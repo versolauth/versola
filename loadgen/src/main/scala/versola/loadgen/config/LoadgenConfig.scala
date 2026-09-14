@@ -1,5 +1,6 @@
 package versola.loadgen.config
 
+import versola.util.Secret
 import versola.util.postgres.PostgresConfig
 import versola.util.postgres.given
 import zio.Config
@@ -33,6 +34,7 @@ case class LoadgenConfig(
     campaign: CampaignConfig,
     actions: List[BusinessActionConfig],
     provision: Option[ProvisionConfig],
+    seed: Option[SeedConfig],
 )
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all four --
@@ -270,6 +272,77 @@ case class ProvisionConfig(
   * resolving to it, which only the deployment knows.
   */
 case class ProvisionResourcesConfig(coreUri: String, payUri: String, notifyUri: String)
+
+/** One of the system under test's databases, as `loadgen seed` reaches it (§10).
+  *
+  * Not [[versola.util.postgres.PostgresConfig]], which is the house type, and for a stated
+  * reason: seven of its nine fields tune a HikariCP pool, and the seeder holds exactly one
+  * connection per database -- `COPY` is serial per table and the seeder's parallelism is in
+  * Argon2, not in the database (see [[versola.loadgen.seed.CopySink.OfConnection]]). Reusing the
+  * block would present `maximum-pool-size` and four timeouts as knobs that do nothing, which is
+  * worse than a smaller type. The emulator's *own* store keeps `PostgresConfig`, because that one
+  * really is pooled.
+  */
+case class SutDatabaseConfig(url: String, user: String, password: Config.Secret)
+
+/** What `loadgen seed` needs beyond [[PopulationConfig]] to bulk-populate the SUT (§10).
+  * Optional for the same reason [[ShardConfig]] and [[ProvisionConfig]] are: a driver holds no
+  * SUT database credentials and its config file omits the block, which requiring it here would
+  * turn into a decode failure before role dispatch read `role`.
+  *
+  * How many users to write is [[PopulationConfig.target]], and the mix is the rest of that block,
+  * so neither is restated here -- the seeder and the drivers have to be reading one population
+  * definition, not two.
+  *
+  * @param passwordsSecret
+  *   auth's Argon2 pepper, which enters the hash as `additional` data. The *same* base64url
+  *   string auth is given as `PASSWORDS_SECRET`, decoded the same way (16 bytes), because a
+  *   seeder with a different pepper produces a population whose every password is individually
+  *   well-formed and none of which verify -- and nothing in that failure points here.
+  * @param shardCount
+  *   how many drivers the campaign will run, because `shard = id % shardCount` is denormalised
+  *   into `vu_users.shard` at write time (§7.1). A seed process owns no shard, so it cannot come
+  *   from [[ShardConfig]]; re-sharding later is the bulk `UPDATE` at a phase boundary the
+  *   tracking issue describes, not something the seeder can leave to the drivers.
+  * @param hashParallelism
+  *   concurrent Argon2id hashes. Each holds ~19 MiB of heap, so this is the knob that bounds the
+  *   seeder's hashing footprint -- and it is required rather than "all cores" precisely because
+  *   the number of cores is not the constraint the heap is.
+  * @param batchSize
+  *   users per `COPY` and per transaction. Also the granularity a crashed run resumes at.
+  */
+case class SeedConfig(
+    auth: SutDatabaseConfig,
+    central: SutDatabaseConfig,
+    tenantId: String,
+    passwordsSecret: Secret.Bytes16,
+    shardCount: Int,
+    hashParallelism: Int,
+    batchSize: Int,
+)
+
+object SeedConfig:
+  /** Anchored in the companion for the same reason [[StoreConfig]]'s is: deriving this needs a
+    * `DeriveConfig` for `Secret.Bytes16` and one for `Config.Secret`, neither of which is in
+    * scope wherever `deriveConfig[LoadgenConfig]` is called.
+    *
+    * The `Secret.Bytes16` derivation mirrors `PostgresOAuthApp`'s exactly -- base64url, length
+    * checked -- rather than `versola.util.postgres`' `Secret.fromString`, because this value has
+    * to round-trip the same string auth reads. Silently interpreting auth's base64url pepper as
+    * raw UTF-8 bytes is the single most likely way to get a population that cannot log in, and
+    * it would not fail anywhere near here.
+    */
+  given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
+    .mapOrFail: value =>
+      Secret.Bytes16
+        .fromBase64Url(value)
+        .left.map(message => Config.Error.InvalidData(message = message))
+        .filterOrElse(
+          _.length == 16,
+          Config.Error.InvalidData(message = "seed.passwords-secret must be 16 base64url-encoded bytes"),
+        )
+
+  given DeriveConfig[SeedConfig] = DeriveConfig.derived
 
 /** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/
   * `cookiePath` scope the `EDGE_SESSION` cookie; both are optional in central, so both are

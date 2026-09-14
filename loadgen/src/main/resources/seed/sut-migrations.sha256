@@ -1,0 +1,18 @@
+# Recorded fingerprints of the SUT migrations directories the seeder writes into
+# (versola-loadgen-dev-spec.md §3.4). One line per directory: <path> <sha256>.
+#
+# The value is SHA-256 over `<filename>:<sha256(contents)>\n` for every .sql file in the
+# directory, sorted by filename -- see versola.loadgen.seed.MigrationFingerprint for why the
+# contents are hashed and not just the listing.
+#
+# If SutSchemaGuardSpec fails against these values, auth's or central's schema has moved.
+# READ THE MIGRATION DIFF FIRST. The question to answer is not "what is the new hash" but
+# "does versola.loadgen.seed.SutSchema still describe every column a seeded user needs, and
+# does SeedRows still write a value for each of them". Re-record only after answering it.
+#
+# Which directories appear here is derived from SutSchema.fingerprintedMigrationDirectories,
+# not chosen here: a seeded table in a service not listed below fails the guard until its
+# directory is added. That is why edge is absent -- the seeder writes no edge table yet.
+
+auth/implementations/postgres/migrations 7adf92dcf56704d5891f87c972960a1959048dd0b177d0c372a2839d058666d5
+central/implementations/postgres/migrations e89666f902e74d32f4f0f5d04812ae1301d512c74375e2b84e3b4aec9a94b2e3
