@@ -1,0 +1,15 @@
+apiVersion: v2
+name: loadgen
+description: >-
+  Helm chart for the Versola load emulator: the coordinator, the driver shard
+  fleet and mockapi. Deploys the instrument, never the system under test --
+  that is k8s/versola. Does not bundle Postgres or a secret backend, and does
+  not bundle Prometheus or Grafana; the dashboards of D9 live in dashboards/
+  and are imported by whatever observability stack the campaign already runs
+  (see versola-loadgen-dev-spec.md §11 and #280).
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+home: https://github.com/versolauth/versola
+sources:
+  - https://github.com/versolauth/versola

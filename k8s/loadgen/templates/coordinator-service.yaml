@@ -1,0 +1,23 @@
+{{- if .Values.coordinator.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-coordinator
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "coordinator" "context" $) | nindent 4 }}
+spec:
+  # ClusterIP over both replicas, which is the whole of the standby
+  # mechanism: `coordinator { url = ... }` in every driver's env.conf names
+  # this Service, and a driver's next poll lands on whichever replica is
+  # still there.
+  type: ClusterIP
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.coordinator.port }}
+      targetPort: http
+    - name: diagnostics
+      port: {{ .Values.coordinator.diagnosticsPort }}
+      targetPort: diagnostics
+{{- end }}

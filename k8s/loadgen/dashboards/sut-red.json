@@ -1,0 +1,413 @@
+{
+  "uid": "versola-loadgen-sut-red",
+  "title": "Versola loadgen \u2014 SUT RED",
+  "description": "Rate, errors and duration of the system under test as the SUT itself reports them: auth, central and edge's http_server_* metrics from Observability.middleware, their outbound http_client_* metrics, and mockapi's own narrow surface as the latency reference every conclusion is measured against. Nothing here comes from the emulator's own counters \u2014 that is the driver RED board.",
+  "tags": ["versola", "loadgen", "sut"],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "utc",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(http_server_requests_total, namespace)",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(http_server_requests_total{namespace=\"$namespace\"}, job)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "hide": 0
+      },
+      {
+        "name": "route",
+        "label": "Route",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(http_server_requests_total{namespace=\"$namespace\", job=~\"$job\"}, route)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this board reads",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "`http_server_requests_total{method,route,status,status_class}`, `http_server_request_duration_seconds{method,route,status_class}` and `http_server_active_requests{method,route}` are emitted by `Observability.middleware` for every service built on `VersolaApp` \u2014 so auth, central and edge, but **not** `mockapi`, which deliberately runs no middleware at all (its ~8,400 rps would otherwise carry a constant bias into the one process the campaign measures against). `mockapi` has its own two metrics, `mockapi_requests_total{endpoint}` and `mockapi_delay_seconds{profile}`, and they are what the bottom row reads.\n\n`job` and `namespace` are **scrape-time** labels: no Versola metric carries a service identity of its own, so which service a series belongs to is whatever the scrape configuration says. On `k8s/versola` that means one scrape target per Deployment.\n\n`route` is the matched route pattern, occasionally with a discriminator appended by `Observability.setRouteLabel` \u2014 `/token?grant_type=authorization_code`, `/revoke?token_type=refresh`, `/logout?flow=...` \u2014 or replaced outright by `setRoutePath`, which is how edge's proxy reports `/resources/core/accounts` rather than one `/resources/{resourceId}/...` bucket. Hence the `=~\"/token.*\"` matchers below rather than exact comparisons."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Rate by service",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (job) (rate(http_server_requests_total{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Errors \u2014 5xx ratio by service",
+      "description": "Only 5xx. 401 and 403 are load-bearing outcomes of this campaign, not faults: the behaviour model plans a step-up challenge and a forbidden action for a share of every hour. \"Zero unexpected 5xx during a rolling restart\" is one of design doc \u00a76.7's pass criteria, and this is the panel it is read off.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (job) (rate(http_server_requests_total{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\", status_class=\"5xx\"}[$__rate_interval])) / clamp_min(sum by (job) (rate(http_server_requests_total{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Responses by status class",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" }, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (status_class) (rate(http_server_requests_total{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval]))",
+          "legendFormat": "{{status_class}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Duration by service",
+      "description": "Bucket quantiles off Observability.durationBoundaries, which top out at 30 s. Anything slower lands in +Inf and the p99 reads as 30 s rather than as the real value.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "{{job}} p50"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval])))",
+          "legendFormat": "{{job}} p99"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "auth /token p99 (pass criterion: \u2264 120 ms)",
+      "description": "Split by grant type, because Observability.setRouteLabel appends it to the route label: authorization_code carries an Argon2 verification on the full-login path, refresh_token does not, and one merged line hides which of the two moved.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.12 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"/token.*\"}[$__rate_interval])))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "edge proxy p99 vs backend p99 (pass criterion: \u2264 backend + 15 ms)",
+      "description": "The one pass criterion of design doc \u00a76.7 that cannot be read off a single series. `edge` is the p99 of edge's own /resources/* responses; `mockapi + 15 ms` is the delay mockapi reports having applied, plus the allowance. The proxy line must stay below the budget line. mockapi_delay_seconds is what the backend *did*, not what edge observed, so this comparison holds only while mockapi's startup self-check passes \u2014 which it enforces by refusing to start.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 23 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"/resources/.*\"}[$__rate_interval])))",
+          "legendFormat": "edge /resources p99"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(mockapi_delay_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval]))) + 0.015",
+          "legendFormat": "backend p99 + 15 ms (budget)"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "In-flight requests by service",
+      "description": "http_server_active_requests, incremented on entry and decremented in an ensuring block, so a line that climbs and never comes back down is requests that never completed rather than load that never left.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (job) (http_server_active_requests{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Outbound calls \u2014 p99 by peer",
+      "description": "http_client_* is the SUT calling something else: edge to mockapi, central to auth, edge to central. `peer` is the named dependency, and `status_class=\"error\"` is this metric's own value for a call that failed before producing a status at all.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "{{peer}} p99"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (peer) (rate(http_client_requests_total{namespace=\"$namespace\", job=~\"$job\", status_class=\"error\"}[$__rate_interval]))",
+          "legendFormat": "{{peer}} failed/s"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "mockapi \u2014 rate by endpoint",
+      "description": "The ten protected actions of design doc \u00a73. Not filtered by $job: mockapi is a separate scrape target and carries none of the http_server_* labels the rest of this board selects on.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" }, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (endpoint) (rate(mockapi_requests_total{namespace=\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{endpoint}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "mockapi \u2014 applied delay by profile",
+      "description": "The reference latency itself: read and write draws from DelaySampler, recorded from the same draw the request actually slept for. Buckets are tight around 1-50 ms, so this is the one place the campaign's baseline can be checked rather than assumed.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 39 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum by (le, profile) (rate(mockapi_delay_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{profile}} p50"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le, profile) (rate(mockapi_delay_seconds_bucket{namespace=\"$namespace\"}[$__rate_interval])))",
+          "legendFormat": "{{profile}} p99"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Slowest routes \u2014 p99",
+      "description": "Every route the selected services served, so a regression can be located without knowing in advance which endpoint to look at.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 47 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["max"], "sortBy": "Max", "sortDesc": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "topk(10, histogram_quantile(0.99, sum by (le, job, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"$route\"}[$__rate_interval]))))",
+          "legendFormat": "{{job}} {{method}} {{route}}"
+        }
+      ]
+    }
+  ]
+}

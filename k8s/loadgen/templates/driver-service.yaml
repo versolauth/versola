@@ -1,0 +1,26 @@
+{{- if .Values.driver.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-driver
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "driver" "context" $) | nindent 4 }}
+spec:
+  # Headless: the StatefulSet's governing Service. Nothing load-balances
+  # across drivers -- each owns a disjoint slice of the population and a
+  # request answered by the wrong shard is answered about the wrong users --
+  # so what is wanted from DNS is the per-pod name
+  # (<fullname>-driver-0.<fullname>-driver), which only clusterIP: None
+  # publishes. It also keeps the fleet's /metrics endpoints individually
+  # addressable, which is what the driver RED board's `pod` breakdown is.
+  clusterIP: None
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "driver" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.driver.port }}
+      targetPort: http
+    - name: diagnostics
+      port: {{ .Values.driver.diagnosticsPort }}
+      targetPort: diagnostics
+{{- end }}

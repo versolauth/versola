@@ -1,0 +1,17 @@
+{{- if .Values.dashboards.configMap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "loadgen.fullname" . }}-dashboards
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "dashboards" "context" $) | nindent 4 }}
+    {{- with .Values.dashboards.configMap.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+data:
+  # One key per file in dashboards/, which is where the boards live whether
+  # or not this ConfigMap is rendered -- the JSON is the deliverable (#280's
+  # D9) and a Grafana sidecar is one of several ways to load it. `.Files.Glob`
+  # rather than a hardcoded list so adding a board is adding a file.
+  {{- (.Files.Glob "dashboards/*.json").AsConfig | nindent 2 }}
+{{- end }}

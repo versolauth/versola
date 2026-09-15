@@ -1,0 +1,141 @@
+{{- if .Values.driver.enabled }}
+{{- $driver := .Values.driver }}
+{{- if lt (int $driver.replicaCount) 1 }}
+{{- fail "driver.replicaCount must be at least 1 -- it is the shard count as well as the pod count (see values.yaml's `driver` block)" }}
+{{- end }}
+{{- if ne $driver.shardIndexFrom "podIndexLabel" }}
+{{- fail (printf "driver.shardIndexFrom must be \"podIndexLabel\", got %q -- see values.yaml for the one mechanism this chart implements" $driver.shardIndexFrom) }}
+{{- end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "loadgen.fullname" . }}-driver
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "driver" "context" $) | nindent 4 }}
+spec:
+  replicas: {{ $driver.replicaCount }}
+  # The headless Service of templates/driver-service.yaml. Required by the
+  # StatefulSet spec, and what gives each shard a resolvable per-pod name --
+  # the coordinator's drain protocol (dev spec §12) addresses one shard at a
+  # time, which a ClusterIP cannot express.
+  serviceName: {{ include "loadgen.fullname" . }}-driver
+  # Parallel, not the default OrderedReady: nothing about shard N's startup
+  # depends on shard N-1 being ready, and starting a fleet of 8-30 drivers
+  # one at a time -- each waiting on a JVM boot, a Hikari pool and a Flyway
+  # schema validation -- delays the campaign by minutes for no ordering
+  # guarantee anyone needs. Rolling *updates* stay ordinal-by-ordinal
+  # regardless of this field, which is the part that matters: one shard is
+  # unowned at a time rather than all of them at once.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "loadgen.componentSelectorLabels" (dict "component" "driver" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "loadgen.componentSelectorLabels" (dict "component" "driver" "context" $) | nindent 8 }}
+      {{- with (include "loadgen.scrapeAnnotations" (dict "root" $ "port" $driver.diagnosticsPort) | trim) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # See values.yaml's top-level comment on preStopSleepSeconds /
+      # terminationGracePeriodSeconds: this has to cover the preStop sleep
+      # below and VersolaApp's own gracefulShutdownTimeout.
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: driver
+          image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $driver "chart" $.Chart) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $driver.port }}
+            - name: diagnostics
+              containerPort: {{ $driver.diagnosticsPort }}
+          env:
+            - name: PORT
+              value: {{ $driver.port | quote }}
+            - name: DPORT
+              value: {{ $driver.diagnosticsPort | quote }}
+            # See VersolaApp.scala's bindHost comment and #207: prod's VPS
+            # sets this to 127.0.0.1 because of network_mode: host, which
+            # would make every pod unreachable here. Deliberately not a
+            # values.yaml knob -- this chart must never inherit that value.
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            - name: CONFIG_PATH
+              value: /app/config/env.conf
+            # The shard identity (dev spec §5: "driver only; injected from
+            # the StatefulSet ordinal"). `apps.kubernetes.io/pod-index` is
+            # stamped on the pod by the StatefulSet controller, so the
+            # ordinal arrives as a label rather than having to be parsed off
+            # the hostname -- see values.yaml's driver.shardIndexFrom for the
+            # Kubernetes version this needs and what the alternative cost.
+            #
+            # Both land in the mounted env.conf as HOCON substitutions
+            # (`shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }`):
+            # VersolaApp.parseConfig resolves the file against the process
+            # environment, the same mechanism auth/central/edge's `${VAR}`
+            # secret placeholders use.
+            - name: SHARD_INDEX
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.labels['apps.kubernetes.io/pod-index']
+            # One pod per shard, so the replica count is the divisor of
+            # `shard = id % count`. Scaling it is not a chart operation --
+            # see values.yaml's driver.replicaCount.
+            - name: SHARD_COUNT
+              value: {{ $driver.replicaCount | quote }}
+            {{- with $driver.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with (include "loadgen.envFrom" (dict "root" $ "svc" $driver) | trim) }}
+          envFrom:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- if $driver.config.existingSecret }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          {{- end }}
+          # /liveness and /readiness are served by the diagnostics server,
+          # separate from application traffic on `http` -- see
+          # VersolaApp.scala's serviceRoutes. A driver's own schema handling
+          # is not RUN_MIGRATIONS: LoadgenStore.transactor's `migrate` is
+          # false for the driver role and true for the coordinator, precisely
+          # so a fleet of them does not race Flyway on startup.
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: diagnostics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml $driver.resources | nindent 12 }}
+      {{- if $driver.config.existingSecret }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ $driver.config.existingSecret }}
+            items:
+              - key: {{ $driver.config.secretKey }}
+                path: env.conf
+      {{- end }}
+{{- end }}
