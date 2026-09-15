@@ -1,7 +1,7 @@
 # versola-loadgen: no sbt in this image. Expects the staged tree `sbt loadgen/stage` produces,
 # downloaded as an artifact before this Dockerfile ever runs -- same shape as Dockerfile.auth.
-# The CI job that stages and uploads it does not exist yet (see build.sbt's comment on the
-# `loadgen` project); until it does, this image is buildable only from a local `sbt loadgen/stage`.
+# Staged and uploaded by the build job's "Stage services for release images" step and consumed
+# by ci-cd.yml's `docker-loadgen` job, the same way Dockerfile.auth's artifact reaches it.
 # Runs as either the coordinator or a driver shard; role is selected entirely by config
 # (see versola-loadgen-dev-spec.md §5), not by a build-time or entrypoint switch.
 #
