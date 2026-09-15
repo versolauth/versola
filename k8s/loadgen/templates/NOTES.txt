@@ -1,0 +1,60 @@
+The Versola load emulator has been deployed. Components created:
+{{- if .Values.driver.enabled }}
+  - {{ include "loadgen.fullname" . }}-driver ({{ .Values.driver.replicaCount }} shards, headless, port {{ .Values.driver.port }}, diagnostics {{ .Values.driver.diagnosticsPort }})
+{{- end }}
+{{- if .Values.coordinator.enabled }}
+  - {{ include "loadgen.fullname" . }}-coordinator ({{ .Values.coordinator.replicaCount }} replicas, port {{ .Values.coordinator.port }}, diagnostics {{ .Values.coordinator.diagnosticsPort }})
+{{- end }}
+{{- if .Values.mockapi.enabled }}
+  - {{ include "loadgen.fullname" . }}-mockapi ({{ .Values.mockapi.replicaCount }} replicas, port {{ .Values.mockapi.port }}, diagnostics {{ .Values.mockapi.diagnosticsPort }})
+{{- end }}
+
+Each `loadgen` role reads one HOCON env.conf from its own
+`<component>.config.existingSecret`, mounted at CONFIG_PATH, and this chart
+generates neither it nor the `${VAR}` values it references (see values.yaml's
+`secrets` block). `role` lives in that file, which is why the driver and the
+coordinator take one Secret each rather than sharing one.
+{{- if .Values.driver.enabled }}
+
+The driver fleet is a StatefulSet of {{ .Values.driver.replicaCount }} shards. Its env.conf must read the
+injected ordinal, or every driver runs as shard 0:
+
+    role = driver
+    shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
+
+{{ .Values.driver.replicaCount }} must equal the `seed.shard-count` the population was seeded with:
+`vu_users.shard` holds `id % shard-count`, written at seed time, so changing
+the replica count without the re-shard UPDATE leaves part of the population
+owned by no driver and part owned by two.
+{{- end }}
+{{- if and .Values.driver.enabled .Values.coordinator.enabled }}
+
+Point every driver's `coordinator { url = ... }` at
+http://{{ include "loadgen.fullname" . }}-coordinator:{{ .Values.coordinator.port }} -- the Service, not a pod. Both replicas
+answer it with the same plan, which is the whole of the standby mechanism.
+{{- end }}
+{{- if .Values.mockapi.enabled }}
+
+central's three resources must resolve to
+{{ include "loadgen.fullname" . }}-mockapi:{{ .Values.mockapi.port }} (`provision.resources`' core/pay/notify URIs).
+Each must be absolute and path-less, so three resources on one mockapi need
+three authorities pointing here -- extra Services, or DNS names this chart
+does not create.
+{{- end }}
+
+{{ if .Values.metrics.prometheusAnnotations -}}
+Every pod carries prometheus.io/scrape annotations on its diagnostics port. The
+boards in k8s/loadgen/dashboards/ select on `namespace`, `job` and `pod`, none
+of which any Versola metric emits itself -- if your scrape configuration drops
+them, the fleet-wide sums still work and the per-pod breakdowns come up empty.
+{{- else -}}
+metrics.prometheusAnnotations is false, so nothing here is discoverable by an
+annotation-based Prometheus. The boards in k8s/loadgen/dashboards/ will be
+empty until something scrapes /metrics on each component's diagnostics port.
+{{- end }}
+{{- if not .Values.dashboards.configMap.enabled }}
+
+No dashboard ConfigMap was created (dashboards.configMap.enabled=false). Import
+k8s/loadgen/dashboards/*.json into Grafana by hand, or set that flag together
+with the label your Grafana sidecar watches for.
+{{- end }}

@@ -1,0 +1,24 @@
+{{- if .Values.mockapi.enabled }}
+# The plain mockapi origin -- direct access to its `http`/`diagnostics` ports
+# (metrics, health, and manual poking), unrewritten. NOT what
+# `resources.coreUri`/`payUri`/`notifyUri` should point at -- see
+# mockapi-resource-origin-services.yaml and values.yaml's
+# `mockapi.resourceGateway` comment for the Services that are.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.mockapi.port }}
+      targetPort: http
+    - name: diagnostics
+      port: {{ .Values.mockapi.diagnosticsPort }}
+      targetPort: diagnostics
+{{- end }}

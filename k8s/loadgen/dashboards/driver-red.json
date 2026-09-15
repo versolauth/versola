@@ -1,0 +1,553 @@
+{
+  "uid": "versola-loadgen-driver-red",
+  "title": "Versola loadgen \u2014 driver RED",
+  "description": "Rate, errors and duration of the load emulator itself, plus the four numbers #267's definition of done names: schedule lag, dropped write-behind rows, refresh rejections and driver CPU. Every series here describes the instrument, not the system under test \u2014 that is the SUT RED board. Metric names and label sets come from loadgen/src/main/scala/versola/loadgen/metrics/LoadgenMetrics.scala; namespace and pod are added at scrape time.",
+  "tags": ["versola", "loadgen", "driver"],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "timezone": "utc",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(loadgen_arrivals_total, namespace)",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "pod",
+        "label": "Driver pod",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(loadgen_driver_cpu_ratio{namespace=\"$namespace\"}, pod)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "hide": 0
+      },
+      {
+        "name": "scenario",
+        "label": "Scenario",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "query": "label_values(loadgen_outcomes_total{namespace=\"$namespace\"}, scenario)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this board reads",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 0 },
+      "options": {
+        "mode": "markdown",
+        "content": "Scraped off each `loadgen` pod's **diagnostics port** (`DPORT`, `/metrics`) \u2014 `k8s/loadgen`'s `metrics.prometheusAnnotations` is what puts the pods in front of Prometheus.\n\n`namespace`, `pod` and `job` are **scrape-time** labels, not application ones: no metric in `LoadgenMetrics` emits a pod identity, so a scrape configuration that drops them leaves the per-driver breakdowns empty while the fleet-wide sums keep working.\n\n`loadgen_outcomes_total`'s label set is fixed at seven values by dev spec \u00a711. Four of them \u2014 `ok`, `stepup`, `forbidden`, `unauthorized` \u2014 are *planned* outcomes and are deliberately **not** counted as errors on this board: `retail-basic` users are supposed to be forbidden, a payment below the token's `acr` is supposed to be answered with a step-up challenge. Only `transport`, `unexpected_status` and `malformed` consume the error budget. Refresh rejections are the eighth case and have their own counter, `loadgen_refresh_rejected_total`."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Rate \u2014 arrivals and completed steps",
+      "description": "Arrivals are the open-model schedule firing; steps are what actually completed. A widening gap is the driver falling behind, which is what the schedule lag panel measures directly.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(loadgen_arrivals_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval]))",
+          "legendFormat": "arrivals"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(loadgen_outcomes_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval]))",
+          "legendFormat": "steps"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Arrival rate by scenario",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (scenario) (rate(loadgen_arrivals_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval]))",
+          "legendFormat": "{{scenario}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Errors \u2014 budget-consuming outcomes only",
+      "description": "transport / unexpected_status / malformed. The planned outcomes (ok, stepup, forbidden, unauthorized) are on the outcome-mix panel instead; a campaign in which they are zero has failed to exercise the paths that matter most.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(loadgen_outcomes_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\", outcome=~\"transport|unexpected_status|malformed\"}[$__rate_interval]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Error budget consumed",
+      "description": "Budget-consuming steps as a fraction of all steps. The report's own verdict is computed from the HdrHistogram snapshots, not from this ratio \u2014 see ErrorTaxonomy's budgetRatio.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(rate(loadgen_outcomes_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\", outcome=~\"transport|unexpected_status|malformed\"}[$__rate_interval])) / clamp_min(sum(rate(loadgen_outcomes_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "error budget"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Step duration",
+      "description": "Per-pod bucket quantiles, for dashboards only. These cannot be merged across pods into a correct campaign-wide quantile \u2014 the defensible p99 is the coordinator's merge of the per-driver HdrHistograms (dev spec \u00a711).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(loadgen_step_duration_seconds_bucket{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(loadgen_step_duration_seconds_bucket{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(loadgen_step_duration_seconds_bucket{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Flow duration p99 by flow",
+      "description": "login, refresh, step-up, ... loadgen_flow_duration_seconds is labelled by flow only and never touches loadgen_outcomes_total, so flows do not inflate the error budget's denominator.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 22 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "histogram_quantile(0.99, sum by (le, flow) (rate(loadgen_flow_duration_seconds_bucket{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval])))",
+          "legendFormat": "{{flow}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Schedule lag (must stay under 250 ms)",
+      "description": "A gauge, one reading per scenario per pod: how far behind its intended start time the arrival process is. Past this line the load being applied is not the load that was planned, and the latency the campaign reports includes the driver's own queueing.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.25 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (scenario) (loadgen_schedule_lag_seconds{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"})",
+          "legendFormat": "{{scenario}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Driver CPU (must stay under 40%)",
+      "description": "A fraction of the pod's own CPU allocation, so the 40% of #267's definition of done reads straight off the graph. Design doc \u00a76.5 sizes the fleet at ~30% precisely so the client's queueing stays outside the latencies it reports. The denominator is cgroup-aware availableProcessors, i.e. the CPU *limit*: a driver pod without one measures itself against the whole node and this line reads far too low.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 30 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never", "thresholdsStyle": { "mode": "line" } },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.4 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "max by (pod) (loadgen_driver_cpu_ratio{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Dropped write-behind rows",
+      "description": "Must be 0 over the campaign. A dropped row is session state that was lost and resurfaces later as a broken virtual user.",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(loadgen_store_flush_dropped_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__range]))",
+          "legendFormat": "dropped",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Refresh rejections",
+      "description": "Must be 0. \u00a77.4's refresh discipline ends the session on a rejection rather than counting it as one more step outcome, which is why it has its own counter.",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(loadgen_refresh_rejected_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__range]))",
+          "legendFormat": "rejected",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Clamped latencies",
+      "description": "Must be 0. A clamp means a sample exceeded the HdrHistogram's 60 s ceiling and the reported tail is a floor rather than a measurement \u2014 an instrument failure, not a slow SUT.",
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(increase(loadgen_latency_clamped_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__range]))",
+          "legendFormat": "clamped",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Busy users / in-flight requests",
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 38 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0 },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(loadgen_busy_users{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "busy users"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum(loadgen_inflight_requests{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "in-flight"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Refresh rejections by reason",
+      "description": "already_exchanged / session_revoked / expired / unknown. already_exchanged is the one to read first: it is either the emulator replaying a rotation or the SUT losing one, and after that point no number in the campaign is trustworthy.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (reason) (rate(loadgen_refresh_rejected_total{namespace=\"$namespace\", pod=~\"$pod\"}[$__rate_interval]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Population",
+      "description": "planned / registered / broken. `broken` is the count of virtual users the driver has retired, and it is what tells you whether a falling arrival rate is the SUT slowing down or the emulator eating its own population.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (state) (loadgen_population{namespace=\"$namespace\", pod=~\"$pod\"})",
+          "legendFormat": "{{state}}"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Outcome mix",
+      "description": "All seven values of loadgen_outcomes_total. The planned four are supposed to be non-zero: a campaign with no forbidden and no step-up has not exercised the paths that matter most.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 51 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": { "drawStyle": "line", "lineWidth": 1, "fillOpacity": 10, "stacking": { "mode": "normal" }, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "sum by (outcome) (rate(loadgen_outcomes_total{namespace=\"$namespace\", pod=~\"$pod\", scenario=~\"$scenario\"}[$__rate_interval]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    }
+  ]
+}

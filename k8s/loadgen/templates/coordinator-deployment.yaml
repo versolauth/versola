@@ -1,0 +1,119 @@
+{{- if .Values.coordinator.enabled }}
+{{- $coordinator := .Values.coordinator }}
+{{- if not $coordinator.config.existingSecret }}
+{{- fail "coordinator.config.existingSecret is required when coordinator.enabled is true -- see values.yaml's `coordinator.config` block and driver-statefulset.yaml's identical guard" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loadgen.fullname" . }}-coordinator
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "coordinator" "context" $) | nindent 4 }}
+spec:
+  # A Deployment and not a StatefulSet, and the one component in this chart
+  # whose replicas are interchangeable: the coordinator holds no per-user
+  # state (dev spec §12), so the second replica is a standby in the only
+  # sense that matters -- drivers poll `GET /plan` every 10s and whichever
+  # replica answers gives the same plan. See values.yaml's
+  # coordinator.replicaCount.
+  replicas: {{ $coordinator.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" $) | nindent 8 }}
+      {{- with (include "loadgen.scrapeAnnotations" (dict "root" $ "port" $coordinator.diagnosticsPort) | trim) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if gt (int $coordinator.replicaCount) 1 }}
+      # Preferred, not required: a standby on the same node as the active
+      # replica still survives the process dying, which is the failure §12
+      # describes, and a hard constraint would leave the standby Pending on a
+      # single-node cluster -- a campaign that cannot start at all instead of
+      # one that is merely less redundant than intended.
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" $) | nindent 20 }}
+      {{- end }}
+      # See values.yaml's top-level comment on preStopSleepSeconds /
+      # terminationGracePeriodSeconds.
+      terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      containers:
+        - name: coordinator
+          image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $coordinator "chart" $.Chart) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            # Named `http` and not `api`: it is VersolaApp's PORT, the same
+            # application listener the driver binds, and the plan API is what
+            # this role happens to serve on it.
+            - name: http
+              containerPort: {{ $coordinator.port }}
+            - name: diagnostics
+              containerPort: {{ $coordinator.diagnosticsPort }}
+          env:
+            - name: PORT
+              value: {{ $coordinator.port | quote }}
+            - name: DPORT
+              value: {{ $coordinator.diagnosticsPort | quote }}
+            # See the driver StatefulSet's comment on BIND_HOST.
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            - name: CONFIG_PATH
+              value: /app/config/env.conf
+            {{- with $coordinator.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with (include "loadgen.envFrom" (dict "root" $ "svc" $coordinator) | trim) }}
+          envFrom:
+            {{- . | nindent 12 }}
+          {{- end }}
+          {{- if $coordinator.config.existingSecret }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+          {{- end }}
+          # As the driver's: the diagnostics server serves these, separately
+          # from the plan API on `http`.
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: diagnostics
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml $coordinator.resources | nindent 12 }}
+      {{- if $coordinator.config.existingSecret }}
+      volumes:
+        - name: config
+          secret:
+            secretName: {{ $coordinator.config.existingSecret }}
+            items:
+              - key: {{ $coordinator.config.secretKey }}
+                path: env.conf
+      {{- end }}
+{{- end }}

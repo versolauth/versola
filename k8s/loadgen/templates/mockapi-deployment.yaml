@@ -1,0 +1,110 @@
+{{- if .Values.mockapi.enabled }}
+{{- $mockapi := .Values.mockapi }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+spec:
+  replicas: {{ $mockapi.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 8 }}
+      {{- with (include "loadgen.scrapeAnnotations" (dict "root" $ "port" $mockapi.diagnosticsPort) | trim) }}
+      annotations:
+        {{- . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- with $.Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # mockapi's own pair, not the chart-wide one: it does not run
+      # VersolaApp and has no gracefulShutdownTimeout to cover. See
+      # values.yaml's `mockapi` block.
+      terminationGracePeriodSeconds: {{ $mockapi.terminationGracePeriodSeconds }}
+      containers:
+        - name: mockapi
+          image: {{ include "loadgen.image" (dict "global" $.Values.global "svc" $mockapi "chart" $.Chart) }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ $mockapi.port }}
+            - name: diagnostics
+              containerPort: {{ $mockapi.diagnosticsPort }}
+          # No CONFIG_PATH and no volume: mockapi has no config file at all.
+          # These three are read straight from the environment in its own
+          # Main.scala, which is also where their defaults (8100/8101/0.0.0.0)
+          # live -- set explicitly anyway so the ports the Service targets and
+          # the ports the process binds have one source.
+          env:
+            - name: PORT
+              value: {{ $mockapi.port | quote }}
+            - name: DPORT
+              value: {{ $mockapi.diagnosticsPort | quote }}
+            - name: BIND_HOST
+              value: "0.0.0.0"
+            {{- with $mockapi.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # mockapi's /readiness answers 503 until the application listener is
+          # installed, the same contract as VersolaApp's -- but it reaches
+          # that point only after the delay self-check of dev spec §9 passes,
+          # which takes a million draws per profile. A miscalibrated backend
+          # fails that check and the process exits, so a pod stuck here is a
+          # CrashLoopBackOff rather than a readiness timeout; the extra
+          # initialDelay is for the honest case, not the failing one.
+          livenessProbe:
+            httpGet:
+              path: /liveness
+              port: diagnostics
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readiness
+              port: diagnostics
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-c", "sleep {{ $mockapi.preStopSleepSeconds }}"]
+          resources:
+            {{- toYaml $mockapi.resources | nindent 12 }}
+        {{- if $mockapi.resourceGateway.enabled }}
+        # See values.yaml's `mockapi.resourceGateway` comment: the three
+        # protected-resource origins central needs (path-less) do not exist
+        # on the mockapi container itself (its routes all carry a
+        # /resources/{id}/ prefix), so this sidecar rewrites and proxies over
+        # localhost -- same pod, same network namespace, no Service hop.
+        - name: resource-gateway
+          image: {{ $mockapi.resourceGateway.image }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: core
+              containerPort: {{ $mockapi.resourceGateway.ports.core }}
+            - name: pay
+              containerPort: {{ $mockapi.resourceGateway.ports.pay }}
+            - name: notify
+              containerPort: {{ $mockapi.resourceGateway.ports.notify }}
+          volumeMounts:
+            - name: resource-gateway-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          resources:
+            {{- toYaml $mockapi.resourceGateway.resources | nindent 12 }}
+        {{- end }}
+      {{- if $mockapi.resourceGateway.enabled }}
+      volumes:
+        - name: resource-gateway-config
+          configMap:
+            name: {{ include "loadgen.fullname" . }}-mockapi-resource-gateway
+      {{- end }}
+{{- end }}

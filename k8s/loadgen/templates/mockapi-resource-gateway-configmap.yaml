@@ -1,0 +1,47 @@
+{{- if and .Values.mockapi.enabled .Values.mockapi.resourceGateway.enabled }}
+{{- $mockapi := .Values.mockapi }}
+{{- $gateway := $mockapi.resourceGateway }}
+# nginx config for the resource-gateway sidecar in the mockapi pod -- see
+# values.yaml's `mockapi.resourceGateway` for why this exists: central's
+# resource identifiers must be path-less, mockapi's routes are not, and this
+# is the rewrite that reconciles the two per resource.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi-resource-gateway
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+data:
+  nginx.conf: |
+    worker_processes 1;
+    events {
+      worker_connections 1024;
+    }
+    http {
+      access_log off;
+      # One server block per resource, each on its own port -- the "three
+      # authorities" values.yaml's comment describes. `location / { proxy_pass
+      # .../resources/{id}/; }` is nginx's URI-replacement form: the matched
+      # part of the request path (here, all of it) is swapped for the
+      # proxy_pass URI, so `GET /accounts` on the core port reaches mockapi as
+      # `GET /resources/core/accounts`, query string and method preserved.
+      server {
+        listen {{ $gateway.ports.core }};
+        location / {
+          proxy_pass http://127.0.0.1:{{ $mockapi.port }}/resources/core/;
+        }
+      }
+      server {
+        listen {{ $gateway.ports.pay }};
+        location / {
+          proxy_pass http://127.0.0.1:{{ $mockapi.port }}/resources/pay/;
+        }
+      }
+      server {
+        listen {{ $gateway.ports.notify }};
+        location / {
+          proxy_pass http://127.0.0.1:{{ $mockapi.port }}/resources/notify/;
+        }
+      }
+    }
+{{- end }}

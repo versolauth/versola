@@ -1,0 +1,284 @@
+# Default values for the loadgen chart.
+#
+# Ground rules this chart follows (the same ones as k8s/versola -- see #206
+# and that chart's values.yaml):
+#   - No bundled Postgres. The emulator's own store (`store.postgres`, dev
+#     spec §6) is an external database the mounted env.conf already points
+#     at.
+#   - No bundled secret backend. This chart consumes a Secret, it never
+#     generates or mandates one.
+#   - No bundled Prometheus or Grafana. The dashboards of D9 are checked in
+#     under dashboards/ and imported by the observability stack the campaign
+#     already runs (design doc §5.4's VictoriaMetrics + Grafana host).
+#   - HPA/PDB/topology spread are out of scope here, as they are there
+#     (#211). A driver fleet must not autoscale mid-campaign in any case:
+#     the shard count is what the population was seeded against.
+#
+# Unlike k8s/versola, the three components are separate top-level blocks
+# rather than one `services` map. They do not share a shape: `driver` is a
+# StatefulSet carrying a shard identity, `coordinator` is a Deployment with a
+# standby, and `mockapi` has no config file, no database and no `${VAR}`
+# secrets at all. A map keyed by name would have to carry every field for
+# every entry and guard most of them.
+
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  # Images are pulled as <imageRegistry>/<imageRepository>/<repository>:<tag>,
+  # e.g. ghcr.io/versolauth/versola-loadgen:0.4.0. `loadgen` and `mockapi`
+  # are two images from two sbt modules (docker/Dockerfile.loadgen,
+  # docker/Dockerfile.mockapi); the coordinator and the drivers are one
+  # image, one binary, differing only in `role` (dev spec §5).
+  imageRegistry: ghcr.io
+  imageRepository: versolauth
+  imagePullPolicy: IfNotPresent
+  imagePullSecrets: []
+
+# terminationGracePeriodSeconds / preStopSleepSeconds for the two `loadgen`
+# roles. Copied from k8s/versola for the same reason: both run VersolaApp,
+# whose gracefulShutdownTimeout is 15s, so 5s preStop + 15s drain + 10s
+# margin = 30s. See that chart's values.yaml for the full reasoning.
+#
+# mockapi has its own pair (below): it does not run VersolaApp and has no
+# graceful shutdown to wait for.
+preStopSleepSeconds: 5
+terminationGracePeriodSeconds: 30
+
+# The Secret carrying the `${VAR}` values the mounted env.conf files
+# reference -- the emulator store's POSTGRES_PASSWORD, and for a one-shot
+# `role = provision`/`role = seed` run its central/edge secrets and auth's
+# Argon2 pepper.
+#
+# Delivered with `envFrom: secretRef`, i.e. every key in the Secret becomes a
+# process env var, rather than k8s/versola's explicit per-var secretKeyRef
+# list. That chart can enumerate the required vars because scripts/gen-env.scala
+# fixes them; loadgen has no generator and no fixed set -- which placeholders
+# a campaign's env.conf uses is the campaign's choice (dev spec §5 shows the
+# file, not the placeholder names). Enumerating a list here would invent a
+# contract the code does not have, and every campaign that named a variable
+# differently would get an unresolved-substitution failure at boot with the
+# chart insisting it had supplied everything.
+#
+# Keys must be legal env var names: HOCON resolves `${POSTGRES_PASSWORD}`
+# against the process environment (VersolaApp.parseConfig calls
+# ConfigFactory.parseString(...).resolve(), which reads the system
+# environment), so a key with a dash in it is silently not a substitution
+# source.
+secrets:
+  existingSecret: ""
+
+# The driver fleet (dev spec §7). A StatefulSet, and not a Deployment,
+# because the pod ordinal *is* the shard index: `shard = id % shardCount`
+# (§7.1) is denormalised into vu_users.shard at seed time, so which slice of
+# the population a pod owns has to survive a restart and a rolling update.
+# A Deployment's pods have no stable identity, so every restart would
+# reshuffle ownership -- two drivers on one slice and none on another, with
+# no error anywhere.
+driver:
+  enabled: true
+  image:
+    repository: versola-loadgen
+    tag: "" # defaults to .Chart.AppVersion
+  # One pod per shard, so this is also SHARD_COUNT (see `shardIndexFrom`
+  # below). It must equal the `seed.shard-count` the population was seeded
+  # with: the seeder wrote `id % shard-count` into every row, and scaling
+  # this number without the re-shard of #267 ("8->16 moves half the rows, as
+  # a bulk UPDATE at a phase boundary behind the drain protocol") leaves the
+  # new shards' rows unowned and the old shards scheduling users that are no
+  # longer theirs.
+  #
+  # Design doc §6.5 sizes the fleet at ~30% CPU per driver precisely so the
+  # client's own queueing stays out of the latencies it reports.
+  replicaCount: 8
+  port: 8080 # PORT -- VersolaApp's application port
+  diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
+  # How SHARD_INDEX is derived. Only one mechanism, `podIndexLabel`: the
+  # downward API reading `apps.kubernetes.io/pod-index`, the label the
+  # StatefulSet controller stamps on each pod (Kubernetes >= 1.28; the
+  # PodIndexLabel gate is on by default there and the field is GA since
+  # 1.32). A values knob with a single legal value so the requirement has
+  # somewhere to be stated and a second mechanism has somewhere to go.
+  #
+  # The alternative -- parsing the ordinal off $HOSTNAME in the entrypoint --
+  # was rejected: it means overriding `command` to wrap
+  # docker/Dockerfile.loadgen's ENTRYPOINT in another shell, and a chart that
+  # rewrites the image's entrypoint silently stops tracking changes to it.
+  shardIndexFrom: podIndexLabel
+  # The one component in this chart with a CPU *limit* and not just a request,
+  # unlike k8s/versola's services. `loadgen_driver_cpu_ratio` is
+  # ProcessCpu's Δcpu-time / (Δwall × availableProcessors), and
+  # availableProcessors is cgroup-aware: it reads the quota, which only exists
+  # if a limit is set. Without one it is the node's core count, so a driver
+  # pegged at its intended 2 cores on a 64-core node reports ~0.03 and the
+  # "driver CPU < 40%" gate of #267 silently always passes -- the exact failure
+  # that metric was written not to have. Equal to the request so the ratio's
+  # denominator is also the capacity the fleet was sized against (design doc
+  # §6.5).
+  resources:
+    requests:
+      cpu: "2"
+      memory: 2Gi
+    limits:
+      cpu: "2"
+      memory: 2Gi
+  config:
+    # REQUIRED (when driver.enabled is true): name of a Secret that already
+    # contains an env.conf key (HOCON, dev spec §5), mounted at CONFIG_PATH.
+    # Must set `role = driver` and a `shard` block reading the injected
+    # ordinal:
+    #   role = driver
+    #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
+    # Separate from the coordinator's Secret below because `role` lives in
+    # the file, not in the environment -- one Secret cannot say both.
+    #
+    # Left empty here on purpose: docker/Dockerfile.loadgen's ENTRYPOINT
+    # always runs with -Denv.path=/app/config/env.conf, so an unset Secret
+    # would otherwise silently render a StatefulSet with no config volume at
+    # all and every pod CrashLoopBackOff on `include required(file(...))`.
+    # driver-statefulset.yaml fails the template instead.
+    existingSecret: ""
+    secretKey: env.conf
+  # Extra plain env vars: [{name: FOO, value: bar}, ...].
+  extraEnv: []
+  # Extra envFrom entries, beyond `secrets.existingSecret` above.
+  extraEnvFrom: []
+
+# The coordinator (dev spec §12): plan API, shard map, drain protocol,
+# registration controller, report merge.
+coordinator:
+  enabled: true
+  image:
+    repository: versola-loadgen
+    tag: ""
+  # Two: one serving, one standby. The coordinator holds no per-user state,
+  # so a standby is a second replica behind the same ClusterIP Service and
+  # nothing else -- §12: "If it dies, drivers keep running on the last plan
+  # they fetched; a standby takes over on the next poll." There is no lease
+  # and no election to configure, and a driver that polls the other replica
+  # mid-failover gets the same answer.
+  replicaCount: 2
+  # 8100, the port dev spec §5's `coordinator { url =
+  # "http://loadgen-coordinator:8100" }` names, not VersolaApp's default
+  # 8080. Both, and 8081 below, are in docker/Dockerfile.loadgen's EXPOSE
+  # set.
+  port: 8100
+  diagnosticsPort: 8081
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 1Gi
+  config:
+    # REQUIRED (when coordinator.enabled is true), same enforcement as
+    # `driver.config.existingSecret` above. As `driver.config` above, but the
+    # file must set `role = coordinator` and omit the `shard` block
+    # (LoadgenConfig.shard is an Option precisely so a coordinator's config
+    # decodes without one).
+    existingSecret: ""
+    secretKey: env.conf
+  extraEnv: []
+  extraEnvFrom: []
+
+# mockapi: the mock protected-resource backend of dev spec §9 -- ten routes,
+# a configured delay distribution, and a startup self-check that
+# CrashLoopBackOffs rather than serve a miscalibrated latency reference.
+#
+# Deliberately not a VersolaApp service (see build.sbt's comment on the
+# `mockapi` project): no config file, no `${VAR}` secrets, no database, no
+# tracing, and PORT/DPORT/BIND_HOST read straight from the environment. It
+# does serve /metrics, /liveness and /readiness on its own diagnostics port.
+mockapi:
+  enabled: true
+  image:
+    repository: versola-mockapi
+    tag: ""
+  # Design doc §5 puts ~8,400 rps through here. This is the one process every
+  # latency number in the campaign is measured against, so it is scaled to
+  # have headroom rather than to be efficient.
+  replicaCount: 3
+  # 8100/8101, matching docker/Dockerfile.mockapi's EXPOSE and the
+  # `targets.mock-url` of dev spec §5.
+  port: 8100
+  diagnosticsPort: 8101
+  resources:
+    requests:
+      cpu: "1"
+      memory: 512Mi
+    limits:
+      memory: 512Mi
+  # mockapi has no equivalent of VersolaApp's gracefulShutdownTimeout -- on
+  # SIGTERM the JVM goes down with whatever it is holding. These only need to
+  # cover the preStop sleep that stops new traffic arriving, plus room for
+  # in-flight requests whose whole duration is one ~10 ms sleep.
+  preStopSleepSeconds: 5
+  terminationGracePeriodSeconds: 20
+  extraEnv: []
+  # Central's RFC 8707 resource identifier must be an absolute URI with an
+  # *empty* path (central's `configuration.ResourceUri.parse` rejects any
+  # `url.path.nonEmpty`), but mockapi's own routes are fixed under
+  # /resources/{core,pay,notify}/... (see mockapi/Endpoints.scala's top
+  # comment) and edge's proxy does nothing but append the caller's
+  # rest-of-path to whatever URI got registered (EdgeService.buildUpstreamRequest's
+  # `baseUrl = resource.resource.addPath(restPath)`). A path-less
+  # coreUri/payUri/notifyUri pointed straight at this Service would 404 on
+  # every protected action.
+  #
+  # This is exactly the gap LoadgenConfig's `ProvisionResourcesConfig` comment
+  # names -- "three resources on one mockapi need three authorities resolving
+  # to it, which only the deployment knows" -- so it is solved here, not in
+  # loadgen's own code: an nginx sidecar in the mockapi pod listens on three
+  # ports, one per resource, and rewrites each to the matching
+  # /resources/{id}/ prefix before proxying to mockapi over localhost. The
+  # three Services this creates (`<fullname>-mockapi-core`, `-pay`,
+  # `-notify`) are those three authorities: point `loadgen provision`'s
+  # `resources.coreUri`/`payUri`/`notifyUri` at
+  # `http://<fullname>-mockapi-core.<namespace>.svc.cluster.local:8110` and
+  # so on for the other two.
+  resourceGateway:
+    enabled: true
+    image: nginx:1.27-alpine
+    ports:
+      core: 8110
+      pay: 8120
+      notify: 8130
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        memory: 32Mi
+
+# Where the dashboards of dashboards/ get their data from, and how the pods
+# are found.
+metrics:
+  # prometheus.io/scrape + /port + /path pod annotations on every component.
+  #
+  # A deviation from k8s/versola, which creates no scrape configuration at
+  # all and leaves discovery entirely to the cluster. Here the dashboards are
+  # part of the same deliverable as the workloads (#280's D8 and D9), and a
+  # board over metrics nothing is scraping is the failure mode this chart
+  # exists to avoid. Annotation-based discovery rather than a
+  # ServiceMonitor/PodMonitor because those need prometheus-operator CRDs
+  # installed, which this chart cannot assume any more than it can assume an
+  # IngressClass.
+  #
+  # The dashboards select on `job`, `namespace` and `pod`, all three of them
+  # scrape-time labels rather than anything the application emits -- see each
+  # board's own description panel.
+  prometheusAnnotations: true
+
+# The Grafana boards of dashboards/, as a ConfigMap for a Grafana dashboard
+# sidecar to pick up.
+#
+# Off by default: the JSON files are the deliverable and are importable by
+# hand or by whatever provisioning the observability host already has. This
+# only helps if Grafana is running in the same cluster with the sidecar
+# watching for a label, which is exactly what `labels` below is for
+# (kube-prometheus-stack's default is `grafana_dashboard: "1"`).
+dashboards:
+  configMap:
+    enabled: false
+    labels: {}
+    #  grafana_dashboard: "1"
