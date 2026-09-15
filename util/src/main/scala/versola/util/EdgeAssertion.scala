@@ -1,11 +1,12 @@
 package versola.util
 
-import zio.json.{JsonCodec, jsonField}
 import zio.json.ast.Json
+import zio.json.{JsonCodec, jsonField}
 import zio.{Duration, IO, Task, ZIO, durationInt}
 
 import java.nio.charset.StandardCharsets
 import java.security.{MessageDigest, PrivateKey}
+import java.time.Instant
 
 /** What an edge sends auth to say it has already enforced RFC 9449 §7 on a request, so auth's
   * own resource endpoints do not demand a second proof the caller cannot produce.
@@ -59,6 +60,17 @@ object EdgeAssertion:
       * against a registry, not by anything here -- [[verify]] is given the keys already. */
     case UnknownEdge
 
+    /** Named an edge that is real and signed correctly, but is not the one central has
+      * assigned to serve this token's tenant. Raised by the caller after resolving the
+      * registry, for the same reason [[UnknownEdge]] is: an edge's identity says nothing
+      * about which tenants it may vouch for without checking that separately. */
+    case WrongTenant
+
+    /** This exact assertion has already been accepted once. Raised by the caller, which is
+      * the only one holding a replay store -- [[verify]]'s own checks are otherwise pure, the
+      * same split `versola.oauth.dpop.DpopService` makes around `Dpop.verify`. */
+    case Replayed
+
   private case class AssertionHeader(
       @jsonField("edge_id") edgeId: Option[String],
   ) derives JsonCodec
@@ -66,12 +78,24 @@ object EdgeAssertion:
   /** `exp` is required here rather than left to `JWT.deserialize`, which treats a token
     * carrying no expiry at all as unexpired. Everything [[issue]] mints has one, so demanding it
     * costs nothing and makes the lifetime a property of the format rather than a convention the
-    * signer is trusted to have followed. */
+    * signer is trusted to have followed.
+    *
+    * `jti`/`iat` are read out rather than left implicit, so [[verify]] can hand them back to a
+    * caller that keeps a replay store -- the same reason `Dpop.Proof` carries its own.
+    */
   private case class AssertionClaims(
       aud: List[String],
       ath: String,
       exp: Long,
+      jti: String,
+      iat: Long,
   ) derives JsonCodec
+
+  /** What a checked assertion hands back: enough for the caller to record it as spent.
+    * `verify` itself keeps no state -- recording is the caller's job, same split
+    * `versola.oauth.dpop.DpopService` makes around `Dpop.verify`.
+    */
+  case class Verified(jti: String, issuedAt: Instant)
 
   /** Mints an assertion for one specific access token. */
   def issue(
@@ -112,12 +136,17 @@ object EdgeAssertion:
     * `keys` must be the registered keys of the edge [[edgeIdOf]] named; passing any other
     * edge's keys fails the signature check, which is what keeps one edge's assertion from
     * speaking for another.
+    *
+    * Says nothing about whether this edge may vouch for *this tenant's* tokens, or whether
+    * this exact assertion has been seen before -- both are the caller's job, the same way
+    * `Dpop.verify` leaves replay protection to `DpopService`. [[Verified]] hands back what
+    * that check needs.
     */
   def verify(
       assertion: String,
       keys: JWT.PublicKeys,
       accessToken: String,
-  ): IO[Error, Unit] =
+  ): IO[Error, Verified] =
     for
       claims <- JWT.deserialize[AssertionClaims](assertion, keys, JWT.Type.JWT)
         .mapError:
@@ -131,4 +160,4 @@ object EdgeAssertion:
           Dpop.ath(accessToken).getBytes(StandardCharsets.UTF_8),
         ),
       )
-    yield ()
+    yield Verified(claims.jti, Instant.ofEpochSecond(claims.iat))

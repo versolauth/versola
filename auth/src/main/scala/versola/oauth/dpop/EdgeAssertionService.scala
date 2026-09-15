@@ -1,7 +1,8 @@
 package versola.oauth.dpop
 
+import versola.oauth.client.model.TenantId
 import versola.oauth.client.{CentralSyncTokenService, EdgeRegistrySyncClient}
-import versola.util.{CacheSource, CoreConfig, EdgeAssertion, JWT, ReloadingCache}
+import versola.util.{CacheSource, CoreConfig, EdgeAssertion, ReloadingCache}
 import zio.http.Client
 import zio.metrics.Metric
 import zio.{Scope, UIO, ZIO, ZLayer}
@@ -16,8 +17,14 @@ import zio.{Scope, UIO, ZIO, ZLayer}
   * the checks it failed, and a genuine edge fails none of them.
   */
 trait EdgeAssertionService:
-  /** The id of the edge that signed `assertion` for `accessToken`, or `None` if nothing did. */
-  def verify(assertion: String, accessToken: String): UIO[Option[String]]
+  /** The id of the edge that signed `assertion` for `accessToken`, or `None` if nothing did.
+    *
+    * `tenantId` is the tenant that owns the token's client: a correctly signed, unexpired,
+    * correctly `ath`-bound assertion still says nothing on its own about which tenants that
+    * edge may vouch for, so an edge not assigned to serve this tenant is refused exactly as
+    * if it had signed nothing at all.
+    */
+  def verify(assertion: String, accessToken: String, tenantId: TenantId): UIO[Option[String]]
 
 object EdgeAssertionService:
   /** How often a bound token was honoured under `Bearer` because an edge vouched for it.
@@ -30,33 +37,46 @@ object EdgeAssertionService:
   private val exemptions = Metric.counter("dpop_edge_assertion_exemptions_total")
 
   /** A presented assertion that did not check out. Ordinary during an edge key rotation auth
-    * has not yet synced; sustained otherwise, it is either a misconfigured edge or something
-    * trying to strip DPoP off a stolen token.
+    * has not yet synced; sustained otherwise, it is either a misconfigured edge, a tenant
+    * reassignment auth has not yet synced, or something trying to strip DPoP off a stolen
+    * token (including by replaying an assertion it captured).
     */
   private val rejections = Metric.counter("dpop_edge_assertion_rejections_total")
 
-  val live: ZLayer[Scope & CoreConfig & Client, Throwable, EdgeAssertionService] =
+  val live: ZLayer[Scope & CoreConfig & Client & DpopProofRepository, Throwable, EdgeAssertionService] =
     CentralSyncTokenService.live >+> EdgeRegistrySyncClient.live >+> cacheLayer >>>
-      ZLayer.fromFunction(Impl(_))
+      ZLayer.fromFunction(Impl(_, _))
 
   private val cacheLayer: ZLayer[
-    Scope & CoreConfig & CacheSource[Map[String, JWT.PublicKeys]],
+    Scope & CoreConfig & CacheSource[Map[String, EdgeRegistrySyncClient.EdgeRegistration]],
     Throwable,
-    ReloadingCache[Map[String, JWT.PublicKeys]],
+    ReloadingCache[Map[String, EdgeRegistrySyncClient.EdgeRegistration]],
   ] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[CoreConfig](config =>
-        ReloadingCache.make[Map[String, JWT.PublicKeys]](config.configurationCacheRefreshInterval),
+        ReloadingCache.make[Map[String, EdgeRegistrySyncClient.EdgeRegistration]](
+          config.configurationCacheRefreshInterval,
+        ),
       )
 
+  /** Scopes an assertion's `jti` to the edge that signed it, the same reason a DPoP proof's
+    * `jti` is scoped to its `jkt`: an accidental collision between two unrelated edges must not
+    * reject a legitimate assertion as a replay.
+    */
+  private def replayScope(edgeId: String): String = s"edge-assertion:$edgeId"
+
   class Impl(
-      edgeKeys: ReloadingCache[Map[String, JWT.PublicKeys]],
+      edgeRegistrations: ReloadingCache[Map[String, EdgeRegistrySyncClient.EdgeRegistration]],
+      proofRepository: DpopProofRepository,
   ) extends EdgeAssertionService:
-    override def verify(assertion: String, accessToken: String): UIO[Option[String]] =
+    override def verify(assertion: String, accessToken: String, tenantId: TenantId): UIO[Option[String]] =
       (for
         edgeId <- EdgeAssertion.edgeIdOf(assertion)
-        keys <- edgeKeys.get.map(_.get(edgeId)).someOrFail(EdgeAssertion.Error.UnknownEdge)
-        _ <- EdgeAssertion.verify(assertion, keys, accessToken)
+        registration <- edgeRegistrations.get.map(_.get(edgeId)).someOrFail(EdgeAssertion.Error.UnknownEdge)
+        _ <- ZIO.fail(EdgeAssertion.Error.WrongTenant).unless(registration.tenantIds.contains(tenantId))
+        verified <- EdgeAssertion.verify(assertion, registration.keys, accessToken)
+        fresh <- proofRepository.recordIfAbsent(replayScope(edgeId), verified.jti, verified.issuedAt)
+        _ <- ZIO.fail(EdgeAssertion.Error.Replayed).unless(fresh)
       yield edgeId).foldZIO(
         _ => rejections.increment.as(None),
         edgeId => exemptions.increment.as(Some(edgeId)),

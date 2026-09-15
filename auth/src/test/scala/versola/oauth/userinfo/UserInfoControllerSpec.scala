@@ -1,14 +1,15 @@
 package versola.oauth.userinfo
 
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.jwk.RSAKey
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
@@ -17,6 +18,7 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
+import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -28,14 +30,40 @@ object UserInfoControllerSpec extends UnitSpecBase:
 
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val clientId1 = ClientId("test-client-1")
+  val tenantId1 = TenantId("tenant-1")
   val boundJkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+
+  /** The record `checkDpop` looks up to learn which tenant an edge assertion for this token's
+    * client has to be scoped to -- see `EdgeAssertionService.verify`. */
+  val client1 = OAuthClientRecord(
+    id = clientId1,
+    tenantId = tenantId1,
+    clientName = Map("en" -> "Test Client"),
+    redirectUris = NonEmptySet("https://example.com/callback"),
+    scope = Set(ScopeToken.OpenId),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+  )
 
   val userInfoResponse = UserInfoResponse(
     claims = Map(
       "sub" -> Json.Str(userId1.toString),
       "name" -> Json.Str("John Doe"),
       "email" -> Json.Str("john@example.com"),
-    )
+    ),
   )
 
   def createAccessToken(
@@ -75,6 +103,9 @@ object UserInfoControllerSpec extends UnitSpecBase:
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
       edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
+      // The lookup `checkDpop` makes to learn the tenant an edge assertion for this token's
+      // client has to be scoped to; defaults to the fixture client every test above assumes.
+      oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = _.find.succeedsWith(Some(client1)),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
@@ -83,6 +114,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
         userInfoService = stub[UserInfoService]
         dpopService = stub[DpopService]
         edgeAssertionService = stub[EdgeAssertionService]
+        oAuthConfigurationService = stub[OAuthConfigurationService]
         config = TestEnvConfig.coreConfig
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
@@ -92,13 +124,15 @@ object UserInfoControllerSpec extends UnitSpecBase:
             UserInfoController.routes
               .provideEnvironment(
                 ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
-                  ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++ tracing,
-              )
-          )
+                  ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++
+                  ZEnvironment(oAuthConfigurationService) ++ tracing,
+              ),
+          ),
         )
         _ <- setup(userInfoService)
         _ <- dpopSetup(dpopService)
         _ <- edgeAssertionSetup(edgeAssertionService)
+        _ <- oAuthConfigurationSetup(oAuthConfigurationService)
 
         response <- client.batched(request)
         verifyResult <- verify(response)
@@ -110,7 +144,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "successfully return user info as JSON",
         request = Request.get(
-          url = URL.empty / "userinfo"
+          url = URL.empty / "userinfo",
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -118,8 +152,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               clientId1,
               Set(ScopeToken.OpenId, ScopeToken("profile")),
               TestEnvConfig.coreConfig,
-            )
-          )
+            ),
+          ),
         ),
         expectedStatus = Status.Ok,
         setup = userInfoService =>
@@ -138,7 +172,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "successfully return user info as JWT when Accept: application/jwt",
         request = Request.get(
-          url = URL.empty / "userinfo"
+          url = URL.empty / "userinfo",
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -146,8 +180,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               clientId1,
               Set(ScopeToken.OpenId, ScopeToken("profile")),
               TestEnvConfig.coreConfig,
-            )
-          )
+            ),
+          ),
         ).addHeader(Header.Accept(MediaType.application.jwt)),
         expectedStatus = Status.Ok,
         setup = userInfoService =>
@@ -166,7 +200,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when Bearer token is missing",
         request = Request.get(
-          url = URL.empty / "userinfo"
+          url = URL.empty / "userinfo",
         ),
         expectedStatus = Status.Unauthorized,
         verify = response =>
@@ -181,7 +215,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when access token is invalid",
         request = Request.get(
-          url = URL.empty / "userinfo"
+          url = URL.empty / "userinfo",
         ).addHeader(Header.Authorization.Bearer("invalid.jwt.token")),
         expectedStatus = Status.Unauthorized,
         verify = response =>
@@ -195,7 +229,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       userInfoTestCase(
         description = "fail with Unauthorized when token has insufficient scope (missing openid)",
         request = Request.get(
-          url = URL.empty / "userinfo"
+          url = URL.empty / "userinfo",
         ).addHeader(
           Header.Authorization.Bearer(
             createAccessToken(
@@ -203,8 +237,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               clientId1,
               Set(ScopeToken("profile")), // Missing openid scope
               TestEnvConfig.coreConfig,
-            )
-          )
+            ),
+          ),
         ),
         expectedStatus = Status.Unauthorized,
         // No setup needed - controller checks scope before calling service
@@ -321,7 +355,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
             yield assertTrue(wwwAuth.contains("invalid_dpop_proof")),
         )
       },
-
       userInfoTestCase(
         description = "fail with invalid_dpop_proof when a DPoP-bound token is presented under the Bearer scheme",
         request = Request.get(url = URL.empty / "userinfo")
@@ -417,8 +450,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               clientId1,
               Set(ScopeToken.OpenId, ScopeToken("profile")),
               TestEnvConfig.coreConfig,
-            )
-          )
+            ),
+          ),
         ),
         expectedStatus = Status.Ok,
         setup = userInfoService =>
@@ -433,4 +466,3 @@ object UserInfoControllerSpec extends UnitSpecBase:
       ),
     ),
   )
-

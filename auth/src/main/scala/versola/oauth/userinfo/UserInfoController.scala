@@ -3,6 +3,7 @@ package versola.oauth.userinfo
 import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ScopeToken
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
@@ -33,7 +34,9 @@ import scala.jdk.CollectionConverters.*
  * Response: JSON object with user claims
  */
 object UserInfoController extends Controller:
-  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeAssertionService
+  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeAssertionService &
+    OAuthConfigurationService &
+    OAuthConfigurationService
 
   private val DpopHeader = "DPoP"
 
@@ -199,7 +202,7 @@ object UserInfoController extends Controller:
       token: AccessTokenPayload,
       scheme: AuthScheme,
       config: CoreConfig,
-  ): ZIO[DpopService & EdgeAssertionService, Throwable | UserInfoError, Unit] =
+  ): ZIO[DpopService & EdgeAssertionService & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
     (token.confirmation.map(_.jkt), scheme) match
       case (Some(jkt), AuthScheme.Dpop) =>
         verifyDpopProof(request, tokenString, jkt, config)
@@ -212,9 +215,18 @@ object UserInfoController extends Controller:
         edgeAssertion(request) match
           case None => ZIO.fail(downgradeRefused)
           case Some(assertion) =>
-            ZIO.serviceWithZIO[EdgeAssertionService](_.verify(assertion, tokenString)).flatMap:
-              case Some(edgeId) => Observability.setRouteLabel("dpop_edge_assertion", edgeId)
-              case None => ZIO.fail(downgradeRefused)
+            for
+              // The tenant an edge's assertion has to be scoped to: an assertion that checks
+              // out otherwise still says nothing about which tenants its edge may vouch for,
+              // so a client auth no longer knows about is refused the same as an assertion no
+              // registered edge signed.
+              client <- ZIO.serviceWithZIO[OAuthConfigurationService](_.find(token.clientId))
+                .someOrFail(downgradeRefused)
+              result <- ZIO.serviceWithZIO[EdgeAssertionService](_.verify(assertion, tokenString, client.tenantId))
+              _ <- result match
+                case Some(edgeId) => Observability.setRouteLabel("dpop_edge_assertion", edgeId)
+                case None => ZIO.fail(downgradeRefused)
+            yield ()
 
       // A proof signed with some key says nothing about a token that was never bound to one:
       // anyone holding the token could have produced it. Treated as invalid rather than

@@ -287,7 +287,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         rejected <- EdgeAssertion.verify(assertion, keys, "a-different-token").flip
       yield assertTrue(
         edgeId == config.id,
-        accepted == Right(()),
+        accepted.isRight,
         rejected == EdgeAssertion.Error.TokenMismatch,
       )
     },

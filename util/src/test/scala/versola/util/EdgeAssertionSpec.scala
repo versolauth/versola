@@ -41,7 +41,7 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
         assertion <- EdgeAssertion.issue(edgeId, keyId, edgePrivateKey, accessToken)
         id <- EdgeAssertion.edgeIdOf(assertion)
         result <- EdgeAssertion.verify(assertion, edgeKeys, accessToken).either
-      yield assertTrue(id == edgeId, result == Right(()))
+      yield assertTrue(id == edgeId, result.map(_.jti.nonEmpty).contains(true))
     },
     test("refuses an assertion made for a different access token") {
       for

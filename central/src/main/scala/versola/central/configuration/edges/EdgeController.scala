@@ -2,7 +2,7 @@ package versola.central.configuration.edges
 
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.resources.ResourceService
-import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
 import versola.util.http.{Controller, Unauthorized}
@@ -13,7 +13,7 @@ import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & ResourceService & CentralConfig
+  type Env = Tracing & EdgeService & ResourceService & CentralConfig & TenantRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,
@@ -102,12 +102,17 @@ object EdgeController extends Controller:
         _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
         service <- ZIO.service[EdgeService]
         edges <- service.getAllEdges
+        tenants <- ZIO.serviceWithZIO[TenantRepository](_.getAll)
         response = GetEdgesRegistryResponse(
           edges = edges.map(edge =>
             EdgeRegistryEntry(
               id = edge.id,
               publicKey = edge.publicKey,
               oldPublicKey = edge.oldPublicKey,
+              // What lets auth refuse an assertion from an edge that is real and correctly
+              // signed but not the one this token's tenant is behind -- see
+              // `versola.util.EdgeAssertion`.
+              tenantIds = tenants.filter(_.edgeId.contains(edge.id)).map(_.id).toList,
             ),
           ).toList,
         )
@@ -133,6 +138,7 @@ case class EdgeRegistryEntry(
     id: EdgeId,
     publicKey: Json.Obj,
     oldPublicKey: Option[Json.Obj],
+    tenantIds: List[TenantId],
 ) derives JsonCodec
 
 case class GetEdgesRegistryResponse(

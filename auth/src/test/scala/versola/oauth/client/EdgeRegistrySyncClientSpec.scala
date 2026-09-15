@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import com.nimbusds.jose.jwk.RSAKey
 import versola.auth.TestEnvConfig
+import versola.oauth.client.model.TenantId
 import versola.util.JWT
 import zio.*
 import zio.http.*
@@ -43,6 +44,7 @@ object EdgeRegistrySyncClientSpec extends ZIOSpecDefault:
       id: String,
       publicKey: Json.Obj,
       oldPublicKey: Option[Json.Obj],
+      tenantIds: List[String] = List.empty,
   ) derives JsonCodec
 
   private case class RegistryResponseMirror(edges: List[RegistryEntryMirror]) derives JsonCodec
@@ -75,7 +77,7 @@ object EdgeRegistrySyncClientSpec extends ZIOSpecDefault:
         result <- service.getAll
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         token <- signedWith(currentKeyPair, "kid-current")
-        verified <- JWT.deserialize[Json.Obj](token, result("edge-1"), JWT.Type.JWT).either
+        verified <- JWT.deserialize[Json.Obj](token, result("edge-1").keys, JWT.Type.JWT).either
       yield assertTrue(
         request.method == Method.GET,
         request.url.path.encode.contains("configuration/edges/registry"),
@@ -93,8 +95,8 @@ object EdgeRegistrySyncClientSpec extends ZIOSpecDefault:
         result <- service.getAll
         currentToken <- signedWith(currentKeyPair, "kid-current")
         oldToken <- signedWith(oldKeyPair, "kid-old")
-        currentVerified <- JWT.deserialize[Json.Obj](currentToken, result("edge-1"), JWT.Type.JWT).either
-        oldVerified <- JWT.deserialize[Json.Obj](oldToken, result("edge-1"), JWT.Type.JWT).either
+        currentVerified <- JWT.deserialize[Json.Obj](currentToken, result("edge-1").keys, JWT.Type.JWT).either
+        oldVerified <- JWT.deserialize[Json.Obj](oldToken, result("edge-1").keys, JWT.Type.JWT).either
       yield assertTrue(currentVerified.isRight, oldVerified.isRight)
     },
     test("returns an empty registry when central has no edges") {
@@ -104,5 +106,19 @@ object EdgeRegistrySyncClientSpec extends ZIOSpecDefault:
         service = EdgeRegistrySyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client))
         result <- service.getAll
       yield assertTrue(result.isEmpty)
+    },
+    // What `EdgeAssertionService` checks a signed-off assertion's edge against -- an edge's
+    // identity alone does not say which tenants it may vouch for.
+    test("carries each edge's assigned tenants alongside its keys") {
+      for
+        _ <- respondWith(
+          RegistryResponseMirror(List(RegistryEntryMirror("edge-1", currentJwk, None, List("tenant-a", "tenant-b")))),
+        )
+        client <- ZIO.service[Client]
+        service = EdgeRegistrySyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client))
+        result <- service.getAll
+      yield assertTrue(
+        result("edge-1").tenantIds == Set(TenantId("tenant-a"), TenantId("tenant-b")),
+      )
     },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging
