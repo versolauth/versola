@@ -117,16 +117,22 @@ object PostgresDpopProofRepository:
   )
 
   /** The eviction anchor never runs closer to `now` than this, however low an admin sets
-    * `dpop.iat-leeway` -- the leeway `EdgeAssertion.Ttl` needs to survive one full lap of
-    * eviction, by the same accounting `MaxIatLeeway` above does for the acceptance window it
-    * bounds. Fixed rather than configurable: `EdgeAssertion.Ttl` is not either.
+    * `dpop.iat-leeway`.
+    *
+    * This ring is also where `EdgeAssertionService` records an edge assertion's `jti` --
+    * see there. An assertion's own window is one-sided (`[issuedAt, issuedAt+Ttl]`), not the
+    * `[iat-L, iat+L]` shape eviction is proven safe for above; `EdgeAssertionService` squares
+    * that by recording the assertion under a timestamp centred on its real window rather than
+    * `issuedAt` itself, which makes `[centred-L, centred+L]` exactly equal to
+    * `[issuedAt, issuedAt+Ttl]` at `L = Ttl/2`. Flooring eviction's own leeway at that same
+    * `Ttl/2` is what then lets it rely on the already-proven symmetric-window guarantee for
+    * that centred record too, rather than a fresh argument for a one-sided window.
     */
-  val EdgeAssertionRetentionFloor: Duration =
-    EdgeAssertion.Ttl.minus(SlotWidth).minus(MaxClockSkew.multipliedBy(2))
+  val EdgeAssertionEvictionLeeway: Duration = EdgeAssertion.Ttl.dividedBy(2)
 
   require(
-    EdgeAssertionRetentionFloor.compareTo(MaxIatLeeway) <= 0,
-    s"EdgeAssertionRetentionFloor of $EdgeAssertionRetentionFloor exceeds $MaxIatLeeway -- " +
+    EdgeAssertionEvictionLeeway.compareTo(MaxIatLeeway) <= 0,
+    s"EdgeAssertionEvictionLeeway of $EdgeAssertionEvictionLeeway exceeds $MaxIatLeeway -- " +
       "EdgeAssertion.Ttl grew past what this ring's geometry can floor iat-leeway to",
   )
 
@@ -155,16 +161,13 @@ object PostgresDpopProofRepository:
 
   /** What `live` actually schedules eviction against: not `iatLeeway` alone.
     *
-    * This ring is also where `EdgeAssertionService` records an edge assertion's `jti`, and an
-    * assertion's own acceptance window is the fixed `EdgeAssertion.Ttl`, unrelated to whatever
-    * an admin tunes `iatLeeway` to for ordinary DPoP proofs. Evicting on `iatLeeway` alone --
-    * an admin is free to set it well under a minute -- can reclaim a slot before an assertion
-    * recorded into it has expired, which lets that same assertion be replayed for whatever is
-    * left of its lifetime. Flooring at `EdgeAssertionRetentionFloor` closes that regardless of
-    * how tight `iatLeeway` is configured.
+    * An admin is free to tune `iatLeeway` well under `EdgeAssertionEvictionLeeway`, and this
+    * ring is shared with `EdgeAssertionService`'s replay guard -- see
+    * `EdgeAssertionEvictionLeeway`. Flooring here closes that regardless of how tight
+    * `iatLeeway` is configured for ordinary DPoP proofs.
     */
   private[dpop] def effectiveEvictionLeeway(iatLeeway: Duration): Duration =
-    if iatLeeway.compareTo(EdgeAssertionRetentionFloor) < 0 then EdgeAssertionRetentionFloor else iatLeeway
+    if iatLeeway.compareTo(EdgeAssertionEvictionLeeway) < 0 then EdgeAssertionEvictionLeeway else iatLeeway
 
   /** Which slot a proof created at `iat` belongs to. Laps the ring, so two proofs a full lap
     * apart share a slot -- by then the earlier one's slot has been truncated.

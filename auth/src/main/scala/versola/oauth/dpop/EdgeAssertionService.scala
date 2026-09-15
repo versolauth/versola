@@ -75,7 +75,14 @@ object EdgeAssertionService:
         registration <- edgeRegistrations.get.map(_.get(edgeId)).someOrFail(EdgeAssertion.Error.UnknownEdge)
         _ <- ZIO.fail(EdgeAssertion.Error.WrongTenant).unless(registration.tenantIds.contains(tenantId))
         verified <- EdgeAssertion.verify(assertion, registration.keys, accessToken)
-        fresh <- proofRepository.recordIfAbsent(replayScope(edgeId), verified.jti, verified.issuedAt)
+        // Not `verified.issuedAt` itself: the repository's ring evicts on the same symmetric
+        // `[iat-L, iat+L]` shape `DpopService` uses for an ordinary proof's `iatLeeway`, while
+        // an assertion's own window is the one-sided `[issuedAt, issuedAt+Ttl]`. Recording it
+        // centred, with `L = Ttl/2` (see `PostgresDpopProofRepository.EdgeAssertionEvictionLeeway`),
+        // makes the two windows the exact same interval, so the ring's already-proven eviction
+        // guarantee for the symmetric case covers this one without a separate argument.
+        centered = verified.issuedAt.plus(EdgeAssertion.Ttl.dividedBy(2))
+        fresh <- proofRepository.recordIfAbsent(replayScope(edgeId), verified.jti, centered)
         _ <- ZIO.fail(EdgeAssertion.Error.Replayed).unless(fresh)
       yield edgeId).foldZIO(
         _ => rejections.increment.as(None),

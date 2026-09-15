@@ -2,6 +2,7 @@ package versola.oauth.dpop
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import versola.util.EdgeAssertion
 import versola.util.postgres.PostgresSpec
 import zio.test.*
 import zio.{Clock, Duration, Scope, ZIO, ZLayer, durationInt}
@@ -71,21 +72,38 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepository
           recovered.isRight,
         )
       },
-      // `EdgeAssertionService` records an edge assertion's `jti` into this same ring (see
-      // `EdgeAssertionService.verify`), and an assertion's acceptance window is the fixed
-      // `EdgeAssertion.Ttl` -- not whatever `live` reads for `iatLeeway`. This is the ring
-      // geometry invariant that keeps a low `iatLeeway` from evicting an assertion's record
-      // before the assertion it guards has actually expired.
+      // `EdgeAssertionService` records an edge assertion's `jti` into this same ring, under a
+      // timestamp centred on the assertion's real (one-sided) window rather than its `issuedAt`
+      // -- see `EdgeAssertionEvictionLeeway`. This is the ring geometry invariant that keeps a
+      // low `iatLeeway` from evicting that record before the assertion it guards has actually
+      // expired.
       test("floors the eviction leeway live schedules against, however low iat-leeway is set") {
         assertTrue(
           PostgresDpopProofRepository.effectiveEvictionLeeway(Duration.Zero) ==
-            PostgresDpopProofRepository.EdgeAssertionRetentionFloor,
+            PostgresDpopProofRepository.EdgeAssertionEvictionLeeway,
           PostgresDpopProofRepository.effectiveEvictionLeeway(5.seconds) ==
-            PostgresDpopProofRepository.EdgeAssertionRetentionFloor,
+            PostgresDpopProofRepository.EdgeAssertionEvictionLeeway,
           // Above the floor, nothing is overridden: an admin who configures a longer leeway
           // than the floor needs still gets exactly that leeway, not the floor.
           PostgresDpopProofRepository.effectiveEvictionLeeway(PostgresDpopProofRepository.MaxIatLeeway) ==
             PostgresDpopProofRepository.MaxIatLeeway,
         )
+      },
+      // The centring trick `EdgeAssertionService` uses only works if this is exact: a record
+      // placed at `issuedAt + Ttl/2` and evicted with leeway `Ttl/2` must be protected for
+      // exactly `[issuedAt, issuedAt+Ttl]`, the assertion's real window. Covered directly
+      // against the ring here, in the same terms as the shared "never reclaims a record while
+      // its proof could still be presented" case above, rather than left to the unit-level
+      // `effectiveEvictionLeeway` check.
+      test("never reclaims an edge assertion's record before its one-sided window has closed") {
+        val realIssuedAt = iat
+        val centred = realIssuedAt.plus(EdgeAssertion.Ttl.dividedBy(2))
+        for
+          recorded <- env.repository.recordIfAbsent("edge-assertion:e2e-edge", "assertion-jti", centred)
+          // The instant the assertion itself expires (`issuedAt + Ttl`): still guarded, because
+          // `centred`'s own protected window runs `Ttl/2` past that.
+          _ <- env.evictStale(realIssuedAt.plus(EdgeAssertion.Ttl), PostgresDpopProofRepository.EdgeAssertionEvictionLeeway)
+          stillReplay <- env.repository.recordIfAbsent("edge-assertion:e2e-edge", "assertion-jti", centred)
+        yield assertTrue(recorded, !stillReplay)
       },
     )
