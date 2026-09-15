@@ -1,11 +1,13 @@
 package versola.central.configuration.edges
 
+import com.nimbusds.jose.jwk.RSAKey
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.TestAdminAuth
 import versola.central.configuration.resources.ResourceService
-import versola.util.RsaKeyPair
+import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
+import versola.central.{TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
+import versola.util.{JWT, RsaKeyPair}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -50,22 +52,92 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
+        tenantRepository = stub[TenantRepository]
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             EdgeController.routes.provideEnvironment(
               ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[ResourceService](resourceService) ++
+                ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment(TestCentralConfig.config) ++
                 tracing,
             ),
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- tenantRepository.getAll.succeedsWith(Vector.empty)
         _ <- setup(edgeService)
         response <- client.batched(request.addHeader(TestAdminAuth.basicAuthHeader))
         verifyResult <- verify(response, edgeService)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** The registry endpoint authenticates with `authorizeInternal`, not the Basic header every
+    * other route here uses, so these cases build their own credentials. */
+  private def registryTestCase(
+      description: String,
+      token: Stub[EdgeService] => Task[String],
+      tenants: Vector[TenantRecord] = Vector.empty,
+      expectedStatus: Status,
+      setup: Stub[EdgeService] => UIO[Unit] = _ => ZIO.unit,
+      verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+  ) =
+    test(description) {
+      for
+        client <- ZIO.service[Client]
+        edgeService = stub[EdgeService]
+        resourceService = stub[ResourceService]
+        tenantRepository = stub[TenantRepository]
+        tracing <- tracingLayer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            EdgeController.routes.provideEnvironment(
+              ZEnvironment[EdgeService](edgeService) ++
+                ZEnvironment[ResourceService](resourceService) ++
+                ZEnvironment[TenantRepository](tenantRepository) ++
+                ZEnvironment(TestCentralConfig.config) ++
+                tracing,
+            ),
+          ),
+        )
+        _ <- tenantRepository.getAll.succeedsWith(tenants)
+        _ <- setup(edgeService)
+        raw <- token(edgeService)
+        response <- client.batched(
+          Request.get(URL.root / "configuration" / "edges" / "registry")
+            .addHeader(Header.Authorization.Bearer(raw)),
+        )
+        verifyResult <- verify(response)
+      yield assertTrue(response.status == expectedStatus) && verifyResult
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
+
+  /** What auth presents: signed with central's own secret key, carrying no `edge_id`, exactly
+    * as auth's `CentralSyncTokenService` mints it. */
+  private val authSyncToken: Stub[EdgeService] => Task[String] = _ =>
+    JWT.serialize(
+      claims = JWT.Claims("auth", "auth", List("central"), Json.Obj()),
+      ttl = 10.minutes,
+      signature = JWT.Signature.Symmetric(TestCentralConfig.config.secretKey),
+    )
+
+  /** What an edge presents: signed with its own registered key and naming itself. */
+  private val edgeSyncToken: Stub[EdgeService] => Task[String] = service =>
+    for
+      _ <- service.find.succeedsWith(Some(edgeRecord))
+      token <- JWT.serialize(
+        claims = JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+        ttl = 10.minutes,
+        signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, testKeyPair.keyId, testKeyPair.privateKey),
+        headers = Map("edge_id" -> edgeId.toString),
+      )
+    yield token
+
+  private val publicJwk: Json.Obj =
+    RSAKey.Builder(testKeyPair.publicKey).keyID(testKeyPair.keyId).build()
+      .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
+
+  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None)
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -145,5 +217,50 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.deleteOldEdgeKey.succeedsWith(()),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
+    ),
+    registryTestCase(
+      description = "edges registry serves every edge's public keys and assigned tenants to auth",
+      token = authSyncToken,
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getAllEdges.succeedsWith(
+          Vector(
+            edgeRecord,
+            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk)),
+          ),
+        ),
+      tenants = Vector(
+        TenantRecord(TenantId("tenant-a"), "Tenant A", edgeId = Some(edgeId)),
+        TenantRecord(TenantId("tenant-b"), "Tenant B", edgeId = Some(edgeId)),
+        TenantRecord(TenantId("tenant-c"), "Tenant C", edgeId = Some(EdgeId("edge-2"))),
+        // Assigned to neither edge below, and must not leak into either one's tenantIds --
+        // this is the set `EdgeAssertionService` checks a token's tenant against.
+        TenantRecord(TenantId("tenant-d"), "Tenant D", edgeId = None),
+      ),
+      verify = response =>
+        for
+          raw <- response.body.asString
+          body <- ZIO.fromEither(raw.fromJson[GetEdgesRegistryResponse]).mapError(new RuntimeException(_))
+        yield assertTrue(
+          body.edges.map(_.id) == List(edgeId, EdgeId("edge-2")),
+          body.edges.head.publicKey == publicJwk,
+          // Both halves of a rotation, so auth keeps accepting assertions signed with the key
+          // being rotated out until it is removed.
+          body.edges.head.oldPublicKey.isEmpty,
+          body.edges(1).oldPublicKey.contains(publicJwk),
+          // What lets auth refuse an assertion from a real, correctly signed edge that is
+          // simply not the one this token's tenant is behind.
+          body.edges.head.tenantIds.toSet == Set(TenantId("tenant-a"), TenantId("tenant-b")),
+          body.edges(1).tenantIds == List(TenantId("tenant-c")),
+        ),
+    ),
+    // An edge has no business reading its peers' identities: the keys it would need to forge
+    // one are exactly what this would hand it.
+    registryTestCase(
+      description = "edges registry refuses an edge, authenticated or not",
+      token = edgeSyncToken,
+      expectedStatus = Status.Unauthorized,
+      setup = service => service.getAllEdges.succeedsWith(Vector(edgeRecord)),
+      verify = response => ZIO.succeed(assertTrue(response.status == Status.Unauthorized)),
     ),
   )

@@ -8,6 +8,8 @@ import zio.http.Method
 import zio.{Duration, IO, ZIO}
 
 import java.net.URI
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.time.Instant
 import scala.util.Try
 
@@ -150,6 +152,15 @@ object Dpop:
   private def normalizeHtu(htu: String): Option[String] =
     Try(new URI(htu)).toOption.filter(_.getScheme != null).map: uri =>
       s"${uri.getScheme}://${Option(uri.getRawAuthority).getOrElse("")}${Option(uri.getRawPath).getOrElse("")}"
+
+  /** RFC 9449 §4.2: `ath` is base64url(SHA-256(ASCII(access token))) -- what a resource
+    * request's proof `ath` claim is checked against. Shared by every resource server that
+    * enforces DPoP (edge, and auth's own `/userinfo`) so the computation has one definition.
+    */
+  def ath(accessToken: String): String =
+    Base64.urlEncode(
+      MessageDigest.getInstance("SHA-256").digest(accessToken.getBytes(StandardCharsets.US_ASCII)),
+    )
 
   private def requireClaim[A](value: => A, name: String): IO[Error, A] =
     ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name)).someOrFail(Error.MissingClaim(name))

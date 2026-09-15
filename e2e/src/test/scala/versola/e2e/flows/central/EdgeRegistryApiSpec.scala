@@ -225,6 +225,22 @@ object EdgeRegistryApiSpec extends CentralApiSpec:
       yield assertTrue(rejected.status == Status.Unauthorized) &&
         assertTrue(record.isEmpty).label("an edge anyone can register is an edge anyone can read secrets through")
     },
+    // The keys registry auth syncs to authenticate an edge that calls it on its own behalf
+    // (`versola.util.EdgeAssertion`). It authenticates its caller as auth or as an edge, so
+    // the admin credential every other test here uses is not a way in -- and neither is
+    // nothing at all. That auth itself can read it is what `DpopBoundTokenSpec` shows: edge's
+    // assertion is only honoured once auth has pulled the key from this endpoint.
+    test("the edges key registry is not readable with the admin credential") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-edge")
+        _ <- central.post(path, register(id))
+        asAdmin <- central.get(s"$path/registry")
+        anonymously <- central.anonymous.get(s"$path/registry")
+        _ <- cleanup(central, id)
+      yield assertTrue(asAdmin.status == Status.Unauthorized, anonymously.status == Status.Unauthorized)
+        .label("an edge's registered key names it to auth: handing the set out tells an attacker what to forge")
+    },
     test("a caller presenting the wrong secret cannot rotate an edge key") {
       for
         central <- api

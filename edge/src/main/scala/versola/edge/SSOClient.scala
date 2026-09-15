@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{AccessToken, AuthorizationPreset, ClientId, Code, CodeVerifier, RefreshToken, State, TokenResponse}
-import versola.util.{Base64, RedirectUri, Secret}
+import versola.util.{Base64, EdgeAssertion, RedirectUri, Secret}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonField}
@@ -30,8 +30,12 @@ trait SSOClient:
       clientSecret: Secret,
   ): IO[Throwable | SSOClient.InvalidGrant.type, TokenResponse]
 
+  /** `dpopBound` names what the caller already knows about `accessToken` -- whether its
+    * `cnf.jkt` is set -- so this can skip minting an assertion for the common case of a plain
+    * bearer token, which auth would accept over `Bearer` without one anyway. */
   def userInfo(
       accessToken: AccessToken,
+      dpopBound: Boolean,
   ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
 
 object SSOClient:
@@ -136,12 +140,26 @@ object SSOClient:
 
     override def userInfo(
         accessToken: AccessToken,
+        dpopBound: Boolean,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
-      val request = Request
-        .get(userInfoUrl)
-        .addHeader(Header.Authorization.Bearer(accessToken.toString))
-
       for
+        // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
+        // own: the client's key signed the one edge already checked, and edge does not hold
+        // that key to mint another. The assertion is how auth tells this call apart from the
+        // `Bearer` downgrade of a bound token -- minted only when the token is bound, since an
+        // unbound token needs no such exemption, and per call because it is bound to the token
+        // below: one captured elsewhere buys nothing for any other token.
+        assertion <- EdgeAssertion.issue(
+          edgeId = config.id,
+          keyId = config.keyId,
+          privateKey = config.privateKey,
+          accessToken = accessToken.toString,
+        ).when(dpopBound)
+        request = Request
+          .get(userInfoUrl)
+          .addHeader(Header.Authorization.Bearer(accessToken.toString))
+          .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
+
         response <- ZIO.scoped(httpClient.request(request))
 
         result <-

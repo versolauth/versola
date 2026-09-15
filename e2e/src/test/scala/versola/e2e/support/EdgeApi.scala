@@ -13,6 +13,8 @@ import zio.json.ast.Json
   */
 enum EdgeAuth:
   case Bearer(accessToken: String)
+  /** RFC 9449 §7.1: the token under the `DPoP` scheme, with the proof that goes with it. */
+  case Dpop(accessToken: String, proof: String)
   case Session(content: String)
   case None
 
@@ -30,6 +32,16 @@ final class EdgeApi(client: Client, config: E2EConfig):
     * preset must register as its `redirectUri` and its client as a redirect URI.
     */
   val completeUri: String = s"${config.edgeUrl}/complete"
+
+  /** The origin clients reach this edge on, and therefore what a DPoP proof's `htu` is
+    * compared against -- edge derives it from its own configured public URL, never from the
+    * inbound `Host`.
+    */
+  val baseUrl: String = config.edgeUrl
+
+  /** The URL a proxied call lands on, which is the `htu` a proof for it has to carry. */
+  def proxyUrl(resourceId: String, path: String): String =
+    s"${config.edgeUrl}/resources/$resourceId$path"
 
   /** GET /login/{presetId} — the entry point a first-party app links to. Answers a 303 to the
     * OP's `/authorize`, having minted and stored the PKCE verifier and state itself.
@@ -162,6 +174,12 @@ final class EdgeApi(client: Client, config: E2EConfig):
   private def authenticate(request: Request, auth: EdgeAuth): Request =
     auth match
       case EdgeAuth.Bearer(token) => request.addHeader(Authorization.Bearer(token))
+      // zio-http has no `DPoP` case, so the scheme travels unparsed with the token as its
+      // parameters -- the shape `EdgeService.extractAccessToken` matches on.
+      case EdgeAuth.Dpop(token, proof) =>
+        request
+          .addHeader(Authorization.Unparsed("DPoP", token))
+          .addHeader(Header.Custom("DPoP", proof))
       case EdgeAuth.Session(content) =>
         request.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(EdgeApi.sessionCookieName, content))))
       case EdgeAuth.None => request

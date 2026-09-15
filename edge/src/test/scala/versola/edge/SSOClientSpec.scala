@@ -1,12 +1,16 @@
 package versola.edge
 
+import com.nimbusds.jose.jwk.RSAKey
 import versola.edge.model.*
-import versola.util.{Base64, RedirectUri, Secret}
+import versola.util.{Base64, EdgeAssertion, JWT, RedirectUri, Secret}
 import zio.*
 import zio.http.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 
 object SSOClientSpec extends ZIOSpecDefault:
 
@@ -237,7 +241,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        claims <- sso.userInfo(AccessToken("at-1"))
+        claims <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
       yield assertTrue(claims.get("sub").flatMap(_.asString) == Some("user-1"))
     },
     test("sends the access token as a bearer credential") {
@@ -248,7 +252,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         )
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        _ <- sso.userInfo(AccessToken("at-1"))
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(
         request.url.path.toString.endsWith("userinfo"),
@@ -258,12 +262,57 @@ object SSOClientSpec extends ZIOSpecDefault:
         },
       )
     },
+    test("sends an edge assertion bound to the access token it presents") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config)
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        assertion <- ZIO.fromOption(request.rawHeader(EdgeAssertion.HeaderName))
+          .orElseFail(new RuntimeException("no edge assertion sent"))
+        edgeId <- EdgeAssertion.edgeIdOf(assertion)
+        // Verified against this edge's own public key, the way auth will once central has
+        // synced it -- and against the token actually presented, not merely any token.
+        keys = JWT.PublicKeys.fromJson(
+          Json.Obj("keys" -> Json.Arr(
+            RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(config.keyId).build()
+              .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj()),
+          )),
+        )
+        accepted <- EdgeAssertion.verify(assertion, keys, "at-1").either
+        rejected <- EdgeAssertion.verify(assertion, keys, "a-different-token").flip
+      yield assertTrue(
+        edgeId == config.id,
+        accepted.isRight,
+        rejected == EdgeAssertion.Error.TokenMismatch,
+      )
+    },
+    // Unbound tokens are the common case, and auth already accepts this call over `Bearer`
+    // without an assertion -- so signing one here would be a wasted RSA operation on every
+    // fetchUserInfo call for a token that never needed the exemption.
+    test("signs no edge assertion for a token that is not DPoP-bound") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config)
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = false)
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+      yield assertTrue(request.rawHeader(EdgeAssertion.HeaderName).isEmpty)
+    },
+
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error.isInstanceOf[RuntimeException])
     },
     test("maps 401 to UserInfoUnauthorized") {
@@ -271,7 +320,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.Unauthorized))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error == SSOClient.UserInfoUnauthorized)
     },
     test("fails for any other error status") {
@@ -279,7 +328,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.InternalServerError))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
         error.asInstanceOf[RuntimeException].getMessage.nn.contains("500"),

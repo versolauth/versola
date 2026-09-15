@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
+import versola.oauth.model.{AccessToken, AccessTokenPayload, Confirmation, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
@@ -167,6 +167,34 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.nbf == Some(now.getEpochSecond),
           result.aud == Some(Vector(publicResource)),
           result.iss == Some("https://auth.example.com"),
+          result.cnf == None,
+        )).provide(env.layer)
+      },
+      test("introspects a DPoP-bound access token as such, echoing its cnf.jkt") {
+        val env = Env()
+        val publicResource = ResourceUri("https://api.example.com")
+        val resource = ResourceRecord(
+          ResourceId("api"),
+          testClient.tenantId,
+          publicResource,
+          List(testClient.id),
+          internal = false,
+        )
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          payload = accessTokenPayload(now, audience = Vector(publicResource))
+            .copy(confirmation = Some(Confirmation("test-key-thumbprint")))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials)
+        yield assertTrue(
+          result.active == true,
+          result.tokenType == Some("DPoP"),
+          result.cnf == Some(Json.Obj("jkt" -> Json.Str("test-key-thumbprint"))),
         )).provide(env.layer)
       },
       test("fail with Unauthenticated when client authentication fails") {
@@ -336,6 +364,26 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.iat == Some(now.getEpochSecond),
           result.iss == Some(env.config.jwt.issuer),
           result.aud == Some(Vector.empty),
+          result.cnf == None,
+        )).provide(env.layer)
+      },
+      test("introspects a DPoP-bound refresh token as such, echoing its cnf.jkt") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          record = tokenRecord(now).copy(cnfJkt = Some("test-key-thumbprint"))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectRefreshToken(refreshToken1, credentials)
+        yield assertTrue(
+          result.active == true,
+          result.tokenType == Some("DPoP"),
+          result.cnf == Some(Json.Obj("jkt" -> Json.Str("test-key-thumbprint"))),
         )).provide(env.layer)
       },
       test("returns the authorization details granted by the refresh token") {

@@ -15,6 +15,8 @@ case class IntrospectionResponse(
     scope: Option[String],
     username: Option[String],
     @jsonField("token_type") tokenType: Option[String],
+    /** RFC 9449 §6.2: echoes the confirmation claim of a DPoP-bound token back to the caller. */
+    cnf: Option[Json.Obj],
     exp: Option[Long],
     iat: Option[Long],
     nbf: Option[Long],
@@ -34,6 +36,7 @@ object IntrospectionResponse:
       scope = None,
       username = None,
       tokenType = None,
+      cnf = None,
       exp = None,
       iat = None,
       nbf = None,

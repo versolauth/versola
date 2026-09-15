@@ -644,13 +644,19 @@ final class OAuthClient(client: Client, config: E2EConfig):
     formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
-  /** POST /token — exchanges authorization code for tokens. */
+  /** POST /token — exchanges authorization code for tokens.
+    *
+    * `dpop` binds the issued access token to that key (RFC 9449 §5): the proof goes over this
+    * endpoint, carries no `ath` — there is no token yet to compute one over — and the `cnf.jkt`
+    * it leaves in the token is what every resource server afterwards demands a proof against.
+    */
   def token(
       code: String,
       verifier: String,
       clientId: Option[String] = None,
       clientSecret: Option[String] = None,
       redirectUri: Option[String] = None,
+      dpop: Option[DpopProver] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
@@ -664,7 +670,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/token")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(proofed).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    yield result
 
   /** POST /token — refreshes an access token.
     *
@@ -1155,6 +1168,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Request.get(s"${config.authUrl}/userinfo")
         .addHeader(Authorization.Bearer(accessToken)),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
+
+  /** GET /userinfo under the `DPoP` scheme (RFC 9449 §7.1), with a proof naming this endpoint
+    * and the token it accompanies. The scheme travels unparsed, the way edge sends it.
+    */
+  def userinfoDpop(accessToken: String, prover: DpopProver): Task[UserinfoResult] =
+    for
+      proof <- prover.proof(Method.GET, s"${config.authUrl}/userinfo", accessToken = Some(accessToken))
+      response <- Client.batched(
+        Request.get(s"${config.authUrl}/userinfo")
+          .addHeader(Authorization.Unparsed("DPoP", accessToken))
+          .addHeader(Header.Custom("DPoP", proof)),
+      ).provide(ZLayer.succeed(client))
+      result <- UserinfoResult.parse(response)
+    yield result
 
   // ── Account Settings (auth's additional listener) ──────────────────────────
 
