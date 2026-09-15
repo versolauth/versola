@@ -1,6 +1,7 @@
 package versola.loadgen
 
 import versola.loadgen.config.{LoadgenConfig, LoadgenRole}
+import versola.loadgen.coordinator.{Coordinator, CoordinatorRoutes, CoordinatorService}
 import versola.loadgen.provision.Provisioner
 import versola.loadgen.seed.Seeder
 import versola.util.EnvName
@@ -22,12 +23,20 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 object Main extends VersolaApp("loadgen"):
   val environmentTag = Tag[Environment]
 
-  override type Dependencies = Any
+  /** `Option`, because the coordinator's service is the one dependency exactly one role has: a
+    * driver process must not open the store pool the coordinator's plan service holds, and the
+    * dependency layer is built before `routes` for every role that reaches it.
+    */
+  override type Dependencies = Option[CoordinatorService]
 
   override given Tag[Dependencies] = Tag[Dependencies]
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    ZLayer.succeed(())
+    ZLayer:
+      ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[LoadgenConfig])).flatMap: config =>
+        config.role match
+          case LoadgenRole.Coordinator => Coordinator.make(config).asSome
+          case _ => ZIO.none
 
   override def run: ZIO[Environment & ZIOAppArgs & Scope, Any, Any] =
     ZIO.serviceWithZIO[ConfigProvider](_.load(deriveConfig[LoadgenConfig])).flatMap: config =>
@@ -41,4 +50,4 @@ object Main extends VersolaApp("loadgen"):
       Method.GET / "" -> handler { (_: Request) =>
         ZIO.succeed(Response.text("loadgen"))
       },
-    )
+    ) ++ CoordinatorRoutes.routes
