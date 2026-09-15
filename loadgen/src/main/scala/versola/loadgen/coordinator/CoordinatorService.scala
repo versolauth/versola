@@ -63,7 +63,8 @@ final class CoordinatorService private (
       now <- Clock.instant
       state <- control.get
       factor <- registrationFactor.get
-      plan <- ZIO.fromEither(planAt(now, state, factor)).mapError(IllegalStateException(_))
+      registered <- registeredCount
+      plan <- ZIO.fromEither(planAt(now, state, factor, registered)).mapError(IllegalStateException(_))
     yield plan
 
   def start: IO[CoordinatorRefusal | Throwable, LoadPlan] = transition(_.start(_))
@@ -94,7 +95,7 @@ final class CoordinatorService private (
     for
       now <- Clock.instant
       current <- plan
-      fleet <- drivers.view(now)
+      fleet <- drivers.view(now, current.shards.epoch)
       rows <- snapshots.loadCampaign(campaign.name, now.minusMillis(CoordinatorService.statusWindow.toMillis))
       latency <- ZIO.fromEither(SnapshotMerge.summaries(rows)).mapError(IllegalStateException(_))
       counts <- population.get
@@ -106,6 +107,7 @@ final class CoordinatorService private (
       pendingShards = current.pendingShards,
       drivers = fleet.drivers,
       staleDrivers = fleet.staleDrivers,
+      staleEpochDrivers = fleet.staleEpochDrivers,
       scenarios = current.scenarios.map: scenario =>
         ScenarioProgress(
           scenario = scenario.scenario,
@@ -145,7 +147,8 @@ final class CoordinatorService private (
           .fail(CoordinatorRefusal.NotFound(s"no latency snapshots have been recorded for campaign '$name'"))
           .when(rows.isEmpty)
         reports <- ZIO.fromEither(SnapshotMerge.toReports(rows)).mapError(IllegalStateException(_))
-        fleet <- drivers.view(now)
+        state <- control.get
+        fleet <- drivers.view(now, state.shards.epoch)
         report <- ZIO
           .fromEither(CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, thresholds))
           .mapError(IllegalStateException(_))
@@ -229,7 +232,8 @@ final class CoordinatorService private (
           case Right(next) => (Right(next), next)
       state <- ZIO.fromEither(moved)
       factor <- registrationFactor.get
-      plan <- ZIO.fromEither(planAt(now, state, factor)).mapError(IllegalStateException(_))
+      registered <- registeredCount
+      plan <- ZIO.fromEither(planAt(now, state, factor, registered)).mapError(IllegalStateException(_))
       _ <- ZIO.logInfo(s"Campaign '${campaign.name}' is ${plan.state.label} (epoch ${plan.shards.epoch})")
     yield plan
 
@@ -240,14 +244,40 @@ final class CoordinatorService private (
   private def registrationAnchor(state: CampaignControl): Option[Instant] =
     if !campaign.registration.enabled || state.state != CampaignState.Running then None else state.startedAt
 
+  private def registeredCount: UIO[Long] =
+    population.get.map(_.getOrElse(VirtualUserState.Registered, 0L))
+
+  /** The ramp is over once it has run for its configured duration or has produced its target,
+    * and a ramp that is over publishes no registration rate at all.
+    *
+    * The controller cannot express this on its own: `RegistrationCurve` clamps its planned count
+    * at the target, so a minute after the ramp lands the error term is zero, the factor is 1.0,
+    * and §12's λ_nominal would go on registering users through every later phase of the
+    * campaign -- past the population the whole capacity model is stated against. "Lands the ramp
+    * on exactly 1M" (§12) is a statement about where it stops, not only about how it gets there.
+    *
+    * Read off the clock and the population count rather than a flag, so a coordinator that took
+    * over mid-campaign reaches the same answer as the one that started it.
+    */
+  private def rampComplete(anchor: Instant, now: Instant, registered: Long): Boolean =
+    Duration.fromInterval(anchor, now).toMillis >= campaign.registration.duration.toMillis ||
+      registered >= campaign.registration.target
+
   /** @return `Left` only for a campaign config the schedule cannot represent, which
     *         [[CoordinatorService.make]] has already rejected -- the phases and the diurnal
     *         envelope are the whole of what `CampaignSchedule.from` validates, and neither
     *         depends on the anchor this passes it.
     */
-  private def planAt(now: Instant, state: CampaignControl, factor: Double): Either[String, LoadPlan] =
-    CampaignSchedule.from(campaign, state.startedAt.getOrElse(now)).map: schedule =>
+  private def planAt(
+      now: Instant,
+      state: CampaignControl,
+      factor: Double,
+      registered: Long,
+  ): Either[String, LoadPlan] =
+    val anchor = state.startedAt.getOrElse(now)
+    CampaignSchedule.from(campaign, anchor).map: schedule =>
       val running = state.state == CampaignState.Running
+      val ramping = !rampComplete(anchor, now, registered)
       LoadPlan(
         campaign = campaign.name,
         state = state.state,
@@ -261,7 +291,10 @@ final class CoordinatorService private (
             // Only the registration stream carries the controller's factor. Applying it to the
             // session streams would let an error-attrition correction on the ramp move the load
             // the campaign is actually measuring.
-            val base = if scenario == PlanScenario.Registration then nominal * factor else nominal
+            val base =
+              if scenario != PlanScenario.Registration then nominal
+              else if ramping then nominal * factor
+              else 0.0
             // A campaign that is not running publishes zero, not its base rate: an idle, paused or
             // stopped campaign must generate nothing, and a driver that read a non-zero base here
             // would schedule against it the moment its own clock passed the campaign's start.

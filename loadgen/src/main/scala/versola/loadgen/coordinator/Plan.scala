@@ -91,6 +91,19 @@ case class ScenarioRate(scenario: PlanScenario, basePerSecond: Double, ratePerSe
   */
 case class ShardMap(epoch: Long, shardCount: Int) derives JsonCodec
 
+object ShardMap:
+
+  /** `vu_users.shard` and `vu_sessions.shard` are `SMALLINT` (V0001, V0002), so the largest
+    * shard index the population can be written with is 32,767 and the largest legal map is one
+    * shard wider than that.
+    *
+    * Enforced where a map is published rather than only where it is written. The bulk `UPDATE`
+    * runs after the drain window has already elapsed, so a count the columns cannot hold does
+    * not fail the operator's request -- it fails a statement that is retried forever with the
+    * pending map still in force, leaving every moved user drained and nobody scheduling them.
+    */
+  val maxShardCount: Int = 32_768
+
 /** A shard map that has been published but is not in force yet -- phase one of §12's two-phase
   * rebalance.
   *
@@ -170,6 +183,7 @@ case class CoordinatorStatus(
     pendingShards: Option[ShardMapChange],
     drivers: List[String],
     staleDrivers: List[String],
+    staleEpochDrivers: List[String],
     scenarios: List[ScenarioProgress],
     latency: List[LatencySummary],
     taxonomy: ErrorTaxonomy,

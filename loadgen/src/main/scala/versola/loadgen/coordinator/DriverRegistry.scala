@@ -67,13 +67,52 @@ object DriverReport:
     */
   val version: Int = 1
 
-/** The last two reports from one driver -- the minimum a rate needs. */
-final case class DriverObservation(latest: DriverReport, previous: Option[DriverReport])
+/** What a driver's earlier incarnations recorded, kept across a restart of that driver.
+  *
+  * Only the monotone tallies. `busyUsers`, `cpuRatio` and the schedule lag are readings about
+  * now, and a dead process's last reading is not a fact about the fleet; the counters here are
+  * steps that happened, and those do not stop having happened because a pod was replaced.
+  */
+final case class CarriedTotals(
+    taxonomy: ErrorTaxonomy,
+    refreshRejectedTotal: Long,
+    storeFlushDroppedTotal: Long,
+    latencyClampedTotal: Long,
+):
+  def plus(report: DriverReport): CarriedTotals =
+    CarriedTotals(
+      taxonomy = taxonomy.merge(report.taxonomy),
+      refreshRejectedTotal = refreshRejectedTotal + report.vitals.refreshRejectedTotal,
+      storeFlushDroppedTotal = storeFlushDroppedTotal + report.vitals.storeFlushDroppedTotal,
+      latencyClampedTotal = latencyClampedTotal + report.vitals.latencyClampedTotal,
+    )
 
-/** The fleet as one figure per question `GET /status` and the report ask. */
+object CarriedTotals:
+  val empty: CarriedTotals = CarriedTotals(ErrorTaxonomy.empty, 0L, 0L, 0L)
+
+/** The last two reports from one driver -- the minimum a rate needs -- plus whatever the
+  * driver's previous incarnations recorded before their counters were re-baselined.
+  */
+final case class DriverObservation(
+    latest: DriverReport,
+    previous: Option[DriverReport],
+    carried: CarriedTotals = CarriedTotals.empty,
+)
+
+/** The fleet as one figure per question `GET /status` and the report ask.
+  *
+  * @param staleEpochDrivers
+  *   drivers whose latest report declares a shard map other than the one in force. Expected to
+  *   be non-empty for up to one poll interval after a promotion -- a driver learns the new epoch
+  *   from `GET /plan`, not from being told -- and expected to be empty after that. A driver that
+  *   stays here is running the old map against rows that have already been re-sharded, which is
+  *   the refresh-token overlap the drain protocol exists to prevent and the only place it is
+  *   visible.
+  */
 final case class FleetView(
     drivers: List[String],
     staleDrivers: List[String],
+    staleEpochDrivers: List[String],
     achievedPerSecond: Map[PlanScenario, Double],
     taxonomy: ErrorTaxonomy,
     health: CampaignHealth,
@@ -81,10 +120,12 @@ final case class FleetView(
 
 /** The coordinator's view of its drivers: the latest report from each, and the one before it.
   *
-  * Nothing is ever evicted. A campaign runs at most a couple of dozen drivers (design doc §6.5),
-  * and a driver that has gone away still counts towards the campaign's error taxonomy -- the
-  * steps it recorded happened. Forgetting it would shrink the error budget's numerator every time
-  * a pod was replaced, which is the direction that mistake must not take.
+  * Nothing is ever evicted, and nothing a driver already reported is ever overwritten. A campaign
+  * runs at most a couple of dozen drivers (design doc §6.5), and a driver that has gone away --
+  * or come back under the same id with its counters reset -- still counts towards the campaign's
+  * error taxonomy: the steps it recorded happened. Forgetting them would shrink the error
+  * budget's numerator every time a pod was replaced, which is the direction that mistake must
+  * not take.
   */
 final class DriverRegistry private (
     campaign: String,
@@ -108,24 +149,48 @@ final class DriverRegistry private (
           // backwards would otherwise become a negative interval, and a negative interval divides
           // the achieved rate by a negative number.
           case Some(existing) if report.atEpochMillis <= existing.latest.atEpochMillis => current
-          case Some(existing) => current.updated(report.driverId, DriverObservation(report, Some(existing.latest)))
+          // The same driver id, but a process that has started counting again. Its predecessor's
+          // tallies move into `carried` before they are overwritten: they are steps that were
+          // executed against the SUT, and dropping them shrinks the error budget's numerator --
+          // a campaign that looks better than it was, which is the direction this must not fail
+          // in. `previous` is cleared with them, so the achieved rate re-baselines on the next
+          // report rather than differencing two different processes' counters.
+          case Some(existing) if restarted(existing.latest, report) =>
+            current.updated(report.driverId, DriverObservation(report, None, existing.carried.plus(existing.latest)))
+          case Some(existing) =>
+            current.updated(report.driverId, DriverObservation(report, Some(existing.latest), existing.carried))
           case None => current.updated(report.driverId, DriverObservation(report, None))
 
-  def view(now: Instant): UIO[FleetView] =
+  def view(now: Instant, epoch: Long): UIO[FleetView] =
     observations.get.map: current =>
       val reports = current.values.toList
       FleetView(
         drivers = current.keys.toList.sorted,
         staleDrivers = reports.filter(observation => isStale(observation.latest, now)).map(_.latest.driverId).sorted,
-        achievedPerSecond = achieved(reports),
+        staleEpochDrivers = reports.filter(_.latest.epoch != epoch).map(_.latest.driverId).sorted,
+        // A stale driver's rate is not a statement about now: its last interval would otherwise
+        // keep contributing its throughput for the rest of the campaign, so a fleet that has
+        // stopped would report the rate it had when it stopped.
+        achievedPerSecond = achieved(reports.filterNot(observation => isStale(observation.latest, now))),
         // Stale drivers are counted here even though their rate is not: their steps happened, and
         // their latency is already in the merge. Only the *rate* is a statement about now.
-        taxonomy = ErrorTaxonomy.mergeAll(reports.map(_.latest.taxonomy)),
-        health = health(reports.map(_.latest.vitals)),
+        taxonomy = ErrorTaxonomy.mergeAll(reports.map(_.latest.taxonomy) ++ reports.map(_.carried.taxonomy)),
+        health = health(reports),
       )
 
   private def isStale(report: DriverReport, now: Instant): Boolean =
     now.toEpochMilli - report.atEpochMillis > staleAfter.toMillis
+
+  /** A driver whose cumulative counters went *down* is a driver whose process was replaced: every
+    * counter on this envelope is cumulative for the reporting process's lifetime, so nothing a
+    * running driver can do makes one of them smaller.
+    */
+  private def restarted(previous: DriverReport, next: DriverReport): Boolean =
+    next.arrivals.values.sum < previous.arrivals.values.sum ||
+      next.taxonomy.total < previous.taxonomy.total ||
+      next.vitals.refreshRejectedTotal < previous.vitals.refreshRejectedTotal ||
+      next.vitals.storeFlushDroppedTotal < previous.vitals.storeFlushDroppedTotal ||
+      next.vitals.latencyClampedTotal < previous.vitals.latencyClampedTotal
 
   /** Cumulative arrivals differenced over the interval between two reports, summed across
     * drivers.
@@ -154,13 +219,15 @@ final class DriverRegistry private (
     * `CampaignHealth`'s own doc fixes that asymmetry: one saturated driver distorts the latencies
     * of its own shard, and a mean CPU or a mean schedule lag averages exactly that away.
     */
-  private def health(vitals: List[DriverVitals]): CampaignHealth =
+  private def health(reports: List[DriverObservation]): CampaignHealth =
+    val vitals = reports.map(_.latest.vitals)
+    val carried = reports.map(_.carried)
     CampaignHealth(
-      refreshRejectedTotal = vitals.map(_.refreshRejectedTotal).sum,
-      flushDroppedTotal = vitals.map(_.storeFlushDroppedTotal).sum,
+      refreshRejectedTotal = vitals.map(_.refreshRejectedTotal).sum + carried.map(_.refreshRejectedTotal).sum,
+      flushDroppedTotal = vitals.map(_.storeFlushDroppedTotal).sum + carried.map(_.storeFlushDroppedTotal).sum,
       maxDriverCpu = vitals.flatMap(_.cpuRatio).maxOption,
       scheduleLagP99 = vitals.flatMap(_.scheduleLagP99Micros).maxOption.map(micros => Duration.fromNanos(micros * 1000L)),
-      latencyClampedTotal = vitals.map(_.latencyClampedTotal).sum,
+      latencyClampedTotal = vitals.map(_.latencyClampedTotal).sum + carried.map(_.latencyClampedTotal).sum,
     )
 
 object DriverRegistry:

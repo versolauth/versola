@@ -42,6 +42,13 @@ object CoordinatorFixture:
     coordinatorConfig.map: config =>
       config.copy(campaign = config.campaign.copy(registration = config.campaign.registration.copy(enabled = true)))
 
+  /** The ramp with a target a test can actually reach: the shared HOCON's is campaign 1's 1M, and
+    * a suite cannot seed a million rows to watch the ramp stop.
+    */
+  def registrationConfigWithTarget(target: Long): IO[zio.Config.Error, LoadgenConfig] =
+    registrationConfig.map: config =>
+      config.copy(campaign = config.campaign.copy(registration = config.campaign.registration.copy(target = target)))
+
   def snapshotRow(
       campaign: String,
       driverId: String,

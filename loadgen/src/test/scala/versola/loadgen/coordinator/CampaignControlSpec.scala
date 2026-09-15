@@ -87,6 +87,17 @@ object CampaignControlSpec extends ZIOSpecDefault:
           started.publishRebalance(16, t0, t0).isLeft,
         )
       },
+      test("refuses a map wider than the shard column, while the request can still be answered") {
+        // `vu_users.shard` and `vu_sessions.shard` are SMALLINT. A wider map is not caught until
+        // the bulk UPDATE, which runs after the drain window has already elapsed -- and `settle`
+        // retries that failure with the pending map still in force, so the moved users stay
+        // drained for the rest of the campaign with nobody scheduling them.
+        assertTrue(
+          started.publishRebalance(ShardMap.maxShardCount, t0.plusSeconds(120), t0).isRight,
+          started.publishRebalance(ShardMap.maxShardCount + 1, t0.plusSeconds(120), t0).isLeft,
+          started.publishRebalance(Int.MaxValue, t0.plusSeconds(120), t0).isLeft,
+        )
+      },
       test("the map is due only once the drain window has elapsed") {
         val draining = started.publishRebalance(16, t0.plusSeconds(120), t0).toOption.get
         assertTrue(

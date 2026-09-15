@@ -58,6 +58,12 @@ final case class CampaignControl(
     */
   def publishRebalance(shardCount: Int, drainUntil: Instant, now: Instant): Either[String, CampaignControl] =
     if shardCount <= 0 then Left(s"shard count must be positive, got $shardCount")
+    // `vu_users.shard` and `vu_sessions.shard` are SMALLINT, and a map this wide is not caught
+    // until the bulk UPDATE -- which runs after the drain window has elapsed, is retried forever
+    // by `settle`, and leaves the moved users drained meanwhile. Here the operator is still on
+    // the other end of the request and can be told.
+    else if shardCount > ShardMap.maxShardCount then
+      Left(s"shard count must be at most ${ShardMap.maxShardCount}, got $shardCount")
     else if state == CampaignState.Stopped then Left("the campaign is stopped")
     else if pendingShards.nonEmpty then Left("a rebalance is already draining")
     else if shardCount == shards.shardCount then Left(s"the shard map is already at $shardCount shards")

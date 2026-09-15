@@ -132,6 +132,27 @@ object PostgresShardRebalancerSpec extends LoadgenPostgresSpec, DatabaseSpecBase
         users.forall((id, shard) => shard == ShardAssignment.shardOf(id, 8)),
       )
     },
+    test("a count the SMALLINT shard column cannot hold is refused, not attempted") {
+      // Both `shard` columns are SMALLINT (V0001, V0002), so 32,768 is the widest map whose
+      // largest index still fits. The id below is the one this fixture needs to show it: at
+      // 32,769 shards it is the only id in the table that lands on 32,768, and a campaign of the
+      // size this emulator is built for has millions of such ids. Refused here rather than
+      // discovered as an out-of-range write after the drain window has already elapsed -- which
+      // `settle` retries forever, with the moved users drained the whole time.
+      for
+        _ <- env.users.insertAll(Chunk(CoordinatorFixture.user(32_768L, VirtualUserState.Registered)))
+        widest <- env.rebalancer.reassign(ShardMap.maxShardCount)
+        tooWide <- env.rebalancer.reassign(ShardMap.maxShardCount + 1).either
+        users <- userShards(env.xa)
+      yield assertTrue(
+        widest == population.size.toLong + 1L,
+        // An `IllegalArgumentException` and not whatever the driver raises: the point is that the
+        // statement is never sent. Reaching Postgres and being rejected by the column would be
+        // the same `Left` here and a retried failure in `settle`, which is the actual defect.
+        tooWide.left.exists(_.isInstanceOf[IllegalArgumentException]),
+        users.forall((id, shard) => shard == ShardAssignment.shardOf(id, ShardMap.maxShardCount)),
+      )
+    },
     test("the shard column keeps agreeing with ShardAssignment for a negative id") {
       // Not a row the seeder can produce, but the column is the denormalisation of a `floorMod`
       // and Postgres' own `%` is not one -- so a fixture row is the only way to state that the

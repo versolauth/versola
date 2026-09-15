@@ -232,6 +232,57 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
             rate(before, PlanScenario.MobileSession).get.basePerSecond,
         )
       },
+      test("stops the ramp when its duration is up, instead of registering past the target") {
+        // The curve clamps at the target, so once the ramp lands the error term is zero and the
+        // factor returns to 1.0. Without a separate end to the ramp λ_nominal would go on
+        // registering users through every later phase of the campaign, past the population the
+        // capacity model is stated against -- §12's "lands the ramp on exactly 1M" is a statement
+        // about where it stops.
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          harness <- harness(CoordinatorFixture.registrationConfig, users, snapshots)
+          _ <- harness.service.start
+          _ <- TestClock.adjust(71.hours)
+          _ <- harness.service.controllerTick
+          before <- harness.service.plan
+          _ <- TestClock.adjust(2.hours)
+          _ <- harness.service.controllerTick
+          after <- harness.service.plan
+        yield assertTrue(
+          rate(before, PlanScenario.Registration).get.basePerSecond > 0.0,
+          rate(after, PlanScenario.Registration).get.basePerSecond == 0.0,
+          rate(after, PlanScenario.Registration).get.ratePerSecond == 0.0,
+          // Only the ramp ends. The campaign it was ramping for carries on.
+          rate(after, PlanScenario.MobileSession).get.basePerSecond > 0.0,
+        )
+      },
+      test("stops the ramp early once the target exists, rather than overshooting it") {
+        for
+          users <- FakeVirtualUsers.make(
+            (1L to 300L).map(CoordinatorFixture.user(_, VirtualUserState.Registered))*,
+          )
+          snapshots <- FakeMetricSnapshots.make()
+          harness <- harness(CoordinatorFixture.registrationConfigWithTarget(300L), users, snapshots)
+          _ <- harness.service.start
+          _ <- TestClock.adjust(1.minute)
+          _ <- harness.service.controllerTick
+          plan <- harness.service.plan
+        yield assertTrue(rate(plan, PlanScenario.Registration).get.basePerSecond == 0.0)
+      },
+      test("a ramp one user short of its target is still running") {
+        for
+          users <- FakeVirtualUsers.make(
+            (1L to 299L).map(CoordinatorFixture.user(_, VirtualUserState.Registered))*,
+          )
+          snapshots <- FakeMetricSnapshots.make()
+          harness <- harness(CoordinatorFixture.registrationConfigWithTarget(300L), users, snapshots)
+          _ <- harness.service.start
+          _ <- TestClock.adjust(1.minute)
+          _ <- harness.service.controllerTick
+          plan <- harness.service.plan
+        yield assertTrue(rate(plan, PlanScenario.Registration).get.basePerSecond > 0.0)
+      },
       test("publishes no registration stream at all for a campaign that registers nobody") {
         for
           harness <- steady
@@ -296,6 +347,33 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
             status.taxonomy.total == taxonomy.total,
             status.health.maxDriverCpu == Some(0.29),
           )
+      },
+      test("names a driver still running the map the rebalance replaced") {
+        // The one failure mode the drain protocol cannot prevent on its own: the rows have been
+        // re-sharded, so a driver on the old epoch is scheduling users another driver now owns,
+        // and it is reporting on time like any healthy one.
+        for
+          harness <- steady
+          _ <- harness.service.start
+          _ <- harness.service.rebalance(RebalanceRequest(shardCount = 16, drainMillis = 60_000L))
+          _ <- TestClock.adjust(61.seconds)
+          _ <- harness.service.settle
+          _ <- harness.service.acceptDriverReport(
+            CoordinatorFixture
+              .driverReport(campaign, "driver-0", t0.plusSeconds(61), Map.empty, taxonomy)
+              .copy(epoch = 1L),
+          )
+          _ <- harness.service.acceptDriverReport(
+            CoordinatorFixture
+              .driverReport(campaign, "driver-1", t0.plusSeconds(61), Map.empty, taxonomy)
+              .copy(epoch = 0L),
+          )
+          status <- harness.service.status
+        yield assertTrue(
+          status.shards == ShardMap(epoch = 1L, shardCount = 16),
+          status.staleDrivers.isEmpty,
+          status.staleEpochDrivers == List("driver-1"),
+        )
       },
     ),
     suite("report")(

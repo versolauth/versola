@@ -39,8 +39,16 @@ final class PostgresShardRebalancer(xa: TransactorZIO) extends ShardRebalancer, 
 
   override def reassign(shardCount: Int): Task[Long] =
     ZIO
-      .fail(IllegalArgumentException(s"shard count must be positive, got $shardCount"))
-      .when(shardCount <= 0)
+      .fail(
+        IllegalArgumentException(
+          s"shard count must be between 1 and ${ShardMap.maxShardCount}, got $shardCount",
+        ),
+      )
+      // The upper bound is the `SMALLINT` both `shard` columns are declared as. `CampaignControl`
+      // refuses such a map when it is published, which is where an operator can still be told;
+      // this is the same check at the only statement that would otherwise discover it, hours
+      // later, as a failed write against a drained population.
+      .when(shardCount <= 0 || shardCount > ShardMap.maxShardCount)
       .flatMap: _ =>
         xa.transactMeasured("reassign-shards"):
           // `((id % n) + n) % n`, not `id % n`: Postgres' `%` follows the sign of the dividend,
