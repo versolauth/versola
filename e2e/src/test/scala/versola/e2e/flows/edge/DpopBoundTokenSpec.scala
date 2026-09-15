@@ -183,4 +183,4 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
       yield assertTrue(result.response.status == Status.Unauthorized)
         .label("§7.1: a proof over a token nobody bound proves nothing, so it is not waved through")
     },
-  ) @@ TestAspect.timeout(180.seconds)
+  ) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)
