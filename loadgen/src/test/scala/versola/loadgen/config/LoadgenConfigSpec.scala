@@ -106,9 +106,29 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  passkey { rp-id = "bank.example.test", rp-name = "Versola Bank", user-verification = preferred }
       |  payment-amount-threshold = 1000000
       |}
+      |
+      |seed {
+      |  auth {
+      |    url      = "jdbc:postgresql://auth-db:5432/auth"
+      |    user     = "auth"
+      |    password = "authpass"
+      |  }
+      |  central {
+      |    url      = "jdbc:postgresql://central-db:5432/central"
+      |    user     = "central"
+      |    password = "centralpass"
+      |  }
+      |  tenant-id        = default
+      |  passwords-secret = "AAECAwQFBgcICQoLDA0ODw"
+      |  shard-count      = 8
+      |  hash-parallelism = 16
+      |  batch-size       = 10000
+      |}
       |""".stripMargin
 
-  /** The provision block dropped, as a driver's or coordinator's config file leaves it. */
+  /** The provision and seed blocks dropped, as a driver's or coordinator's config file leaves
+    * them.
+    */
   val hoconWithoutProvision: String = hocon.substring(0, hocon.indexOf("provision {"))
 
   def spec = suite("LoadgenConfig")(
@@ -140,16 +160,64 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.provision.flatMap(_.preset.cookieDomain) == Some("bank.example.test"),
           config.provision.map(_.passkey.rpId) == Some("bank.example.test"),
           config.provision.map(_.paymentAmountThreshold) == Some(1000000L),
+          config.seed.map(_.auth.url) == Some("jdbc:postgresql://auth-db:5432/auth"),
+          config.seed.map(_.central.user) == Some("central"),
+          config.seed.map(_.tenantId) == Some("default"),
+          config.seed.map(_.shardCount) == Some(8),
+          config.seed.map(_.hashParallelism) == Some(16),
+          config.seed.map(_.batchSize) == Some(10000),
+          // base64url, the same string auth reads as PASSWORDS_SECRET -- not the raw UTF-8 bytes
+          // of it, which would silently hash the whole population against the wrong pepper.
+          config.seed.map(_.passwordsSecret.toSeq) == Some((0 to 15).map(_.toByte)),
         )
       },
       // A driver holds no admin credentials, so requiring the block here would fail its decode
       // before `role` was ever read.
-      test("decodes a config that omits the provision block") {
+      test("decodes a config that omits the provision and seed blocks") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hoconWithoutProvision)
             .kebabCase
             .load(loadgenConfigDescriptor)
-        yield assertTrue(config.provision == None)
+        yield assertTrue(config.provision == None, config.seed == None)
+      },
+      // A pepper of the wrong length is a population whose every password fails to verify, and
+      // the 16-byte check is the only place that can still be said out loud -- once it has been
+      // hashed with, the evidence is gone.
+      test("rejects a seed pepper that is not 16 base64url-encoded bytes") {
+        for
+          tooShort <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", "AAECAw"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          notBase64 <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", "not base64 at all!"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(tooShort.isFailure, notBase64.isFailure)
+      },
+      // Both hang rather than fail when they reach the seeder: hash-parallelism = 0 builds a
+      // zero-permit semaphore in SecurityService and every Argon2 hash waits on it forever,
+      // and batch-size = 0 iterates the same id range forever.
+      test("rejects a non-positive hash-parallelism or batch-size, which would hang the seeder") {
+        for
+          noHashers <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("hash-parallelism = 16", "hash-parallelism = 0"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          negativeHashers <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("hash-parallelism = 16", "hash-parallelism = -1"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          noBatch <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("batch-size       = 10000", "batch-size       = 0"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(noHashers.isFailure, negativeHashers.isFailure, noBatch.isFailure)
       },
       test("decodes a coordinator config, which owns no shard") {
         for config <- TypesafeConfigProvider
