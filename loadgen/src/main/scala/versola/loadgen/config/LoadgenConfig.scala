@@ -33,6 +33,7 @@ case class LoadgenConfig(
     session: SessionConfig,
     campaign: CampaignConfig,
     actions: List[BusinessActionConfig],
+    plan: Option[PlanConfig],
     provision: Option[ProvisionConfig],
     seed: Option[SeedConfig],
 )
@@ -232,6 +233,54 @@ case class CampaignConfig(
     phases: List[CampaignPhaseConfig],
     diurnal: DiurnalConfig,
     registration: RegistrationConfig,
+)
+
+/** What `role = coordinator` needs beyond the blocks every role shares in order to publish a
+  * plan (versola-loadgen-dev-spec.md §12). Optional for the same reason [[ShardConfig]],
+  * [[ProvisionConfig]] and [[SeedConfig]] are: no other role publishes a plan, and requiring the
+  * block here would fail their decode before role dispatch ever read `role`.
+  *
+  * @param shardCount
+  *   the shard map the campaign starts on. Not read from [[ShardConfig]], which a coordinator
+  *   process does not have, and not derived from `max(vu_users.shard)`, which is empty for the
+  *   registration campaign -- the one campaign that starts with no population at all. A driver's
+  *   `shard.count` is its bootstrap value only: after the first poll the coordinator's map is
+  *   authoritative, because re-sharding changes it mid-campaign and the drivers' files do not.
+  * @param acceptance
+  *   which recorded measurements the design doc's acceptance thresholds are about
+  */
+case class PlanConfig(shardCount: Int, acceptance: AcceptanceMeasurementsConfig)
+
+object PlanConfig:
+  /** Same idiom as [[SeedConfig.validate]]'s. A non-positive shard count is rejected here because
+    * the alternative is a campaign that boots: `ShardAssignment.shardOf` requires a positive
+    * count, so the first `/plan` poll would answer 500 to every driver, and a count of zero also
+    * makes `ArrivalProcess.shardRate` divide by zero rather than fail.
+    */
+  def validate(config: PlanConfig): Either[String, PlanConfig] =
+    Either.cond(config.shardCount > 0, config, s"plan.shard-count must be positive, got ${config.shardCount}")
+
+  given DeriveConfig[PlanConfig] = DeriveConfig
+    .derived[PlanConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
+
+/** One recorded measurement, named the way `versola.loadgen.metrics.MeasurementId` names it: a
+  * step belongs to a scenario, a flow is named on its own, so `scenario = None` means a flow.
+  */
+case class MeasurementRefConfig(scenario: Option[String], name: String)
+
+/** Which measurement each of the design doc §6.7 thresholds is about.
+  *
+  * In configuration rather than as constants in the coordinator because the scenario and step
+  * names belong to the scenario engine: a threshold naming a measurement nothing records is
+  * reported as *not evaluated* by `CampaignReport`, so a hard-coded guess at the naming would
+  * turn the campaign's headline criteria into lines nobody checked. The figures themselves are
+  * not configurable -- they are the design doc's, via `AcceptanceThresholds.designDefaults`.
+  */
+case class AcceptanceMeasurementsConfig(
+    tokenRefresh: MeasurementRefConfig,
+    edgeProxy: MeasurementRefConfig,
+    mockBackend: MeasurementRefConfig,
 )
 
 /** What `loadgen provision` needs beyond [[TargetsConfig]] to write the campaign's configuration

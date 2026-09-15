@@ -87,6 +87,15 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  { name = pay,     weight = 0.1, method = POST, path = "/payments", acr = "password-level" },
       |]
       |
+      |plan {
+      |  shard-count = 8
+      |  acceptance {
+      |    token-refresh = { scenario = "mobile-otp", name = token-refresh }
+      |    edge-proxy    = { scenario = "mobile-otp", name = proxy-accounts }
+      |    mock-backend  = { name = mock-accounts }
+      |  }
+      |}
+      |
       |provision {
       |  tenant-id = default
       |  central-secret = "central-secret"
@@ -126,8 +135,9 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |}
       |""".stripMargin
 
-  /** The provision and seed blocks dropped, as a driver's or coordinator's config file leaves
-    * them.
+  /** The provision and seed blocks dropped, as a coordinator's config file leaves them -- the
+    * `plan` block above is deliberately on the other side of the cut, since that is the one role
+    * that does need it.
     */
   val hoconWithoutProvision: String = hocon.substring(0, hocon.indexOf("provision {"))
 
@@ -153,6 +163,11 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.campaign.phases(1).scale == None,
           config.campaign.diurnal.timezone == "Asia/Almaty",
           config.actions.map(_.name) == List("balance", "pay"),
+          config.plan.map(_.shardCount) == Some(8),
+          config.plan.map(_.acceptance.tokenRefresh) == Some(MeasurementRefConfig(Some("mobile-otp"), "token-refresh")),
+          // No scenario names a flow rather than a step (§11), so the absence has to survive the
+          // decode as `None` instead of becoming an empty string.
+          config.plan.map(_.acceptance.mockBackend) == Some(MeasurementRefConfig(None, "mock-accounts")),
           config.actions(1).acr == Some("password-level"),
           config.actions(0).acr == None,
           config.provision.map(_.tenantId) == Some("default"),
@@ -232,6 +247,23 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.role == LoadgenRole.Coordinator,
           config.shard == None,
         )
+      },
+      // A count of zero answers 500 to every driver's poll for the whole campaign:
+      // `ShardAssignment.shardOf` requires a positive count and `ArrivalProcess.shardRate`
+      // divides by it.
+      test("rejects a non-positive plan shard count") {
+        for
+          zero <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("shard-count = 8", "shard-count = 0"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+          negative <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("shard-count = 8", "shard-count = -4"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(zero.isFailure, negative.isFailure)
       },
       test("rejects an unknown role") {
         for exit <- TypesafeConfigProvider
