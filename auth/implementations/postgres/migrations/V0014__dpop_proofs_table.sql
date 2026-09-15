@@ -16,6 +16,15 @@
 -- the code; it must match PostgresDpopProofRepository.{SlotCount, SlotWidth}. The ring holds
 -- more slots than the acceptance window needs, because acceptance and eviction are decided
 -- against different instances' clocks -- see PostgresDpopProofRepository.MaxClockSkew.
+--
+-- Every partition is UNLOGGED, individually: `iat` has already put an upper bound on how long
+-- a record can matter, and `Dpop.verify` rejects on `iat` before this table is ever consulted,
+-- so WAL would be buying durability for rows engineered to expire within the minute. A crash
+-- empties the ring and costs one `iat-leeway` window of replay protection, which is the same
+-- exposure a restart already carries. Persistence is NOT inherited from the parent -- a
+-- partition added later without the keyword silently reverts to full WAL logging, so any new
+-- one must repeat it, and PostgresDpopProofRepositorySpec asserts none has been missed. The
+-- parent itself cannot be unlogged; PostgreSQL rejects `CREATE UNLOGGED TABLE ... PARTITION BY`.
 
 CREATE TABLE dpop_proofs (
     slot INTEGER NOT NULL,
@@ -28,15 +37,15 @@ CREATE TABLE dpop_proofs (
     PRIMARY KEY (slot, digest)
 ) PARTITION BY LIST (slot);
 
-CREATE TABLE dpop_proofs_0 PARTITION OF dpop_proofs FOR VALUES IN (0);
-CREATE TABLE dpop_proofs_1 PARTITION OF dpop_proofs FOR VALUES IN (1);
-CREATE TABLE dpop_proofs_2 PARTITION OF dpop_proofs FOR VALUES IN (2);
-CREATE TABLE dpop_proofs_3 PARTITION OF dpop_proofs FOR VALUES IN (3);
-CREATE TABLE dpop_proofs_4 PARTITION OF dpop_proofs FOR VALUES IN (4);
-CREATE TABLE dpop_proofs_5 PARTITION OF dpop_proofs FOR VALUES IN (5);
-CREATE TABLE dpop_proofs_6 PARTITION OF dpop_proofs FOR VALUES IN (6);
-CREATE TABLE dpop_proofs_7 PARTITION OF dpop_proofs FOR VALUES IN (7);
-CREATE TABLE dpop_proofs_8 PARTITION OF dpop_proofs FOR VALUES IN (8);
-CREATE TABLE dpop_proofs_9 PARTITION OF dpop_proofs FOR VALUES IN (9);
-CREATE TABLE dpop_proofs_10 PARTITION OF dpop_proofs FOR VALUES IN (10);
-CREATE TABLE dpop_proofs_11 PARTITION OF dpop_proofs FOR VALUES IN (11);
+CREATE UNLOGGED TABLE dpop_proofs_0 PARTITION OF dpop_proofs FOR VALUES IN (0);
+CREATE UNLOGGED TABLE dpop_proofs_1 PARTITION OF dpop_proofs FOR VALUES IN (1);
+CREATE UNLOGGED TABLE dpop_proofs_2 PARTITION OF dpop_proofs FOR VALUES IN (2);
+CREATE UNLOGGED TABLE dpop_proofs_3 PARTITION OF dpop_proofs FOR VALUES IN (3);
+CREATE UNLOGGED TABLE dpop_proofs_4 PARTITION OF dpop_proofs FOR VALUES IN (4);
+CREATE UNLOGGED TABLE dpop_proofs_5 PARTITION OF dpop_proofs FOR VALUES IN (5);
+CREATE UNLOGGED TABLE dpop_proofs_6 PARTITION OF dpop_proofs FOR VALUES IN (6);
+CREATE UNLOGGED TABLE dpop_proofs_7 PARTITION OF dpop_proofs FOR VALUES IN (7);
+CREATE UNLOGGED TABLE dpop_proofs_8 PARTITION OF dpop_proofs FOR VALUES IN (8);
+CREATE UNLOGGED TABLE dpop_proofs_9 PARTITION OF dpop_proofs FOR VALUES IN (9);
+CREATE UNLOGGED TABLE dpop_proofs_10 PARTITION OF dpop_proofs FOR VALUES IN (10);
+CREATE UNLOGGED TABLE dpop_proofs_11 PARTITION OF dpop_proofs FOR VALUES IN (11);

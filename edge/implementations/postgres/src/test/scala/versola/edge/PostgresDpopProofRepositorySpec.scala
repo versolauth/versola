@@ -1,7 +1,8 @@
-package versola.oauth.dpop
+package versola.edge
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import versola.edge.dpop.DpopProofRepositorySpec
 import versola.util.postgres.PostgresSpec
 import zio.test.*
 import zio.{Clock, Scope, ZIO, ZLayer}
@@ -18,7 +19,7 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepository
   override def beforeEach(env: DpopProofRepositorySpec.Env) =
     for
       xa <- ZIO.service[TransactorZIO]
-      _ <- xa.connect(sql"TRUNCATE TABLE dpop_proofs".update.run())
+      _ <- xa.connect(sql"TRUNCATE TABLE edge_dpop_proofs".update.run())
     yield ()
 
   override def testCases(
@@ -37,12 +38,12 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepository
               FROM pg_class c
               JOIN pg_inherits i ON i.inhrelid = c.oid
               JOIN pg_class p ON p.oid = i.inhparent
-              WHERE p.relname = 'dpop_proofs' AND c.relpersistence <> 'u'
+              WHERE p.relname = 'edge_dpop_proofs' AND c.relpersistence <> 'u'
             """.query[String].run()
         yield assertTrue(logged.isEmpty)
       },
       // A lock on the parent is held by Postgres on every partition too, so this stands in
-      // for anything that could hold the one partition being truncated -- a stuck instance, a
+      // for anything that could hold the one partition being truncated -- a stuck pod, a
       // manual VACUUM FULL. The slot number is computed from `now` before the wait, so a
       // truncate left blocked long enough would act on a decision that's gone stale by the
       // time it finally runs; `lock_timeout` is what keeps that window bounded instead of open
@@ -52,7 +53,7 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepository
         val releaseLock = java.util.concurrent.CountDownLatch(1)
         for
           locker <- env.xa.transact:
-            sql"LOCK TABLE dpop_proofs IN ACCESS EXCLUSIVE MODE".update.run()
+            sql"LOCK TABLE edge_dpop_proofs IN ACCESS EXCLUSIVE MODE".update.run()
             lockAcquired.countDown()
             releaseLock.await(10, java.util.concurrent.TimeUnit.SECONDS)
           .fork

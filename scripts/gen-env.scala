@@ -179,6 +179,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
   val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
   val dpopNoncesSecret          = rand(rng, 32) // auth only: authenticates DPoP-Nonce values
+  // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
+  // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
+  val edgeDpopNonceSalt         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
 
   // ── Environment ───────────────────────────────────────────────────────────────
@@ -775,12 +778,28 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  ]
        |}
        |
+       |# RFC 9449 proof validation on proxied calls, against edge-url below. Every
+       |# proof must carry a valid nonce (§9) once this block is present -- there is
+       |# no setting that turns that off; the round trip it costs a client on its
+       |# first request (or after nonce-ttl) is the price of using DPoP here at all.
+       |# Remove this block entirely to turn DPoP off; a key-bound token is still
+       |# refused over Bearer either way.
+       |dpop {
+       |  nonce-salt = ${secretField(useOpenBao, edgeDpopNonceSalt, "EDGE_DPOP_NONCE_SALT")}
+       |  allowed-algorithms = ["ES256", "PS256"]
+       |  iat-leeway = "60 seconds"
+       |  nonce-ttl = "600 seconds"
+       |}
+       |
        |central {
        |  url = "$centralUrl"
        |}
        |
        |versola-url = "$authUrl"
        |versola-internal-url = "$authInternalUrl"
+       |# The origin clients reach this edge on -- what a DPoP proof's htu is
+       |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
+       |edge-url = "$edgeUrl"
        |""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────
@@ -865,6 +884,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
         "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
         "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
+        "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
       ) ++ edgeExtras)
 
     println(

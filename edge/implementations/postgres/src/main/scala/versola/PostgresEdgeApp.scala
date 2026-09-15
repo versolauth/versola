@@ -4,10 +4,11 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
+import versola.edge.dpop.{DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -46,6 +47,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     TokenRevocationService &
     JwksService &
     SSOClient &
+    DpopProofRepository &
+    DpopReplayGuard &
+    DpopVerifier &
     EdgeService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
@@ -62,6 +66,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresRevocationRepository.live ++
+          PostgresDpopProofRepository.live ++
           PostgresCleanupManager.live)) >+>
       PostgresRevocationNotifications.live >+>
       SecureRandom.live >+>
@@ -80,6 +85,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       JwksService.live >+>
       TokenRevocationService.live >+>
       SSOClient.live >+>
+      DpopReplayGuard.shared >+>
+      DpopVerifier.live >+>
       EdgeService.live
 
 
@@ -98,6 +105,11 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
+
+  given DeriveConfig[Dpop.Algorithm] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Dpop.Algorithm.values.find(_.toString == str)
+        .toRight(zio.Config.Error.InvalidData(message = s"Unknown DPoP signing algorithm: '$str'"))
 
   given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>

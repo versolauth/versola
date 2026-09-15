@@ -1,4 +1,4 @@
-package versola.oauth.dpop
+package versola.edge.dpop
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.util.DatabaseSpecBase
@@ -7,6 +7,10 @@ import zio.test.*
 
 import java.time.Instant
 
+/** The fleet-wide half of edge's replay protection. Deliberately covers the same ground as
+  * auth's repository spec: the two rings are separate code, and the only thing keeping them
+  * from drifting apart in behaviour is that both are held to it.
+  */
 trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
 
@@ -20,6 +24,8 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
         yield assertTrue(fresh)
       },
       test("reports a replay for the same (jkt, jti) pair recorded twice") {
+        // The case the in-memory ring cannot answer: in production these two calls are two
+        // pods, and only this record is shared between them.
         for
           first <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
           second <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
@@ -47,14 +53,16 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
         yield assertTrue(first, !second)
       },
       test("concurrent attempts to record the same pair -- only one should see it as fresh") {
+        // Exactly one `true` is the whole contract. It holds today because the unique index
+        // settles it inside the database; any future batching of this write has to reproduce
+        // it in the batch itself, where two copies of one digest become one inserted row.
         for
-          results <- ZIO.collectAllPar(List.fill(10)(env.repository.recordIfAbsent("jkt-1", "jti-1", iat)))
+          results <- ZIO.collectAllPar(
+            List.fill(10)(env.repository.recordIfAbsent("jkt-1", "jti-1", iat)),
+          )
         yield assertTrue(results.count(identity) == 1)
       },
       test("reclaims the slot holding a proof once that proof has left the iat window") {
-        // A slot becomes reclaimable a leeway, one slot width and the tolerated clock skew
-        // after the proofs it holds were created -- by then no instance would pass any of them
-        // through the `iat` check.
         for
           recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
           _ <- env.evictStale(iat.plusSeconds(150), leeway)
@@ -69,11 +77,12 @@ trait DpopProofRepositorySpec extends DatabaseSpecBase[DpopProofRepositorySpec.E
           replay <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
         yield assertTrue(recorded, !replay)
       },
-      test("never reclaims a record an instance behind the evicting one would still accept") {
-        // Eviction reads the clock of whichever instance runs it, acceptance the clock of
-        // whichever instance the proof reaches. An instance running ahead must not truncate a
-        // slot at the moment its own window ends: a peer that far behind still accepts the
-        // `iat`s in it, and would then have no record to reject the replay against.
+      test("never reclaims a record a pod behind the evicting one would still accept") {
+        // Eviction reads the clock of whichever pod runs it, acceptance the clock of whichever
+        // pod the proof reaches. A pod running ahead must not truncate a slot at the moment
+        // its own window ends: a peer that far behind still accepts the `iat`s in it, and
+        // would then have no record to reject the replay against. This is the margin the
+        // in-memory ring does not need and this one does.
         for
           recorded <- env.repository.recordIfAbsent("jkt-1", "jti-1", iat)
           _ <- env.evictStale(iat.plusSeconds(149), leeway)
