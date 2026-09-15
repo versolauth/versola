@@ -77,4 +77,34 @@ spec:
                 command: ["sh", "-c", "sleep {{ $mockapi.preStopSleepSeconds }}"]
           resources:
             {{- toYaml $mockapi.resources | nindent 12 }}
+        {{- if $mockapi.resourceGateway.enabled }}
+        # See values.yaml's `mockapi.resourceGateway` comment: the three
+        # protected-resource origins central needs (path-less) do not exist
+        # on the mockapi container itself (its routes all carry a
+        # /resources/{id}/ prefix), so this sidecar rewrites and proxies over
+        # localhost -- same pod, same network namespace, no Service hop.
+        - name: resource-gateway
+          image: {{ $mockapi.resourceGateway.image }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          ports:
+            - name: core
+              containerPort: {{ $mockapi.resourceGateway.ports.core }}
+            - name: pay
+              containerPort: {{ $mockapi.resourceGateway.ports.pay }}
+            - name: notify
+              containerPort: {{ $mockapi.resourceGateway.ports.notify }}
+          volumeMounts:
+            - name: resource-gateway-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          resources:
+            {{- toYaml $mockapi.resourceGateway.resources | nindent 12 }}
+        {{- end }}
+      {{- if $mockapi.resourceGateway.enabled }}
+      volumes:
+        - name: resource-gateway-config
+          configMap:
+            name: {{ include "loadgen.fullname" . }}-mockapi-resource-gateway
+      {{- end }}
 {{- end }}

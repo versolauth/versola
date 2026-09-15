@@ -123,13 +123,20 @@ driver:
       cpu: "2"
       memory: 2Gi
   config:
-    # Name of a Secret that already contains an env.conf key (HOCON, dev
-    # spec §5), mounted at CONFIG_PATH. Must set `role = driver` and a
-    # `shard` block reading the injected ordinal:
+    # REQUIRED (when driver.enabled is true): name of a Secret that already
+    # contains an env.conf key (HOCON, dev spec §5), mounted at CONFIG_PATH.
+    # Must set `role = driver` and a `shard` block reading the injected
+    # ordinal:
     #   role = driver
     #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
     # Separate from the coordinator's Secret below because `role` lives in
     # the file, not in the environment -- one Secret cannot say both.
+    #
+    # Left empty here on purpose: docker/Dockerfile.loadgen's ENTRYPOINT
+    # always runs with -Denv.path=/app/config/env.conf, so an unset Secret
+    # would otherwise silently render a StatefulSet with no config volume at
+    # all and every pod CrashLoopBackOff on `include required(file(...))`.
+    # driver-statefulset.yaml fails the template instead.
     existingSecret: ""
     secretKey: env.conf
   # Extra plain env vars: [{name: FOO, value: bar}, ...].
@@ -164,9 +171,11 @@ coordinator:
     limits:
       memory: 1Gi
   config:
-    # As `driver.config` above, but the file must set `role = coordinator`
-    # and omit the `shard` block (LoadgenConfig.shard is an Option precisely
-    # so a coordinator's config decodes without one).
+    # REQUIRED (when coordinator.enabled is true), same enforcement as
+    # `driver.config.existingSecret` above. As `driver.config` above, but the
+    # file must set `role = coordinator` and omit the `shard` block
+    # (LoadgenConfig.shard is an Option precisely so a coordinator's config
+    # decodes without one).
     existingSecret: ""
     secretKey: env.conf
   extraEnv: []
@@ -206,6 +215,40 @@ mockapi:
   preStopSleepSeconds: 5
   terminationGracePeriodSeconds: 20
   extraEnv: []
+  # Central's RFC 8707 resource identifier must be an absolute URI with an
+  # *empty* path (central's `configuration.ResourceUri.parse` rejects any
+  # `url.path.nonEmpty`), but mockapi's own routes are fixed under
+  # /resources/{core,pay,notify}/... (see mockapi/Endpoints.scala's top
+  # comment) and edge's proxy does nothing but append the caller's
+  # rest-of-path to whatever URI got registered (EdgeService.buildUpstreamRequest's
+  # `baseUrl = resource.resource.addPath(restPath)`). A path-less
+  # coreUri/payUri/notifyUri pointed straight at this Service would 404 on
+  # every protected action.
+  #
+  # This is exactly the gap LoadgenConfig's `ProvisionResourcesConfig` comment
+  # names -- "three resources on one mockapi need three authorities resolving
+  # to it, which only the deployment knows" -- so it is solved here, not in
+  # loadgen's own code: an nginx sidecar in the mockapi pod listens on three
+  # ports, one per resource, and rewrites each to the matching
+  # /resources/{id}/ prefix before proxying to mockapi over localhost. The
+  # three Services this creates (`<fullname>-mockapi-core`, `-pay`,
+  # `-notify`) are those three authorities: point `loadgen provision`'s
+  # `resources.coreUri`/`payUri`/`notifyUri` at
+  # `http://<fullname>-mockapi-core.<namespace>.svc.cluster.local:8110` and
+  # so on for the other two.
+  resourceGateway:
+    enabled: true
+    image: nginx:1.27-alpine
+    ports:
+      core: 8110
+      pay: 8120
+      notify: 8130
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        memory: 32Mi
 
 # Where the dashboards of dashboards/ get their data from, and how the pods
 # are found.

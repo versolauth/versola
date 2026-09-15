@@ -1,4 +1,9 @@
 {{- if .Values.mockapi.enabled }}
+# The plain mockapi origin -- direct access to its `http`/`diagnostics` ports
+# (metrics, health, and manual poking), unrewritten. NOT what
+# `resources.coreUri`/`payUri`/`notifyUri` should point at -- see
+# mockapi-resource-origin-services.yaml and values.yaml's
+# `mockapi.resourceGateway` comment for the Services that are.
 apiVersion: v1
 kind: Service
 metadata:

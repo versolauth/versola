@@ -1,0 +1,55 @@
+{{- if and .Values.mockapi.enabled .Values.mockapi.resourceGateway.enabled }}
+{{- $gateway := .Values.mockapi.resourceGateway }}
+# The three authorities values.yaml's `mockapi.resourceGateway` comment
+# describes: one Service per resource, each pointing at the resource-gateway
+# sidecar's port for that resource (see mockapi-deployment.yaml and
+# mockapi-resource-gateway-configmap.yaml). Point `loadgen provision`'s
+# resources.coreUri/payUri/notifyUri at these, not at the plain mockapi
+# Service above -- that one has no path-rewrite and is path-less-registration
+# incompatible with mockapi's actual routes.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi-core
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+  ports:
+    - name: core
+      port: {{ $gateway.ports.core }}
+      targetPort: core
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi-pay
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+  ports:
+    - name: pay
+      port: {{ $gateway.ports.pay }}
+      targetPort: pay
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "loadgen.fullname" . }}-mockapi-notify
+  labels:
+    {{- include "loadgen.componentLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "loadgen.componentSelectorLabels" (dict "component" "mockapi" "context" $) | nindent 4 }}
+  ports:
+    - name: notify
+      port: {{ $gateway.ports.notify }}
+      targetPort: notify
+{{- end }}

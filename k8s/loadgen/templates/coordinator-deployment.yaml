@@ -1,5 +1,8 @@
 {{- if .Values.coordinator.enabled }}
 {{- $coordinator := .Values.coordinator }}
+{{- if not $coordinator.config.existingSecret }}
+{{- fail "coordinator.config.existingSecret is required when coordinator.enabled is true -- see values.yaml's `coordinator.config` block and driver-statefulset.yaml's identical guard" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

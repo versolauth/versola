@@ -6,6 +6,9 @@
 {{- if ne $driver.shardIndexFrom "podIndexLabel" }}
 {{- fail (printf "driver.shardIndexFrom must be \"podIndexLabel\", got %q -- see values.yaml for the one mechanism this chart implements" $driver.shardIndexFrom) }}
 {{- end }}
+{{- if not $driver.config.existingSecret }}
+{{- fail "driver.config.existingSecret is required when driver.enabled is true -- the image always runs with -Denv.path=/app/config/env.conf (docker/Dockerfile.loadgen's ENTRYPOINT), so with no Secret named here no config volume is rendered at all and `include required(file(...))` aborts startup on every pod" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
