@@ -84,11 +84,18 @@ object UpstreamStub:
   val port = 9104
   val uri = s"http://localhost:$port"
 
+  /** The origin of a second stub, for a spec that needs an upstream of its own: two resources
+    * may not share a URI, since that is what central resolves a token's audience by.
+    */
+  def uriOn(port: Int): String = s"http://localhost:$port"
+
   /** Runs the stub for as long as the spec that acquired it. The server layer is composed in
     * rather than provided inside the effect, so its scope is the spec's and not the single
     * effect that starts it.
     */
-  val live: ZLayer[Any, Throwable, UpstreamStub] =
+  val live: ZLayer[Any, Throwable, UpstreamStub] = liveOn(port)
+
+  def liveOn(port: Int): ZLayer[Any, Throwable, UpstreamStub] =
     Server.defaultWithPort(port) >>> ZLayer.scoped[Server] {
       for
         received <- Ref.make(Chunk.empty[UpstreamRequest])
