@@ -47,8 +47,13 @@ final class DriverLoop(
   def run: ZIO[Scope, Throwable, Unit] =
     for
       queue <- Queue.bounded[Option[ScheduledArrival]](queueCapacity)
-      generator <- generate(queue).forkScoped
-      _ <- dispatch(queue).ensuring(generator.interrupt)
+      // The generator's death has to reach the dispatcher, which is otherwise parked on a queue
+      // nothing will ever fill again. `ArrivalProcess` validates its rate ceiling at the point of
+      // use and dies on a bad one, so this is the path a misconfigured campaign actually takes --
+      // and a loop that hung there would neither produce load nor report why.
+      generatorFailed <- Promise.make[Throwable, Nothing]
+      generator <- generate(queue).sandbox.catchAll(generatorFailed.failCause).forkScoped
+      _ <- dispatch(queue).raceFirst(generatorFailed.await).ensuring(generator.interrupt)
     yield ()
 
   /** The generator's only exit is the horizon: [[ArrivalProcess.next]] answers `None` once the

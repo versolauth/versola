@@ -44,6 +44,8 @@ object ScenarioSut:
       stepUpPath: String,
       forbiddenPaths: Set[String],
       codeRedirectTo: String,
+      accessTokenSeconds: Long,
+      refuseRefresh: Boolean,
   ): UIO[(State, Routes[Any, Nothing])] =
     for
       seen <- Ref.make(Vector.empty[String])
@@ -56,14 +58,46 @@ object ScenarioSut:
       counter <- Ref.make(0)
       refused <- Ref.make(0)
       state = State(seen, spent, refused, liveCookie)
-      built = routes(state, steps, remaining, acrOfToken, pendingAcr, cookieAcr, liveCookie, counter, stepUpPath, forbiddenPaths, codeRedirectTo)
+      built = routes(
+        state,
+        steps,
+        remaining,
+        acrOfToken,
+        pendingAcr,
+        cookieAcr,
+        liveCookie,
+        counter,
+        stepUpPath,
+        forbiddenPaths,
+        codeRedirectTo,
+        accessTokenSeconds,
+        refuseRefresh,
+      )
     yield (state, built)
 
-  def mobile(steps: List[String], stepUpPath: String, forbiddenPaths: Set[String] = Set.empty): UIO[(State, Routes[Any, Nothing])] =
-    make(steps, stepUpPath, forbiddenPaths, codeRedirect)
+  /** @param accessTokenSeconds the `expires_in` every token carries. `0` is how a test reaches
+    *                           the clock-driven branches of the session state machine without
+    *                           waiting out a real TTL.
+    * @param refuseRefresh      answers every `refresh_token` grant with `invalid_grant`, which is
+    *                           what the SUT does to a token it has already retired.
+    */
+  def mobile(
+      steps: List[String],
+      stepUpPath: String,
+      forbiddenPaths: Set[String] = Set.empty,
+      accessTokenSeconds: Long = 900L,
+      refuseRefresh: Boolean = false,
+  ): UIO[(State, Routes[Any, Nothing])] =
+    make(steps, stepUpPath, forbiddenPaths, codeRedirect, accessTokenSeconds, refuseRefresh)
 
-  def web(steps: List[String], stepUpPath: String, forbiddenPaths: Set[String] = Set.empty): UIO[(State, Routes[Any, Nothing])] =
-    make(steps, stepUpPath, forbiddenPaths, edgeCodeRedirect)
+  def web(
+      steps: List[String],
+      stepUpPath: String,
+      forbiddenPaths: Set[String] = Set.empty,
+      accessTokenSeconds: Long = 900L,
+      refuseRefresh: Boolean = false,
+  ): UIO[(State, Routes[Any, Nothing])] =
+    make(steps, stepUpPath, forbiddenPaths, edgeCodeRedirect, accessTokenSeconds, refuseRefresh)
 
   private def routes(
       state: State,
@@ -77,6 +111,8 @@ object ScenarioSut:
       stepUpPath: String,
       forbiddenPaths: Set[String],
       codeRedirectTo: String,
+      accessTokenSeconds: Long,
+      refuseRefresh: Boolean,
   ): Routes[Any, Nothing] =
     val challengeRedirect = Response
       .seeOther(URL.decode("/challenge").toOption.get)
@@ -85,10 +121,17 @@ object ScenarioSut:
     /** A step-up asks only for the factor the requested assurance level is missing, which is one
       * page and not the whole conversation again -- folding the two together would hide a driver
       * that re-ran a full login where the SUT asked for a single re-authentication.
+      *
+      * Both conditions are load-bearing. `acr_values` alone is a request for an assurance level,
+      * not evidence that anyone is already authenticated: without the `SSO_SESSION` there is no
+      * session to raise, so auth runs the whole conversation. Shortening it on the ACR alone is
+      * what let a driver that never sent the cookie look like it was stepping up.
       */
-    def begin(acrValues: Option[String]): UIO[Response] =
+    def begin(acrValues: Option[String], session: Option[String]): UIO[Response] =
       pendingAcr.set(acrValues) *>
-        remaining.set(if acrValues.isDefined then List("otp") else configuredSteps).as(challengeRedirect)
+        remaining
+          .set(if acrValues.isDefined && session.isDefined then List("otp") else configuredSteps)
+          .as(challengeRedirect)
 
     def advance: UIO[Response] =
       remaining
@@ -104,14 +147,14 @@ object ScenarioSut:
       counter.updateAndGet(_ + 1).map(n => (s"access-$n", s"refresh-$n"))
 
     def tokenBody(access: String, refresh: String): String =
-      s"""{"access_token":"$access","token_type":"Bearer","expires_in":900,""" +
+      s"""{"access_token":"$access","token_type":"Bearer","expires_in":$accessTokenSeconds,""" +
         s""""refresh_token":"$refresh","id_token":"id-$access","scope":"openid phone offline_access"}"""
 
     /** A rotated pair inherits the assurance level of the one it replaces: a refresh does not
       * re-authenticate anybody, so a session that stepped up stays stepped up across it.
       */
     def onRefresh(presented: String): UIO[Response] =
-      state.spentRefresh.modify(spent => (spent.contains(presented), spent + presented)).flatMap:
+      state.spentRefresh.modify(spent => (refuseRefresh || spent.contains(presented), spent + presented)).flatMap:
         case true =>
           state.refused.update(_ + 1).as(Response.json("""{"error":"invalid_grant"}""").status(Status.BadRequest))
         case false =>
@@ -165,7 +208,8 @@ object ScenarioSut:
       yield response
 
     val handled = Routes(
-      Method.GET / "authorize" -> handler((request: Request) => begin(request.url.queryParams.getAll("acr_values").headOption)),
+      Method.GET / "authorize" -> handler: (request: Request) =>
+        begin(request.url.queryParams.getAll("acr_values").headOption, request.cookie("SSO_SESSION").map(_.content)),
       Method.GET / "challenge" -> handler: (_: Request) =>
         remaining.get.map(pending => Response.text(page(pending.headOption.getOrElse("credential")))),
       Method.POST / "challenge" / "phone" -> handler((_: Request) => advance),
@@ -193,18 +237,20 @@ object ScenarioSut:
         ZIO.succeed(Response.seeOther(URL.decode(authLogoutUrl).toOption.get)),
       Method.GET / "logout" / "frontchannel" -> handler: (_: Request) =>
         ZIO.succeed(Response.ok.addCookie(Cookie.Response("EDGE_SESSION", "", maxAge = Some(Duration.Zero)))),
+      // Edge exchanges the code server-side and keeps the tokens behind the cookie, so this hop
+      // and not `/token` is where a web session acquires its assurance level.
       Method.GET / "complete" -> handler: (request: Request) =>
         if request.url.queryParams.getAll("code").isEmpty then ZIO.succeed(Response.badRequest)
         else
-          counter.updateAndGet(_ + 1).flatMap: n =>
-            val issued = s"edge-session-$n"
-            liveCookie
-              .set(issued)
-              .as(
-                Response
-                  .seeOther(URL.decode(postLoginRedirect).toOption.get)
-                  .addCookie(Cookie.Response("EDGE_SESSION", issued, maxAge = Some(edgeCookieTtl))),
-              )
+          for
+            acr <- pendingAcr.getAndSet(None)
+            _ <- ZIO.foreachDiscard(acr)(value => cookieAcr.set(Some(value)))
+            n <- counter.updateAndGet(_ + 1)
+            issued = s"edge-session-$n"
+            _ <- liveCookie.set(issued)
+          yield Response
+            .seeOther(URL.decode(postLoginRedirect).toOption.get)
+            .addCookie(Cookie.Response("EDGE_SESSION", issued, maxAge = Some(edgeCookieTtl)))
       ,
       Method.ANY / "resources" / trailing -> handler: (rest: Path, request: Request) =>
         onResource(request, "/resources" + rest.addLeadingSlash.toString),

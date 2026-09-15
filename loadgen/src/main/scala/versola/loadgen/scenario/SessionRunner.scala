@@ -59,7 +59,7 @@ final class SessionRunner(
       resumable <- liveSession(user)
       plan = SessionPlan.draw(config, user.platform, random)
       started <- start(user, resumable, plan, random)
-      _ <- ZIO.foreachDiscard(started)(session => act(user, session, plan, random, 0))
+      _ <- ZIO.foreachDiscard(started)(session => act(user, session, plan, random, 0, plan.extraRefresh))
     yield ()
 
   /** §2.3's first branch. A resume that retires the session falls through to a full login rather
@@ -139,7 +139,7 @@ final class SessionRunner(
   private def webLogin(user: VirtualUser, acrValues: Option[List[String]]): IO[ProtocolError, RunningSession] =
     for
       credentials <- loginCredentials(user)
-      result <- web.webOtp(WebLoginRequest(clients.webPreset, acrValues), credentials)
+      result <- web.webOtp(WebLoginRequest(clients.webPreset, acrValues, None), credentials)
       (cookie, ssoSession) = result
       now <- Clock.instant
       expiresAt <- cookieExpiry(cookie, now)
@@ -168,22 +168,45 @@ final class SessionRunner(
       plan: SessionPlan,
       random: RandomSource,
       index: Int,
+      extraRefreshLeft: Boolean,
   ): IO[ProtocolError, Unit] =
     if index >= plan.actionCount then finish(user, session, plan)
     else
       for
-        refreshed <- refreshIfStale(user, session, plan)
-        call <- ZIO.fromEither(actions.call(chosen(plan, index, random), user.id)).mapError(detail => ProtocolError.Misconfigured(detail))
-        next <- perform(user, refreshed, call, random)
-        _ <- ZIO.sleep(thinkTime.sample(random)).when(index + 1 < plan.actionCount)
-        _ <- next match
-          case Some(running) => act(user, running, plan, random, index + 1)
-          // The session lost its credential mid-run -- a rejected refresh behind a 401, or a
-          // step-up that could not complete. The row is already retired; the user's next arrival
-          // logs in again rather than this one starting over, which would be a session the
-          // arrival process never scheduled.
+        due <- extraRefreshDue(session, extraRefreshLeft)
+        // Spent whether or not the exchange succeeded: the plan allows one extra refresh per
+        // session, and a second one would be traffic §2.3's mix never asked for.
+        remaining = extraRefreshLeft && !due
+        refreshed <- if due then renew(user, session) else ZIO.some(session)
+        _ <- refreshed match
+          // The refresh retired the row, so there is no credential left to act with. Continuing
+          // on the expired one would put a request the scenario never planned on the wire and
+          // charge the SUT's rejection of it to the error budget.
           case None => ZIO.unit
+          case Some(current) => step(user, current, plan, random, index, remaining)
       yield ()
+
+  /** One action and whatever follows it, once the session is known to still have a credential. */
+  private def step(
+      user: VirtualUser,
+      session: RunningSession,
+      plan: SessionPlan,
+      random: RandomSource,
+      index: Int,
+      extraRefreshLeft: Boolean,
+  ): IO[ProtocolError, Unit] =
+    for
+      call <- ZIO.fromEither(actions.call(chosen(plan, index, random), user.id)).mapError(detail => ProtocolError.Misconfigured(detail))
+      next <- perform(user, session, call, random)
+      _ <- ZIO.sleep(thinkTime.sample(random)).when(index + 1 < plan.actionCount)
+      _ <- next match
+        case Some(running) => act(user, running, plan, random, index + 1, extraRefreshLeft)
+        // The session lost its credential mid-run -- a rejected refresh behind a 401, or a
+        // step-up that could not complete. The row is already retired; the user's next arrival
+        // logs in again rather than this one starting over, which would be a session the
+        // arrival process never scheduled.
+        case None => ZIO.unit
+    yield ()
 
   /** Which of the ten actions this slot is.
     *
@@ -201,16 +224,18 @@ final class SessionRunner(
     * the clock and not of the action count: a session whose think times happened to be short does
     * not reach the TTL and does not refresh, even though the plan allowed it to.
     *
+    * `extraRefreshLeft` is the plan's single allowance, which [[act]] carries forward and spends.
+    * Reading `plan.extraRefresh` here instead would make this true again at every later action of
+    * a session that outlives two token lifetimes, and §2.3's refresh mix would drift with session
+    * length rather than stay where the config put it.
+    *
     * Web sessions are absent on purpose -- edge refreshes behind the cookie and hands back a
     * rotated one, so there is no token here to renew and forcing a re-login would be inventing
     * traffic.
     */
-  private def refreshIfStale(user: VirtualUser, session: RunningSession, plan: SessionPlan): IO[ProtocolError, RunningSession] =
-    if !plan.extraRefresh || session.kind != SessionKind.MobileToken then ZIO.succeed(session)
-    else
-      Clock.instant.flatMap: now =>
-        if now.isBefore(session.accessExpiresAt) then ZIO.succeed(session)
-        else renew(user, session).map(_.getOrElse(session))
+  private def extraRefreshDue(session: RunningSession, extraRefreshLeft: Boolean): IO[ProtocolError, Boolean] =
+    if !extraRefreshLeft || session.kind != SessionKind.MobileToken then ZIO.succeed(false)
+    else Clock.instant.map(now => !now.isBefore(session.accessExpiresAt))
 
   /** A refresh on a session already in flight: the row is re-read because [[RefreshDiscipline]]
     * works from the persisted credential, which is the only copy §7.4's generation guard is
@@ -360,7 +385,7 @@ final class SessionRunner(
   ): IO[ProtocolError, Option[RunningSession]] =
     for
       credentials <- loginCredentials(user)
-      result <- web.stepUp(WebLoginRequest(clients.webPreset, Some(acrValues)), credentials)
+      result <- web.stepUp(WebLoginRequest(clients.webPreset, Some(acrValues), session.ssoSession), credentials)
       (cookie, ssoSession) = result
       now <- Clock.instant
       expiresAt <- cookieExpiry(cookie, now)
@@ -411,7 +436,7 @@ final class SessionRunner(
   private def logout(session: RunningSession): IO[ProtocolError, Unit] =
     val ended = (session.kind, session.cookie, session.ssoSession, session.idToken) match
       case (SessionKind.WebCookie, Some(cookie), Some(ssoSession), _) =>
-        web.logout(WebLoginRequest(clients.webPreset, None), cookie, ssoSession)
+        web.logout(WebLoginRequest(clients.webPreset, None, Some(ssoSession)), cookie, ssoSession)
       case (SessionKind.MobileToken, _, _, Some(idToken)) => mobile.logout(idToken)
       // Nothing to present: a mobile session with no id token (a resumed one whose refresh
       // response carried none), or a web session with no SSO session. Dropping the row is still

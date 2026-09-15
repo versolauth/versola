@@ -38,11 +38,11 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
 
   private def config(
       paymentProbability: Double = 0.0,
+      accessTokenTtl: Duration = 15.minutes,
       extraRefreshProbability: Double = 0.0,
       logout: Double = 0.0,
       fullLogin: Double = 0.0,
       mobileMean: Double = 3.0,
-      accessTokenTtl: Duration = 15.minutes,
   ): SessionConfig =
     SessionConfig(
       fullLoginProbability = FullLoginProbabilityConfig(fullLogin, fullLogin),
@@ -312,6 +312,41 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
         issued != "edge-session-2",
       )
     },
+    test("§4: a defect in the arrival generator ends the loop instead of parking it on a queue nobody fills") {
+      // A zero rate ceiling is `ArrivalProcess`'s own precondition, checked at the point of use:
+      // it dies rather than returning, and the death happens on the generator's fiber.
+      val settings = config()
+      for
+        _ <- truncate
+        _ <- truncateUsers
+        repo <- users
+        _ <- repo.insertAll(Chunk(user(30L, Platform.Mobile)))
+        stub <- ScenarioSut.mobile(List("credential", "otp"), paymentPath)
+        (sut, routes) = stub
+        harnessed <- harness(settings, List(accounts, balance), routes, sut)
+        pool <- UserPool.paged(repo, shard, UserPool.pageSize)
+        busy <- BusyUsers.make
+        lag <- ScheduleLag.make
+        now <- Clock.instant
+        loop = DriverLoop(
+          ArrivalProcess.startingAt(now, RandomSource.seeded(41L)),
+          VaryingRate(0.0, now.plusSeconds(60), _ => 1.0),
+          pool,
+          busy,
+          harnessed.runner,
+          harnessed.recorder,
+          lag,
+          RandomSource.seeded(42L),
+          64,
+        )
+        exit <- ZIO.scoped(loop.run).exit.timeout(30.seconds)
+      yield assertTrue(
+        // The point is that this terminates at all: a dispatcher that only learns of the horizon
+        // through the queue blocks forever when the generator dies before reaching it, and a
+        // misconfigured campaign then produces neither load nor a reason.
+        exit.exists(_.isFailure),
+      )
+    },
     test("an explicit logout ends the session at the SUT and leaves no row to resume") {
       val settings = config(logout = 1.0)
       for
@@ -332,6 +367,79 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
           case DeferredUpdate.SessionTouched(_) => true
           case _ => false
         } == 0,
+      )
+    },
+    test("§7.4: a web step-up carries the session's SSO_SESSION, so auth asks only for the missing factor") {
+      val settings = config(paymentProbability = 1.0, mobileMean = 6.0)
+      val plan = planFor(settings, Platform.Web, 1010L)
+      for
+        _ <- truncate
+        stub <- ScenarioSut.web(List("credential", "otp"), paymentPath)
+        (sut, routes) = stub
+        harnessed <- harness(settings, List(accounts, balance, payment), routes, sut)
+        _ <- harnessed.runner.run(user(8L, Platform.Web), RandomSource.seeded(1010L)).mapError(failed)
+        hops <- sut.paths
+        stored <- rows
+      yield assertTrue(
+        plan.paymentAction.isDefined,
+        // Two authorizations -- the login and the step-up -- but only one credential factor: the
+        // step-up is answered on the session the login left behind. Without the `SSO_SESSION` on
+        // the authorize hop the SUT cannot know that, and the second conversation is a full login
+        // reported as a step-up.
+        hops.count(_ == "GET /authorize") == 2,
+        hops.count(_ == "POST /challenge/phone") == 1,
+        hops.count(_ == "POST /challenge/otp") == 2,
+        // The step-up ran the web path end to end, so it also ends in a fresh cookie.
+        hops.count(_ == "GET /complete") == 2,
+        hops.count(_ == s"POST $paymentPath") == 2,
+        stored.forall(_.acr.contains(ScenarioSut.stepUpAcr)),
+        stored.forall(_.edgeCookie.isDefined),
+      )
+    },
+    test("§2.3: the plan's extra refresh is spent once, however many actions outlive the access token") {
+      // Every token the SUT mints is already expired, so the staleness test is true at every
+      // action and only the plan's own allowance keeps the count down.
+      val settings = config(extraRefreshProbability = 1.0, mobileMean = 8.0)
+      val plan = planFor(settings, Platform.Mobile, 1111L)
+      for
+        _ <- truncate
+        stub <- ScenarioSut.mobile(List("credential", "otp"), paymentPath, accessTokenSeconds = 0L)
+        (sut, routes) = stub
+        harnessed <- harness(settings, List(accounts, balance), routes, sut)
+        _ <- harnessed.runner.run(user(9L, Platform.Mobile), RandomSource.seeded(1111L)).mapError(failed)
+        hops <- sut.paths
+        refused <- sut.refusedRefreshes
+        stored <- rows
+      yield assertTrue(
+        plan.extraRefresh,
+        // Enough actions that "once per session" and "once per action" are different numbers.
+        plan.actionCount >= 3,
+        // The login's exchange and exactly one refresh.
+        hops.count(_ == "POST /token") == 2,
+        refused == 0,
+        stored.forall(!_.rotationInFlight),
+      )
+    },
+    test("a session whose refresh is refused stops there rather than acting on the expired token") {
+      val settings = config(extraRefreshProbability = 1.0, mobileMean = 8.0)
+      for
+        _ <- truncate
+        stub <- ScenarioSut.mobile(List("credential", "otp"), paymentPath, accessTokenSeconds = 0L, refuseRefresh = true)
+        (sut, routes) = stub
+        harnessed <- harness(settings, List(accounts, balance), routes, sut)
+        virtual = user(10L, Platform.Mobile)
+        _ <- harnessed.runner.run(virtual, RandomSource.seeded(1212L)).mapError(failed)
+        hops <- sut.paths
+        stored <- rows
+      yield assertTrue(
+        // The refresh was attempted and refused.
+        hops.count(_ == "POST /token") == 2,
+        // And nothing was attempted afterwards. Carrying on with the credential the refresh just
+        // retired would put a request the scenario never planned on the wire, and the SUT's 401
+        // would land in the error budget as if the SUT had misbehaved.
+        hops.count(hop => hop.startsWith("GET /resources") || hop.startsWith("POST /resources")) == 0,
+        // §7.4 step 5: the row is retired, so the next arrival logs in rather than resuming.
+        stored.isEmpty,
       )
     },
     test("the pool walks its shard in id order, skips users that are not registered, and wraps around") {

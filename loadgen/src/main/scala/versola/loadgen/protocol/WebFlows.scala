@@ -4,10 +4,14 @@ import zio.{IO, ZIO}
 
 /** What one web login varies by. Narrower than [[LoginRequest]] on purpose: a web login is
   * started by edge, from a preset, so there is no `client_id` and no `scope` for the driver to
-  * choose -- both are the preset's -- and no `SSO_SESSION` either, since edge builds the
-  * authorize URL and offers no way to put one on it.
+  * choose -- both are the preset's.
+  *
+  * `ssoSession` survives the narrowing because it is a cookie and not a query parameter: edge
+  * builds the authorize URL, but the driver makes the request to it, so it can send a session it
+  * already holds even though it cannot name one on the URL. `None` is a login by someone who
+  * holds no session; a step-up passes the one the row persisted.
   */
-case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]])
+case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]], ssoSession: Option[SsoSession])
 
 /** §8.4: the web client `web-otp` authenticating **through** edge and ending in a cookie
   * session, plus §8.6 and the logout for that session.
@@ -51,9 +55,12 @@ final class WebFlows(
     * gives: a step-up's latency does not belong in the action's, nor in the login's.
     *
     * It ends in a new `EDGE_SESSION` rather than in a token pair, so the caller has a cookie to
-    * adopt as well as an assurance level to persist. Auth will still recognise the SSO session
-    * behind it and ask only for the missing factor; the driver simply cannot name that session
-    * itself on this path.
+    * adopt as well as an assurance level to persist.
+    *
+    * `request.ssoSession` is what makes this a step-up rather than a login wearing the name: auth
+    * recognises the session behind the authorize hop and asks only for the factor the requested
+    * ACR is missing. Called with `None` it still succeeds -- and measures a full credential
+    * conversation as a step-up, which inflates the flow's latency and understates the login's.
     */
   def stepUp(request: WebLoginRequest, credentials: Credentials): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
     login(FlowName.WebStepUp, request, credentials)
@@ -66,7 +73,7 @@ final class WebFlows(
     FlowTiming.flow(observer, flow):
       for
         started <- FlowTiming.step(observer, flow, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
-        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started))
+        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
         outcome <- conversation.walk(flow, credentials, conversationCookie)
         completed <- refusalCompleted(flow, outcome)
         state <- echoedState(started, completed)
