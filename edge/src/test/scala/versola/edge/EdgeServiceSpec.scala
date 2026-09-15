@@ -1134,6 +1134,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          confirmation = None,
         )
         prod <- env.buildService(client, security, EnvName.Prod).getMyPermissions(claims, Nil)
         nonProd <- env.buildService(client, security).getMyPermissions(claims, Nil)
@@ -1155,6 +1156,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
       yield assertTrue(
@@ -1179,6 +1181,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
       yield assertTrue(
@@ -1203,6 +1206,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
       yield assertTrue(
@@ -1230,6 +1234,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("orders"), ResourceId("billing")))
       yield assertTrue(
@@ -1259,6 +1264,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("operator"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
       yield assertTrue(
@@ -1282,6 +1288,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("oauth-admin"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, Nil)
       yield assertTrue(
@@ -1304,6 +1311,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = None,
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("member"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central"), ResourceId("orders")))
       yield assertTrue(
@@ -1328,6 +1336,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("central-admin")),
           tenantId = Some(TenantId.default),
           roles = Some(List(RoleId("editor"))),
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("central")))
       yield assertTrue(
@@ -1351,6 +1360,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           clientId = Some(ClientId("web-app")),
           tenantId = None,
           roles = None,
+          confirmation = None,
         )
         response <- service.getMyPermissions(claims, List(ResourceId("orders")))
       yield assertTrue(

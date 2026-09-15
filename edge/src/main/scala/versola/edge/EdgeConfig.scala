@@ -113,13 +113,20 @@ object EdgeConfig:
     */
   case class Dpop(
       nonceSalt: Secret.Bytes32,
-      allowedAlgorithms: Set[versola.util.Dpop.Algorithm] = Dpop.DefaultAlgorithms,
-      iatLeeway: Duration = Duration.fromSeconds(60),
-      nonceTtl: Duration = Duration.fromSeconds(600),
+      allowedAlgorithms: Set[versola.util.Dpop.Algorithm],
+      iatLeeway: Duration,
+      nonceTtl: Duration,
   )
 
   object Dpop:
-    /** RFC 9449 §5 mandates `ES256`; `PS256` is included for FAPI 2.0. `RS256` is verifiable
-      * but left out, matching auth's default -- a deployment can opt back in explicitly. */
-    val DefaultAlgorithms: Set[versola.util.Dpop.Algorithm] =
-      Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256)
+    /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for
+      * callers that want them without restating each one. RFC 9449 §5 mandates `ES256`;
+      * `PS256` is included for FAPI 2.0. `RS256` is verifiable but left out, matching auth's
+      * own default -- a deployment can opt back in explicitly.
+      */
+    def default(nonceSalt: Secret.Bytes32): Dpop = Dpop(
+      nonceSalt = nonceSalt,
+      allowedAlgorithms = Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256),
+      iatLeeway = Duration.fromSeconds(60),
+      nonceTtl = Duration.fromSeconds(600),
+    )

@@ -18,7 +18,7 @@ case class AccessTokenClaims(
     /** RFC 9449 §6.1: present only on a sender-constrained token. Its `jkt` is the thumbprint
       * of the key the accompanying DPoP proof must be signed with, and its mere presence is
       * what makes the `Bearer` scheme inadmissible for this token (§7.2). */
-    @jsonField("cnf") confirmation: Option[Confirmation] = None,
+    @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec
 
 case class Confirmation(jkt: String) derives JsonCodec

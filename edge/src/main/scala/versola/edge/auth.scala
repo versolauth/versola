@@ -108,5 +108,5 @@ case class PermissionsClaims(
     @jsonField("tenant_id") tenantId: Option[TenantId],
     roles: Option[List[RoleId]],
     @jsonField("sid") sid: Option[SessionId] = None,
-    @jsonField("cnf") confirmation: Option[Confirmation] = None,
+    @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec

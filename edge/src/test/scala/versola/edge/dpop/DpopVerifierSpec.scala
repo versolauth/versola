@@ -64,10 +64,10 @@ object DpopVerifierSpec extends ZIOSpecDefault:
 
   private def verifier(
       dpop: Option[EdgeConfig.Dpop] = Some(
-        EdgeConfig.Dpop(nonceSalt = nonceSalt),
+        EdgeConfig.Dpop.default(nonceSalt),
       ),
   ): DpopVerifier =
-    DpopVerifier.Impl(config(dpop), DpopReplayGuard.Impl())
+    DpopVerifier.Impl(config(dpop), DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries))
 
   private def config(dpop: Option[EdgeConfig.Dpop]): EdgeConfig =
     val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
@@ -171,7 +171,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
     suite("nonce")(
       test("demands one, and supplies it, when the deployment requires a nonce") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
+          Some(EdgeConfig.Dpop.default(nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -183,7 +183,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       },
       test("accepts a proof carrying a nonce this edge issued") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
+          Some(EdgeConfig.Dpop.default(nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -192,7 +192,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       },
       test("rejects a nonce it never issued") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
+          Some(EdgeConfig.Dpop.default(nonceSalt)),
         )
         for
           now <- Clock.instant
@@ -204,7 +204,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       // proof is, by construction, one from a client that has already been given one.
       test("refuses a nonce-less retry after the challenge that handed out a nonce") {
         val service = verifier(
-          Some(EdgeConfig.Dpop(nonceSalt = nonceSalt)),
+          Some(EdgeConfig.Dpop.default(nonceSalt)),
         )
         for
           now <- Clock.instant

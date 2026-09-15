@@ -88,14 +88,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       versolaUrl = URL.decode("https://idp.example").toOption.get,
       edgeUrl = edgePublicUrl,
       configurationCacheRefreshInterval = 5.minutes,
-      dpop = Some(
-        EdgeConfig.Dpop(
-          nonceSalt = dpopNonceSalt,
-        ),
-      ),
+      dpop = Some(EdgeConfig.Dpop.default(dpopNonceSalt)),
     )
 
-    val replayGuard = DpopReplayGuard.Impl()
+    val replayGuard = DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries)
     val dpopVerifier: DpopVerifier = DpopVerifier.Impl(edgeConfig, replayGuard)
 
     val publicKeys: JWT.PublicKeys =
@@ -2261,7 +2257,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withResources(usersResource(usersEndpoint()))
         token <- env.signToken(cnfJkt = Some(dpopJkt))
         proof <- dpopProof(token, "/users")
-        unconfigured = DpopVerifier.Impl(env.edgeConfig.copy(dpop = None), DpopReplayGuard.Impl())
+        unconfigured = DpopVerifier.Impl(env.edgeConfig.copy(dpop = None), DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries))
         service = env.buildService(client, security, unconfigured)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
         upstream <- capture.get
