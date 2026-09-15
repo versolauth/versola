@@ -9,7 +9,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, EcKeyPair, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -169,6 +169,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
       override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("Unused in test")
     )
 
   private def controllerTestCase(
@@ -396,6 +397,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
         override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
         override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+        override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("Unused in test")
       for
         client <- ZIO.service[Client]
         security <- (SecureRandom.live >>> SecurityService.live).build

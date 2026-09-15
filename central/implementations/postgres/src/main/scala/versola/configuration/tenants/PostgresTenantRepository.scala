@@ -15,7 +15,7 @@ class PostgresTenantRepository(xa: TransactorZIO) extends TenantRepository, Basi
 
   override def getAll: Task[Vector[TenantRecord]] =
     xa.connectMeasured("get-all-tenants"):
-      sql"""SELECT id, description, edge_id FROM tenants ORDER BY id"""
+      sql"""SELECT id, description, edge_id, signing_algorithm FROM tenants ORDER BY id"""
         .query[TenantRecord]
         .run()
 

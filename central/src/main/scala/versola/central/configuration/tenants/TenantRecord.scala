@@ -7,6 +7,7 @@ case class TenantRecord(
     id: TenantId,
     description: String,
     edgeId: Option[EdgeId],
+    signingAlgorithm: String = "RS256",
 )
 
 object TenantRecord:

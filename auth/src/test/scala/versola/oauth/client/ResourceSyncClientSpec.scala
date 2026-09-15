@@ -2,7 +2,7 @@ package versola.oauth.client
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{ClientId, ResourceId, ResourceUri, TenantId}
-import versola.util.{Base64, Secret, SecurityService}
+import versola.util.{Base64, EcKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -24,6 +24,7 @@ object ResourceSyncClientSpec extends ZIOSpecDefault:
     override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =
       ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    override def generateEcKeyPair: UIO[EcKeyPair] = ZIO.dieMessage("not used in test")
 
   private case class RegistryEntryMirror(
       resourceId: ResourceId,

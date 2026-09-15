@@ -1,7 +1,7 @@
 package versola.central.configuration.jwks
 
 import versola.central.CentralConfig
-import versola.util.{JWT, ReloadingCache}
+import versola.util.{JWT, ReloadingCache, SecurityService}
 import zio.json.ast.Json
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer}
 
@@ -20,15 +20,16 @@ trait JwksService:
   def createKey(kid: String, jwk: Json.Obj): Task[Unit]
   def updateKey(kid: String, jwk: Json.Obj): Task[Unit]
   def deleteKey(kid: String): Task[Unit]
+  def generateKey(algorithm: JWT.Algorithm): Task[Unit]
 
 object JwksService:
-  def live: ZLayer[JwksRepository & Scope & CentralConfig, Throwable, JwksService] =
+  def live: ZLayer[JwksRepository & SecurityService & Scope & CentralConfig, Throwable, JwksService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[JwksRecord]](config.configurationCacheRefreshInterval),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _))
 
   private def toJwks(records: Vector[JwksRecord]): Json.Obj =
     Json.Obj("keys" -> Json.Arr(records.map(_.jwk)*))
@@ -36,6 +37,7 @@ object JwksService:
   case class Impl(
       cache: ReloadingCache[Vector[JwksRecord]],
       repository: JwksRepository,
+      security: SecurityService,
   ) extends JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] =
       cache.get.map(records => JWT.PublicKeys.fromJson(toJwks(records)))
@@ -54,3 +56,16 @@ object JwksService:
 
     override def deleteKey(kid: String): Task[Unit] =
       repository.delete(kid)
+
+    override def generateKey(algorithm: JWT.Algorithm): Task[Unit] =
+      algorithm match
+        case JWT.Algorithm.RS256 | JWT.Algorithm.PS256 =>
+          security.generateRsaKeyPair.flatMap(pair =>
+            repository.create(pair.keyId, pair.toPublicJwk)
+          )
+        case JWT.Algorithm.ES256 =>
+          security.generateEcKeyPair.flatMap(pair =>
+            repository.create(pair.keyId, pair.toPublicJwk)
+          )
+        case JWT.Algorithm.HS256 =>
+          ZIO.fail(new IllegalArgumentException("HS256 is symmetric and not stored in JWKS"))
