@@ -136,9 +136,19 @@ object DpopVerifier:
 
   /** §4.3: the target URI with no query or fragment. Built from the configured public origin
     * and the request's own path, so a forwarded `Host` cannot change what is compared.
+    *
+    * Deliberately not `publicUrl.copy(path = path, ...).encode`: `Path.decode` never decodes
+    * percent-escapes -- it just splits the raw request-target string on literal `/` bytes, so
+    * a client-supplied `%2F` survives inside a single segment exactly as sent. Routing that
+    * segment through `URL.encode` (`Path#encodeBuilder`, used internally by `URL`'s own
+    * `.encode`) treats it as an already-*decoded* value and percent-encodes it again --
+    * turning `%` into `%25` and so `/a%2Fb` into `/a%252Fb`, which no proof's `htu` will ever
+    * equal. `Path#encode` (the public method, called directly here) has no such step: it joins
+    * `path`'s segments verbatim, which is the identity `normalizeHtu` (`util.Dpop`) expects on
+    * the other side of this comparison, since it reads `htu` back out via `getRawPath`.
     */
   private def htu(publicUrl: URL, path: Path): String =
-    publicUrl.copy(path = path, queryParams = QueryParams.empty, fragment = None).encode
+    publicUrl.copy(path = Path.empty, queryParams = QueryParams.empty, fragment = None).encode + path.encode
 
   private def constantTimeEquals(a: String, b: String): Boolean =
     MessageDigest.isEqual(

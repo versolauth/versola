@@ -154,6 +154,39 @@ object DpopVerifierSpec extends ZIOSpecDefault:
         result <- verify(service, proof(iat = now), path = Path.decode("/resources/users-api/admins"))
       yield assertTrue(result == Left(DpopVerifier.Error.InvalidProof(Dpop.Error.UriMismatch)))
     },
+    // `Path.decode` never decodes percent-escapes -- "/a%2Fb" stays one segment, the literal
+    // text "a%2Fb", rather than becoming the two segments "a", "b". Building `htu` by handing
+    // that segment to `URL.encode` (as opposed to `Path#encode`, called directly) would encode
+    // it a second time -- turning `%` into `%25` -- and no proof's `htu` would ever match a
+    // request through this edge again. This pins the request side of the fix in 33e0ba0
+    // (`util.Dpop.normalizeHtu`, the proof side of the same `htu` comparison).
+    test("accepts a proof for a path whose own segment carries a percent-encoded slash") {
+      val service = verifier()
+      val encodedPath = Path.decode("/resources/users-api/a%2Fb")
+      for
+        now <- Clock.instant
+        result <- verify(
+          service,
+          proof(
+            iat = now,
+            htu = s"${PublicUrl.encode}${encodedPath.encode}",
+            nonce = Some(DpopNonce.issue(nonceSalt, now)),
+          ),
+          path = encodedPath,
+        )
+      yield assertTrue(result.isRight)
+    },
+    test("does not conflate an encoded slash in the request path with a literal one") {
+      val service = verifier()
+      for
+        now <- Clock.instant
+        result <- verify(
+          service,
+          proof(iat = now, htu = s"${PublicUrl.encode}/resources/users-api/a%2Fb"),
+          path = Path.decode("/resources/users-api/a/b"),
+        )
+      yield assertTrue(result == Left(DpopVerifier.Error.InvalidProof(Dpop.Error.UriMismatch)))
+    },
     test("rejects a proof made for a different method") {
       val service = verifier()
       for
