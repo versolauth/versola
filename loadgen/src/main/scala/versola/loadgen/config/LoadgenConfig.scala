@@ -36,17 +36,20 @@ case class LoadgenConfig(
     plan: Option[PlanConfig],
     provision: Option[ProvisionConfig],
     seed: Option[SeedConfig],
+    calibration: Option[CalibrationConfig],
 )
 
-/** Which half of the `loadgen` binary this process runs. Same binary and image serve all four --
+/** Which half of the `loadgen` binary this process runs. Same binary and image serve all five --
   * see versola-loadgen-dev-spec.md §12 (coordinator) and §7 (driver). `Seed`/`Provision` are the
-  * one-shot `loadgen seed` / `loadgen provision` subcommands (§10, §4's `AdminClient`).
+  * one-shot `loadgen seed` / `loadgen provision` subcommands (§10, §4's `AdminClient`), and
+  * `Calibrate` is the one-shot calibration gate of §9/§13 (versolauth/versola#281).
   */
 enum LoadgenRole(val configValue: String):
   case Coordinator extends LoadgenRole("coordinator")
   case Driver extends LoadgenRole("driver")
   case Seed extends LoadgenRole("seed")
   case Provision extends LoadgenRole("provision")
+  case Calibrate extends LoadgenRole("calibrate")
 
 object LoadgenRole:
   private val byValue: Map[String, LoadgenRole] = values.map(r => r.configValue -> r).toMap
@@ -457,3 +460,89 @@ case class BusinessActionConfig(
     path: String,
     acr: Option[String],
 )
+
+/** What `mockapi`'s `DelaySampler` is configured to produce for one delay profile, as the
+  * calibration gate states it (versolauth/versola#281: "the driver's measured p50/p99 must match
+  * the sampler's *configured* p50/p99 within 2 ms").
+  *
+  * In configuration rather than as constants in this tree, for a stated reason: `mockapi` is a
+  * separate sbt module that `loadgen` deliberately does not depend on (see build.sbt's comment on
+  * the `mockapi` project), so a copy of `DelaySampler.readTargets`/`writeTargets` here would be a
+  * second statement of the same two pairs of numbers, free to drift from the process actually
+  * serving them -- and a calibration that compares a driver against a stale copy of the backend's
+  * configuration is worse than no calibration. The deployment that runs both knows which figures
+  * the backend was built with.
+  *
+  * The *tolerance* is deliberately not here: it is the gate's own figure and lives in
+  * [[versola.loadgen.calibrate.CalibrationVerdict]], for the same reason
+  * [[AcceptanceMeasurementsConfig]] names measurements but not thresholds.
+  *
+  * Written `p-50`/`p-99` in the file rather than `p50`/`p99`: `VersolaApp.parseConfig` reads this
+  * tree through a kebab-case provider, which splits a field name before a digit exactly as it
+  * splits one before a capital.
+  */
+case class CalibrationTargetsConfig(p50: Duration, p99: Duration)
+
+/** What `role = calibrate` needs beyond the blocks every role shares (versolauth/versola#281).
+  *
+  * Optional for the same reason [[ShardConfig]], [[ProvisionConfig]] and [[SeedConfig]] are: no
+  * other role runs the gate, and requiring the block here would fail their decode before role
+  * dispatch ever read `role`.
+  *
+  * The run's *shape* is ordinary campaign config and is not restated here: how long it runs and at
+  * what multiple of `rate-per-second` is `campaign.phases`, and which calls it makes is the
+  * top-level `actions` list. [[versola.loadgen.calibrate.Calibration]] rejects the campaign shapes
+  * that would make the rate vary, since a gate run at an unknown rate measures nothing.
+  *
+  * @param ratePerSecond
+  *   the known fixed arrival rate the gate is run at, in arrivals per second, before
+  *   `campaign.phases[].scale`. Required and with no default: "a 30-minute run at a known fixed
+  *   rate" is the whole premise, and a rate this process picked for itself would not be known.
+  * @param seed
+  *   the campaign seed the arrival process and the action draw run off, so a failed gate can be
+  *   re-run on the same stream ([[versola.loadgen.scheduler.RandomSource]] takes no other kind of
+  *   seed on purpose).
+  */
+case class CalibrationConfig(
+    ratePerSecond: Double,
+    seed: Long,
+    read: CalibrationTargetsConfig,
+    write: CalibrationTargetsConfig,
+)
+
+object CalibrationConfig:
+  /** Same idiom as [[SeedConfig.validate]]'s: reject at decode time rather than hand the gate a
+    * number it cannot act on.
+    *
+    * A non-positive or non-finite rate is the worse case: `ArrivalProcess.next` requires a
+    * positive ceiling and dies on anything else, so the run would fail some way into its own
+    * startup rather than at boot. Non-positive configured quantiles are rejected because a gate
+    * that compares a measurement against a target of zero reports a delta of the measurement
+    * itself -- a failure whose message points at the driver and not at the config file.
+    */
+  def validate(config: CalibrationConfig): Either[String, CalibrationConfig] =
+    def positiveRate: Either[String, Unit] =
+      if config.ratePerSecond.isNaN || config.ratePerSecond.isInfinite then
+        Left(s"calibration.rate-per-second must be finite, got ${config.ratePerSecond}")
+      else Either.cond(config.ratePerSecond > 0.0, (), s"calibration.rate-per-second must be positive, got ${config.ratePerSecond}")
+
+    def positiveTargets(profile: String, targets: CalibrationTargetsConfig): Either[String, Unit] =
+      for
+        _ <- Either.cond(targets.p50.toNanos > 0L, (), s"calibration.$profile.p50 must be positive, got ${targets.p50}")
+        _ <- Either.cond(targets.p99.toNanos > 0L, (), s"calibration.$profile.p99 must be positive, got ${targets.p99}")
+        _ <- Either.cond(
+          targets.p99.toNanos >= targets.p50.toNanos,
+          (),
+          s"calibration.$profile.p99 (${targets.p99}) must not be below its p50 (${targets.p50})",
+        )
+      yield ()
+
+    for
+      _ <- positiveRate
+      _ <- positiveTargets("read", config.read)
+      _ <- positiveTargets("write", config.write)
+    yield config
+
+  given DeriveConfig[CalibrationConfig] = DeriveConfig
+    .derived[CalibrationConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))

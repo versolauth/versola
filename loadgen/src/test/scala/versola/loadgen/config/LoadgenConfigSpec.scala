@@ -3,6 +3,7 @@ package versola.loadgen.config
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
+import zio.{Duration, durationInt}
 
 /** Pure config-parsing test for [[LoadgenConfig]], mirroring EdgeConfigSpec's pattern: a
   * kebab-case [[zio.ConfigProvider]] over a raw HOCON string, loaded via
@@ -276,6 +277,50 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
         yield assertTrue(exit.isFailure)
       },
     ),
+    suite("calibration")(
+      test("decodes the gate's block alongside role = calibrate") {
+        for config <- decodeCalibration(calibration)
+        yield assertTrue(
+          config.role == LoadgenRole.Calibrate,
+          config.calibration.map(_.ratePerSecond) == Some(120.0),
+          config.calibration.map(_.seed) == Some(424242L),
+          config.calibration.map(_.read.p50) == Some(6.millis),
+          config.calibration.map(_.read.p99) == Some(46.millis),
+          // 13.5 ms: mockapi's write mixture has no whole-millisecond p50, so the block has to be
+          // able to state one it does not round.
+          config.calibration.map(_.write.p50) == Some(Duration.fromNanos(13_500_000L)),
+          config.calibration.map(_.write.p99) == Some(50.millis),
+        )
+      },
+      // No other role runs the gate, so requiring the block would fail a driver's decode before
+      // `role` was ever read -- the same cut `provision` and `seed` are on.
+      test("decodes a config that omits the calibration block") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hoconWithoutProvision)
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+        yield assertTrue(config.calibration == None)
+      },
+      // `ArrivalProcess.next` requires a positive ceiling and dies on anything else, so without
+      // this the run fails some way into its own startup instead of at boot.
+      test("rejects a rate that is not a positive finite number") {
+        for
+          zero <- decodeCalibration(calibration.replaceFirst("120.0", "0.0")).exit
+          negative <- decodeCalibration(calibration.replaceFirst("120.0", "-5.0")).exit
+          nonFinite <- decodeCalibration(calibration.replaceFirst("120.0", "NaN")).exit
+        yield assertTrue(zero.isFailure, negative.isFailure, nonFinite.isFailure)
+      },
+      // A target of zero makes the reported delta the measurement itself, which reads as a driver
+      // fault rather than as the config error it is. A p99 below its own p50 is not a
+      // distribution any sampler can have produced.
+      test("rejects a non-positive target and a p99 below its own p50") {
+        for
+          zero <- decodeCalibration(calibration.replaceFirst("p-50 = 6ms", "p-50 = 0ms")).exit
+          negative <- decodeCalibration(calibration.replaceFirst("p-99 = 46ms", "p-99 = -46ms")).exit
+          inverted <- decodeCalibration(calibration.replaceFirst("p-99 = 46ms", "p-99 = 5ms")).exit
+        yield assertTrue(zero.isFailure, negative.isFailure, inverted.isFailure)
+      },
+    ),
     suite("campaign phases")(
       // Each of these decodes into a `CampaignPhaseConfig` the schedule cannot represent. Rejecting
       // them here rather than at first use is the point: a campaign whose volume is wrong is
@@ -302,6 +347,24 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       },
     ),
   )
+
+  /** The gate's own block (versolauth/versola#281), stated with `mockapi`'s configured quantiles
+    * -- the figures a real calibration run compares itself against.
+    */
+  private val calibration: String =
+    """calibration {
+      |  rate-per-second = 120.0
+      |  seed            = 424242
+      |  read  { p-50 = 6ms,         p-99 = 46ms }
+      |  write { p-50 = 13500micros, p-99 = 50ms }
+      |}
+      |""".stripMargin
+
+  private def decodeCalibration(block: String) =
+    TypesafeConfigProvider
+      .fromHoconString(hocon.replaceFirst("role = driver", "role = calibrate") + block)
+      .kebabCase
+      .load(loadgenConfigDescriptor)
 
   /** Decodes `hocon` with its first campaign phase replaced, so the assertions above exercise the
     * real `deriveConfig[LoadgenConfig]` path rather than calling the validator directly.

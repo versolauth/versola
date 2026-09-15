@@ -79,8 +79,20 @@ object EdgeActionClient:
         if matcher.find() then matcher.group(1).split(' ').iterator.filter(_.nonEmpty).toList else Nil
 
   def make(client: Client, targets: TargetsConfig, requestTimeout: Duration): IO[ProtocolError, ActionClient] =
+    at(client, targets.edgeUrl, requestTimeout)
+
+  /** The same client against a base URL that is not edge's.
+    *
+    * The one caller is the calibration gate (versolauth/versola#281), which drives `mockapi`
+    * directly with the SUT out of the picture. It is this client and not a second one on purpose:
+    * what the gate calibrates is the instrument the campaign measures the SUT with, so every hop
+    * of the request -- the pooled `ZClient`, the per-request timeout, the body read -- has to be
+    * the one a campaign actually uses. The three outcome branches below are simply never taken
+    * against `mockapi`, whose contract is "always 200 after a delay".
+    */
+  def at(client: Client, baseUrl: String, requestTimeout: Duration): IO[ProtocolError, ActionClient] =
     ZIO
-      .fromEither(URL.decode(targets.edgeUrl).left.map(error => ProtocolError.Misconfigured(targets.edgeUrl + ": " + error.getMessage)))
+      .fromEither(URL.decode(baseUrl).left.map(error => ProtocolError.Misconfigured(baseUrl + ": " + error.getMessage)))
       .map(url => EdgeActionClient(HttpExchange(client, requestTimeout), url))
 
   val live: ZLayer[Client & TargetsConfig, ProtocolError, ActionClient] =
