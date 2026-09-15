@@ -509,7 +509,7 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
-        userInfo <- ssoClient.userInfo(session.accessToken)
+        userInfo <- ssoClient.userInfo(session.accessToken, dpopBound = typedClaims.confirmation.isDefined)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {

@@ -1838,6 +1838,46 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.ssoClient.userInfo.calls.nonEmpty,
       )
     },
+    // ssoClient decides whether to mint an edge assertion off this flag, so it has to reach
+    // it truthfully: a plain bearer token has no cnf claim to read it from.
+    test("tells ssoClient a plain bearer token is not DPoP-bound") {
+      val env = new Env
+      val endpoint = usersEndpoint(fetchUserInfo = true)
+      for
+        _ <- env.setupDefaults()
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+      yield assertTrue(
+        response.status == Status.Ok,
+        env.ssoClient.userInfo.calls.map(_._2) == List(false),
+      )
+    },
+    test("tells ssoClient a DPoP-bound token is bound") {
+      val env = new Env
+      val endpoint = usersEndpoint(fetchUserInfo = true)
+      for
+        _ <- env.setupDefaults()
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(cnfJkt = Some(dpopJkt))
+        proof <- dpopProof(token, "/users")
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
+      yield assertTrue(
+        response.status == Status.Ok,
+        env.ssoClient.userInfo.calls.map(_._2) == List(true),
+      )
+    },
     test("returns 401 when userInfo is unauthorized") {
       val env = new Env
       val endpoint = usersEndpoint(

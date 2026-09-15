@@ -241,7 +241,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        claims <- sso.userInfo(AccessToken("at-1"))
+        claims <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
       yield assertTrue(claims.get("sub").flatMap(_.asString) == Some("user-1"))
     },
     test("sends the access token as a bearer credential") {
@@ -252,7 +252,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         )
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        _ <- sso.userInfo(AccessToken("at-1"))
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(
         request.url.path.toString.endsWith("userinfo"),
@@ -270,7 +270,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         )
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        _ <- sso.userInfo(AccessToken("at-1"))
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         assertion <- ZIO.fromOption(request.rawHeader(EdgeAssertion.HeaderName))
           .orElseFail(new RuntimeException("no edge assertion sent"))
@@ -291,13 +291,28 @@ object SSOClientSpec extends ZIOSpecDefault:
         rejected == EdgeAssertion.Error.TokenMismatch,
       )
     },
+    // Unbound tokens are the common case, and auth already accepts this call over `Bearer`
+    // without an assertion -- so signing one here would be a wasted RSA operation on every
+    // fetchUserInfo call for a token that never needed the exemption.
+    test("signs no edge assertion for a token that is not DPoP-bound") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config)
+        _ <- sso.userInfo(AccessToken("at-1"), dpopBound = false)
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+      yield assertTrue(request.rawHeader(EdgeAssertion.HeaderName).isEmpty)
+    },
 
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error.isInstanceOf[RuntimeException])
     },
     test("maps 401 to UserInfoUnauthorized") {
@@ -305,7 +320,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.Unauthorized))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error == SSOClient.UserInfoUnauthorized)
     },
     test("fails for any other error status") {
@@ -313,7 +328,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         _ <- respondWith(Response.status(Status.InternalServerError))
         client <- ZIO.service[Client]
         sso = SSOClient.Impl(client, config)
-        error <- sso.userInfo(AccessToken("at-1")).flip
+        error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
         error.asInstanceOf[RuntimeException].getMessage.nn.contains("500"),
