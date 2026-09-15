@@ -9,7 +9,7 @@ import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyReposi
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
 import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, PostgresDpopProofRepository}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
 import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
 import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
 import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
@@ -47,6 +47,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       DpopProofRepository &
       DpopNonceService &
       DpopService &
+      EdgeAssertionService &
       UserRepository &
       UserService &
       OAuthConfigurationService &
@@ -139,6 +140,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresDpopProofRepository.live >+>
       DpopNonceService.live >+>
       DpopService.live >+>
+      EdgeAssertionService.live >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
       CentralSyncTokenService.live >+>

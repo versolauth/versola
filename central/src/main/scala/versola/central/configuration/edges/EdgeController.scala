@@ -3,16 +3,17 @@ package versola.central.configuration.edges
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.authorizeBasic
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Base64Url
-import versola.util.http.Controller
+import versola.util.http.{Controller, Unauthorized}
 import zio.ZIO
 import zio.http.*
+import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonCodec, JsonEncoder}
 import zio.schema.*
 
 object EdgeController extends Controller:
-  type Env = Tracing & EdgeService & ResourceService
+  type Env = Tracing & EdgeService & ResourceService & CentralConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllEdgesEndpoint,
@@ -20,6 +21,7 @@ object EdgeController extends Controller:
     rotateEdgeKeyEndpoint,
     deleteOldEdgeKeyEndpoint,
     deleteEdgeEndpoint,
+    edgesRegistryEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -85,6 +87,33 @@ object EdgeController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
+  /** The registered signing keys of every edge, for auth to authenticate the edges that call
+    * it directly (see `versola.util.EdgeAssertion`). Public keys only -- the same JWKs
+    * `authorizeInternal` verifies an edge's own sync calls against.
+    *
+    * Restricted to auth, which `authorizeInternal` reports as an absent edge id: an edge has
+    * no use for its peers' keys, and handing them over would let a single compromised edge
+    * learn the identities it would have to forge.
+    */
+  val edgesRegistryEndpoint =
+    Method.GET / "configuration" / "edges" / "registry" -> handler { (request: Request) =>
+      for
+        callerEdgeId <- authorizeInternal(request)
+        _ <- ZIO.fail(Unauthorized).when(callerEdgeId.isDefined)
+        service <- ZIO.service[EdgeService]
+        edges <- service.getAllEdges
+        response = GetEdgesRegistryResponse(
+          edges = edges.map(edge =>
+            EdgeRegistryEntry(
+              id = edge.id,
+              publicKey = edge.publicKey,
+              oldPublicKey = edge.oldPublicKey,
+            ),
+          ).toList,
+        )
+      yield Response.json(response.toJson)
+    }
+
 case class RegisterEdgeRequest(
     id: EdgeId,
 ) derives Schema, JsonCodec
@@ -97,6 +126,18 @@ case class EdgeResponse(
 case class GetAllEdgesResponse(
     edges: List[EdgeResponse],
 ) derives Schema, JsonCodec
+
+/** `oldPublicKey` is present only during a rotation window, and is sent so auth keeps
+  * accepting assertions an edge signed with the key it is rotating out. */
+case class EdgeRegistryEntry(
+    id: EdgeId,
+    publicKey: Json.Obj,
+    oldPublicKey: Option[Json.Obj],
+) derives JsonCodec
+
+case class GetEdgesRegistryResponse(
+    edges: List[EdgeRegistryEntry],
+) derives JsonCodec
 
 case class ServiceKeyResponse(
     keyId: String,

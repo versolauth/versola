@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{AccessToken, AuthorizationPreset, ClientId, Code, CodeVerifier, RefreshToken, State, TokenResponse}
-import versola.util.{Base64, RedirectUri, Secret}
+import versola.util.{Base64, EdgeAssertion, RedirectUri, Secret}
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonField}
@@ -137,11 +137,23 @@ object SSOClient:
     override def userInfo(
         accessToken: AccessToken,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
-      val request = Request
-        .get(userInfoUrl)
-        .addHeader(Header.Authorization.Bearer(accessToken.toString))
-
       for
+        // auth enforces RFC 9449 §7 on this token too, and this call carries no proof: the
+        // client's key signed the one edge already checked, and edge does not hold that key
+        // to mint another. The assertion is how auth tells this call apart from the `Bearer`
+        // downgrade of a bound token, and it is minted per call because it is bound to the
+        // token below -- one captured elsewhere buys nothing for any other token.
+        assertion <- EdgeAssertion.issue(
+          edgeId = config.id,
+          keyId = config.keyId,
+          privateKey = config.privateKey,
+          accessToken = accessToken.toString,
+        )
+        request = Request
+          .get(userInfoUrl)
+          .addHeader(Header.Authorization.Bearer(accessToken.toString))
+          .addHeader(Header.Custom(EdgeAssertion.HeaderName, assertion))
+
         response <- ZIO.scoped(httpClient.request(request))
 
         result <-

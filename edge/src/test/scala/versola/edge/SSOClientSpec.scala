@@ -1,12 +1,16 @@
 package versola.edge
 
+import com.nimbusds.jose.jwk.RSAKey
 import versola.edge.model.*
-import versola.util.{Base64, RedirectUri, Secret}
+import versola.util.{Base64, EdgeAssertion, JWT, RedirectUri, Secret}
 import zio.*
 import zio.http.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 
 object SSOClientSpec extends ZIOSpecDefault:
 
@@ -258,6 +262,36 @@ object SSOClientSpec extends ZIOSpecDefault:
         },
       )
     },
+    test("sends an edge assertion bound to the access token it presents") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        _ <- TestClient.addRoutes(
+          Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
+        )
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config)
+        _ <- sso.userInfo(AccessToken("at-1"))
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        assertion <- ZIO.fromOption(request.rawHeader(EdgeAssertion.HeaderName))
+          .orElseFail(new RuntimeException("no edge assertion sent"))
+        edgeId <- EdgeAssertion.edgeIdOf(assertion)
+        // Verified against this edge's own public key, the way auth will once central has
+        // synced it -- and against the token actually presented, not merely any token.
+        keys = JWT.PublicKeys.fromJson(
+          Json.Obj("keys" -> Json.Arr(
+            RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(config.keyId).build()
+              .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj()),
+          )),
+        )
+        accepted <- EdgeAssertion.verify(assertion, keys, "at-1").either
+        rejected <- EdgeAssertion.verify(assertion, keys, "a-different-token").flip
+      yield assertTrue(
+        edgeId == config.id,
+        accepted == Right(()),
+        rejected == EdgeAssertion.Error.TokenMismatch,
+      )
+    },
+
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))

@@ -4,12 +4,12 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.model.ScopeToken
-import versola.oauth.dpop.DpopService
+import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.util.http.{Controller, Observability}
-import versola.util.{CoreConfig, Dpop, JWT}
+import versola.util.{CoreConfig, Dpop, EdgeAssertion, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -33,7 +33,7 @@ import scala.jdk.CollectionConverters.*
  * Response: JSON object with user claims
  */
 object UserInfoController extends Controller:
-  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService
+  type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeAssertionService
 
   private val DpopHeader = "DPoP"
 
@@ -191,7 +191,7 @@ object UserInfoController extends Controller:
     *
     * The `cnf.jkt` claim, not the scheme, is what makes a proof mandatory. A caller choosing
     * `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to refuse, so that
-    * refusal is unconditional. Mirrors `EdgeService.checkDpop`.
+    * refusal stands unless an edge signs for it. Mirrors `EdgeService.checkDpop`.
     */
   private def checkDpop(
       request: Request,
@@ -199,13 +199,22 @@ object UserInfoController extends Controller:
       token: AccessTokenPayload,
       scheme: AuthScheme,
       config: CoreConfig,
-  ): ZIO[DpopService, Throwable | UserInfoError, Unit] =
+  ): ZIO[DpopService & EdgeAssertionService, Throwable | UserInfoError, Unit] =
     (token.confirmation.map(_.jkt), scheme) match
       case (Some(jkt), AuthScheme.Dpop) =>
         verifyDpopProof(request, tokenString, jkt, config)
 
+      // The one refusal an edge can answer: it has already run these same checks at its
+      // own boundary, and can neither forward nor re-mint the proof that satisfied them
+      // (see [[EdgeAssertion]]). Nothing else about the request is treated differently --
+      // an assertion that fails to verify leaves this refusal exactly as it was.
       case (Some(_), AuthScheme.Bearer) =>
-        ZIO.fail(UserInfoError.InvalidDpopProof("bound token presented with the Bearer scheme"))
+        edgeAssertion(request) match
+          case None => ZIO.fail(downgradeRefused)
+          case Some(assertion) =>
+            ZIO.serviceWithZIO[EdgeAssertionService](_.verify(assertion, tokenString)).flatMap:
+              case Some(edgeId) => Observability.setRouteLabel("dpop_edge_assertion", edgeId)
+              case None => ZIO.fail(downgradeRefused)
 
       // A proof signed with some key says nothing about a token that was never bound to one:
       // anyone holding the token could have produced it. Treated as invalid rather than
@@ -215,6 +224,21 @@ object UserInfoController extends Controller:
 
       case (None, AuthScheme.Bearer) =>
         ZIO.unit
+
+  /** The refusal RFC 9449 §7.2 requires of a bound token presented without a proof. Held in
+    * one place because it is now reached from two: no assertion at all, and one that did not
+    * verify -- which must be indistinguishable from the outside. */
+  private val downgradeRefused = UserInfoError.InvalidDpopProof("bound token presented with the Bearer scheme")
+
+  /** RFC 9449 §4.3(1) refuses a duplicated `DPoP` header, and the same reasoning holds here:
+    * a second assertion is a second identity claim, and picking either one silently is how
+    * the one that was not checked gets in. */
+  private def edgeAssertion(request: Request): Option[String] =
+    request.headers.toList
+      .filter(_.headerName.equalsIgnoreCase(EdgeAssertion.HeaderName))
+      .map(_.renderedValue) match
+      case assertion :: Nil => Some(assertion)
+      case _ => None
 
   private def verifyDpopProof(
       request: Request,
