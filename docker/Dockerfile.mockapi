@@ -1,7 +1,7 @@
 # versola-mockapi: no sbt in this image. Expects the staged tree `sbt mockapi/stage` produces,
 # downloaded as an artifact before this Dockerfile ever runs -- same shape as Dockerfile.auth.
-# The CI job that stages and uploads it does not exist yet (see build.sbt's comment on the
-# `mockapi` project); until it does, this image is buildable only from a local `sbt mockapi/stage`.
+# Staged and uploaded by the build job's "Stage services for release images" step and consumed
+# by ci-cd.yml's `docker-mockapi` job, the same way Dockerfile.auth's artifact reaches it.
 #
 # Deliberately the plainest image in docker/: mockapi has no config file, no migrations, no
 # database -- it is a pure delay generator with its own minimal boot sequence rather than

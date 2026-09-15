@@ -234,8 +234,9 @@ lazy val tools = project
 // `e2e`/`tools` above: staged explicitly (`sbt loadgen/stage`), not part of the default
 // `sbt compile`/`sbt test` loop. ci-cd.yml's "Compile" step and its "Run loadgen and mockapi
 // tests" step name this project explicitly, the same way `tools/compile` does for `tools`
-// above -- so it is compiled and tested on every run despite not being aggregated. Staging
-// (`sbt loadgen/stage`) and a published image are still not wired into ci-cd.yml.
+// above -- so it is compiled and tested on every run despite not being aggregated. Staged for
+// release alongside the services ("Stage services for release images") and published as
+// `versola-loadgen` by the `docker-loadgen` job.
 lazy val loadgen = project
   .in(file("loadgen"))
   .enablePlugins(JavaAppPackaging)
