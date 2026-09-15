@@ -4,7 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import versola.util.postgres.PostgresSpec
 import zio.test.*
-import zio.{Clock, Scope, ZIO, ZLayer}
+import zio.{Clock, Duration, Scope, ZIO, ZLayer, durationInt}
 
 object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepositorySpec:
 
@@ -69,6 +69,23 @@ object PostgresDpopProofRepositorySpec extends PostgresSpec, DpopProofRepository
           // its own timeout rather than waiting the lock out.
           elapsed.toMillis < 5000L,
           recovered.isRight,
+        )
+      },
+      // `EdgeAssertionService` records an edge assertion's `jti` into this same ring (see
+      // `EdgeAssertionService.verify`), and an assertion's acceptance window is the fixed
+      // `EdgeAssertion.Ttl` -- not whatever `live` reads for `iatLeeway`. This is the ring
+      // geometry invariant that keeps a low `iatLeeway` from evicting an assertion's record
+      // before the assertion it guards has actually expired.
+      test("floors the eviction leeway live schedules against, however low iat-leeway is set") {
+        assertTrue(
+          PostgresDpopProofRepository.effectiveEvictionLeeway(Duration.Zero) ==
+            PostgresDpopProofRepository.EdgeAssertionRetentionFloor,
+          PostgresDpopProofRepository.effectiveEvictionLeeway(5.seconds) ==
+            PostgresDpopProofRepository.EdgeAssertionRetentionFloor,
+          // Above the floor, nothing is overridden: an admin who configures a longer leeway
+          // than the floor needs still gets exactly that leeway, not the floor.
+          PostgresDpopProofRepository.effectiveEvictionLeeway(PostgresDpopProofRepository.MaxIatLeeway) ==
+            PostgresDpopProofRepository.MaxIatLeeway,
         )
       },
     )

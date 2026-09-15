@@ -3,8 +3,8 @@ package versola.oauth.dpop
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import org.apache.commons.codec.digest.Blake3
-import versola.util.CoreConfig
 import versola.util.postgres.BasicCodecs
+import versola.util.{CoreConfig, EdgeAssertion}
 import zio.{Clock, Duration, Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 import java.nio.charset.StandardCharsets
@@ -16,7 +16,7 @@ import java.time.Instant
   * time.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
-  import PostgresDpopProofRepository.{digestOf, slotOf, EvictionLockTimeout, MaxClockSkew, SlotWidth}
+  import PostgresDpopProofRepository.{EvictionLockTimeout, MaxClockSkew, SlotWidth, digestOf, slotOf}
 
   override def recordIfAbsent(jkt: String, jti: String, iat: Instant): Task[Boolean] =
     xa.connectMeasured("record-dpop-proof-if-absent"):
@@ -116,6 +116,20 @@ object PostgresDpopProofRepository:
     (SlotCount * SlotWidth.toSeconds - 2 * SlotWidth.toSeconds - 4 * MaxClockSkew.toSeconds) / 2,
   )
 
+  /** The eviction anchor never runs closer to `now` than this, however low an admin sets
+    * `dpop.iat-leeway` -- the leeway `EdgeAssertion.Ttl` needs to survive one full lap of
+    * eviction, by the same accounting `MaxIatLeeway` above does for the acceptance window it
+    * bounds. Fixed rather than configurable: `EdgeAssertion.Ttl` is not either.
+    */
+  val EdgeAssertionRetentionFloor: Duration =
+    EdgeAssertion.Ttl.minus(SlotWidth).minus(MaxClockSkew.multipliedBy(2))
+
+  require(
+    EdgeAssertionRetentionFloor.compareTo(MaxIatLeeway) <= 0,
+    s"EdgeAssertionRetentionFloor of $EdgeAssertionRetentionFloor exceeds $MaxIatLeeway -- " +
+      "EdgeAssertion.Ttl grew past what this ring's geometry can floor iat-leeway to",
+  )
+
   def live: ZLayer[TransactorZIO & CoreConfig & Scope, Throwable, DpopProofRepository] =
     ZLayer:
       for
@@ -133,11 +147,24 @@ object PostgresDpopProofRepository:
 
         repository = PostgresDpopProofRepository(xa)
         _ <- Clock.instant
-          .flatMap(repository.evictStaleSlot(_, iatLeeway))
+          .flatMap(repository.evictStaleSlot(_, effectiveEvictionLeeway(iatLeeway)))
           .catchAllCause(cause => ZIO.logWarningCause("failed to evict a dpop_proofs slot", cause))
           .repeat(Schedule.spaced(SlotWidth))
           .forkScoped
       yield repository
+
+  /** What `live` actually schedules eviction against: not `iatLeeway` alone.
+    *
+    * This ring is also where `EdgeAssertionService` records an edge assertion's `jti`, and an
+    * assertion's own acceptance window is the fixed `EdgeAssertion.Ttl`, unrelated to whatever
+    * an admin tunes `iatLeeway` to for ordinary DPoP proofs. Evicting on `iatLeeway` alone --
+    * an admin is free to set it well under a minute -- can reclaim a slot before an assertion
+    * recorded into it has expired, which lets that same assertion be replayed for whatever is
+    * left of its lifetime. Flooring at `EdgeAssertionRetentionFloor` closes that regardless of
+    * how tight `iatLeeway` is configured.
+    */
+  private[dpop] def effectiveEvictionLeeway(iatLeeway: Duration): Duration =
+    if iatLeeway.compareTo(EdgeAssertionRetentionFloor) < 0 then EdgeAssertionRetentionFloor else iatLeeway
 
   /** Which slot a proof created at `iat` belongs to. Laps the ring, so two proofs a full lap
     * apart share a slot -- by then the earlier one's slot has been truncated.
