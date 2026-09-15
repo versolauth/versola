@@ -4,10 +4,14 @@ import zio.{IO, ZIO}
 
 /** What one web login varies by. Narrower than [[LoginRequest]] on purpose: a web login is
   * started by edge, from a preset, so there is no `client_id` and no `scope` for the driver to
-  * choose -- both are the preset's -- and no `SSO_SESSION` either, since edge builds the
-  * authorize URL and offers no way to put one on it.
+  * choose -- both are the preset's.
+  *
+  * `ssoSession` survives the narrowing because it is a cookie and not a query parameter: edge
+  * builds the authorize URL, but the driver makes the request to it, so it can send a session it
+  * already holds even though it cannot name one on the URL. `None` is a login by someone who
+  * holds no session; a step-up passes the one the row persisted.
   */
-case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]])
+case class WebLoginRequest(preset: PresetId, acrValues: Option[List[String]], ssoSession: Option[SsoSession])
 
 /** §8.4: the web client `web-otp` authenticating **through** edge and ending in a cookie
   * session, plus §8.6 and the logout for that session.
@@ -43,14 +47,37 @@ final class WebFlows(
     * because it is the only thing that survives the cookie.
     */
   def webOtp(request: WebLoginRequest, credentials: Credentials): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
-    FlowTiming.flow(observer, FlowName.WebOtp):
+    login(FlowName.WebOtp, request, credentials)
+
+  /** §7.4's step-up on the cookie path. The same hops as [[webOtp]], with `acr_values` on edge's
+    * `/login` -- which is the only way a web login can ask for an assurance level, since edge and
+    * not the driver builds the authorize URL -- and reported as its own flow for the reason §7.4
+    * gives: a step-up's latency does not belong in the action's, nor in the login's.
+    *
+    * It ends in a new `EDGE_SESSION` rather than in a token pair, so the caller has a cookie to
+    * adopt as well as an assurance level to persist.
+    *
+    * `request.ssoSession` is what makes this a step-up rather than a login wearing the name: auth
+    * recognises the session behind the authorize hop and asks only for the factor the requested
+    * ACR is missing. Called with `None` it still succeeds -- and measures a full credential
+    * conversation as a step-up, which inflates the flow's latency and understates the login's.
+    */
+  def stepUp(request: WebLoginRequest, credentials: Credentials): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
+    login(FlowName.WebStepUp, request, credentials)
+
+  private def login(
+      flow: FlowName,
+      request: WebLoginRequest,
+      credentials: Credentials,
+  ): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
+    FlowTiming.flow(observer, flow):
       for
-        started <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
-        conversationCookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.Authorize)(edge.startConversation(started))
-        outcome <- conversation.walk(FlowName.WebOtp, credentials, conversationCookie)
-        completed <- refusalCompleted(outcome)
+        started <- FlowTiming.step(observer, flow, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
+        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
+        outcome <- conversation.walk(flow, credentials, conversationCookie)
+        completed <- refusalCompleted(flow, outcome)
         state <- echoedState(started, completed)
-        cookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeComplete)(edge.complete(state, completed.code))
+        cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code))
       yield (cookie, completed.ssoSession)
 
   /** §8.6 on the web path: the same proxied action the mobile flows make, with the cookie in
@@ -125,11 +152,11 @@ final class WebFlows(
     * not allowed to replace the refusal: what the report needs is the SUT's `error` code, not a
     * secondary complaint about the cleanup.
     */
-  private def refusalCompleted(outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
+  private def refusalCompleted(flow: FlowName, outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
     outcome match
       case ConversationOutcome.Refused(error, Some(state)) =>
         FlowTiming
-          .step(observer, FlowName.WebOtp, StepName.EdgeCompleteError)(edge.completeError(state, error))
+          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state, error))
           .ignore *> ChallengeConversation.orFail(outcome)
       case other => ChallengeConversation.orFail(other)
 

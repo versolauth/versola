@@ -23,6 +23,19 @@ enum FlowName(val value: String):
   /** The web counterpart of [[Logout]]: edge's own two hops, not auth's one. */
   case WebLogout extends FlowName("web-logout")
 
+  /** §7.4's ACR step-up on the mobile path: `/authorize` again with `acr_values`, on the SSO
+    * session the login left behind. Its own flow because §7.4 requires it -- "record the step-up
+    * as its own scenario with its own histogram; do not fold its latency into the action's\" --
+    * and because design doc §2.3 has step-ups running at ~1.7x the full-login rate, which is a
+    * load source worth being able to read off the report on its own.
+    */
+  case StepUp extends FlowName("step-up")
+
+  /** The same, through edge: a web session steps up by logging in again with `acr_values`, since
+    * edge owns the authorize URL and the cookie is what the step-up has to replace.
+    */
+  case WebStepUp extends FlowName("web-step-up")
+
 /** One measured hop. Every `/challenge` fetch is the same step name regardless of which step of
   * the conversation it rendered -- the hop is the HTTP round trip, and what the SUT spent it on
   * is the next submit's business.

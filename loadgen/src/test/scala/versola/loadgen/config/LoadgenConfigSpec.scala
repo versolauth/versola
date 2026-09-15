@@ -69,6 +69,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  extra-refresh-probability = 0.25
       |  logout-probability { mobile = 0.05, web = 0.35 }
       |  access-token-ttl = 15m
+      |  refresh-token-ttl = 30d
       |}
       |
       |campaign {
@@ -148,6 +149,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.population.target == 10000000L,
           config.population.classes.map(_.name) == List("heavy", "regular", "light", "dormant"),
           config.session.actionCount.webMean == 9,
+          config.session.refreshTokenTtl == zio.Duration.fromSeconds(2592000),
           config.campaign.phases.map(_.name) == List("warmup", "ramp", "steady"),
           config.campaign.phases(1).scaleFrom == Some(0.1),
           config.campaign.phases(1).scale == None,

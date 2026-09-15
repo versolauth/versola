@@ -66,12 +66,16 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           )
         yield EdgeLoginStarted(location, state)
 
-  override def startConversation(started: EdgeLoginStarted): IO[ProtocolError, ConversationCookie] =
+  override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, ConversationCookie] =
     for
       url <- ZIO
         .fromEither(URL.decode(started.authorizeUrl))
         .mapError(error => ProtocolError.MalformedResponse(loginEndpoint, error.getMessage))
-      received <- exchange.send(Request.get(url))
+      request = Request.get(url)
+      withSession = ssoSession.fold(request)(session =>
+        request.addHeader(HttpExchange.cookieHeader(HttpAuthClient.ssoSessionCookie, session.value)),
+      )
+      received <- exchange.send(withSession)
       conversation <-
         if HttpExchange.isRedirect(received.status) || received.status == Status.Ok then
           HttpExchange

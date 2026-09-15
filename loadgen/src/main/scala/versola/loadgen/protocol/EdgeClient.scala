@@ -30,8 +30,15 @@ trait EdgeClient extends ActionClient:
     * party's `Location` is exactly the browser behaviour this client emulates.
     *
     * Returns the `SSO_CONVERSATION` the conversation of hops 3-6 is then walked with.
+    *
+    * `ssoSession` is the `SSO_SESSION` a browser would already be holding from an earlier login
+    * on this origin. It is not on the URL and could not be -- it is a cookie, and the query is
+    * edge's -- but the driver is the one making this request, so it is the driver's to send. Auth
+    * reads it to recognise the session behind a step-up and ask only for the factor the requested
+    * assurance level is missing (§7.4). Omitting it fails nothing: it silently turns every web
+    * step-up into a full credential conversation, reported as a step-up.
     */
-  def startConversation(started: EdgeLoginStarted): IO[ProtocolError, ConversationCookie]
+  def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, ConversationCookie]
 
   /** §8.4's last hop: `GET {edge}/complete?code=…&state=…`, which exchanges the code behind the
     * driver's back and answers the redirect that sets `EDGE_SESSION`.

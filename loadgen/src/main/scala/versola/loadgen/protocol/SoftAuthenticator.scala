@@ -9,8 +9,8 @@ import java.math.BigInteger
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.security.interfaces.{ECPrivateKey, ECPublicKey}
-import java.security.spec.ECGenParameterSpec
-import java.security.{KeyPairGenerator, Signature}
+import java.security.spec.{ECGenParameterSpec, PKCS8EncodedKeySpec}
+import java.security.{KeyFactory, KeyPairGenerator, Signature}
 import java.util.UUID
 
 /** A software WebAuthn authenticator, just complete enough for the registration and assertion
@@ -30,6 +30,25 @@ object SoftAuthenticator:
 
   private val registrationEndpoint = "/settings/passkeys/register/start"
   private val assertionEndpoint = "/challenge/passkey/options"
+
+  /** The credential a *seeded* passkey user asserts with: the key pair was minted by the seeder
+    * (§10) and the driver only ever reads it back out of `vu_users`, so there is no [[create]]
+    * call in a campaign's login path to have produced a [[Credential]].
+    *
+    * `responseJson` is empty, and deliberately so rather than reconstructed: it is the
+    * *registration* response a browser posts back at enrolment, [[get]] does not read it, and
+    * rebuilding an attestation object the SUT already accepted and stored would be inventing a
+    * value nothing checks. Only `id` and `privateKey` are load-bearing for an assertion.
+    *
+    * Fails as [[ProtocolError.Misconfigured]] rather than throwing: a `vu_users` row whose
+    * `passkey_key` is not a PKCS#8 P-256 key is a seeder or migration fault, and a campaign that
+    * hits it is measuring a population it cannot log in -- see that case's doc for why it is
+    * neither an error-budget failure nor a planned outcome.
+    */
+  def restore(credentialId: String, privateKeyPkcs8: Array[Byte]): IO[ProtocolError, Credential] =
+    attempt("passkey-key"):
+      val key = KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(privateKeyPkcs8))
+      Credential(credentialId, Json.Obj(), key.asInstanceOf[ECPrivateKey])
 
   /** `navigator.credentials.create()` against the options auth returned from the enrollment
     * start route. Runs in the seeder and the 0.5%/month enrolment process, not on the login

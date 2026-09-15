@@ -78,7 +78,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState))
+        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None)
         paths <- recorder.paths
       yield assertTrue(
         conversation == ConversationCookie(StubSut.conversation),
@@ -88,7 +88,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     test("an authorize response that starts no conversation is malformed") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode("/challenge").toOption.get))
-        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState)).either
+        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("SSO_CONVERSATION")
         case _ => false)
