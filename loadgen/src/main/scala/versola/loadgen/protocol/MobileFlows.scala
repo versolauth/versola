@@ -52,6 +52,22 @@ final class MobileFlows(
   ): IO[ProtocolError, (Tokens, Option[SsoSession])] =
     login(FlowName.MobilePasskey, request, Credentials.Passkey(credential, sutUserId))
 
+  /** §7.4's step-up: the same conversation as a login, re-run with `acr_values` on the SSO
+    * session the session already holds, so auth asks only for the factor the requested assurance
+    * level is missing rather than starting again at credentials.
+    *
+    * Its own [[FlowName]] and not a variant of the login it reuses, because §7.4 requires the
+    * step-up to be recorded as its own scenario -- folding its latency into `mobile-otp` would
+    * make the full-login histogram a mixture of two flows whose hop counts differ, and hide the
+    * ~1.7x full-login rate design doc §2.3 says these run at.
+    *
+    * The caller supplies `request.sessionCookie` and `request.acrValues`; without the first this
+    * degrades into an ordinary full login that happens to be labelled a step-up, which is the
+    * scenario mix being misreported rather than a failure anything would catch.
+    */
+  def stepUp(request: LoginRequest, credentials: Credentials): IO[ProtocolError, (Tokens, Option[SsoSession])] =
+    login(FlowName.StepUp, request, credentials)
+
   /** §8.5. One hop, but still a flow of its own: it is the single most frequent thing the
     * campaign does, and `RefreshRejected` must stay at ~0 for the whole run (§7.4).
     *

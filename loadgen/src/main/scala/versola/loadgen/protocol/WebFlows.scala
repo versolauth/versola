@@ -43,14 +43,34 @@ final class WebFlows(
     * because it is the only thing that survives the cookie.
     */
   def webOtp(request: WebLoginRequest, credentials: Credentials): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
-    FlowTiming.flow(observer, FlowName.WebOtp):
+    login(FlowName.WebOtp, request, credentials)
+
+  /** §7.4's step-up on the cookie path. The same hops as [[webOtp]], with `acr_values` on edge's
+    * `/login` -- which is the only way a web login can ask for an assurance level, since edge and
+    * not the driver builds the authorize URL -- and reported as its own flow for the reason §7.4
+    * gives: a step-up's latency does not belong in the action's, nor in the login's.
+    *
+    * It ends in a new `EDGE_SESSION` rather than in a token pair, so the caller has a cookie to
+    * adopt as well as an assurance level to persist. Auth will still recognise the SSO session
+    * behind it and ask only for the missing factor; the driver simply cannot name that session
+    * itself on this path.
+    */
+  def stepUp(request: WebLoginRequest, credentials: Credentials): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
+    login(FlowName.WebStepUp, request, credentials)
+
+  private def login(
+      flow: FlowName,
+      request: WebLoginRequest,
+      credentials: Credentials,
+  ): IO[ProtocolError, (EdgeCookie, Option[SsoSession])] =
+    FlowTiming.flow(observer, flow):
       for
-        started <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
-        conversationCookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.Authorize)(edge.startConversation(started))
-        outcome <- conversation.walk(FlowName.WebOtp, credentials, conversationCookie)
-        completed <- refusalCompleted(outcome)
+        started <- FlowTiming.step(observer, flow, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
+        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started))
+        outcome <- conversation.walk(flow, credentials, conversationCookie)
+        completed <- refusalCompleted(flow, outcome)
         state <- echoedState(started, completed)
-        cookie <- FlowTiming.step(observer, FlowName.WebOtp, StepName.EdgeComplete)(edge.complete(state, completed.code))
+        cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code))
       yield (cookie, completed.ssoSession)
 
   /** §8.6 on the web path: the same proxied action the mobile flows make, with the cookie in
@@ -125,11 +145,11 @@ final class WebFlows(
     * not allowed to replace the refusal: what the report needs is the SUT's `error` code, not a
     * secondary complaint about the cleanup.
     */
-  private def refusalCompleted(outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
+  private def refusalCompleted(flow: FlowName, outcome: ConversationOutcome): IO[ProtocolError, ConversationCompleted] =
     outcome match
       case ConversationOutcome.Refused(error, Some(state)) =>
         FlowTiming
-          .step(observer, FlowName.WebOtp, StepName.EdgeCompleteError)(edge.completeError(state, error))
+          .step(observer, flow, StepName.EdgeCompleteError)(edge.completeError(state, error))
           .ignore *> ChallengeConversation.orFail(outcome)
       case other => ChallengeConversation.orFail(other)
 
