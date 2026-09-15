@@ -167,7 +167,7 @@ jobs:
       # it's still not part of the default `compile`/`test` loop for
       # everyone else, just guaranteed to be checked on every run.
       - name: Compile
-        run: sbt compile "tools/compile"
+        run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile"
 
       - name: Run tests
         if: github.event_name != 'push'
@@ -180,6 +180,23 @@ jobs:
         env:
           POSTGRES_HOST: localhost:5432
         run: sbt coverage test coverageReport coverageAggregate
+
+      # loadgen/mockapi aren't part of root's aggregate (see build.sbt), so neither `sbt
+      # test` nor `sbt coverage test` above touches them -- same reasoning as `tools/compile`
+      # above, and the same gap `e2e` closes for itself with its own explicit step below.
+      # Both set `coverageEnabled := false`, so this deliberately runs outside the coverage
+      # step rather than being folded into it. Needs only the `postgres` service already up
+      # for the job (see PostgresSpec/SutDatabases): loadgen's specs create and migrate their
+      # own scratch databases (`loadgen_test`, `loadgen_sut_auth_test`,
+      # `loadgen_sut_central_test`) against it directly with Flyway, so this needs none of the
+      # staged auth/central services the e2e step below spins up. Skipped on release for the
+      # same reason e2e's staging is: a release only builds and publishes images from a commit
+      # that already passed this on its push-to-main run.
+      - name: Run loadgen and mockapi tests
+        if: github.event_name != 'release'
+        env:
+          POSTGRES_HOST: localhost:5432
+        run: sbt "loadgen/test" "mockapi/test"
 
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

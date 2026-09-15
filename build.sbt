@@ -232,10 +232,10 @@ lazy val tools = project
 // port, `/liveness`, `/readiness`, graceful shutdown) and `PostgresHikariDataSource` -- the
 // emulator's own state store, not the SUT's. Not part of `root`'s aggregate, same reasoning as
 // `e2e`/`tools` above: staged explicitly (`sbt loadgen/stage`), not part of the default
-// `sbt compile`/`sbt test` loop. ci-cd.yml does NOT yet compile or stage this project -- that
-// change to the "Compile" step needs the `workflow` token scope, tracked on #268; until it lands
-// nothing here is validated by CI (the same gap `tools` closed for itself by naming itself in
-// that step).
+// `sbt compile`/`sbt test` loop. ci-cd.yml's "Compile" step and its "Run loadgen and mockapi
+// tests" step name this project explicitly, the same way `tools/compile` does for `tools`
+// above -- so it is compiled and tested on every run despite not being aggregated. Staging
+// (`sbt loadgen/stage`) and a published image are still not wired into ci-cd.yml.
 lazy val loadgen = project
   .in(file("loadgen"))
   .enablePlugins(JavaAppPackaging)
@@ -280,8 +280,8 @@ lazy val loadgen = project
 // per-route spans/RED counters, no shared graceful-shutdown behaviour, and a `/liveness`+
 // `/readiness` surface that has to stay correct here on its own. It does publish its own narrow
 // `/metrics` -- per-endpoint request counters and the read/write delay histograms (#270) -- via
-// `zio-metrics-connectors-prometheus`, already on this classpath through `Dependencies.http`. Not part of `root`'s aggregate, and -- like `loadgen` above -- not yet
-// named in ci-cd.yml's "Compile" step either; see that comment.
+// `zio-metrics-connectors-prometheus`, already on this classpath through `Dependencies.http`. Not part of `root`'s aggregate, and -- like `loadgen` above -- compiled and tested by
+// ci-cd.yml's explicit steps rather than by being aggregated; see that comment.
 lazy val mockapi = project
   .in(file("mockapi"))
   .enablePlugins(JavaAppPackaging)
