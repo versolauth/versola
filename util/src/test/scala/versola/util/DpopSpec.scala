@@ -207,6 +207,20 @@ object DpopSpec extends ZIOSpecDefault:
       for result <- verify(token).either
       yield assertTrue(result == Left(Dpop.Error.UriMismatch))
     },
+    // RFC 3986 §2.2/§3.3: `%2F` in a path is a reserved octet standing for a literal `/`
+    // *inside one segment*, not a second path separator -- "/a%2Fb" (one segment, "a/b") and
+    // "/a/b" (two segments) name different resources. Decoding it before comparing would
+    // collapse that distinction and let a proof made for one validate a request to the other.
+    test("rejects an htu whose encoded slash would collapse into the request's literal one") {
+      val token = proof(htu = "https://auth.example.com/a%2Fb")
+      for result <- Dpop.verify(token, AllAlgorithms, Htm, "https://auth.example.com/a/b", now, leeway).either
+      yield assertTrue(result == Left(Dpop.Error.UriMismatch))
+    },
+    test("still accepts an htu whose encoded slash matches the request's own encoded slash") {
+      val token = proof(htu = "https://auth.example.com/a%2Fb")
+      for result <- Dpop.verify(token, AllAlgorithms, Htm, "https://auth.example.com/a%2Fb", now, leeway).either
+      yield assertTrue(result.isRight)
+    },
     test("rejects an iat too far in the past") {
       val token = proof(iat = now.minusSeconds(120))
       for result <- verify(token).either

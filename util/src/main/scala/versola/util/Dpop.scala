@@ -137,9 +137,19 @@ object Dpop:
   /** Strips the query and fragment from an `htu` claim before comparing it against
     * `expectedUri`, per RFC 9449 §4.3 step 9. `None` if `htu` isn't a valid URI at all, which
     * simply fails the comparison rather than the whole proof crashing.
+    *
+    * Built from the *raw* (still percent-encoded) authority and path, not `getAuthority`/
+    * `getPath`, which decode reserved octets on the way out. `/` is reserved precisely because
+    * it is the path separator (RFC 3986 section 2.2/3.3): decoding a `%2F` and handing it to a
+    * `URI(scheme, authority, path, query, fragment)` constructor -- which re-encodes from
+    * already-decoded components and treats a literal `/` in `path` as a separator, not
+    * something to re-escape -- collapses `/a%2Fb` (one segment, "a/b") and `/a/b` (two
+    * segments) into the same comparison string. A proof stamped for one would then validate a
+    * request whose target is the other, exactly the confusion `htu` exists to rule out.
     */
   private def normalizeHtu(htu: String): Option[String] =
-    Try(new URI(htu)).toOption.map(uri => new URI(uri.getScheme, uri.getAuthority, uri.getPath, null, null).toString)
+    Try(new URI(htu)).toOption.filter(_.getScheme != null).map: uri =>
+      s"${uri.getScheme}://${Option(uri.getRawAuthority).getOrElse("")}${Option(uri.getRawPath).getOrElse("")}"
 
   private def requireClaim[A](value: => A, name: String): IO[Error, A] =
     ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name)).someOrFail(Error.MissingClaim(name))
