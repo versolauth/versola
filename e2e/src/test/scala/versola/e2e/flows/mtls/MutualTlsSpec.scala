@@ -201,7 +201,16 @@ object MutualTlsSpec extends E2ESpec:
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         (clientId, _) <- mtlsClient(auth, "subject_dn", certificate.subjectDn)
-        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, certificate = Some(header)).success
+        resource = s"https://$clientId.example.test"
+        _ <- auth.registerResource(s"res-$clientId", resource, audience = Set(clientId))
+        _ <- auth.syncConfiguration()
+        token <- auth.clientCredentials(
+          clientId,
+          "",
+          useBasicAuth = false,
+          resources = Some(List(resource)),
+          certificate = Some(header),
+        ).success
         // Basic carries the id with an empty secret: /introspect refuses a caller that
         // presents nothing but a `client_id`, and a certificate is what satisfies it here.
         introspection <- auth.introspect(
