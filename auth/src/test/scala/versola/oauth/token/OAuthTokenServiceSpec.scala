@@ -1598,6 +1598,9 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // token it already holds rather than being handed a successor.
           env.tokenRepo.createRefreshToken.calls.isEmpty,
           env.tokenRepo.renewBoundToken.calls.nonEmpty,
+          // The request named no scope, so the grant is unchanged and the renewal carries
+          // none: rewriting the stored value would cost a row version per refresh.
+          env.tokenRepo.renewBoundToken.calls.head._3.isEmpty,
           result.refreshToken.contains(refreshToken1),
         )
       },
@@ -1622,7 +1625,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.scope == reducedScope,
           // Renewal is in place, so this row is the grant's only record: the narrowing has to
           // reach it or the next refresh hands back the scope just dropped.
-          env.tokenRepo.renewBoundToken.calls.head._3 == reducedScope,
+          env.tokenRepo.renewBoundToken.calls.head._3.contains(reducedScope),
           reducedScope != scope1,
         )
       },

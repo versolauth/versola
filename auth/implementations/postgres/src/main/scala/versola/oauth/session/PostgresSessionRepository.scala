@@ -490,7 +490,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def renewBoundToken(
       token: MAC.Of[RefreshToken],
       accessToken: AccessToken,
-      scope: Set[ScopeToken],
+      scope: Option[Set[ScopeToken]],
       expiresAt: Instant,
       accessTokenExpiresAt: Instant,
   ): Task[Boolean] =
@@ -502,21 +502,36 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // currently outstanding for revocation to be able to reach it -- so sliding `expires_at`
         // in the same statement is free, and `GREATEST` keeps that idempotent under a retry.
         //
-        // `scope` is written for the same reason the rotating path carries it into the
-        // successor: this row is the grant's only record, so a narrowing that is not persisted
-        // here is one the next refresh silently undoes.
+        // `scope` is carried only when this refresh narrowed the grant: this row is the
+        // grant's only record, so a narrowing that is not persisted here is one the next
+        // refresh silently undoes -- but a refresh that named no scope leaves the stored
+        // value already correct, and rewriting it costs a row version per refresh to store
+        // what the row already holds.
         //
         // `access_token_expires_at` is replaced outright, not `GREATEST`-guarded like
         // `expires_at`: it describes the access token this row now names, and that token's own
         // expiry never needs to be the max of itself and a stale prior value.
-        sql"""
-          UPDATE refresh_tokens
-          SET access_token = $accessToken,
-              access_token_expires_at = $accessTokenExpiresAt,
-              scope = $scope,
-              expires_at = GREATEST(expires_at, $expiresAt)
-          WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
-        """.update.run() > 0
+        val renewed = scope match
+          case Some(narrowed) =>
+            sql"""
+              UPDATE refresh_tokens
+              SET access_token = $accessToken,
+                  access_token_expires_at = $accessTokenExpiresAt,
+                  scope = $narrowed,
+                  expires_at = GREATEST(expires_at, $expiresAt)
+              WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
+            """.update.run()
+
+          case None =>
+            sql"""
+              UPDATE refresh_tokens
+              SET access_token = $accessToken,
+                  access_token_expires_at = $accessTokenExpiresAt,
+                  expires_at = GREATEST(expires_at, $expiresAt)
+              WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
+            """.update.run()
+
+        renewed > 0
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
     Clock.instant.flatMap: now =>

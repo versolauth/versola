@@ -48,6 +48,11 @@ object OAuthTokenService:
   private case class BoundRenewal(
       token: RefreshToken,
       mac: MAC.Of[RefreshToken],
+      // `Some` only when this refresh actually narrowed the grant. RFC 6749 §6 lets the
+      // request omit `scope` to mean "unchanged", and a request that repeats what is stored
+      // means the same: in both cases the row already holds the right value, so the renewal
+      // leaves the column alone rather than paying a row version to rewrite it.
+      narrowedScope: Option[Set[ScopeToken]],
   )
 
   /** Which token the refresh actually continues from, and whether getting there needed the
@@ -313,7 +318,7 @@ object OAuthTokenService:
           // the idempotency key that makes rotation retryable all stop paying for themselves.
           // A retry can only be reached through a retired row, which a bound token never has.
           boundRenewal = Option.when(tokenRecord.cnfJkt.isDefined && !resolved.retried)(
-            BoundRenewal(refreshToken, resolved.previousToken),
+            BoundRenewal(refreshToken, resolved.previousToken, scope.filter(_ != tokenRecord.scope)),
           ),
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
@@ -561,7 +566,8 @@ object OAuthTokenService:
             case Some(renewal) =>
               Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
                 sessionRepository.renewBoundToken(
-                  renewal.mac, record.accessToken, record.scope, record.expiresAt, record.accessTokenExpiresAt,
+                  renewal.mac, record.accessToken, renewal.narrowedScope, record.expiresAt,
+                  record.accessTokenExpiresAt,
                 )
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)

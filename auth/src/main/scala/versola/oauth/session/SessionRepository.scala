@@ -133,11 +133,12 @@ trait SessionRepository:
     * token cannot be used by whoever copied it, so the chain, its retained generations and the
     * idempotency key that makes rotation retryable are all unnecessary here.
     *
-    * `scope` is written for the same reason the rotating path writes it into the successor:
-    * RFC 6749 §6 narrowing has to outlive the request that asked for it, or the next refresh
-    * -- which names no scope of its own -- would hand back what the client just dropped. This
-    * row is the grant's only record, so leaving it alone would keep the wider scope
-    * authoritative.
+    * `scope` is `Some` only when this refresh actually narrowed the grant. A narrowing has to
+    * outlive the request that asked for it (RFC 6749 §6), or the next refresh -- which names
+    * no scope of its own -- would hand back what the client just dropped; this row is the
+    * grant's only record, so leaving it alone would keep the wider scope authoritative. When
+    * the request named no scope, or named the one already stored, the stored value is already
+    * correct and writing it buys a row version for nothing.
     *
     * `accessTokenExpiresAt` is written for the same reason: a family revocation reads this
     * row's own expiry, not the client's current `accessTokenTtl`, to decide whether the token
@@ -148,7 +149,7 @@ trait SessionRepository:
   def renewBoundToken(
       token: MAC.Of[RefreshToken],
       accessToken: AccessToken,
-      scope: Set[ScopeToken],
+      scope: Option[Set[ScopeToken]],
       expiresAt: Instant,
       accessTokenExpiresAt: Instant,
   ): Task[Boolean]
