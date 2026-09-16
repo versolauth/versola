@@ -30,6 +30,7 @@ case class LoadgenConfig(
     coordinator: CoordinatorClientConfig,
     store: StoreConfig,
     population: PopulationConfig,
+    clients: Option[ClientsConfig],
     session: SessionConfig,
     campaign: CampaignConfig,
     actions: List[BusinessActionConfig],
@@ -84,6 +85,41 @@ case class TargetsConfig(
 )
 
 case class CoordinatorClientConfig(url: String, pollInterval: Duration)
+
+/** Which provisioned clients a driver authenticates its virtual users as (design doc §2.2).
+  *
+  * Named here rather than taken from [[versola.loadgen.provision.CampaignBlueprint]]'s constants,
+  * even though those are the ids `loadgen provision` writes: a driver never runs that role and
+  * its config file omits the block entirely, so reading the blueprint would have a driver
+  * authenticate against the campaign's *intended* configuration in place of the one it was
+  * actually pointed at. A campaign run against a central someone else provisioned is exactly the
+  * case that has to be expressible.
+  *
+  * Optional for the same reason [[ShardConfig]] is: no other role logs anyone in, and requiring
+  * the block would fail a coordinator's or a seeder's decode before `role` was ever read. Role
+  * dispatch asserts it is present for `driver`.
+  *
+  * @param mobileRedirectUri
+  *   the app scheme the three mobile clients' authorization codes come back on. One value for
+  *   all three because `provision` registers one.
+  * @param scope
+  *   requested on every authorization. `offline_access` in particular is what makes §2.3's 96.7%
+  *   refresh path exist at all -- a scope string without it produces a campaign of full logins
+  *   that still passes every threshold while measuring the wrong thing.
+  * @param otpLength
+  *   how many digits the non-prod OTP has. Stated rather than fixed at six because it is a
+  *   property of the tenant's `challenge_settings` the driver has to match, and a mismatch fails
+  *   every login in the campaign at the same step.
+  */
+case class ClientsConfig(
+    mobileOtp: String,
+    mobileOtpPassword: String,
+    mobilePasskey: String,
+    mobileRedirectUri: String,
+    webPreset: String,
+    scope: String,
+    otpLength: Int,
+)
 
 case class WriteBehindConfig(flushInterval: Duration, batchSize: Int)
 

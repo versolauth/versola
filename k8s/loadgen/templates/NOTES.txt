@@ -22,6 +22,11 @@ injected ordinal, or every driver runs as shard 0:
     role = driver
     shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
 
+It must also carry a `clients` block naming the clients that were provisioned
+(`mobile-otp`, `mobile-otp-password`, `mobile-passkey`, the web preset, the
+requested scope and the OTP length). A driver holds no `provision` block, so
+nothing else in its file states which clients it may authenticate as.
+
 {{ .Values.driver.replicaCount }} must equal the `seed.shard-count` the population was seeded with:
 `vu_users.shard` holds `id % shard-count`, written at seed time, so changing
 the replica count without the re-shard UPDATE leaves part of the population

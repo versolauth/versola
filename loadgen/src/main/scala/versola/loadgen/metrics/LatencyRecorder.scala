@@ -27,6 +27,17 @@ trait LatencyRecorder:
     */
   def snapshot: UIO[Chunk[HistogramSample]]
 
+  /** How many samples exceeded [[LatencyRecorder.highestTrackableMicros]] and were recorded at it,
+    * cumulative for this process.
+    *
+    * `loadgen_latency_clamped_total` publishes the same figure, but the campaign's verdict has to
+    * read it too (`CampaignHealth.latencyClampedTotal`): a clamped sample is a tail the report is
+    * understating, and a report that understates its own tail without saying so is the one
+    * outcome the health block exists to prevent. Prometheus counters cannot be read back in
+    * process, so the recorder keeps its own.
+    */
+  def clampedTotal: UIO[Long]
+
 object LatencyRecorder:
   val lowestDiscernibleMicros: Long = 1L
   val highestTrackableMicros: Long = 60L * 1000L * 1000L
@@ -36,7 +47,10 @@ object LatencyRecorder:
     Histogram(lowestDiscernibleMicros, highestTrackableMicros, significantDigits)
 
   val make: UIO[LatencyRecorder] =
-    Ref.Synchronized.make(Map.empty[MeasurementId, Recorder]).map(Live(_))
+    for
+      recorders <- Ref.Synchronized.make(Map.empty[MeasurementId, Recorder])
+      clamped <- Ref.make(0L)
+    yield Live(recorders, clamped)
 
   val layer: ULayer[LatencyRecorder] =
     ZLayer.fromZIO(make)
@@ -45,16 +59,19 @@ object LatencyRecorder:
     * multi-writer/single-reader structure, so the thousands of fibers recording per second never
     * contend with each other, only with the once-a-minute snapshot.
     */
-  private final class Live(recorders: Ref.Synchronized[Map[MeasurementId, Recorder]]) extends LatencyRecorder:
+  private final class Live(recorders: Ref.Synchronized[Map[MeasurementId, Recorder]], clamped: Ref[Long])
+    extends LatencyRecorder:
 
     override def record(id: MeasurementId, latency: IntendedLatency): UIO[Unit] =
       val micros = latency.micros
-      val clamped = math.max(lowestDiscernibleMicros, math.min(micros, highestTrackableMicros))
+      val bounded = math.max(lowestDiscernibleMicros, math.min(micros, highestTrackableMicros))
       for
         recorder <- recorderFor(id)
-        _ <- ZIO.succeed(recorder.recordValue(clamped))
-        _ <- LoadgenMetrics.latencyClamped.when(micros > highestTrackableMicros)
+        _ <- ZIO.succeed(recorder.recordValue(bounded))
+        _ <- (clamped.update(_ + 1L) *> LoadgenMetrics.latencyClamped).when(micros > highestTrackableMicros)
       yield ()
+
+    override def clampedTotal: UIO[Long] = clamped.get
 
     override def snapshot: UIO[Chunk[HistogramSample]] =
       recorders.get.flatMap: current =>

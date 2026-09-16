@@ -125,10 +125,17 @@ driver:
   config:
     # REQUIRED (when driver.enabled is true): name of a Secret that already
     # contains an env.conf key (HOCON, dev spec §5), mounted at CONFIG_PATH.
-    # Must set `role = driver` and a `shard` block reading the injected
-    # ordinal:
+    # Must set `role = driver`, a `shard` block reading the injected ordinal,
+    # and a `clients` block naming the clients `loadgen provision` registered
+    # (a driver holds no provision block, so it cannot derive them):
     #   role = driver
     #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
+    #   clients {
+    #     mobile-otp = mobile-otp, mobile-otp-password = mobile-otp-password
+    #     mobile-passkey = mobile-passkey, mobile-redirect-uri = "versola://callback"
+    #     web-preset = web-otp, scope = "openid profile phone offline_access"
+    #     otp-length = 6
+    #   }
     # Separate from the coordinator's Secret below because `role` lives in
     # the file, not in the environment -- one Secret cannot say both.
     #

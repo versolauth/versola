@@ -3,6 +3,7 @@ package versola.loadgen
 import versola.loadgen.calibrate.Calibration
 import versola.loadgen.config.{LoadgenConfig, LoadgenRole}
 import versola.loadgen.coordinator.{Coordinator, CoordinatorRoutes, CoordinatorService}
+import versola.loadgen.driver.Driver
 import versola.loadgen.provision.Provisioner
 import versola.loadgen.seed.Seeder
 import versola.util.EnvName
@@ -18,8 +19,12 @@ import zio.telemetry.opentelemetry.tracing.Tracing
   *
   * `role = seed`, `role = provision` and `role = calibrate` are the one-shot subcommands of §10,
   * §4 and §9/§13: each runs to completion and exits, so they take over `run` rather than standing
-  * up the servers `VersolaApp` otherwise waits on forever. The remaining roles still land with the
-  * `coordinator`/`driver` packages.
+  * up the servers `VersolaApp` otherwise waits on forever.
+  *
+  * `role = driver` takes `run` over too, for a different reason: the campaign is the process's
+  * work, not something it answers requests about, and it ends when the coordinator stops the
+  * campaign. It still mounts the routes below, so a driver keeps the same probe surface and
+  * `/metrics` scrape contract as every other pod -- which is where its histograms are read from.
   */
 object Main extends VersolaApp("loadgen"):
   val environmentTag = Tag[Environment]
@@ -45,6 +50,10 @@ object Main extends VersolaApp("loadgen"):
         case LoadgenRole.Provision => Provisioner.provision(config)
         case LoadgenRole.Seed => Seeder.seed(config)
         case LoadgenRole.Calibrate => Calibration.calibrate(config)
+        // The driver's load generation and `VersolaApp`'s server are raced rather than sequenced:
+        // the server never returns, and the campaign has to be able to end the process when the
+        // coordinator stops it or the run latches an abort.
+        case LoadgenRole.Driver => ZIO.scoped(Driver.run(config)).raceFirst(super.run)
         case _ => super.run
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
