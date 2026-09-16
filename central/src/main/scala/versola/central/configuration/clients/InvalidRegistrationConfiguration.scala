@@ -1,6 +1,6 @@
 package versola.central.configuration.clients
 
-import zio.Duration
+import zio.{Duration, duration2DurationOps}
 
 /** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
   * for example when registration is enabled without an auth flow or for a
