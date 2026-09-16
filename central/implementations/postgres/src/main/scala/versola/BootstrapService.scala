@@ -490,6 +490,7 @@ object BootstrapService:
       ipHeader = "X-Real-IP",
       acrVocabulary = None,
       postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
+      requireDpopNonce = false,
     )
 
   /** Default theme seeded from the shared CSS resource. */

@@ -38,7 +38,9 @@ paths:
           schema:
             type: string
           description: |
-            RFC 9449 proof-of-possession JWT. Optional per request: a request without one
+            RFC 9449 proof-of-possession JWT. Optional per request unless the client is
+            registered with `dpop_bound_access_tokens`, in which case a request without one is
+            refused with `invalid_dpop_proof` (§5.2). A request without one
             yields a bearer access token; a valid proof binds the issued access token (and, for
             `refresh_token`, a fresh grant) to the proof's key, after which only proofs from
             that same key are accepted for it. May be rejected with `invalid_dpop_proof`
@@ -311,7 +313,9 @@ components:
       description: |
         - `invalid_request` — a required field is missing or malformed.
         - `invalid_grant` — the code or refresh token is unknown, expired, already used, bound
-          to a different client or redirect URI, or PKCE verification failed.
+          to a different client or redirect URI, PKCE verification failed, or the code was
+          committed to a key with `dpop_jkt` and this request's proof is for another key
+          (or absent) (RFC 9449 §10.1).
         - `unsupported_grant_type` — `grant_type` is absent or not one of the three supported values.
         - `invalid_scope` — the requested scope exceeds what was granted.
         - `invalid_target` — a `resource` value is unknown for the client's tenant, is not
@@ -321,7 +325,8 @@ components:
           the client's tenant, fails its type's schema, or (for `refresh_token`) does not
           exactly match one already granted.
         - `invalid_dpop_proof` — the `DPoP` header is malformed, signed by the wrong key,
-          or has already been used (RFC 9449 §5).
+          or has already been used (RFC 9449 §5); also returned when the client is registered
+          with `dpop_bound_access_tokens` and the request carries no proof at all (§5.2).
         - `use_dpop_nonce` — retry with the nonce carried in the `DPoP-Nonce` header of this
           response (RFC 9449 §8).
       headers:

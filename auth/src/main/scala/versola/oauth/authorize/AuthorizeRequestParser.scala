@@ -9,7 +9,7 @@ import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Email, JsonSchemaValidator, Phone, Secret, SecurityService}
+import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -243,6 +243,15 @@ object AuthorizeRequestParser:
 
         authorizationDetails <- resolveAuthorizationDetails(params, client, redirectUri, state, useFragment)
 
+        dpopJkt <- getParam(params, Dpop.Jkt.Parameter)
+          .orElseFail(Error.MultipleValuesProvided(redirectUri, state, Dpop.Jkt.Parameter, useFragment = useFragment))
+          .flatMap:
+            case None => ZIO.none
+            case Some(value) =>
+              ZIO.fromOption(Dpop.Jkt.parse(value))
+                .orElseFail(Error.DpopJktInvalid(redirectUri, state, useFragment = useFragment))
+                .asSome
+
         authorizeRequest = AuthorizeRequest(
           clientId = clientId,
           redirectUri = redirectUri,
@@ -264,6 +273,7 @@ object AuthorizeRequestParser:
           idTokenHint = idTokenHint,
           resources = resources,
           authorizationDetails = authorizationDetails,
+          dpopJkt = dpopJkt,
           ip = ip,
         )
       yield authorizeRequest

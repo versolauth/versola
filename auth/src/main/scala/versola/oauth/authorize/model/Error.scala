@@ -188,6 +188,15 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8707#section-2"),
     )
 
+  /** RFC 9449 §10: the value is refused here rather than carried into the code, because a
+    * thumbprint no proof could ever produce would otherwise only surface at redemption -- by
+    * which point the code is spent and the client cannot be told what was wrong with it. */
+  case class DpopJktInvalid(uri: URL, state: Option[State], useFragment: Boolean) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "The dpop_jkt parameter is not a base64url-encoded JWK thumbprint",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-10"),
+    )
+
   case class InvalidAuthorizationDetails(uri: URL, state: Option[State], value: String, useFragment: Boolean) extends RedirectError(
       error = ErrorCode.InvalidAuthorizationDetails,
       errorDescription = s"The authorization_details parameter is invalid, malformed, or unknown - $value",

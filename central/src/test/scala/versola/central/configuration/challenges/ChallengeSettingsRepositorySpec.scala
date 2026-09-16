@@ -36,6 +36,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     ipHeader = "X-Forwarded-For",
     acrVocabulary = None,
     postLogoutRedirectUris = List("https://example.com/logout"),
+    requireDpopNonce = false,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =

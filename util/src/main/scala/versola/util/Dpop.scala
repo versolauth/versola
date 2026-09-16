@@ -5,6 +5,7 @@ import com.nimbusds.jose.jwk.{ECKey, JWK, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.SignedJWT
 import zio.http.Method
+import zio.json.ast.Json
 import zio.{Duration, IO, ZIO}
 
 import java.net.URI
@@ -33,8 +34,8 @@ object Dpop:
   /** Signing algorithms a DPoP proof may use. Chosen by the client based on the key it holds, so
     * this is independent of [[JWT.Algorithm]] (which governs this server's own token signing).
     * RFC 9449 \u00a75 requires `ES256` support; `PS256` is included for FAPI 2.0 deployments.
-    * `RS256` is supported here too -- whether it's actually accepted is a deployment choice, see
-    * `CoreConfig.DpopConfig`.
+    * `RS256` is supported here too -- whether it's actually accepted is a deployment choice,
+    * named by [[Algorithm.MetadataField]].
     */
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case ES256 extends Algorithm(JWSAlgorithm.ES256)
@@ -42,7 +43,60 @@ object Dpop:
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
 
   object Algorithm:
+    /** RFC 8414 §2 / RFC 9449 §5.1: the authorization server metadata field naming the set an
+      * incoming proof's `alg` is checked against. That document is the only place the set is
+      * written down, so what clients are told and what they are held to cannot disagree. */
+    val MetadataField = "dpop_signing_alg_values_supported"
+
+    /** The set assumed where the metadata document does not name it: `ES256` because §5
+      * mandates it, `PS256` for FAPI 2.0. `RS256` is left out -- FAPI disallows it outright, so
+      * a deployment that wants it has to ask. */
+    val Default: Set[Algorithm] = Set(ES256, PS256)
+
     def fromJws(alg: JWSAlgorithm): Option[Algorithm] = values.find(_.jwsAlgorithm == alg)
+
+    def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
+
+    /** The set an incoming proof's `alg` is checked against, read off the authorization server
+      * metadata document -- [[MetadataField]] is the only place it is written down, so `auth`
+      * (which serves the document) and `edge` (which syncs it) hold proofs to the same set
+      * clients discover.
+      *
+      * An algorithm the document names but [[Dpop.verify]] has no verifier for is dropped, so a
+      * proof can never be refused for an `alg` the deployment advertised. A field that names
+      * nothing recognizable therefore derives to an empty set and DPoP goes unusable: the
+      * operator asked for algorithms none of which exist here, and quietly substituting
+      * [[Default]] would accept the very keys they took the trouble to exclude. Only a field
+      * that is absent, or too malformed to read an intent off at all, falls back.
+      */
+    def fromMetadata(document: Json.Obj): Set[Algorithm] =
+      document.get(MetadataField) match
+        case None => Default
+        case Some(field) => field.as[Set[String]].toOption.fold(Default)(_.flatMap(fromName))
+
+  /** RFC 9449 §10: the authorization request parameter by which a client commits, before a code
+    * exists, to the key that code will be redeemed against. Its value is the same RFC 7638
+    * thumbprint [[Proof.jkt]] carries, so the two are compared as-is at the token endpoint.
+    */
+  object Jkt:
+    val Parameter = "dpop_jkt"
+
+    /** A SHA-256 thumbprint base64url-encoded without padding: 43 characters of the URL-safe
+      * alphabet. Checked rather than accepted verbatim so a value that could never equal a
+      * proof's `jkt` is refused at `/authorize`, where the client can still be told why,
+      * instead of at redemption, where the code is already spent.
+      *
+      * 43 base64 characters carry 258 bits, two more than the 256 a SHA-256 digest has, so the
+      * last character's low 2 bits are unused. `computeThumbprint` always emits them as zero (the
+      * only canonical encoding), which restricts that character to one of 16 symbols rather than
+      * the full alphabet -- a value with anything else there decodes fine but can never equal a
+      * canonical thumbprint's *string* form, so unlike this check the equality at redemption
+      * (`OAuthTokenService`, byte-for-byte string comparison, not decode-and-compare) would never
+      * pass, permanently stranding the code it was requested against.
+      */
+    private val Pattern = "[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]".r
+
+    def parse(value: String): Option[String] = Option.when(Pattern.matches(value))(value)
 
   /** The proof's self-contained, already-validated claims.
     *

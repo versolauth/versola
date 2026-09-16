@@ -59,6 +59,7 @@ object LogoutServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val clientNoLogoutUri = baseClient

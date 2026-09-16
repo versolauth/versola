@@ -96,37 +96,34 @@ object EdgeConfig:
       batchSize: Int = 50000,
   )
 
-  /** RFC 9449 proof validation at the resource server. A proof must always carry a valid
-    * nonce (§9) once this block is present -- there is no way to configure this edge to skip
-    * that check, so a nonce is unconditionally handed out on a proof's first rejection and
-    * checked on every one after.
+  /** RFC 9449 proof validation at the resource server: the parts that are facts about this
+    * deployment rather than decisions about policy.
+    *
+    * What is *not* here is deliberate. The accepted signing algorithms (§5.1) are read off the
+    * authorization server metadata document central holds, so `auth` and `edge` cannot come to
+    * disagree about what a client may sign with; whether a nonce is required (§9) is per edge
+    * in central, so it can be changed from the console rather than by redeploying the edge. See
+    * `DpopAlgorithmsSyncClient` and `DpopPolicySyncClient`.
     *
     * @param nonceSalt keys this edge's `DPoP-Nonce` space. §9 keeps the resource server's nonces
     *   separate from the authorization server's, so this is deliberately not auth's
     *   `dpop-nonces-secret`: a nonce minted by auth is not valid here.
-    * @param allowedAlgorithms signing algorithms an incoming proof's `alg` may use. Kept
-    *   independent of auth's list so a deployment can tighten the resource server without
-    *   having to re-issue tokens.
     * @param iatLeeway maximum distance between a proof's `iat` and now, in either direction.
     *   Also the window a proof is remembered for, so it sizes the replay guard.
     * @param nonceTtl how long a nonce this edge issued stays acceptable.
     */
   case class Dpop(
       nonceSalt: Secret.Bytes32,
-      allowedAlgorithms: Set[versola.util.Dpop.Algorithm],
       iatLeeway: Duration,
       nonceTtl: Duration,
   )
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for
-      * callers that want them without restating each one. RFC 9449 §5 mandates `ES256`;
-      * `PS256` is included for FAPI 2.0. `RS256` is verifiable but left out, matching auth's
-      * own default -- a deployment can opt back in explicitly.
+      * callers that want them without restating each one.
       */
     def default(nonceSalt: Secret.Bytes32): Dpop = Dpop(
       nonceSalt = nonceSalt,
-      allowedAlgorithms = Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256),
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(600),
     )

@@ -98,16 +98,22 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
 
   /** Stands the endpoint up over stubbed services and hands back the client and the stubs, so
     * a test can drive more than one request against the same server. */
-  def withTokenEndpoint[A](use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
+  def withTokenEndpoint[A](
+      config: CoreConfig = TestEnvConfig.coreConfig,
+      requireDpopNonce: Boolean = false,
+  )(use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
     for
       client <- ZIO.service[Client]
       tokenService = stub[OAuthTokenService]
       clientService = stub[OAuthConfigurationService]
       userInfoService = stub[UserInfoService]
-      config = TestEnvConfig.coreConfig
       jwksService = TestEnvConfig.jwksService
             dpopService     = stub[DpopService]
       tracing <- NoopTracing.layer.build
+
+      // RFC 9449 §8 is the requesting client's tenant setting, consulted only where a proof
+      // is actually present -- a request with no `DPoP` header never reaches it.
+      _ <- clientService.requireDpopNonce.succeedsWith(requireDpopNonce)
 
       services = Services(tokenService, userInfoService, dpopService)
 
@@ -127,9 +133,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       setup: Services => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyServices: Services => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      config: CoreConfig = TestEnvConfig.coreConfig,
+      requireDpopNonce: Boolean = false,
   ) =
     test(description) {
-            withTokenEndpoint: (client, services) =>
+            withTokenEndpoint(config, requireDpopNonce): (client, services) =>
                 for
                     _ <- setup(services)
                     response <- client.batched(request)
@@ -347,7 +355,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             run: (Client, Services) => ZIO[Scope, Throwable, TestResult],
         ) =
           test(description) {
-            withTokenEndpoint(run)
+            withTokenEndpoint()(run)
           }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
         List(
@@ -1101,6 +1109,30 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             body.contains("use_dpop_nonce"),
             response.headers.get("DPoP-Nonce").contains("fresh-nonce"),
           ),
+      ),
+      // RFC 9449 §8 is the requesting client's tenant setting, not an endpoint property, so
+      // what has to be asserted is that the setting reaches the check -- the challenge itself
+      // is covered above.
+      tokenEndpointTestCase(
+        description = "does not demand a nonce unless the client's tenant asks for one",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.dpopService.verify.succeedsWith(proof1) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(services.dpopService.verify.calls.map(_._4) == List(false))),
+      ),
+      tokenEndpointTestCase(
+        description = "requires a nonce on every proof once the client's tenant asks for one",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.dpopService.verify.succeedsWith(proof1) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(services.dpopService.verify.calls.map(_._4) == List(true))),
+        requireDpopNonce = true,
       ),
     ),
   )

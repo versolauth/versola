@@ -66,10 +66,14 @@ object DpopVerifier:
       case values if values.size > 1 => ZIO.fail(Error.MultipleProofs)
       case values => ZIO.succeed(values.head)
 
-  def live: ZLayer[EdgeConfig & DpopReplayGuard, Nothing, DpopVerifier] =
-    ZLayer.fromFunction(Impl(_, _))
+  def live: ZLayer[EdgeConfig & DpopReplayGuard & DpopPolicyService, Nothing, DpopVerifier] =
+    ZLayer.fromFunction(Impl(_, _, _))
 
-  class Impl(config: EdgeConfig, replayGuard: DpopReplayGuard) extends DpopVerifier:
+  class Impl(
+      config: EdgeConfig,
+      replayGuard: DpopReplayGuard,
+      policy: DpopPolicyService,
+  ) extends DpopVerifier:
 
     override def verify(
         proofHeader: String,
@@ -83,9 +87,10 @@ object DpopVerifier:
         case Some(dpop) =>
           for
             now <- Clock.instant
+            allowedAlgorithms <- policy.allowedAlgorithms
             proof <- Dpop.verify(
               token = proofHeader,
-              allowedAlgorithms = dpop.allowedAlgorithms,
+              allowedAlgorithms = allowedAlgorithms,
               expectedMethod = method,
               expectedUri = htu(config.edgeUrl, path),
               now = now,
@@ -107,22 +112,29 @@ object DpopVerifier:
             _ <- ZIO.fail(Error.Replayed).unless(fresh)
           yield proof
 
-    /** §4.3 step 10 / §9: every proof must carry a nonce this edge issued -- there is no
-      * configuration that skips this check. §11.3 forbids ever accepting a nonce-less proof
-      * once a nonce has been issued, and one always has been here, so a missing, stale, or
-      * unrecognized nonce is refused the same way: with a fresh one for the retry.
+    /** §4.3 step 10 / §9: where central has this edge requiring a nonce, every proof must carry
+      * one this edge issued. §11.3 forbids ever accepting a nonce-less proof once a nonce has
+      * been issued, so a missing, stale, or unrecognized nonce is refused the same way: with a
+      * fresh one for the retry.
+      *
+      * The other way round, an edge set not to require one does not "prefer" a nonce: the claim
+      * is not consulted and no nonce is ever issued. A challenge raised over a nonce this edge
+      * does not insist on would be one a nonce-less retry walks straight past -- the downgrade
+      * §11.3 names -- and nothing here is per-client state that could tell the two apart.
       */
     private def checkNonce(
         dpop: EdgeConfig.Dpop,
         proof: Dpop.Proof,
         now: Instant,
     ): IO[Error, Unit] =
-      proof.nonce match
-        case Some(nonce) =>
-          DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
-            case Right(_) => ZIO.unit
-            case Left(_) => freshNonceRequired(dpop, now)
-        case None => freshNonceRequired(dpop, now)
+      policy.requireNonce.flatMap: requireNonce =>
+        if !requireNonce then ZIO.unit
+        else proof.nonce match
+          case Some(nonce) =>
+            DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
+              case Right(_) => ZIO.unit
+              case Left(_) => freshNonceRequired(dpop, now)
+          case None => freshNonceRequired(dpop, now)
 
     private def freshNonceRequired(dpop: EdgeConfig.Dpop, now: Instant): IO[Error, Nothing] =
       ZIO.fail(Error.NonceRequired(DpopNonce.issue(dpop.nonceSalt, now)))

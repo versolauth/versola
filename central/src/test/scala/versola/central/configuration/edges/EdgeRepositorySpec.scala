@@ -80,6 +80,29 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           after.isEmpty,
         )
       },
+      // RFC 9449 §9 was unconditional at every edge before it became a setting, so a newly
+      // registered edge that did not demand a nonce would be a downgrade nobody asked for.
+      test("a newly registered edge requires a DPoP nonce") {
+        for
+          _ <- env.repository.createEdge(edgeId, sampleJwk)
+          found <- env.repository.find(edgeId)
+        yield assertTrue(found.exists(_.requireDpopNonce))
+      },
+      test("setRequireDpopNonce changes only the named edge") {
+        for
+          _ <- env.repository.createEdge(edgeId, sampleJwk)
+          _ <- env.repository.createEdge(edge2Id, sampleJwk)
+          _ <- env.repository.setRequireDpopNonce(edgeId, false)
+          changed <- env.repository.find(edgeId)
+          untouched <- env.repository.find(edge2Id)
+          _ <- env.repository.setRequireDpopNonce(edgeId, true)
+          restored <- env.repository.find(edgeId)
+        yield assertTrue(
+          changed.exists(!_.requireDpopNonce),
+          untouched.exists(_.requireDpopNonce),
+          restored.exists(_.requireDpopNonce),
+        )
+      },
       test("find returns None for non-existent edge") {
         for
           result <- env.repository.find(EdgeId("non-existent"))

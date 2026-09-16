@@ -139,10 +139,12 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >+>
       DpopNonceService.live >+>
-      DpopService.live >+>
       EdgeAssertionService.live >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
+      // Reads its accepted algorithms off the metadata document, so it has to follow the
+      // service that serves it.
+      DpopService.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
       MetadataSyncClient.live >+>
@@ -196,11 +198,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   given DeriveConfig[Method] = DeriveConfig[String].map(Method.fromString)
-
-  given DeriveConfig[Dpop.Algorithm] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Dpop.Algorithm.values.find(_.toString == str)
-        .toRight(zio.Config.Error.InvalidData(message = s"Unknown DPoP signing algorithm: '$str'"))
 
   given DeriveConfig[Email] = DeriveConfig[String]
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))

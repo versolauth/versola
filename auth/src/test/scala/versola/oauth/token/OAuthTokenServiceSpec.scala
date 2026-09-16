@@ -81,6 +81,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -105,6 +106,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -143,6 +145,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     acr = None,
     resources = Nil,
     authorizationDetails = None,
+    dpopJkt = None,
   )
 
   val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
@@ -262,6 +265,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = List(ResourceUri("https://api.example.com"), ResourceUri("resource://edge")),
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -322,6 +326,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -392,6 +397,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -427,6 +433,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -473,6 +480,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -512,6 +520,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -553,6 +562,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acr = None,
             resources = Nil,
             authorizationDetails = None,
+            dpopJkt = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(adminClient))
@@ -1673,6 +1683,113 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = new Env
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+
+          request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials, Some(jkt1))
+        yield assertTrue(result.cnfJkt.contains(jkt1))
+      },
+    ),
+    suite("dpop_jkt authorization code binding")(
+      test("redeems a committed code for a proof carrying the same thumbprint") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1, dpopJkt = Some(jkt1))))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1))
+        yield assertTrue(result.cnfJkt.contains(jkt1))
+      },
+      test("rejects a committed code redeemed with a different thumbprint, leaving the code unspent") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1, dpopJkt = Some(jkt1))))
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt2)).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.CodeKeyMismatch),
+          // The holder of the wrong key must not be able to burn a code the committed client
+          // can still legitimately redeem.
+          env.authCodeRepo.markAsUsed.calls.isEmpty,
+        )
+      },
+      test("rejects a committed code redeemed without any proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1, dpopJkt = Some(jkt1))))
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.CodeKeyMismatch))
+      },
+    ),
+    suite("dpop_bound_access_tokens client registration")(
+      test("refuses a code exchange from a registered client that carries no proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient.copy(dpopBoundAccessTokens = true)))
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidDpopProof("client is registered for DPoP-bound access tokens")),
+          env.authCodeRepo.find.calls.isEmpty,
+        )
+      },
+      test("refuses a refresh from a registered client that carries no proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient.copy(dpopBoundAccessTokens = true)))
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, None, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidDpopProof("client is registered for DPoP-bound access tokens")),
+          env.tokenRepo.findToken.calls.isEmpty,
+        )
+      },
+      test("refuses a client_credentials request from a registered client that carries no proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient.copy(dpopBoundAccessTokens = true)))
+
+          request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.clientCredentials(request, credentials, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidDpopProof("client is registered for DPoP-bound access tokens")),
+        )
+      },
+      test("still issues a bound token to a registered client that presents a proof") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient.copy(dpopBoundAccessTokens = true)))
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
 
           request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)

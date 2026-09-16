@@ -2,7 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.*
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.metadata.MetadataSyncClient
+import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -38,6 +38,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -60,6 +61,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))
@@ -80,6 +82,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
+    requireDpopNonce = false,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -106,7 +109,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       otpRef <- Ref.make(otpTemplates)
       challengeRef <- Ref.make(challengeSettingsVec)
       sysRef <- Ref.make(sysSettings)
-      metadataRef <- Ref.make(metadata)
+      metadataRef <- Ref.make(ServedMetadata.derive(metadata))
       resourceRef <- Ref.make(ResourceSyncClient.SyncResult(resources, authResourceSecrets))
       authDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield OAuthConfigurationService.Impl(
@@ -258,6 +261,27 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getIpHeader(ClientId("missing"))
       yield assertTrue(result == "X-Real-IP")
     },
+    // RFC 9449 §8. The two negative cases matter more than the positive one: both are states
+    // the server can be in before it knows anything, and answering "nonce required" from
+    // either would challenge clients that have no nonce to give and no reason to expect one.
+    test("requireDpopNonce returns the setting of the client's tenant") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(requireDpopNonce = true)))
+        result <- env.requireDpopNonce(clientId1)
+      yield assertTrue(result)
+    },
+    test("requireDpopNonce is false for an unknown client") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(requireDpopNonce = true)))
+        result <- env.requireDpopNonce(ClientId("missing"))
+      yield assertTrue(!result)
+    },
+    test("requireDpopNonce is false when the client's tenant has no challenge settings row") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector.empty)
+        result <- env.requireDpopNonce(clientId1)
+      yield assertTrue(!result)
+    },
     test("getPasskeySettings returns settings for known client") {
       for
         env <- makeEnv()
@@ -331,7 +355,75 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       for
         env <- makeEnv(metadata = stored, authorizationDetailTypes = Vector(registered))
         result <- env.getMetadata
-      yield assertTrue(result == stored)
+      yield assertTrue(
+        result.get("authorization_details_types_supported") ==
+          stored.get("authorization_details_types_supported"),
+      )
+    },
+    // RFC 9449 §5.1. The set is served and enforced off the same field, so a document that
+    // never mentioned it still has to advertise what a proof will actually be held to --
+    // otherwise a client has no way to discover the set short of guessing.
+    test("getMetadata advertises the default DPoP algorithms when the document omits the field") {
+      for
+        env <- makeEnv(metadata = Json.Obj("issuer" -> Json.Str("https://idp.example")))
+        served <- env.getMetadata
+        enforced <- env.getDpopSigningAlgorithms
+      yield assertTrue(
+        served.get(Dpop.Algorithm.MetadataField)
+          .contains(Json.Arr(Json.Str("ES256"), Json.Str("PS256"))),
+        enforced == Dpop.Algorithm.Default,
+        served.get("issuer").contains(Json.Str("https://idp.example")),
+      )
+    },
+    test("getDpopSigningAlgorithms narrows to what the document names") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+        ))
+        served <- env.getMetadata
+        enforced <- env.getDpopSigningAlgorithms
+      yield assertTrue(
+        enforced == Set(Dpop.Algorithm.RS256),
+        served.get(Dpop.Algorithm.MetadataField).contains(Json.Arr(Json.Str("RS256"))),
+      )
+    },
+    // An algorithm no verifier here implements would otherwise be advertised and then refused
+    // on arrival, which is worse than not offering it: the client picks a key it cannot use.
+    test("getMetadata drops an algorithm it has no verifier for instead of advertising it") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("EdDSA")),
+        ))
+        served <- env.getMetadata
+        enforced <- env.getDpopSigningAlgorithms
+      yield assertTrue(
+        enforced == Set(Dpop.Algorithm.ES256),
+        served.get(Dpop.Algorithm.MetadataField).contains(Json.Arr(Json.Str("ES256"))),
+      )
+    },
+    // Nothing recognizable is not the same as nothing said: the operator excluded every
+    // algorithm this build has, and substituting the defaults would re-admit the keys they
+    // went out of their way to exclude. DPoP goes unusable and says so in the document.
+    test("getDpopSigningAlgorithms leaves the set empty when nothing the document names exists here") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("EdDSA")),
+        ))
+        served <- env.getMetadata
+        enforced <- env.getDpopSigningAlgorithms
+      yield assertTrue(
+        enforced.isEmpty,
+        served.get(Dpop.Algorithm.MetadataField).contains(Json.Arr()),
+      )
+    },
+    // A field too malformed to read an intent off is not an exclusion -- it is an operator
+    // error, and guessing at it either way is a guess. The default is the one that keeps the
+    // advertised and enforced sets equal.
+    test("getDpopSigningAlgorithms falls back to the default when the field is malformed") {
+      for
+        env <- makeEnv(metadata = Json.Obj(Dpop.Algorithm.MetadataField -> Json.Str("ES256")))
+        enforced <- env.getDpopSigningAlgorithms
+      yield assertTrue(enforced == Dpop.Algorithm.Default)
     },
     test("findByTenant returns only the clients of that tenant") {
       val otherTenant = privateClient.copy(id = ClientId("other"), tenantId = TenantId("other"))
@@ -357,6 +449,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     test("getPostLogoutRedirectUris decodes the tenant's configured URLs") {
       val settings = challengeSettings.copy(
         postLogoutRedirectUris = List("https://app.example/bye", "not a url"),
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettingsVec = Vector(settings))
@@ -512,7 +605,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           otpRef <- Ref.make(Vector.empty[OtpTemplateRecord])
           challengeRef <- Ref.make(Vector(challengeSettings))
           sysRef <- Ref.make(systemSettings)
-          metadataRef <- Ref.make(Json.Obj())
+          metadataRef <- Ref.make(ServedMetadata.derive(Json.Obj()))
           resourceRef <- Ref.make(ResourceSyncClient.SyncResult(Vector.empty, Nil))
           authDetailTypeRef <- Ref.make(Vector.empty[AuthorizationDetailTypeRecord])
           env = OAuthConfigurationService.Impl(
@@ -559,7 +652,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           otpTemplates <- env.otpTemplateCache.get
           challengeSettingsResult <- env.challengeSettingsCache.get
           sysSettings <- env.systemSettingsCache.get
-          metadata <- env.metadataCache.get
+          metadata <- env.metadataCache.get.map(_.document)
           resources <- env.resourceCache.get
           authorizationDetailTypes <- env.authorizationDetailTypeCache.get
         yield assertTrue(
@@ -571,7 +664,10 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
           otpTemplates == newOtpTemplates,
           challengeSettingsResult == newChallengeSettings,
           sysSettings == newSystemSettings,
-          metadata == newMetadata,
+          // `syncConfiguration` derives `ServedMetadata` the same way the cache source does
+          // (see `OAuthConfigurationService.live`'s `metadataCacheSource`), so the served
+          // document carries the normalized DPoP field rather than `newMetadata` verbatim.
+          metadata == ServedMetadata.derive(newMetadata).document,
           resources == ResourceSyncClient.SyncResult(newResources, newSecrets),
           authorizationDetailTypes == newAuthorizationDetailTypes,
         )

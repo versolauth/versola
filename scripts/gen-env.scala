@@ -394,9 +394,10 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
 
-  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is a static mirror of
-  // CoreConfig.DpopConfig.default.allowedAlgorithms -- this script has no access to that type,
-  // so if the server-side default ever changes, update both.
+  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is not a mirror of anything:
+  // auth reads the set a proof is checked against straight off this document, so editing it
+  // here is how a deployment narrows or widens what it accepts. An entry auth has no verifier
+  // for is dropped rather than advertised; drop the field entirely to fall back to its default.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
@@ -778,15 +779,16 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  ]
        |}
        |
-       |# RFC 9449 proof validation on proxied calls, against edge-url below. Every
-       |# proof must carry a valid nonce (§9) once this block is present -- there is
-       |# no setting that turns that off; the round trip it costs a client on its
-       |# first request (or after nonce-ttl) is the price of using DPoP here at all.
+       |# RFC 9449 proof validation on proxied calls, against edge-url below. Only
+       |# what is a fact about this deployment lives here: the salt keying this
+       |# edge's own nonce space, and the two windows. What a proof may be signed
+       |# with (§5.1) is read off the metadata document central holds, so this edge
+       |# and auth cannot disagree about it; whether a nonce is required (§9) is
+       |# per edge in central -- change it in the console, not by redeploying.
        |# Remove this block entirely to turn DPoP off; a key-bound token is still
-       |# refused over Bearer either way.
+       |# refused over Bearer the same way.
        |dpop {
        |  nonce-salt = ${secretField(useOpenBao, edgeDpopNonceSalt, "EDGE_DPOP_NONCE_SALT")}
-       |  allowed-algorithms = ["ES256", "PS256"]
        |  iat-leeway = "60 seconds"
        |  nonce-ttl = "600 seconds"
        |}

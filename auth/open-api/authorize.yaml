@@ -47,6 +47,7 @@ paths:
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/Resource'
         - $ref: '#/components/parameters/AuthorizationDetails'
+        - $ref: '#/components/parameters/DpopJkt'
         - $ref: '#/components/parameters/RequestUri'
         - $ref: '#/components/parameters/UserAgent'
         - $ref: '#/components/parameters/SessionCookie'
@@ -299,6 +300,21 @@ components:
       example: |
         [{"type": "payment_initiation", "actions": ["initiate"], "locations": ["https://api.example.com"]}]
 
+    DpopJkt:
+      name: dpop_jkt
+      in: query
+      required: false
+      description: |
+        RFC 9449 §10: the JWK thumbprint of the key the client will redeem the resulting code
+        against — base64url-encoded SHA-256, 43 characters. The code is bound to it, and
+        `POST /token` refuses to redeem that code for a DPoP proof over any other key (or for
+        no proof at all) with `invalid_grant`. A value that is not a thumbprint is rejected
+        here rather than at redemption, with `invalid_request`.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+      example: 0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I
+
     RequestUri:
       name: request_uri
       in: query
@@ -393,6 +409,9 @@ components:
         authorization_details:
           type: string
           contentMediaType: application/json
+        dpop_jkt:
+          type: string
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
         request_uri:
           type: string
 

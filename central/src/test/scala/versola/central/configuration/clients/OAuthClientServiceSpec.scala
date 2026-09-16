@@ -58,6 +58,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -82,6 +83,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val createRequest = CreateClientRequest(
@@ -192,6 +194,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         policyUri = None,
         tosUri = None,
         consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
+        dpopBoundAccessTokens = false,
       )
 
       for
@@ -254,6 +257,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
+            None,
           ),
         ),
       )
@@ -412,7 +416,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow) = env.repository.updateClient.calls.head
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _) = env.repository.updateClient.calls.head
       yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {

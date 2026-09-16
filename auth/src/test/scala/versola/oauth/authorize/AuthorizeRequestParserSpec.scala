@@ -57,6 +57,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
@@ -880,6 +881,56 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.nonce == Some(Nonce("abc123")))
+      },
+    ),
+    suite("dpop_jkt")(
+      test("captures a thumbprint the request commits its code to") {
+        val env = Env()
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> jkt)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.dpopJkt == Some(jkt))
+      },
+      test("leaves the request uncommitted when the parameter is absent") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.dpopJkt.isEmpty)
+      },
+      test("rejects a value no JWK thumbprint could equal") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> "not-a-thumbprint")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+      },
+      test("rejects a thumbprint of the wrong length for SHA-256") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> ("a" * 42))))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+      },
+      // 43 base64url characters carry 258 bits, two more than a SHA-256 digest's 256, so a
+      // canonical thumbprint's last character always has its low 2 bits zero -- one of 16
+      // symbols, not the full alphabet. 'I' (the real thumbprint's last character, above) is
+      // one of them; 'B' is not, and `computeThumbprint` can never produce it there, so this
+      // value could never equal a proof's `jkt` and must be refused here rather than stranding
+      // the code it would be attached to.
+      test("rejects a thumbprint whose last character no canonical thumbprint ends with") {
+        val env = Env()
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4B"
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> jkt)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
       },
     ),
     suite("prompt")(

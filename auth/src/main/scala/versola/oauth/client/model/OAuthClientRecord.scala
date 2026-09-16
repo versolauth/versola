@@ -31,6 +31,10 @@ case class OAuthClientRecord(
     tosUri: Option[String],
     /** Consent screen configuration; `None` for first-party clients, which never prompt. */
     consentFlow: Option[ConsentFlow],
+    /** RFC 9449 §5.2 `dpop_bound_access_tokens`: the client always uses DPoP, so a token
+      * request from it that carries no proof is refused rather than answered with a bearer
+      * token. */
+    dpopBoundAccessTokens: Boolean,
 ) derives CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

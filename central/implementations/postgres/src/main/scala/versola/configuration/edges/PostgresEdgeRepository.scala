@@ -16,14 +16,14 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
   override def getAll: Task[Vector[EdgeRecord]] =
     xa.connectMeasured("get-all-edges"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
         FROM edges
       """.query[EdgeRecord].run()
 
   override def find(id: EdgeId): Task[Option[EdgeRecord]] =
     xa.connectMeasured("find-edge"):
       sql"""
-        SELECT id, public_key_jwk, old_public_key_jwk
+        SELECT id, public_key_jwk, old_public_key_jwk, require_dpop_nonce
         FROM edges
         WHERE id = $id
       """.query[EdgeRecord].run().headOption
@@ -42,6 +42,15 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
         UPDATE edges
         SET old_public_key_jwk = public_key_jwk,
             public_key_jwk = $newPublicKeyJwk
+        WHERE id = $id
+      """.update.run()
+    .unit
+
+  override def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit] =
+    xa.connectMeasured("set-edge-require-dpop-nonce"):
+      sql"""
+        UPDATE edges
+        SET require_dpop_nonce = $requireDpopNonce
         WHERE id = $id
       """.update.run()
     .unit

@@ -46,6 +46,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -94,6 +95,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = Nil,
+    requireDpopNonce = false,
   )
 
   override def spec = suite("AuthorizationPresetService")(

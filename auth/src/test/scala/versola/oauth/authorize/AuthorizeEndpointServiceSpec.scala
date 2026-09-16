@@ -81,6 +81,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val baseRequest = AuthorizeRequest(
@@ -104,6 +105,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     idTokenHint = None,
     resources = Nil,
     authorizationDetails = None,
+    dpopJkt = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -231,6 +233,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(
@@ -305,6 +308,28 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.head._2.amr == AuthMethodRef.amrClaim(session.amr),
         createCalls.head._2.authTime == session.createdAt,
       )
+    },
+    test("carry dpop_jkt onto a code issued without any interaction") {
+      val env = Env()
+      val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+      val code = AuthorizationCode(Array.fill(16)(3.toByte))
+      val accessToken = AccessToken(Array.fill(16)(4.toByte))
+      val codeMac = MAC(Array.fill(32)(2.toByte))
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.configurationService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
+        _ <- env.sessionService.registerClient.succeedsWith(())
+        _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
+        _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.securityService.mac.succeedsWith(codeMac)
+        _ <- env.authorizationCodeRepository.create.succeedsWith(())
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
+        _ <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), dpopJkt = Some(jkt)))
+        createCalls = env.authorizationCodeRepository.create.calls
+      yield assertTrue(createCalls.head._2.dpopJkt == Some(jkt))
     },
     test("fail with AccessDenied when hybrid silent auth has session but missing user") {
       val env = Env()
@@ -1166,6 +1191,22 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.head._2.promptConsent,
         decideCalls.map(_._4) == List(Set(Prompt.consent)),
       )
+    },
+    test("carry dpop_jkt into a conversation, so the code it later issues is still committed") {
+      val env = Env()
+      val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+      val uuid = UUID.randomUUID()
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(None)
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        _ <- env.conversationRouter.advance.succeedsWith(())
+        _ <- env.service.authorize(baseRequest.copy(dpopJkt = Some(jkt)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(createCalls.head._2.dpopJkt == Some(jkt))
     },
     test("resolve consent only after the authentication factors are satisfied") {
       val env = Env()

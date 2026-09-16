@@ -6,11 +6,13 @@ const edgesPath = '/?view=edges';
 const alphaEdge = {
   id: 'edge-alpha',
   hasOldKey: false,
+  requireDpopNonce: true,
 };
 
 const bravoEdge = {
   id: 'edge-bravo',
   hasOldKey: false,
+  requireDpopNonce: true,
 };
 
 function edgeCard(page: Page, edgeId: string) {
@@ -107,6 +109,47 @@ test('expands edge card and shows linked tenants section', async ({ page }) => {
 
   // Should show linked tenants section
   await expect(card.getByText('Linked Tenants')).toBeVisible();
+});
+
+// RFC 9449 section 9 is per edge and lives in central, so the console is where it is turned
+// off -- not in the edge's own config file, which no longer carries it.
+test('turns off an edge DPoP nonce requirement and reflects it after the save', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: edgesPath,
+    state: { edges: [alphaEdge] },
+  });
+
+  const card = edgeCard(page, 'edge-alpha');
+  await card.locator('.edge-header').click();
+
+  const toggle = card.locator('.dpop-toggle input[type="checkbox"]');
+  await expect(toggle).toBeChecked();
+  await toggle.uncheck();
+
+  const request = findRequest(api.requests, 'PUT', '/configuration/edges/dpop');
+  expect(request.searchParams).toEqual({ edgeId: 'edge-alpha' });
+  expect(request.body).toEqual({ requireDpopNonce: false });
+  await expect(toggle).not.toBeChecked();
+});
+
+// What the setting costs and what it breaks has to be readable where it is flipped; an
+// operator who has to go read RFC 9449 to decide is one who guesses instead.
+test('explains the DPoP nonce requirement next to the toggle', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: edgesPath,
+    state: { edges: [alphaEdge] },
+  });
+
+  const card = edgeCard(page, 'edge-alpha');
+  await card.locator('.edge-header').click();
+
+  const tooltip = card.locator('.option-tooltip');
+  await expect(tooltip).not.toBeVisible();
+
+  await card.getByRole('button', { name: 'DPoP nonce requirement info' }).click();
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText('use_dpop_nonce');
+  await expect(tooltip).toContainText('Governs this edge only');
 });
 
 test('rotates edge key and shows the new private key banner', async ({ page }) => {

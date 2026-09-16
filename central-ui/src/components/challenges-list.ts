@@ -105,6 +105,10 @@ export class VersolaChallengesList extends LitElement {
   @state() private postLogoutRedirectUris: string[] = [];
   @state() private editPostLogoutRedirectUris: Array<{ value: string }> = [];
 
+  @state() private requireDpopNonce = false;
+  @state() private editRequireDpopNonce = false;
+  @state() private openInfoKey: string | null = null;
+
   static styles = [
     theme,
     cardStyles,
@@ -320,6 +324,42 @@ export class VersolaChallengesList extends LitElement {
       }
       .error-msg { font-size: 0.875rem; color: var(--danger); margin-top: var(--spacing-sm); }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
+      .label-row { display: flex; align-items: center; gap: 0.4rem; margin-bottom: var(--spacing-sm); }
+      .label-row > label { margin-bottom: 0; }
+      .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
+      .option-info-button {
+        flex: none;
+        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border-radius: 999px;
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1;
+        padding: 0.25rem 0.45rem;
+        cursor: pointer;
+        font-family: var(--font-family);
+      }
+      .option-info-button:hover { background: rgba(var(--accent-tint), 0.18); border-color: rgba(var(--accent-tint), 0.55); }
+      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2); }
+      .option-tooltip {
+        position: absolute;
+        left: 0;
+        top: calc(100% + 0.4rem);
+        z-index: 20;
+        min-width: 18rem;
+        max-width: min(28rem, 75vw);
+        padding: 0.75rem;
+        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border-radius: var(--radius-md);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
+        display: none;
+      }
+      .option-info.option-info-open .option-tooltip { display: block; }
+      .option-tooltip-title { margin-bottom: 0.5rem; color: var(--accent); font-size: 0.8125rem; font-weight: 600; }
+      .option-tooltip-item { color: var(--text-primary); font-size: 0.75rem; line-height: 1.45; }
+      .option-tooltip-item + .option-tooltip-item { margin-top: 0.375rem; }
       .prefix-tags {
         display: flex;
         flex-wrap: wrap;
@@ -461,6 +501,20 @@ export class VersolaChallengesList extends LitElement {
     `,
   ];
 
+  private handleDocumentClick = () => {
+    this.openInfoKey = null;
+  };
+
+  connectedCallback() {
+    super.connectedCallback();
+    document.addEventListener('click', this.handleDocumentClick);
+  }
+
+  disconnectedCallback() {
+    document.removeEventListener('click', this.handleDocumentClick);
+    super.disconnectedCallback();
+  }
+
   updated(changed: Map<string, unknown>) {
     if (changed.has('tenantId')) {
       this.loadData();
@@ -494,6 +548,7 @@ export class VersolaChallengesList extends LitElement {
         this.acrVocabulary = challengeSettings.acrVocabulary ?? {};
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
         this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
+        this.requireDpopNonce = challengeSettings.requireDpopNonce ?? false;
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -507,6 +562,7 @@ export class VersolaChallengesList extends LitElement {
         this.acrVocabulary = {};
         this.ipHeader = 'X-Real-IP';
         this.postLogoutRedirectUris = [];
+        this.requireDpopNonce = false;
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -678,6 +734,44 @@ export class VersolaChallengesList extends LitElement {
 
   private localeName(code: string): string {
     return this.availableLocales.find(l => l.code === code)?.name ?? code;
+  }
+
+  private toggleInfo(key: string) {
+    this.openInfoKey = this.openInfoKey === key ? null : key;
+  }
+
+  private renderOptionInfo(key: string, title: string, content: unknown, ariaLabel: string) {
+    return html`
+      <div class=${`option-info ${this.openInfoKey === key ? 'option-info-open' : ''}`} @click=${(e: Event) => e.stopPropagation()}>
+        <button
+          type="button"
+          class="option-info-button"
+          aria-label=${ariaLabel}
+          aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
+          @click=${() => this.toggleInfo(key)}
+        >i</button>
+        <div class="option-tooltip" role="tooltip">
+          <div class="option-tooltip-title">${title}</div>
+          ${content}
+        </div>
+      </div>
+    `;
+  }
+
+  /** Shared by the DPoP nonce toggle's read-only card and its editor, so the two cannot drift. */
+  private renderDpopNonceInfo() {
+    return this.renderOptionInfo(
+      'require-dpop-nonce',
+      'Require a DPoP nonce',
+      html`
+        <div class="option-tooltip-item">A DPoP nonce (RFC 9449 section 8) is a short-lived value the authorization server issues and the client must sign into its next proof. It bounds how long a captured proof stays usable: without one, a proof is replayable for as long as its <code>iat</code> is within the accepted window.</div>
+        <div class="option-tooltip-item">On, every proof this tenant's clients present at <code>/token</code> and <code>/userinfo</code> must carry a nonce. A request without one is not simply refused — it is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client is expected to retry over.</div>
+        <div class="option-tooltip-item">Before turning it on: every client of this tenant that uses DPoP must implement that retry. One that does not stops being able to get or refresh a token — it will read the challenge as a plain failure. Clients that do not use DPoP at all are unaffected.</div>
+        <div class="option-tooltip-item">The cost when it works is one extra round trip per client per nonce lifetime, not per request. Turning it back off takes effect at once and breaks nothing: a proof carrying a nonce is still accepted, the nonce just stops being required.</div>
+        <div class="option-tooltip-item">Applies to this tenant's clients only, and only to auth's own endpoints. Proxied API calls through an edge are governed by that edge's own <strong>DPoP Nonce</strong> setting on the Edges page, which is on by default.</div>
+      `,
+      'DPoP nonce requirement info',
+    );
   }
 
   private formatDuration(seconds: number): string {
@@ -876,6 +970,7 @@ export class VersolaChallengesList extends LitElement {
     this.editAcrVocabulary = Object.entries(this.acrVocabulary)
       .map(([acr, factors]) => ({ acr, factors: [...factors] }));
     this.editPostLogoutRedirectUris = this.postLogoutRedirectUris.map(value => ({ value }));
+    this.editRequireDpopNonce = this.requireDpopNonce;
     this.settingsError = '';
   }
 
@@ -987,6 +1082,7 @@ export class VersolaChallengesList extends LitElement {
         ipHeader,
         acrVocabulary,
         postLogoutRedirectUris,
+        this.editRequireDpopNonce,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -1000,6 +1096,7 @@ export class VersolaChallengesList extends LitElement {
       this.passkeySettings = { ...passkeySettings, origins: [...passkeySettings.origins] };
       this.acrVocabulary = acrVocabulary;
       this.postLogoutRedirectUris = postLogoutRedirectUris;
+      this.requireDpopNonce = this.editRequireDpopNonce;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -1310,6 +1407,14 @@ export class VersolaChallengesList extends LitElement {
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
+          <div class="label-row">
+            <label>DPoP Nonce</label>
+            ${this.renderDpopNonceInfo()}
+          </div>
+          <div class="template-text">${this.requireDpopNonce ? 'Required on every proof' : 'Not required'}</div>
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>Passkey (WebAuthn)</label>
           ${this.passkeySettings
             ? html`
@@ -1520,6 +1625,19 @@ export class VersolaChallengesList extends LitElement {
         <button class="btn btn-secondary" @click=${() => this.addPasskeyOrigin()}>+ Add Origin</button>
 
         ${this.renderIpHeaderEdit()}
+
+        <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">DPoP</h3>
+
+        <div class="label-row">
+          <label>Require a DPoP nonce</label>
+          ${this.renderDpopNonceInfo()}
+        </div>
+        <div class="hint">Every DPoP proof this tenant's clients send to <code>/token</code> and <code>/userinfo</code> must carry a server-issued nonce. Clients that do not retry on <code>use_dpop_nonce</code> will stop working.</div>
+        <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer;">
+          <input type="checkbox" .checked=${this.editRequireDpopNonce}
+            @change=${(e: Event) => { this.editRequireDpopNonce = (e.target as HTMLInputElement).checked; }} />
+          Required
+        </label>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Submission Limits</h3>
 

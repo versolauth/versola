@@ -56,6 +56,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val userInfoResponse = UserInfoResponse(
@@ -103,10 +104,14 @@ object UserInfoControllerSpec extends UnitSpecBase:
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
       edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
-      // The lookup `checkDpop` makes to learn the tenant an edge assertion for this token's
-      // client has to be scoped to; defaults to the fixture client every test above assumes.
-      oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = _.find.succeedsWith(Some(client1)),
+      // The lookups `checkDpop` makes against the token's client: the tenant an edge assertion
+      // has to be scoped to, and (RFC 9449 §8) whether that client's tenant demands a nonce.
+      // Defaults to the fixture client every test above assumes, with no nonce required.
+      oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = service =>
+        service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(false),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      config: CoreConfig = TestEnvConfig.coreConfig,
   ) =
     test(description) {
       for
@@ -115,7 +120,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
         dpopService = stub[DpopService]
         edgeAssertionService = stub[EdgeAssertionService]
         oAuthConfigurationService = stub[OAuthConfigurationService]
-        config = TestEnvConfig.coreConfig
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
@@ -136,7 +140,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
 
         response <- client.batched(request)
         verifyResult <- verify(response)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        verifyDpopResult <- verifyDpop(dpopService)
+      yield assertTrue(response.status == expectedStatus) && verifyResult && verifyDpopResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("UserInfoController")(
@@ -280,6 +285,65 @@ object UserInfoControllerSpec extends UnitSpecBase:
               body <- response.body.asString
               userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
             yield assertTrue(userInfo.claims.contains("sub")),
+        )
+      },
+      locally {
+        val boundAccessToken = createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          cnfJkt = Some(boundJkt1),
+        )
+        val boundRequest = Request.get(url = URL.empty / "userinfo")
+          .addHeader(Header.Custom("Authorization", s"DPoP $boundAccessToken"))
+          .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder"))
+        def boundProof(nonce: Option[String]) = Dpop.Proof(
+          jkt = boundJkt1,
+          jti = "proof-jti-1",
+          iat = Instant.now(),
+          nonce = nonce,
+          ath = Some(Dpop.ath(boundAccessToken)),
+        )
+        suite("DPoP nonce")(
+          // RFC 9449 §8 is the tenant setting of the client the token was issued to rather than
+          // a property of this endpoint, so what has to be asserted is that the setting is what
+          // reaches the check.
+          userInfoTestCase(
+            description = "do not demand a nonce unless the token's client tenant asks for one",
+            request = boundRequest,
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            dpopSetup = _.verify.succeedsWith(boundProof(nonce = None)),
+            verifyDpop = dpopService =>
+              ZIO.succeed(assertTrue(dpopService.verify.calls.map(_._4) == List(false))),
+          ),
+          userInfoTestCase(
+            description = "require a nonce on every proof once the token's client tenant asks for one",
+            request = boundRequest,
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            dpopSetup = _.verify.succeedsWith(boundProof(nonce = Some("srv-nonce"))),
+            verifyDpop = dpopService =>
+              ZIO.succeed(assertTrue(dpopService.verify.calls.map(_._4) == List(true))),
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
+          ),
+          // §9: the nonce travels in its own header rather than in the challenge, and the client
+          // is expected to retry once over it -- so the refusal has to carry both.
+          userInfoTestCase(
+            description = "answer a nonce challenge with use_dpop_nonce and serve the nonce in DPoP-Nonce",
+            request = boundRequest,
+            expectedStatus = Status.Unauthorized,
+            dpopSetup = _.verify.failsWith(DpopService.Error.NonceRequired("fresh-nonce")),
+            verify = response =>
+              ZIO.succeed(assertTrue(
+                response.headers.get("WWW-Authenticate").exists(_.contains("use_dpop_nonce")),
+                response.headers.get("DPoP-Nonce").contains("fresh-nonce"),
+              )),
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
+          ),
         )
       },
       locally {

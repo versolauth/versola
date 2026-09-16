@@ -94,7 +94,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -133,6 +133,7 @@ type ClientsResponse = {
     policyUri?: string | null;
     tosUri?: string | null;
     consentFlow?: BackendConsentFlow | null;
+    dpopBoundAccessTokens?: boolean;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -707,6 +708,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         policyUri: client.policyUri ?? null,
         tosUri: client.tosUri ?? null,
         consentFlow: consentFlowFromBackend(client.consentFlow),
+        dpopBoundAccessTokens: client.dpopBoundAccessTokens ?? false,
         tenantId,
       };
     }),
@@ -1073,6 +1075,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       policyUri: client.policyUri ?? null,
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
+      dpopBoundAccessTokens: client.dpopBoundAccessTokens,
       clientType: client.clientType ?? 'web',
     },
   });
@@ -1146,6 +1149,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       consentFlow: sameConsentFlow(existing.consentFlow, client.consentFlow)
         ? undefined
         : consentFlowToBackend(client.consentFlow),
+      dpopBoundAccessTokens: existing.dpopBoundAccessTokens !== client.dpopBoundAccessTokens ? client.dpopBoundAccessTokens : undefined,
     },
   });
 
@@ -1204,7 +1208,18 @@ export async function fetchEdges(): Promise<Edge[]> {
   return sortById(response.edges.map(edge => ({
     id: edge.id,
     hasOldKey: edge.hasOldKey ?? false,
+    // An edge central has not answered for is read as requiring one, which is what every
+    // edge did before the setting existed.
+    requireDpopNonce: edge.requireDpopNonce ?? true,
   })));
+}
+
+export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean): Promise<void> {
+  await requestVoid('/configuration/edges/dpop', {
+    method: 'PUT',
+    query: { edgeId },
+    body: { requireDpopNonce },
+  });
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {
@@ -1399,6 +1414,7 @@ export async function upsertChallengeSettings(
   ipHeader: string,
   acrVocabulary?: Record<string, string[]> | null,
   postLogoutRedirectUris?: string[],
+  requireDpopNonce?: boolean,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1416,6 +1432,7 @@ export async function upsertChallengeSettings(
       ipHeader,
       acrVocabulary: acrVocabulary ?? null,
       postLogoutRedirectUris: postLogoutRedirectUris ?? null,
+      requireDpopNonce: requireDpopNonce ?? null,
     },
   });
 }

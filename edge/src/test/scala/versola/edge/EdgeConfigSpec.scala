@@ -60,7 +60,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
   // Also throwaway — Secret.Bytes32 just needs 32 raw bytes, base64url-encoded.
   private val secret32 = Base64.getUrlEncoder.withoutPadding.encodeToString(Array.fill(32)(7.toByte))
 
-  private def hocon(includeInternalUrl: Boolean): String =
+  private def hocon(includeInternalUrl: Boolean, dpopBlock: String = ""): String =
     val internalLine = if includeInternalUrl then """versola-internal-url = "http://auth:8080"""" else ""
     s"""id = "edge-default"
        |key-id = "test-key"
@@ -81,6 +81,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |edge-url = "http://edge:8095"
        |configuration-cache-refresh-interval = 5 minutes
        |$internalLine
+       |$dpopBlock
        |""".stripMargin
 
   def spec = suite("EdgeConfig")(

@@ -91,6 +91,9 @@ export interface OAuthClient {
   policyUri?: string | null;
   tosUri?: string | null;
   consentFlow?: ConsentFlow | null;
+  /** RFC 9449 section 5.2: the client always uses DPoP, so a token request from it without a
+   *  proof is refused rather than answered with a bearer token. */
+  dpopBoundAccessTokens: boolean;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }
@@ -140,6 +143,9 @@ export interface ChallengeSettingsRecord {
   ipHeader: string;
   acrVocabulary?: Record<string, string[]> | null;
   postLogoutRedirectUris: string[];
+  /** RFC 9449 section 8: whether a DPoP proof from one of this tenant's clients must carry a
+   * nonce the authorization server issued. */
+  requireDpopNonce: boolean;
 }
 
 // Global (non-tenant-scoped) password policy
@@ -261,6 +267,7 @@ export interface PaginatedResponse<T> {
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
+  requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
 }
 
 export interface ServiceKey {

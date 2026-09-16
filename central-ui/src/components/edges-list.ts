@@ -10,6 +10,7 @@ import {
   fetchTenants,
   registerEdge,
   rotateEdgeKey,
+  setEdgeDpopNonce,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { copyToClipboard } from '../utils/helpers';
@@ -32,6 +33,8 @@ export class VersolaEdgesList extends LitElement {
   @state() private expandedEdges: Set<string> = new Set();
   @state() private generatedKey: { edgeId: string; keyId: string; privateKey: string; action: 'created' | 'rotated' } | null = null;
   @state() private copyFeedback = '';
+  @state() private openInfoKey: string | null = null;
+  @state() private savingDpopEdgeId: string | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -224,6 +227,67 @@ export class VersolaEdgesList extends LitElement {
         font-family: var(--font-mono);
       }
 
+      .dpop-section {
+        margin-bottom: var(--spacing-lg);
+      }
+
+      .dpop-label-row {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        margin-bottom: var(--spacing-sm);
+      }
+
+      .dpop-label {
+        font-size: 0.875rem;
+        font-weight: 600;
+        color: var(--text-secondary);
+      }
+
+      .dpop-toggle {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-sm);
+        font-size: 0.875rem;
+        color: var(--text-primary);
+        cursor: pointer;
+      }
+
+      .option-info { position: relative; display: inline-flex; align-items: center; flex: none; }
+      .option-info-button {
+        flex: none;
+        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border-radius: 999px;
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
+        font-size: 0.75rem;
+        font-weight: 700;
+        line-height: 1;
+        padding: 0.25rem 0.45rem;
+        cursor: pointer;
+        font-family: var(--font-family);
+      }
+      .option-info-button:hover { background: rgba(var(--accent-tint), 0.18); border-color: rgba(var(--accent-tint), 0.55); }
+      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2); }
+      .option-tooltip {
+        position: absolute;
+        left: 0;
+        top: calc(100% + 0.4rem);
+        z-index: 20;
+        min-width: 18rem;
+        max-width: min(28rem, 75vw);
+        padding: 0.75rem;
+        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border-radius: var(--radius-md);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
+        display: none;
+      }
+      .option-info.option-info-open .option-tooltip { display: block; }
+      .option-tooltip-title { margin-bottom: 0.5rem; color: var(--accent); font-size: 0.8125rem; font-weight: 600; }
+      .option-tooltip-item { color: var(--text-primary); font-size: 0.75rem; line-height: 1.45; }
+      .option-tooltip-item + .option-tooltip-item { margin-top: 0.375rem; }
+
       .empty-state {
         text-align: center;
         padding: 3rem;
@@ -301,7 +365,7 @@ export class VersolaEdgesList extends LitElement {
       const { id } = e.detail;
       const result = await registerEdge(id);
       this.generatedKey = { edgeId: id, keyId: result.keyId, privateKey: result.privateKey, action: 'created' };
-      this.edges = [...this.edges, { id, hasOldKey: false }];
+      this.edges = [...this.edges, { id, hasOldKey: false, requireDpopNonce: true }];
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to register edge';
     }
@@ -400,6 +464,69 @@ export class VersolaEdgesList extends LitElement {
 
   private getLinkedTenants(edgeId: string): Tenant[] {
     return this.tenants.filter(tenant => tenant.edgeId === edgeId);
+  }
+
+  private toggleInfo(key: string) {
+    this.openInfoKey = this.openInfoKey === key ? null : key;
+  }
+
+  private async handleDpopNonceChange(edge: Edge, requireDpopNonce: boolean) {
+    this.errorMessage = '';
+    this.savingDpopEdgeId = edge.id;
+    try {
+      await setEdgeDpopNonce(edge.id, requireDpopNonce);
+      this.edges = this.edges.map(e => e.id === edge.id ? { ...e, requireDpopNonce } : e);
+    } catch (error) {
+      this.errorMessage = error instanceof Error ? error.message : 'Failed to update the DPoP nonce requirement';
+    } finally {
+      this.savingDpopEdgeId = null;
+    }
+  }
+
+  private renderDpopSection(edge: Edge) {
+    const saving = this.savingDpopEdgeId === edge.id;
+
+    return html`
+      <div class="dpop-section">
+        <div class="dpop-label-row">
+          <span class="dpop-label">DPoP Nonce</span>
+          <div
+            class=${`option-info ${this.openInfoKey === edge.id ? 'option-info-open' : ''}`}
+            @click=${(event: Event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              class="option-info-button"
+              aria-label="DPoP nonce requirement info"
+              aria-expanded=${this.openInfoKey === edge.id ? 'true' : 'false'}
+              @click=${() => this.toggleInfo(edge.id)}
+            >i</button>
+            <div class="option-tooltip" role="tooltip">
+              <div class="option-tooltip-title">Require a DPoP nonce</div>
+              <div class="option-tooltip-item">A DPoP nonce (RFC 9449 section 9) is a short-lived value this edge issues and the client must sign into its next proof. It bounds how long a captured proof stays usable on a proxied call — the one place a stolen proof is actually worth replaying, since it buys the attacker a real API request.</div>
+              <div class="option-tooltip-item">On, every proof this edge checks must carry a nonce it issued. A call without one is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client is expected to retry over. The cost is one extra round trip per client per nonce lifetime, not per request.</div>
+              <div class="option-tooltip-item">Off is not "prefer a nonce": the claim stops being read and no nonce is ever issued. A challenge over a nonce this edge does not insist on is one a nonce-less retry walks straight past, so there is no middle setting to offer.</div>
+              <div class="option-tooltip-item">Before turning it off: nothing breaks, and it takes effect on this edge's next configuration sync. Before turning it on: every client calling through this edge with DPoP must implement the <code>use_dpop_nonce</code> retry, or its proxied calls start failing.</div>
+              <div class="option-tooltip-item">Governs this edge only, and only the calls it proxies. Auth's own <code>/token</code> and <code>/userinfo</code> follow the tenant's <strong>Require DPoP nonce</strong> setting instead.</div>
+            </div>
+          </div>
+        </div>
+        ${this.canManage ? html`
+          <label class="dpop-toggle">
+            <input
+              type="checkbox"
+              .checked=${edge.requireDpopNonce}
+              ?disabled=${saving}
+              @change=${(event: Event) =>
+                this.handleDpopNonceChange(edge, (event.target as HTMLInputElement).checked)}
+            />
+            Required on every proxied call
+          </label>
+        ` : html`
+          <div class="info-text">${edge.requireDpopNonce ? 'Required on every proxied call' : 'Not required'}</div>
+        `}
+      </div>
+    `;
   }
 
   private renderLinkedTenants(edgeId: string) {
@@ -513,6 +640,7 @@ export class VersolaEdgesList extends LitElement {
                   <div class="edge-body-content">
                     ${hasGeneratedKey ? this.renderKeyBanner() : html`
                       ${this.renderLinkedTenants(edge.id)}
+                      ${this.renderDpopSection(edge)}
                     `}
                   </div>
                 </div>

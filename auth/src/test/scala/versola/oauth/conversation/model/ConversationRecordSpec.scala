@@ -53,6 +53,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   private val registrationFlow = RegistrationFlow(

@@ -102,6 +102,7 @@ object OtpChallengeController extends Controller:
             body.ipHeader,
             body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
             body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
+            body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
           ),
         )
       yield Response.status(Status.NoContent)

@@ -34,6 +34,10 @@ private[authorize] case class AuthorizeRequest(
       * when the parameter was absent, distinct from an empty list (which the parameter itself
       * disallows). */
     authorizationDetails: Option[List[AuthorizationDetail]],
+    /** RFC 9449 §10 `dpop_jkt`: the thumbprint of the key the client says it will redeem the
+      * code against. `None` when the parameter was absent, which leaves redemption open to
+      * any key (or none). */
+    dpopJkt: Option[String],
     ip: Option[String] = None,
 ):
   def promptNone: Boolean    = prompt.contains(Prompt.none)

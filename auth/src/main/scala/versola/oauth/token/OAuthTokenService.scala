@@ -84,6 +84,19 @@ object OAuthTokenService:
       */
     private val MaxIdempotentRecoveryHops = 8
 
+    /** RFC 9449 §5.2: a client registered with `dpop_bound_access_tokens` has said it always
+      * uses DPoP, so a token request from it carrying no proof is refused rather than answered
+      * with the bearer token it would otherwise get. Applies to every grant: the registration
+      * is about the client, not about how a particular token was obtained.
+      */
+    private def requireDpop(
+        client: OAuthClientRecord,
+        dpopJkt: Option[String],
+    ): IO[TokenEndpointError, Unit] =
+      ZIO.fail(TokenEndpointError.InvalidDpopProof("client is registered for DPoP-bound access tokens"))
+        .when(client.dpopBoundAccessTokens && dpopJkt.isEmpty)
+        .unit
+
     /** Completes the OAuth 2.0 Authorization Code exchange.
      * Propagates AMR and ACR from the authorization code record to the issued tokens.
      */
@@ -100,6 +113,8 @@ object OAuthTokenService:
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(TokenEndpointError.InvalidClient)
 
+        _ <- requireDpop(client, dpopJkt)
+
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
         codeRecord <- authorizationCodeRepository.find(codeMac)
@@ -107,6 +122,10 @@ object OAuthTokenService:
           .filterOrFail(_.clientId == client.id)(TokenEndpointError.InvalidGrant.CodeClientMismatch)
           .filterOrFail(_.redirectUri == redirectUri)(TokenEndpointError.InvalidGrant.RedirectUriMismatch)
           .filterOrFail(_.verify(codeVerifier))(TokenEndpointError.InvalidGrant.PkceMismatch)
+          // RFC 9449 §10.1: a code the authorization request committed to a key is redeemable
+          // only by a proof for that same key. Checked before the code is marked used, so a
+          // holder of the wrong key cannot burn a code the committed client still needs.
+          .filterOrFail(_.dpopJkt.forall(dpopJkt.contains))(TokenEndpointError.InvalidGrant.CodeKeyMismatch)
 
         _ <- Observability.setSessionId(codeRecord.publicSessionId)
         _ <- Observability.setUserId(codeRecord.userId.toString)
@@ -185,6 +204,8 @@ object OAuthTokenService:
             Observability.setClientId(clientId) *>
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(TokenEndpointError.InvalidClient)
+
+        _ <- requireDpop(client, dpopJkt)
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
@@ -468,6 +489,8 @@ object OAuthTokenService:
             Observability.setClientId(clientId) *>
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(TokenEndpointError.InvalidClient)
+
+        _ <- requireDpop(client, dpopJkt)
 
         _ <- ZIO.fail(TokenEndpointError.InvalidClient)
           .when(client.isPublic)

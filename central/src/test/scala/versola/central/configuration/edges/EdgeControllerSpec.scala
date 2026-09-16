@@ -73,10 +73,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
-  /** The registry endpoint authenticates with `authorizeInternal`, not the Basic header every
+  /** The edge-facing routes authenticate with `authorizeInternal`, not the Basic header every
     * other route here uses, so these cases build their own credentials. */
-  private def registryTestCase(
+  private def internalTestCase(
       description: String,
+      url: URL = URL.root / "configuration" / "edges" / "registry",
       token: Stub[EdgeService] => Task[String],
       tenants: Vector[TenantRecord] = Vector.empty,
       expectedStatus: Status,
@@ -102,12 +103,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         )
         _ <- tenantRepository.getAll.succeedsWith(tenants)
-        _ <- setup(edgeService)
+        // `token` stubs `find` for `authorizeInternal`; a case that wants a particular record
+        // back from it sets its own afterwards, so its setup runs second.
         raw <- token(edgeService)
-        response <- client.batched(
-          Request.get(URL.root / "configuration" / "edges" / "registry")
-            .addHeader(Header.Authorization.Bearer(raw)),
-        )
+        _ <- setup(edgeService)
+        response <- client.batched(Request.get(url).addHeader(Header.Authorization.Bearer(raw)))
         verifyResult <- verify(response)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
@@ -137,7 +137,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     RSAKey.Builder(testKeyPair.publicKey).keyID(testKeyPair.keyId).build()
       .toJSONString.fromJson[Json.Obj].getOrElse(Json.Obj())
 
-  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None)
+  private val edgeRecord = EdgeRecord(edgeId, publicJwk, oldPublicKey = None, requireDpopNonce = true)
 
   def spec = suite("EdgeController")(
     controllerTestCase(
@@ -153,16 +153,16 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service =>
         service.getAllEdges.succeedsWith(
           Vector(
-            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None),
-            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj())),
+            EdgeRecord(edgeId, Json.Obj(), oldPublicKey = None, requireDpopNonce = true),
+            EdgeRecord(EdgeId("edge-2"), Json.Obj(), oldPublicKey = Some(Json.Obj()), requireDpopNonce = false),
           ),
         ),
       verify = (response, _) =>
         for body <- response.body.asJson[GetAllEdgesResponse]
         yield assertTrue(
           body.edges == List(
-            EdgeResponse(edgeId, hasOldKey = false),
-            EdgeResponse(EdgeId("edge-2"), hasOldKey = true),
+            EdgeResponse(edgeId, hasOldKey = false, requireDpopNonce = true),
+            EdgeResponse(EdgeId("edge-2"), hasOldKey = true, requireDpopNonce = false),
           ),
         ),
     ),
@@ -218,7 +218,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.deleteOldEdgeKey.calls == List(edgeId))),
     ),
-    registryTestCase(
+    internalTestCase(
       description = "edges registry serves every edge's public keys and assigned tenants to auth",
       token = authSyncToken,
       expectedStatus = Status.Ok,
@@ -226,7 +226,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.getAllEdges.succeedsWith(
           Vector(
             edgeRecord,
-            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk)),
+            EdgeRecord(EdgeId("edge-2"), publicJwk, oldPublicKey = Some(publicJwk), requireDpopNonce = true),
           ),
         ),
       tenants = Vector(
@@ -256,11 +256,56 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     // An edge has no business reading its peers' identities: the keys it would need to forge
     // one are exactly what this would hand it.
-    registryTestCase(
+    internalTestCase(
       description = "edges registry refuses an edge, authenticated or not",
       token = edgeSyncToken,
       expectedStatus = Status.Unauthorized,
       setup = service => service.getAllEdges.succeedsWith(Vector(edgeRecord)),
       verify = response => ZIO.succeed(assertTrue(response.status == Status.Unauthorized)),
+    ),
+    controllerTestCase(
+      description = "setting an edge's nonce requirement returns 204 No Content and records it",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "dpop").addQueryParam("edgeId", edgeId.toString),
+        body = Body.fromString(SetEdgeDpopRequest(requireDpopNonce = false).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.find.succeedsWith(Some(edgeRecord)) *> service.setRequireDpopNonce.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls == List((edgeId, false)))),
+    ),
+    // Writing policy for an edge that does not exist would be a row no edge ever reads, and a
+    // console that reported success for a typo.
+    controllerTestCase(
+      description = "setting the nonce requirement of an unregistered edge returns 404 and writes nothing",
+      request = Request(
+        method = Method.PUT,
+        url = (URL.root / "configuration" / "edges" / "dpop").addQueryParam("edgeId", "edge-missing"),
+        body = Body.fromString(SetEdgeDpopRequest(requireDpopNonce = true).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NotFound,
+      setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
+    ),
+    internalTestCase(
+      description = "an edge syncing its DPoP policy is served its own row",
+      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
+      token = edgeSyncToken,
+      expectedStatus = Status.Ok,
+      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(requireDpopNonce = false))),
+      verify = response =>
+        for body <- response.body.asJson[EdgeDpopSyncResponse]
+        yield assertTrue(!body.requireDpopNonce),
+    ),
+    // auth has no proxied calls to check proofs on, and an edge id is how this route knows
+    // whose policy to answer with -- a caller that is not an edge has no answer here.
+    internalTestCase(
+      description = "DPoP policy sync refuses auth, which is not an edge",
+      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
+      token = authSyncToken,
+      expectedStatus = Status.Unauthorized,
+      setup = service => service.find.succeedsWith(Some(edgeRecord)),
     ),
   )

@@ -40,6 +40,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       policyUri: Option[String],
       tosUri: Option[String],
       consentFlow: Option[ConsentFlow],
+      dpopBoundAccessTokens: Boolean,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -97,6 +98,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Some("https://example.com/privacy"),
                       Some("https://example.com/terms"),
                       Some(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days))),
+                      true,
                     )
                   ),
                 ).toJson
@@ -129,6 +131,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.policyUri.contains("https://example.com/privacy"),
         client.tosUri.contains("https://example.com/terms"),
         client.consentFlow.contains(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days))),
+        client.dpopBoundAccessTokens,
       )
     },
   ).provideShared(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live) @@ TestAspect.silentLogging

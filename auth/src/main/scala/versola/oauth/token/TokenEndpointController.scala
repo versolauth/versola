@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
@@ -52,7 +52,7 @@ object TokenEndpointController extends Controller:
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
-        dpopJkt <- verifyDpopProof(request, config)
+        dpopJkt <- verifyDpopProof(request, config, credentials.clientId)
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt)
@@ -89,34 +89,39 @@ object TokenEndpointController extends Controller:
   /** RFC 9449 §5: DPoP is opt-in per request here -- a request without a proof still yields
     * bearer tokens. Whether a given client is *required* to use DPoP is a separate, per-client
     * policy decision that isn't wired up yet.
+    *
+    * Whether a proof must also carry a server nonce (§8) is the requesting client's tenant
+    * setting. It is read from the client named in the request's credentials rather than from
+    * anything in the proof, so a client cannot pick the answer; where it is set, the refusal
+    * below is `use_dpop_nonce` and carries one to retry with.
     */
   private def verifyDpopProof(
       request: Request,
       config: CoreConfig,
-  ): ZIO[DpopService, Throwable | TokenEndpointError, Option[String]] =
+      clientId: ClientId,
+  ): ZIO[DpopService & OAuthConfigurationService, Throwable | TokenEndpointError, Option[String]] =
     request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue) match
       case Nil =>
         ZIO.none
       case proofs if proofs.size != 1 =>
         ZIO.fail(TokenEndpointError.InvalidDpopProof("request must contain exactly one DPoP header"))
       case proof :: Nil =>
-        ZIO.serviceWithZIO[DpopService](
-          _.verify(
-            token = proof,
-            method = Method.POST,
-            uri = tokenEndpointUri(config),
-            requireNonce = false,
-          ),
-        )
-          .mapBoth(
-            {
-              case DpopService.Error.InvalidProof(reason) => TokenEndpointError.InvalidDpopProof(reason.toString)
-              case DpopService.Error.Replayed => TokenEndpointError.InvalidDpopProof("proof has already been used")
-              case DpopService.Error.NonceRequired(nonce) => TokenEndpointError.UseDpopNonce(nonce)
-              case error: Throwable => error
-            },
-            verified => Some(verified.jkt),
-          )
+        for
+          requireNonce <- ZIO.serviceWithZIO[OAuthConfigurationService](_.requireDpopNonce(clientId))
+          verified <- ZIO.serviceWithZIO[DpopService](
+            _.verify(
+              token = proof,
+              method = Method.POST,
+              uri = tokenEndpointUri(config),
+              requireNonce = requireNonce,
+            ),
+          ).mapError {
+            case DpopService.Error.InvalidProof(reason) => TokenEndpointError.InvalidDpopProof(reason.toString)
+            case DpopService.Error.Replayed => TokenEndpointError.InvalidDpopProof("proof has already been used")
+            case DpopService.Error.NonceRequired(nonce) => TokenEndpointError.UseDpopNonce(nonce)
+            case error: Throwable => error
+          }
+        yield Some(verified.jkt)
 
   private def toTokenResponse(
       tokens: IssuedTokens,

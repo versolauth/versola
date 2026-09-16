@@ -127,6 +127,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   val passwordRecord = baseRecord.copy(

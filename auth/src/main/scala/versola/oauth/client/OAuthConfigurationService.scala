@@ -29,8 +29,8 @@ import versola.oauth.client.model.{
   ThemeRecord,
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
-import versola.util.{CacheSource, CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
+import versola.util.{CacheSource, CoreConfig, Dpop, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -89,7 +89,23 @@ trait OAuthConfigurationService:
 
   def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]]
 
+  /** RFC 9449 §8: whether a proof presented by this client must carry a nonce this server
+    * issued. A tenant-level setting rather than a per-request one: §11.3 forbids accepting a
+    * nonce-less proof from a client that has been handed a nonce, so the answer has to be
+    * fixed by the time the proof is read, and it has to be the same answer on every replica.
+    *
+    * A tenant with no settings row, and a client auth does not know, both read as `false` --
+    * the same answer every tenant gave before the switch existed. Erring the other way would
+    * mean a cache that has not loaded yet starts challenging clients that cannot retry. */
+  def requireDpopNonce(id: ClientId): UIO[Boolean]
+
   def getMetadata: UIO[Json.Obj]
+
+  /** RFC 9449 §5.1: the signing algorithms an incoming DPoP proof's `alg` may use, as named by
+    * `dpop_signing_alg_values_supported` in the document [[getMetadata]] serves. Read from the
+    * document rather than from [[CoreConfig]] so that advertising the set and enforcing it are
+    * the same act. */
+  def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]]
 
   /** Resolves an RFC 9396 `authorization_details` type to its registered schema, scoped to
     * the requesting client's tenant. */
@@ -128,6 +144,14 @@ object OAuthConfigurationService:
         ZIO.serviceWithZIO[CoreConfig](config =>
           ReloadingCache.make[A](config.configurationCacheRefreshInterval),
         )
+    // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
+    // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --
+    // rather than on every `getMetadata`/`getDpopSigningAlgorithms` call.
+    val metadataCacheSource: URLayer[MetadataSyncClient, CacheSource[ServedMetadata]] =
+      ZLayer.fromFunction((client: MetadataSyncClient) =>
+        new CacheSource[ServedMetadata]:
+          override def getAll: Task[ServedMetadata] = client.getAll.map(ServedMetadata.derive),
+      )
     val syncClients =
       CentralSyncTokenService.live >+>
         ((OAuthClientSyncClient.live >+> cacheLayer[Map[ClientId, OAuthClientRecord]]) >+>
@@ -138,7 +162,7 @@ object OAuthConfigurationService:
           (OtpTemplateSyncClient.live >+> cacheLayer[Vector[OtpTemplateRecord]]) >+>
           (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
           (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
-          (MetadataSyncClient.live >+> cacheLayer[Json.Obj]) >+>
+          (MetadataSyncClient.live >+> metadataCacheSource >+> cacheLayer[ServedMetadata]) >+>
           (ResourceSyncClient.live >+> cacheLayer[ResourceSyncClient.SyncResult]) >+>
           (AuthorizationDetailTypeSyncClient.live >+> cacheLayer[Vector[AuthorizationDetailTypeRecord]]))
     syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
@@ -161,7 +185,7 @@ object OAuthConfigurationService:
       challengeSettingsRepository: ChallengeSettingsSyncClient,
       systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       systemSettingsRepository: SystemSettingsSyncClient,
-      metadataCache: ReloadingCache[Json.Obj],
+      metadataCache: ReloadingCache[ServedMetadata],
       metadataRepository: MetadataSyncClient,
       resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
       resourceRepository: ResourceSyncClient,
@@ -381,6 +405,15 @@ object OAuthConfigurationService:
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
 
+    override def requireDpopNonce(id: ClientId): UIO[Boolean] =
+      find(id).flatMap:
+        case None => ZIO.succeed(false)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(false)(_.requireDpopNonce),
+          )
+
     override def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]] =
       challengeSettingsCache.get.map(
         _.find(_.tenantId == tenantId)
@@ -388,7 +421,10 @@ object OAuthConfigurationService:
       )
 
     override def getMetadata: UIO[Json.Obj] =
-      metadataCache.get
+      metadataCache.get.map(_.document)
+
+    override def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]] =
+      metadataCache.get.map(_.dpopSigningAlgorithms)
 
     override def findAuthorizationDetailType(
         tenantId: TenantId,
@@ -427,7 +463,7 @@ object OAuthConfigurationService:
         systemSettings <- systemSettingsRepository.getAll
         _ <- systemSettingsCache.set(systemSettings)
         metadata <- metadataRepository.getAll
-        _ <- metadataCache.set(metadata)
+        _ <- metadataCache.set(ServedMetadata.derive(metadata))
         resources <- resourceRepository.getAll
         _ <- resourceCache.set(resources)
         authorizationDetailTypes <- authorizationDetailTypeRepository.getAll

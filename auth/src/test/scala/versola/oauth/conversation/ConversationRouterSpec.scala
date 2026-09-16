@@ -114,6 +114,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   val otpRecord = ConversationRecord(
@@ -149,6 +150,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   val login = Login("testuser")

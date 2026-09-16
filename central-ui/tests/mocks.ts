@@ -33,7 +33,7 @@ type ResourceEndpointDto = { id: ResourceEndpointId; method: string; path: strin
 type ResourceDto = { resourceId: string; resource: string; endpoints: ResourceEndpointDto[]; internal?: boolean; secretRotation?: boolean };
 type RoleDto = { id: string; description: Record<string, string>; permissions: string[]; active: boolean };
 type AuthorizationDetailTypeDto = { type: string; description: Record<string, string>; schema: Record<string, unknown> };
-type EdgeDto = { id: string; hasOldKey?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
+type EdgeDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean; tenants?: string[]; clients?: EdgeClientLinkDto[] };
 type EdgeClientLinkDto = { tenantId: string; clientId: string };
 type AuthorizationPresetDto = {
   id: string;
@@ -202,6 +202,7 @@ type ChallengeSettingsDto = {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
+  requireDpopNonce?: boolean | null;
 };
 type LocaleDto = { code: string; name: string; isDefault: boolean; active: boolean };
 
@@ -220,6 +221,7 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   otpLength: 6,
   otpResendAfter: 60,
   passkeySettings: null,
+  requireDpopNonce: false,
 });
 
 type MyPermissionsDto = {
@@ -946,7 +948,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.edges = [{ id: payload.id, hasOldKey: false, tenants: [], clients: [] }, ...state.edges];
+        state.edges = [{ id: payload.id, hasOldKey: false, requireDpopNonce: true, tenants: [], clients: [] }, ...state.edges];
         const mockKeyId = `${new Date().toISOString().split('T')[0]}_12-00-00`;
         const mockPrivateKey = `mock-private-key-${payload.id}-${Date.now()}`;
         await route.fulfill(json({ keyId: mockKeyId, privateKey: mockPrivateKey }, 201));
@@ -973,6 +975,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         await route.fulfill({ status: 204, body: '' });
         return;
       }
+    }
+
+    if (pathname === '/configuration/edges/dpop' && method === 'PUT') {
+      const edgeId = url.searchParams.get('edgeId');
+      const edge = state.edges.find(e => e.id === edgeId);
+      if (!edge) {
+        await route.fulfill(json({ message: `Edge ${edgeId} not found` }, 404));
+        return;
+      }
+
+      edge.requireDpopNonce = (body as { requireDpopNonce: boolean }).requireDpopNonce;
+      await route.fulfill({ status: 204, body: '' });
+      return;
     }
 
     if (pathname === '/configuration/edges/rotate-key' && method === 'POST') {
@@ -1203,6 +1218,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           otpLength: payload.otpLength,
           otpResendAfter: payload.otpResendAfter,
           passkeySettings: payload.passkeySettings ?? null,
+          requireDpopNonce: payload.requireDpopNonce ?? false,
         };
         await route.fulfill({ status: 204, body: '' });
         return;

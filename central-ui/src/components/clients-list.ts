@@ -1392,6 +1392,13 @@ export class VersolaClientsList extends LitElement {
             </div>
           ` : ''}
 
+          ${client.dpopBoundAccessTokens ? html`
+            <div class="auth-flow-setting-row">
+              <div class="auth-flow-setting-label">DPoP</div>
+              <div class="auth-flow-setting-value">Access tokens are always key-bound</div>
+            </div>
+          ` : ''}
+
           <div class="auth-flow-setting-row">
             <div class="auth-flow-setting-label">Logout Settings</div>
             <div class="auth-flow-setting-value auth-flow-setting-stack">

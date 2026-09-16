@@ -126,6 +126,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   val otpRecord = initialConversation.copy(
@@ -326,6 +327,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           authorizationDetails = None,
           grantedScope = None,
           promptConsent = false,
+          dpopJkt = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
@@ -379,6 +381,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           authorizationDetails = None,
           grantedScope = None,
           promptConsent = false,
+          dpopJkt = None,
         )
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Banned)
