@@ -62,6 +62,20 @@ object CampaignReportSpec extends ZIOSpecDefault:
         report.map(_.latency.map(_.count)) == Right(List(100L, 100L, 100L)),
       )
     },
+    test("the window is the oldest and newest snapshot actually merged, not this process's clock") {
+      val reports = List(
+        HistogramWire.report("c3", "driver-0", Instant.parse("2026-09-10T18:00:00Z"), Chunk(sample(tokenRefresh, 90_000L, 10L))),
+        HistogramWire.report("c3", "driver-1", Instant.parse("2026-09-10T18:05:00Z"), Chunk(sample(tokenRefresh, 90_000L, 10L))),
+      )
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, thresholds)
+      assertTrue(
+        report.map(_.startEpochMillis) == Right(Instant.parse("2026-09-10T18:00:00Z").toEpochMilli),
+        report.map(_.endEpochMillis) == Right(Instant.parse("2026-09-10T18:05:00Z").toEpochMilli),
+      )
+    },
+    test("refuses to build a window with no driver reports to take it from") {
+      assertTrue(CampaignReport.assemble("c3", Nil, ErrorTaxonomy.empty, healthyRun, thresholds).isLeft)
+    },
     test("fails on the token endpoint's absolute p99") {
       val reports = List(
         driverReport(
@@ -230,6 +244,8 @@ object CampaignReportSpec extends ZIOSpecDefault:
         json.fromJson[CampaignReport].map(_.passed) == Right(true),
         json.fromJson[CampaignReport].map(_.latency.size) == Right(3),
         json.fromJson[CampaignReport].map(_.health) == Right(healthyRun),
+        json.fromJson[CampaignReport].map(_.startEpochMillis) == Right(report.startEpochMillis),
+        json.fromJson[CampaignReport].map(_.endEpochMillis) == Right(report.endEpochMillis),
       )
     },
   )
