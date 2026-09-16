@@ -314,6 +314,7 @@ case class OAuthClientResponse(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlowDto],
+    dpopBoundAccessTokens: Boolean,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -357,6 +358,9 @@ case class CreateClientRequest(
     policyUri: Option[String] = None,
     tosUri: Option[String] = None,
     consentFlow: Option[ConsentFlowDto] = None,
+    /** RFC 9449 §5.2: defaults to `false`, leaving DPoP opt-in per request for a caller that
+      * does not ask for it. */
+    dpopBoundAccessTokens: Boolean = false,
     /** Defaults to `web` so that a caller written before native clients existed keeps
       * getting the confidential client it has always got.
       */
@@ -391,6 +395,7 @@ case class UpdateClientRequest(
     policyUri: Option[Patch[String]] = None,
     tosUri: Option[Patch[String]] = None,
     consentFlow: Option[Patch[ConsentFlowDto]] = None,
+    dpopBoundAccessTokens: Option[Boolean] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -563,6 +568,7 @@ case class SyncOAuthClientRecord(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlow],
+    dpopBoundAccessTokens: Boolean,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

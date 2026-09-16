@@ -43,6 +43,7 @@ export class VersolaClientForm extends LitElement {
     registrationFlow: null,
     consentFlow: null,
     frontChannelLogoutSessionRequired: true,
+    dpopBoundAccessTokens: false,
   };
 
   @state() private redirectUriInput = '';
@@ -912,6 +913,7 @@ export class VersolaClientForm extends LitElement {
       policyUri: (this.formData.policyUri || '').trim() || null,
       tosUri: (this.formData.tosUri || '').trim() || null,
       consentFlow: authFlow ? this.formData.consentFlow ?? null : null,
+      dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -1044,6 +1046,13 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       frontChannelLogoutSessionRequired: !this.formData.frontChannelLogoutSessionRequired,
+    };
+  }
+
+  private toggleDpopBoundAccessTokens() {
+    this.formData = {
+      ...this.formData,
+      dpopBoundAccessTokens: !this.formData.dpopBoundAccessTokens,
     };
   }
 
@@ -1711,6 +1720,21 @@ export class VersolaClientForm extends LitElement {
                 <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds</div>
               </div>
             ` : ''}
+
+            <div class="form-group">
+              <label class="plain-checkbox-label">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.dpopBoundAccessTokens}
+                  @change=${() => this.toggleDpopBoundAccessTokens()}
+                />
+                Require DPoP-bound access tokens
+              </label>
+              <div class="hint">
+                A token request from this client must carry a DPoP proof; one without it is
+                refused rather than answered with a bearer token.
+              </div>
+            </div>
 
             <div class="form-group">
               <div style="display: flex; align-items: center; gap: 0.4rem;">

@@ -56,6 +56,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   val userInfoResponse = UserInfoResponse(

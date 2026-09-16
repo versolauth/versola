@@ -162,6 +162,7 @@ object OAuthClientService:
           policyUri = request.policyUri,
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(_.toDomain),
+          dpopBoundAccessTokens = request.dpopBoundAccessTokens,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -204,6 +205,7 @@ object OAuthClientService:
           policyUri = request.policyUri,
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(toConsentFlowPatch),
+          dpopBoundAccessTokens = request.dpopBoundAccessTokens,
         )
       yield ()
 

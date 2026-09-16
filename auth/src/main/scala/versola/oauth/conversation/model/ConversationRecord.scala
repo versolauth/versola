@@ -58,6 +58,9 @@ case class ConversationRecord(
     /** `prompt=consent` was requested, so the consent screen is shown even when a matching grant
       * is already on file. Persisted because the decision is taken long after `/authorize`. */
     promptConsent: Boolean,
+    /** RFC 9449 §10 `dpop_jkt` requested at `/authorize`, carried onto the authorization code
+      * this conversation eventually issues. */
+    dpopJkt: Option[String],
 ):
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(

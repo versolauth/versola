@@ -35,6 +35,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
       policyUri: Option[Patch[String]] = None,
       tosUri: Option[Patch[String]] = None,
       consentFlow: Option[Patch[ConsentFlow]] = None,
+      dpopBoundAccessTokens: Option[Boolean] = None,
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]

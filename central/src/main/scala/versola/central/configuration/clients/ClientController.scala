@@ -59,6 +59,7 @@ object ClientController extends Controller:
               policyUri = client.policyUri,
               tosUri = client.tosUri,
               consentFlow = client.consentFlow.map(ConsentFlowDto.fromDomain),
+              dpopBoundAccessTokens = client.dpopBoundAccessTokens,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -108,6 +109,7 @@ object ClientController extends Controller:
             policyUri = client.policyUri,
             tosUri = client.tosUri,
             consentFlow = client.consentFlow,
+            dpopBoundAccessTokens = client.dpopBoundAccessTokens,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

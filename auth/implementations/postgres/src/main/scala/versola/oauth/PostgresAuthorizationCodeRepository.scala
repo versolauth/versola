@@ -64,7 +64,7 @@ class PostgresAuthorizationCodeRepository(
           SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
                  requested_claims, ui_locales, nonce, access_token,
-                 amr, auth_time, acr, resources, authorization_details
+                 amr, auth_time, acr, resources, authorization_details, dpop_jkt
           FROM authorization_codes
           WHERE code = $code AND expires_at > $now"""
           .query[AuthorizationCodeRecord].run()
@@ -98,6 +98,7 @@ class PostgresAuthorizationCodeRepository(
             acr,
             resources,
             authorization_details,
+            dpop_jkt,
             used,
             expires_at
           )
@@ -120,6 +121,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.acr},
             ${record.resources},
             ${record.authorizationDetails},
+            ${record.dpopJkt},
             ${false},
             ${now.plusSeconds(ttl.toSeconds)}
           )

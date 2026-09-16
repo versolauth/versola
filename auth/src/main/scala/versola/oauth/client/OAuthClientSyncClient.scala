@@ -51,6 +51,7 @@ object OAuthClientSyncClient:
             policyUri = client.policyUri,
             tosUri = client.tosUri,
             consentFlow = client.consentFlow,
+            dpopBoundAccessTokens = client.dpopBoundAccessTokens,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -85,6 +86,7 @@ object OAuthClientSyncClient:
         policyUri: Option[String],
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
+        dpopBoundAccessTokens: Boolean,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

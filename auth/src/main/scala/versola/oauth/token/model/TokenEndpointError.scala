@@ -50,6 +50,9 @@ object TokenEndpointError:
     val RefreshTokenReplayed = InvalidGrant("refresh token already exchanged for a successor; the chain was revoked")
     val RefreshChainAlreadyExchanged = InvalidGrant("refresh token chain was already exchanged")
     val RefreshTokenKeyMismatch      = InvalidGrant("refresh token is bound to a different DPoP key")
+    /** RFC 9449 §10.1: the code was committed to a key at `/authorize` and the proof on this
+      * request is for a different one, or for none at all. */
+    val CodeKeyMismatch              = InvalidGrant("authorization code was committed to a different DPoP key")
 
   case object UnsupportedGrantType extends TokenEndpointError:
     val status = Status.BadRequest

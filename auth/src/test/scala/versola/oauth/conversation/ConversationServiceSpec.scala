@@ -83,6 +83,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   /** Consent already decided, so `finish` proceeds straight to issuing the code. */
@@ -163,6 +164,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val consentingClient = registrationClient.copy(
@@ -714,6 +716,18 @@ object ConversationServiceSpec extends UnitSpecBase:
           result.isInstanceOf[ConversationResult.Complete],
           codeCalls.head._2.scope == requestedScope,
         )
+      },
+      test("finish carries the conversation's dpop_jkt onto the issued code") {
+        val env = Env()
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+        val record = conversationRecord.copy(userId = Some(userId), dpopJkt = Some(jkt))
+        for
+          _ <- env.configService.get.succeedsWith(consentingClient)
+          _ <- env.consentService.decide.succeedsWith(ConsentDecision.Satisfied(requestedScope))
+          _ <- issueCodeStubs(env)
+          _ <- env.service.finish(authId, record)
+          codeCalls = env.authorizationCodeRepository.create.calls
+        yield assertTrue(codeCalls.head._2.dpopJkt == Some(jkt))
       },
       test("finish forwards prompt=consent from the conversation to the decision") {
         val env = Env()

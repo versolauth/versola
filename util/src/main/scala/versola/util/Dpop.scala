@@ -56,6 +56,21 @@ object Dpop:
 
     def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
 
+  /** RFC 9449 §10: the authorization request parameter by which a client commits, before a code
+    * exists, to the key that code will be redeemed against. Its value is the same RFC 7638
+    * thumbprint [[Proof.jkt]] carries, so the two are compared as-is at the token endpoint.
+    */
+  object Jkt:
+    val Parameter = "dpop_jkt"
+
+    /** A SHA-256 thumbprint base64url-encoded without padding: 43 characters of the URL-safe
+      * alphabet. Checked rather than accepted verbatim so a value that could never equal a
+      * proof's `jkt` is refused at `/authorize`, where the client can still be told why,
+      * instead of at redemption, where the code is already spent. */
+    private val Pattern = "[A-Za-z0-9_-]{43}".r
+
+    def parse(value: String): Option[String] = Option.when(Pattern.matches(value))(value)
+
   /** The proof's self-contained, already-validated claims.
     *
     * @param jkt RFC 7638 JWK thumbprint of the proof's embedded public key -- what an issued

@@ -133,6 +133,7 @@ type ClientsResponse = {
     policyUri?: string | null;
     tosUri?: string | null;
     consentFlow?: BackendConsentFlow | null;
+    dpopBoundAccessTokens?: boolean;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -707,6 +708,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         policyUri: client.policyUri ?? null,
         tosUri: client.tosUri ?? null,
         consentFlow: consentFlowFromBackend(client.consentFlow),
+        dpopBoundAccessTokens: client.dpopBoundAccessTokens ?? false,
         tenantId,
       };
     }),
@@ -1073,6 +1075,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       policyUri: client.policyUri ?? null,
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
+      dpopBoundAccessTokens: client.dpopBoundAccessTokens,
       clientType: client.clientType ?? 'web',
     },
   });
@@ -1146,6 +1149,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       consentFlow: sameConsentFlow(existing.consentFlow, client.consentFlow)
         ? undefined
         : consentFlowToBackend(client.consentFlow),
+      dpopBoundAccessTokens: existing.dpopBoundAccessTokens !== client.dpopBoundAccessTokens ? client.dpopBoundAccessTokens : undefined,
     },
   });
 

@@ -53,6 +53,7 @@ object AuthMetricsSpec extends ZIOSpecDefault:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   private def count(name: String, labels: Set[MetricLabel]): UIO[Double] =

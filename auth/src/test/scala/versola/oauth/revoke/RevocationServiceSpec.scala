@@ -57,6 +57,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

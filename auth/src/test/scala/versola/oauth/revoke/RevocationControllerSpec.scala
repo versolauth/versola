@@ -50,6 +50,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =

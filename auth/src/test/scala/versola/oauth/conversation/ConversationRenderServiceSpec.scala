@@ -48,6 +48,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId))
@@ -102,6 +103,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   private val consentScope = ScopeRecord(

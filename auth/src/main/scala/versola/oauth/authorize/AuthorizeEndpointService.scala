@@ -356,6 +356,7 @@ object AuthorizeEndpointService:
           authorizationDetails = request.authorizationDetails,
           grantedScope = None,
           promptConsent = request.promptConsent,
+          dpopJkt = request.dpopJkt,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)
@@ -411,6 +412,7 @@ object AuthorizeEndpointService:
           acr = acr,
           resources = request.resources,
           authorizationDetails = request.authorizationDetails,
+          dpopJkt = request.dpopJkt,
         )
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
         _ <- authorizationCodeRepository.create(codeMac, codeRecord, zio.Duration.fromSeconds(60))

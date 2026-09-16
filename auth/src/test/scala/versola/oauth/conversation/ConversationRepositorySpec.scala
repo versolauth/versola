@@ -81,6 +81,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     authorizationDetails = None,
     grantedScope = Some(Set(ScopeToken("openid"))),
     promptConsent = true,
+    dpopJkt = None,
   )
 
   val record2 = record1.copy(
@@ -123,6 +124,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     authorizationDetails = None,
     grantedScope = None,
     promptConsent = false,
+    dpopJkt = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =

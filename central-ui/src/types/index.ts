@@ -91,6 +91,9 @@ export interface OAuthClient {
   policyUri?: string | null;
   tosUri?: string | null;
   consentFlow?: ConsentFlow | null;
+  /** RFC 9449 section 5.2: the client always uses DPoP, so a token request from it without a
+   *  proof is refused rather than answered with a bearer token. */
+  dpopBoundAccessTokens: boolean;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

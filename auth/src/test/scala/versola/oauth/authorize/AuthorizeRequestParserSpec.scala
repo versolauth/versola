@@ -57,6 +57,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
@@ -880,6 +881,41 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.nonce == Some(Nonce("abc123")))
+      },
+    ),
+    suite("dpop_jkt")(
+      test("captures a thumbprint the request commits its code to") {
+        val env = Env()
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> jkt)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.dpopJkt == Some(jkt))
+      },
+      test("leaves the request uncommitted when the parameter is absent") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.dpopJkt.isEmpty)
+      },
+      test("rejects a value no JWK thumbprint could equal") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> "not-a-thumbprint")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+      },
+      test("rejects a thumbprint of the wrong length for SHA-256") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> ("a" * 42))))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
       },
     ),
     suite("prompt")(

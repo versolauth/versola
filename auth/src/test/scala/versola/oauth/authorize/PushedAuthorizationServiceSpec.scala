@@ -39,6 +39,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     policyUri = None,
     tosUri = None,
     consentFlow = None,
+    dpopBoundAccessTokens = false,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(
@@ -62,6 +63,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     idTokenHint = None,
     resources = Nil,
     authorizationDetails = None,
+    dpopJkt = None,
   )
 
   private val credentials = ClientIdWithSecret(clientId, Some(clientSecret))

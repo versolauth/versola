@@ -36,6 +36,9 @@ case class AuthorizationCodeRecord(
       * issued access token and echoed in the token response. `None` when the parameter was
       * absent, distinct from an empty list (which the parameter itself disallows). */
     authorizationDetails: Option[List[AuthorizationDetail]],
+    /** RFC 9449 §10 `dpop_jkt`: the key thumbprint the authorization request committed this
+      * code to. `None` when the request named none, leaving redemption unconstrained. */
+    dpopJkt: Option[String],
 ) derives CanEqual, Equal:
 
   def verify(verifier: CodeVerifier): Boolean =

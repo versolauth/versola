@@ -76,7 +76,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details, granted_scope, prompt_consent
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -120,6 +120,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 authorization_details,
                 granted_scope,
                 prompt_consent,
+                dpop_jkt,
                 expires_at
             ) values (
                 $authId,
@@ -155,6 +156,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.authorizationDetails},
                 ${record.grantedScope}::text[],
                 ${record.promptConsent},
+                ${record.dpopJkt},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()

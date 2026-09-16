@@ -2072,6 +2072,11 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
       required:
         - id
         - clientName
@@ -2084,6 +2089,7 @@ components:
         - theme
         - otpTemplateId
         - frontChannelLogoutSessionRequired
+        - dpopBoundAccessTokens
     GetAllClientsResponse:
       type: object
       properties:
@@ -2153,6 +2159,11 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
       required:
         - tenantId
         - id
@@ -2225,6 +2236,11 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ConsentFlowDto'
             - type: 'null'
+        dpopBoundAccessTokens:
+          type: boolean
+          description: |
+            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
+            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
       required: [clientId, redirectUris, scope, permissions]
     CreateClientResponse:
       type: object
