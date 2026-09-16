@@ -42,6 +42,15 @@ object PushedAuthorizationError:
     val errorDescription = Some("The pushed authorization request exceeds the maximum allowed size")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9126#section-2.3")
 
+  /** RFC 8705 §6.5: the certificate the tenant's proxy forwarded could not be read. Answered
+    * as `invalid_client` because that is what it costs the request, but `reason` — which
+    * describes the deployment's proxy, not the caller — is logged rather than returned. */
+  case class InvalidClientCertificate(reason: String) extends PushedAuthorizationError:
+    val status = Status.Unauthorized
+    val error: String = ErrorCode.InvalidClient
+    val errorDescription = InvalidClient.errorDescription
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8705#section-6.5")
+
   case class Validation(
       error: String,
       errorDescription: Option[String],

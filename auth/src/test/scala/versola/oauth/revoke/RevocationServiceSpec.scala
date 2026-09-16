@@ -4,7 +4,8 @@ import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.logout.BackChannelDispatcher
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.mtls.ClientAuthentication
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
@@ -99,14 +100,24 @@ object RevocationServiceSpec extends UnitSpecBase:
     confirmation = None,
   )
 
+  /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
+  val mtlsClient = testClient.copy(
+    secret = None,
+    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
+  )
+
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
+    // Authentication looks the client up first to see whether it registered an mTLS
+    // subject; an unregistered one falls through to the secret it presented.
+    oauthClientService.find.returnsWith(ZIO.none)
+    val clientAuthentication = ClientAuthentication.Impl(oauthClientService)
     val tokenRepository = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig
 
-    val layer = ZLayer.succeed(oauthClientService) ++
+    val layer = ZLayer.succeed(clientAuthentication) ++
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(accessTokenRevocationService) ++
       ZLayer.succeed(securityService) ++
@@ -127,7 +138,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeRefreshToken(refreshToken1, credentials)
+          result <- service.revokeRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(
           result == (),
           // No access token was presented and none is recorded against the chain, so the push
@@ -144,7 +155,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(None)
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeRefreshToken(refreshToken1, credentials).either
+          result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
       },
       test("fail with InvalidClient when token belongs to different client") {
@@ -159,7 +170,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeRefreshToken(refreshToken1, credentials).either
+          result <- service.revokeRefreshToken(refreshToken1, credentials, None).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
       },
       test("succeed when token not found (idempotent)") {
@@ -173,7 +184,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.delete.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeRefreshToken(refreshToken1, credentials)
+          result <- service.revokeRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(result == ())).provide(env.layer)
       },
     ),
@@ -189,7 +200,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeAccessToken(payload, credentials)
+          result <- service.revokeAccessToken(payload, credentials, None)
         yield assertTrue(
           result == (),
           // The token was parsed here, so its own `exp` is used rather than an upper bound.
@@ -207,7 +218,7 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(None)
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeAccessToken(payload, credentials).either
+          result <- service.revokeAccessToken(payload, credentials, None).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
       },
       test("fail with InvalidClient when token audience doesn't match client") {
@@ -221,8 +232,78 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(otherClient))
 
           service <- ZIO.service[RevocationService]
-          result <- service.revokeAccessToken(payload, credentials).either
+          result <- service.revokeAccessToken(payload, credentials, None).either
         yield assertTrue(result == Left(RevocationError.InvalidClient))).provide(env.layer)
+      },
+    ),
+    suite("mutual TLS")(
+      test("authenticates a client by its certificate, with no secret presented") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+          _ <- env.tokenRepository.delete.succeedsWith(())
+          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
+
+          // No secret: the certificate is the credential.
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          result <- ZIO.serviceWithZIO[RevocationService](
+            _.revokeRefreshToken(refreshToken1, credentials, Some(TestEnvConfig.clientCertificate)),
+          )
+        yield assertTrue(
+          result == (),
+          env.tokenRepository.delete.calls.nonEmpty,
+          env.oauthClientService.verifySecret.calls.isEmpty,
+        )).provide(env.layer)
+      },
+      test("fails with InvalidClient when the certificate's subject is not the registered one") {
+        val env = Env()
+        (for
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          result <- ZIO.serviceWithZIO[RevocationService](
+            _.revokeRefreshToken(refreshToken1, credentials, Some(TestEnvConfig.otherClientCertificate)),
+          ).either
+        yield assertTrue(
+          result == Left(RevocationError.InvalidClient),
+          // Nothing was revoked on the strength of a certificate that authenticates nobody.
+          env.tokenRepository.delete.calls.isEmpty,
+        )).provide(env.layer)
+      },
+      test("fails with InvalidClient when a certificate-authenticated client presents none") {
+        val env = Env()
+        (for
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          result <- ZIO.serviceWithZIO[RevocationService](
+            _.revokeRefreshToken(refreshToken1, credentials, None),
+          ).either
+        yield assertTrue(
+          result == Left(RevocationError.InvalidClient),
+          // The registered method is the certificate, so no secret can stand in for it.
+          env.oauthClientService.verifySecret.calls.isEmpty,
+        )).provide(env.layer)
+      },
+      test("authenticates the credentials-only check RFC 7009 §2.1 requires by certificate") {
+        val env = Env()
+        (for
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          // The path a token of an unrecognised shape takes: no token to check, only the
+          // client to authenticate.
+          result <- ZIO.serviceWithZIO[RevocationService](
+            _.authenticateClient(credentials, Some(TestEnvConfig.clientCertificate)),
+          )
+        yield assertTrue(result.id == clientId1)).provide(env.layer)
       },
     ),
     suite("AccessTokenRevocationService")(

@@ -5,6 +5,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizati
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
+import versola.oauth.mtls.ClientAuthentication
 import versola.util.{Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
@@ -84,6 +85,10 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     val parser = stub[AuthorizeRequestParser]
     val repository = stub[PushedAuthorizationRepository]
     val configuration = stub[OAuthConfigurationService]
+    // Authentication looks the client up first to see whether it registered an mTLS
+    // subject; an unregistered one falls through to the secret it presented.
+    configuration.find.returnsWith(ZIO.none)
+    val clientAuthentication = ClientAuthentication.Impl(configuration)
 
     def service: UIO[PushedAuthorizationService] =
       SecureRandom.live.build.flatMap { env =>
@@ -93,7 +98,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
             config,
             parser,
             repository,
-            configuration,
+            clientAuthentication,
             secureRandom,
             SecurityService.Impl(secureRandom, hashingSemaphore),
           )
@@ -107,6 +112,12 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- repository.create.succeedsWith(())
       yield ()
 
+  /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
+  private val mtlsClientRecord = clientRecord.copy(
+    secret = None,
+    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
+  )
+
   private val request = Request.get(URL.empty / "par")
 
   def spec = suite("PushedAuthorizationService")(
@@ -115,7 +126,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        response <- service.push(validParams(), credentials, request)
+        response <- service.push(validParams(), credentials, None, request)
       yield assertTrue(
         response.requestUri.startsWith(RequestUri.Prefix),
         response.expiresIn == config.parOrDefault.requestUriTtl.toSeconds,
@@ -126,7 +137,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        response <- service.push(validParams("state" -> Chunk("test-state")), credentials, request)
+        response <- service.push(validParams("state" -> Chunk("test-state")), credentials, None, request)
         created = env.repository.create.calls
       yield assertTrue(
         created.size == 1,
@@ -143,6 +154,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- service.push(
           validParams("client_secret" -> Chunk("super-secret")),
           credentials,
+          None,
           request,
         )
         created = env.repository.create.calls.head._2
@@ -158,7 +170,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.happyPath
         secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
         service <- env.service
-        response <- service.push(validParams(), credentials, request)
+        response <- service.push(validParams(), credentials, None, request)
         reference <- ZIO.fromEither(RequestUri.parse(response.requestUri)).mapError(RuntimeException(_))
         hashingSemaphore <- Semaphore.make(1)
         expected <- SecurityService.Impl(secureRandom, hashingSemaphore).mac(Secret(reference), config.security.parRequestsSecret)
@@ -173,7 +185,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.configuration.verifySecret.succeedsWith(None)
         service <- env.service
-        result <- service.push(validParams(), credentials, request).either
+        result <- service.push(validParams(), credentials, None, request).either
       yield assertTrue(result == Left(PushedAuthorizationError.InvalidClient))
     },
     test("rejects a request_uri parameter") {
@@ -181,7 +193,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        result <- service.push(validParams("request_uri" -> Chunk("urn:x")), credentials, request).either
+        result <- service.push(validParams("request_uri" -> Chunk("urn:x")), credentials, None, request).either
       yield assertTrue(result == Left(PushedAuthorizationError.RequestUriNotAllowed))
     },
     test("rejects a request without client_id") {
@@ -189,7 +201,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       for
         _ <- env.happyPath
         service <- env.service
-        result <- service.push(validParams() - "client_id", credentials, request).either
+        result <- service.push(validParams() - "client_id", credentials, None, request).either
       yield assertTrue(result == Left(PushedAuthorizationError.ClientIdMissing))
     },
     test("reports authorization request validation failures directly") {
@@ -198,7 +210,55 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
         _ <- env.parser.validate.failsWith(Error.ScopeMissing(redirectUri, None, useFragment = false))
         service <- env.service
-        result <- service.push(validParams(), credentials, request).either
+        result <- service.push(validParams(), credentials, None, request).either
       yield assertTrue(result.left.toOption.exists(_.asInstanceOf[PushedAuthorizationError].error == "invalid_scope"))
+    },
+    test("authenticates a client by its certificate, with no secret presented") {
+      val env = Env()
+      for
+        _ <- env.configuration.find.succeedsWith(Some(mtlsClientRecord))
+        _ <- env.parser.validate.succeedsWith(parsedRequest)
+        _ <- env.repository.create.succeedsWith(())
+        service <- env.service
+        // No secret: the certificate is the credential.
+        result <- service.push(
+          validParams(),
+          ClientIdWithSecret(clientId, None),
+          Some(TestEnvConfig.clientCertificate),
+          request,
+        ).either
+      yield assertTrue(
+        result.isRight,
+        env.configuration.verifySecret.calls.isEmpty,
+      )
+    },
+    test("rejects a certificate whose subject is not the registered one") {
+      val env = Env()
+      for
+        _ <- env.configuration.find.succeedsWith(Some(mtlsClientRecord))
+        service <- env.service
+        result <- service.push(
+          validParams(),
+          ClientIdWithSecret(clientId, None),
+          Some(TestEnvConfig.otherClientCertificate),
+          request,
+        ).either
+      yield assertTrue(
+        result == Left(PushedAuthorizationError.InvalidClient),
+        // Nothing was pushed on the strength of a certificate that authenticates nobody.
+        env.repository.create.calls.isEmpty,
+      )
+    },
+    test("rejects a certificate-authenticated client that presents none") {
+      val env = Env()
+      for
+        _ <- env.configuration.find.succeedsWith(Some(mtlsClientRecord))
+        service <- env.service
+        result <- service.push(validParams(), ClientIdWithSecret(clientId, None), None, request).either
+      yield assertTrue(
+        result == Left(PushedAuthorizationError.InvalidClient),
+        // The registered method is the certificate, so no secret can stand in for it.
+        env.configuration.verifySecret.calls.isEmpty,
+      )
     },
   )

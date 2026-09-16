@@ -3,6 +3,7 @@ package versola.oauth.token
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
+import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
@@ -21,12 +22,17 @@ trait OAuthTokenService:
       codeExchangeRequest: CodeExchangeRequest,
       tokenCredentials: ClientCredentials,
       dpopJkt: Option[String],
+      /** The client certificate the tenant's proxy forwarded on this request, `None` when the
+        * tenant terminates no mutual TLS or the client presented none. Both the credential an
+        * RFC 8705 §2.1 client authenticates with and what §3 binds the issued tokens to. */
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
   def refreshAccessToken(
       refreshTokenRequest: RefreshTokenRequest,
       tokenCredentials: ClientCredentials,
       dpopJkt: Option[String],
+      certificate: Option[ClientCertificate],
       /** `Idempotency-Key` header, when the client sent one. Lets a client that never received
         * the response to an exchange repeat it instead of being read as replaying the token.
         * Only meaningful for a bearer grant: a bound one is not rotated, so a retry of it is
@@ -38,6 +44,7 @@ trait OAuthTokenService:
       clientCredentialsRequest: ClientCredentialsRequest,
       tokenCredentials: ClientCredentials,
       dpopJkt: Option[String],
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | TokenEndpointError, IssuedTokens]
 
 object OAuthTokenService:
@@ -67,11 +74,12 @@ object OAuthTokenService:
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       authorizationCodeRepository: AuthorizationCodeRepository,
       oauthClientService: OAuthConfigurationService,
+      clientAuthentication: ClientAuthentication,
       sessionRepository: SessionRepository,
       accessTokenRevocationService: AccessTokenRevocationService,
       securityService: SecurityService,
@@ -102,6 +110,43 @@ object OAuthTokenService:
         .when(client.dpopBoundAccessTokens && dpopJkt.isEmpty)
         .unit
 
+    /** RFC 8705 §3.4: a client whose tokens are bound has said every token it gets carries a
+      * `cnf.x5t#S256`, so a request that reaches here with no certificate is refused rather
+      * than answered with the bearer token it would otherwise get. A client that authenticates
+      * by certificate never reaches this without one; the case this catches is the client that
+      * authenticates by secret and registered the flag, whose proxy forwarded nothing.
+      */
+    private def requireCertificate(
+        client: OAuthClientRecord,
+        certificate: Option[ClientCertificate],
+    ): IO[TokenEndpointError, Unit] =
+      ZIO.fail(TokenEndpointError.InvalidClientCertificate("client is registered for certificate-bound access tokens"))
+        .when(client.bindsAccessTokens && certificate.isEmpty)
+        .unit
+
+    /** A bare `client_id` authenticates a public client here: the PKCE exchange, not a secret,
+      * is what that client proves itself with. */
+    private def authenticateClient(
+        tokenCredentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
+    ): IO[TokenEndpointError, OAuthClientRecord] =
+      clientAuthentication.authenticate(credentials = tokenCredentials, certificate = certificate)
+        .orElseFail(TokenEndpointError.InvalidClient)
+
+    /** RFC 8705 §3.1: the confirmation an issued token carries. The certificate contributes a
+      * thumbprint only for a client whose tokens are bound — one that authenticated with a
+      * certificate, or registered the §3.4 flag — so a certificate a tenant's proxy forwards
+      * for every connection does not silently constrain tokens nobody asked to constrain. */
+    private def confirmation(
+        client: OAuthClientRecord,
+        dpopJkt: Option[String],
+        certificate: Option[ClientCertificate],
+    ): Option[Cnf] =
+      Cnf.from(
+        jkt = dpopJkt,
+        x5tS256 = certificate.map(_.thumbprint).filter(_ => client.bindsAccessTokens),
+      )
+
     /** Completes the OAuth 2.0 Authorization Code exchange.
      * Propagates AMR and ACR from the authorization code record to the issued tokens.
      */
@@ -109,16 +154,14 @@ object OAuthTokenService:
         codeExchangeRequest: CodeExchangeRequest,
         tokenCredentials: ClientCredentials,
         dpopJkt: Option[String],
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import codeExchangeRequest.{code, codeVerifier, redirectUri}
       for
-        client <- tokenCredentials match
-          case ClientIdWithSecret(clientId, clientSecret) =>
-            Observability.setClientId(clientId) *>
-              oauthClientService.verifySecret(clientId, clientSecret)
-                .someOrFail(TokenEndpointError.InvalidClient)
+        client <- authenticateClient(tokenCredentials, certificate)
 
         _ <- requireDpop(client, dpopJkt)
+        _ <- requireCertificate(client, certificate)
 
         codeMac <- securityService.mac(Secret(code), config.security.authCodesSecret)
 
@@ -182,7 +225,7 @@ object OAuthTokenService:
             amr = codeRecord.amr,
             authTime = codeRecord.authTime,
             acr = codeRecord.acr,
-            cnf = dpopJkt.map(Cnf.dpop),
+            cnf = confirmation(client, dpopJkt, certificate),
           ),
           previousRefreshToken = None,
           idempotencyKey = None,
@@ -202,19 +245,17 @@ object OAuthTokenService:
         refreshTokenRequest: RefreshTokenRequest,
         tokenCredentials: ClientCredentials,
         dpopJkt: Option[String],
+        certificate: Option[ClientCertificate],
         idempotencyKey: Option[String],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
         _ <- Observability.setPreviousRefreshToken(Base64.urlEncode(refreshToken))
 
-        client <- tokenCredentials match
-          case ClientIdWithSecret(clientId, clientSecret) =>
-            Observability.setClientId(clientId) *>
-              oauthClientService.verifySecret(clientId, clientSecret)
-                .someOrFail(TokenEndpointError.InvalidClient)
+        client <- authenticateClient(tokenCredentials, certificate)
 
         _ <- requireDpop(client, dpopJkt)
+        _ <- requireCertificate(client, certificate)
 
         refreshTokenMac <- securityService.mac(Secret(refreshToken), config.security.refreshTokensSecret)
 
@@ -229,7 +270,7 @@ object OAuthTokenService:
             resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
 
         issuedTokens <- continueRefresh(
-          client, refreshToken, dpopJkt, scope, resources, authorizationDetails,
+          client, refreshToken, dpopJkt, certificate, scope, resources, authorizationDetails,
           refreshTokenMac, idempotencyKeyMac, resolved,
         )
       yield issuedTokens
@@ -268,6 +309,7 @@ object OAuthTokenService:
         client: OAuthClientRecord,
         refreshToken: RefreshToken,
         dpopJkt: Option[String],
+        certificate: Option[ClientCertificate],
         scope: Option[Set[ScopeToken]],
         resources: Option[List[ResourceUri]],
         authorizationDetails: Option[List[AuthorizationDetail]],
@@ -288,6 +330,13 @@ object OAuthTokenService:
         // refresh token with any key of one's own would "upgrade" it into a bound one.
         _ <- ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenKeyMismatch)
           .when(tokenRecord.cnf.flatMap(_.jkt).exists(!dpopJkt.contains(_)))
+
+        // RFC 8705 §3: the same for a certificate-bound grant, and for the same reason. It
+        // matters even where the client also authenticates by certificate: a confidential
+        // client can rotate to a new certificate and would otherwise keep refreshing a grant
+        // bound to the old one, which is the binding the resource server still enforces.
+        _ <- ZIO.fail(TokenEndpointError.InvalidGrant.RefreshTokenCertificateMismatch)
+          .when(tokenRecord.cnf.flatMap(_.x5tS256).exists(!certificate.map(_.thumbprint).contains(_)))
 
         // RFC 6749 §6: the request may narrow the underlying grant but never widen it, so the
         // comparison is against what was granted, not against the client's registration —
@@ -345,7 +394,7 @@ object OAuthTokenService:
               .flatMap:
                 case Some((tip, record)) =>
                   continueRefresh(
-                    client, refreshToken, dpopJkt, scope, resources, authorizationDetails,
+                    client, refreshToken, dpopJkt, certificate, scope, resources, authorizationDetails,
                     refreshTokenMac, idempotencyKeyMac, Resolved(tip, record, retried = true), recoveryHops + 1,
                   )
                 case None =>
@@ -487,15 +536,13 @@ object OAuthTokenService:
         request: ClientCredentialsRequest,
         tokenCredentials: ClientCredentials,
         dpopJkt: Option[String],
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       for
-        client <- tokenCredentials match
-          case ClientIdWithSecret(clientId, clientSecret) =>
-            Observability.setClientId(clientId) *>
-              oauthClientService.verifySecret(clientId, clientSecret)
-                .someOrFail(TokenEndpointError.InvalidClient)
+        client <- authenticateClient(tokenCredentials, certificate)
 
         _ <- requireDpop(client, dpopJkt)
+        _ <- requireCertificate(client, certificate)
 
         _ <- ZIO.fail(TokenEndpointError.InvalidClient)
           .when(client.isPublic)
@@ -543,7 +590,7 @@ object OAuthTokenService:
         amr = Set.empty,
         authTime = None,
         acr = None,
-        cnf = dpopJkt.map(Cnf.dpop),
+        cnf = confirmation(client, dpopJkt, certificate),
       )
 
     /** Orchestrates token issuance for a specific authentication session.

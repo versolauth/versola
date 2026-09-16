@@ -9,6 +9,7 @@ import versola.oauth.client.model.{
   ClientSecret,
   FormRecord,
   Locales,
+  MtlsCertificateSource,
   OAuthClientRecord,
   OtpType,
   OtpSettings,
@@ -68,6 +69,10 @@ trait OAuthConfigurationService:
   def getSubmissionLimits(id: ClientId): UIO[SubmissionLimits]
 
   def getIpHeader(id: ClientId): UIO[String]
+
+  /** Where to read a client certificate for this client's tenant, per RFC 8705 §6.5; `None`
+    * when the tenant's proxy does not terminate mutual TLS. */
+  def getMtlsCertificateSource(id: ClientId): UIO[Option[MtlsCertificateSource]]
 
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
@@ -334,6 +339,19 @@ object OAuthConfigurationService:
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
               .fold("X-Real-IP")(_.ipHeader),
+          )
+
+    override def getMtlsCertificateSource(id: ClientId): UIO[Option[MtlsCertificateSource]] =
+      find(id).flatMap:
+        case None => ZIO.none
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId).flatMap: settings =>
+              // Both or neither: central stores the encoding alongside the header and refuses
+              // one without the other, so a half-configured tenant is a corrupt row rather
+              // than a state to guess an encoding for.
+              settings.mtlsCertificateHeader.zip(settings.mtlsCertificateEncoding)
+                .map(MtlsCertificateSource(_, _)),
           )
 
     override def getOtpSettings(id: ClientId): UIO[OtpSettings] =

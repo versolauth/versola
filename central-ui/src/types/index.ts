@@ -129,6 +129,12 @@ export interface PasskeySettings {
 }
 
 // Challenge Settings
+// How the reverse proxy in front of a tenant delivers a client certificate it terminated
+// mTLS for. There's no standard header or encoding for this across proxies (nginx's
+// `$ssl_client_escaped_cert`, Traefik's `passTLSClientCert`, cloud load balancers' own
+// headers again), so `auth` has to be told which shape to expect.
+export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   allowedPrefixes: string[];
@@ -146,6 +152,8 @@ export interface ChallengeSettingsRecord {
   /** RFC 9449 section 8: whether a DPoP proof from one of this tenant's clients must carry a
    * nonce the authorization server issued. */
   requireDpopNonce: boolean;
+  mtlsCertificateHeader?: string | null;
+  mtlsCertificateEncoding?: MtlsCertificateEncoding | null;
 }
 
 // Global (non-tenant-scoped) password policy

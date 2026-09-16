@@ -1,6 +1,7 @@
 package versola.oauth.revoke
 
 import versola.oauth.client.model.ClientIdWithSecret
+import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
@@ -16,7 +17,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 7009: https://datatracker.ietf.org/doc/html/rfc7009
  */
 object RevocationController extends Controller:
-  type Env = Tracing & RevocationService & JwksService & CoreConfig
+  type Env = Tracing & RevocationService & ClientAuthentication & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     revokeEndpoint,
@@ -33,6 +34,14 @@ object RevocationController extends Controller:
         _ <- credentials match
           case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
 
+        certificate <- ZIO.serviceWithZIO[ClientAuthentication](
+          _.certificate(
+            request = request,
+            credentials = credentials,
+            relevance = CertificateRelevance.Authentication,
+          ).mapError(RevocationError.InvalidClientCertificate(_)),
+        )
+
         token <- FormDecoder.single(form, "token", (s: String) => Right(s))
           .orElseFail(RevocationError.InvalidRequest)
 
@@ -45,7 +54,7 @@ object RevocationController extends Controller:
             // RFC 7009 §2.1 requires the client to be authenticated regardless of whether the
             // token turns out to be one it could ever have held -- so wrong credentials must
             // still fail here rather than being short-circuited by the §2.2 exemption below.
-            revocationService.authenticateClient(credentials) *>
+            revocationService.authenticateClient(credentials, certificate) *>
               Observability.setError("invalid_token", Some("The presented token is not of a recognized form"))
 
           case Some(Right(accessToken)) =>
@@ -55,20 +64,20 @@ object RevocationController extends Controller:
                   Observability.setToken(payload.id.encoded) *>
                     ZIO.foreachDiscard(payload.userId)(uid => Observability.setUserId(uid.toString)),
                 )
-                .flatMap(revocationService.revokeAccessToken(_, credentials))
+                .flatMap(revocationService.revokeAccessToken(_, credentials, certificate))
                 .catchSome {
                   case _: JWT.Error =>
                     // Deserialization failed before RevocationService (and its client
                     // authentication) was ever reached -- authenticate explicitly so wrong
                     // credentials still fail per §2.1, as with the unrecognized-shape case above.
-                    revocationService.authenticateClient(credentials) *>
+                    revocationService.authenticateClient(credentials, certificate) *>
                       Observability.setError("invalid_token", Some("The presented access token could not be verified"))
                 }
 
           case Some(Left(refreshToken)) =>
             Observability.setRouteLabel("token_type", "refresh") *>
               Observability.setRefreshToken(Base64.urlEncode(refreshToken)) *>
-              revocationService.revokeRefreshToken(refreshToken, credentials)
+              revocationService.revokeRefreshToken(refreshToken, credentials, certificate)
       yield Response.ok)
         .catchAll {
           case error: RevocationError =>

@@ -11,6 +11,22 @@ case class PasskeySettings(
     userVerification: String,
 ) derives Schema, JsonCodec
 
+/** How the reverse proxy in front of this tenant delivers a client certificate it terminated
+  * mTLS for. There is no standard header or encoding for this -- every proxy invents its own
+  * (nginx's `$ssl_client_escaped_cert`, Traefik's `passTLSClientCert`, cloud load balancers'
+  * own headers again) -- so `auth` has to be told which shape to expect instead of guessing.
+  */
+enum MtlsCertificateEncoding derives Schema, JsonCodec:
+  /** The full PEM (delimiters included), with `\n` and other reserved characters
+    * percent-encoded. nginx's `$ssl_client_escaped_cert`; ingress-nginx forwards it unchanged
+    * as `ssl-client-cert` when `auth-tls-pass-certificate-to-upstream` is set.
+    */
+  case urlEncodedPem
+  /** The certificate's DER bytes, base64-encoded, with the PEM delimiters and newlines
+    * stripped. Traefik's `passTLSClientCert` middleware with `pem: true`.
+    */
+  case base64Der
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
@@ -28,4 +44,13 @@ case class ChallengeSettingsRecord(
     /** RFC 9449 §8: whether a proof reaching auth's token or userinfo endpoint from one of
       * this tenant's clients must carry a server-issued nonce. */
     requireDpopNonce: Boolean,
+    /** The header the proxy sets with the client certificate it terminated mTLS for. `None`
+      * means this tenant's proxy does not terminate mTLS, so `auth` never looks for one --
+      * matching a client's `mtlsAuth` is then impossible and registering it should be refused.
+      */
+    mtlsCertificateHeader: Option[String],
+    /** How the certificate in `mtlsCertificateHeader` is encoded. Always present together
+      * with `mtlsCertificateHeader` -- a header with no known encoding can't be parsed.
+      */
+    mtlsCertificateEncoding: Option[MtlsCertificateEncoding],
 ) derives Schema, JsonCodec

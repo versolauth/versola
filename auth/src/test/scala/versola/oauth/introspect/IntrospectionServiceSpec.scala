@@ -3,8 +3,9 @@ package versola.oauth.introspect
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
+import versola.oauth.mtls.ClientAuthentication
 import versola.oauth.model.{AccessToken, AccessTokenPayload, Cnf, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
@@ -103,13 +104,24 @@ object IntrospectionServiceSpec extends UnitSpecBase:
       .fromJson[Json].toOption.get,
   ).toOption.get
 
+  /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
+  val mtlsClient = testClient.copy(
+    secret = None,
+    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
+  )
+
   class Env:
     val oauthClientService = stub[OAuthConfigurationService]
+    // Authentication looks the client up first to see whether it registered an mTLS
+    // subject; an unregistered one falls through to the secret it presented.
+    oauthClientService.find.returnsWith(ZIO.none)
+    val clientAuthentication = ClientAuthentication.Impl(oauthClientService)
     val tokenRepository = stub[SessionRepository]
     val securityService = stub[SecurityService]
     val config = TestEnvConfig.coreConfig
 
     val layer = ZLayer.succeed(oauthClientService) ++
+      ZLayer.succeed(clientAuthentication) ++
       ZLayer.succeed(tokenRepository) ++
       ZLayer.succeed(securityService) ++
       ZLayer.succeed(config) >>> IntrospectionService.live
@@ -134,7 +146,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           )))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.authorizationDetails == Some(Json.Arr(paymentDetail.value)),
         )).provide(env.layer)
@@ -158,7 +170,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.active == true,
           result.clientId == Some(clientId1),
@@ -193,7 +205,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.active == true,
           result.tokenType == Some("DPoP"),
@@ -210,7 +222,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(None)
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials).either
+          result <- service.introspectAccessToken(payload, credentials, None).either
         yield assertTrue(result.isLeft)).provide(env.layer)
       },
       test("returns inactive when requester has no access to the token audience") {
@@ -225,7 +237,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.getResourcesForClient.succeedsWith(Nil)
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials).either
+          result <- service.introspectAccessToken(payload, credentials, None).either
         yield assertTrue(result == Left(IntrospectionError.Unauthenticated))).provide(env.layer)
       },
       test("expands the edge audience to issuer resources before intersecting with requester resources") {
@@ -261,7 +273,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.getResourcesForClient.succeedsWith(requesterResources)
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.active,
           result.aud == Some(expectedAudience),
@@ -298,7 +310,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           )
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.active,
           result.aud == Some(expectedAudience),
@@ -335,7 +347,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           )
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectAccessToken(payload, credentials)
+          result <- service.introspectAccessToken(payload, credentials, None)
         yield assertTrue(
           result.active,
           result.aud == Some(expectedAudience),
@@ -356,7 +368,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials)
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(
           result.active == true,
           result.clientId == Some(clientId1),
@@ -382,7 +394,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials)
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(
           result.active == true,
           result.tokenType == Some("DPoP"),
@@ -401,7 +413,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials)
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(
           result.authorizationDetails == Some(Json.Arr(paymentDetail.value)),
         )).provide(env.layer)
@@ -416,7 +428,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(None)
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials)
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None)
         yield assertTrue(
           result.active == false,
           result == IntrospectionResponse.Inactive,
@@ -430,7 +442,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.oauthClientService.verifySecret.succeedsWith(None)
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials).either
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None).either
         yield assertTrue(result.isLeft)).provide(env.layer)
       },
       test("fail with Unauthenticated when token belongs to different client") {
@@ -446,8 +458,91 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
 
           service <- ZIO.service[IntrospectionService]
-          result <- service.introspectRefreshToken(refreshToken1, credentials).either
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None).either
         yield assertTrue(result.isLeft)).provide(env.layer)
+      },
+    ),
+    suite("mutual TLS")(
+      test("authenticates a client by its certificate, with no secret presented") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
+
+          // No secret: the certificate is the credential.
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectRefreshToken(refreshToken1, credentials, Some(TestEnvConfig.clientCertificate))
+        yield assertTrue(
+          result.active,
+          env.oauthClientService.verifySecret.calls.isEmpty,
+        )).provide(env.layer)
+      },
+      test("authenticates an access token introspection by certificate too") {
+        val env = Env()
+        val resource = ResourceRecord(
+          ResourceId("api"),
+          testClient.tenantId,
+          ResourceUri("https://api.example.com"),
+          List(testClient.id),
+          internal = false,
+        )
+        (for
+          now <- Clock.instant
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+          payload = accessTokenPayload(now, audience = Vector(resource.resource))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials, Some(TestEnvConfig.clientCertificate))
+        yield assertTrue(result.active)).provide(env.layer)
+      },
+      test("fails with InvalidClient when the certificate's subject is not the registered one") {
+        val env = Env()
+        (for
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service
+            .introspectRefreshToken(refreshToken1, credentials, Some(TestEnvConfig.otherClientCertificate))
+            .either
+        yield assertTrue(result == Left(IntrospectionError.InvalidClient))).provide(env.layer)
+      },
+      test("fails with InvalidClient when a certificate-authenticated client presents none") {
+        val env = Env()
+        (for
+          _ <- env.oauthClientService.find.succeedsWith(Some(mtlsClient))
+
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None).either
+        yield assertTrue(
+          result == Left(IntrospectionError.InvalidClient),
+          // The registered method is the certificate, so no secret can stand in for it.
+          env.oauthClientService.verifySecret.calls.isEmpty,
+        )).provide(env.layer)
+      },
+      test("still refuses a client that presents nothing but its id") {
+        val env = Env()
+        (for
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          service <- ZIO.service[IntrospectionService]
+          // RFC 7662: a public client's id is not a secret, and knowing one must not be enough
+          // to read the tokens issued for its audience.
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None).either
+        yield assertTrue(
+          result == Left(IntrospectionError.InvalidClient),
+          env.oauthClientService.verifySecret.calls.isEmpty,
+        )).provide(env.layer)
       },
     ),
   )

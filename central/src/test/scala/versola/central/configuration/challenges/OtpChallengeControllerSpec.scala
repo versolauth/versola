@@ -6,7 +6,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.JWT
+import versola.util.{JWT, Patch}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -34,6 +34,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       acrVocabulary: Option[Map[String, List[String]]] = Some(Map("a" -> List("b"))),
       postLogoutRedirectUris: List[String] = List("https://existing.example/logout"),
       requireDpopNonce: Boolean = false,
+      mtlsCertificateHeader: Option[String] = Some("ssl-client-cert"),
+      mtlsCertificateEncoding: Option[MtlsCertificateEncoding] = Some(MtlsCertificateEncoding.urlEncodedPem),
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -50,6 +52,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       acrVocabulary = acrVocabulary,
       postLogoutRedirectUris = postLogoutRedirectUris,
       requireDpopNonce = requireDpopNonce,
+      mtlsCertificateHeader = mtlsCertificateHeader,
+      mtlsCertificateEncoding = mtlsCertificateEncoding,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -229,6 +233,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             acrVocabulary = Some(Map("x" -> List("y"))),
             postLogoutRedirectUris = Some(List("https://new.example/logout")),
             requireDpopNonce = Some(true),
+            mtlsCertificateHeader = Some(Patch.Modified("x-client-cert")),
+            mtlsCertificateEncoding = Some(Patch.Modified(MtlsCertificateEncoding.base64Der)),
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -246,12 +252,14 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               acrVocabulary = Some(Map("x" -> List("y"))),
               postLogoutRedirectUris = List("https://new.example/logout"),
               requireDpopNonce = true,
+              mtlsCertificateHeader = Some("x-client-cert"),
+              mtlsCertificateEncoding = Some(MtlsCertificateEncoding.base64Der),
             ),
           ),
         )),
     ),
     controllerTestCase(
-      description = "PUT challenge-settings falls back to existing settings when optional fields are omitted",
+      description = "PUT challenge-settings clears the certificate source when the console sends it null",
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "challenge-settings",
@@ -270,6 +278,79 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ipHeader = "X-Forwarded-For",
             acrVocabulary = None,
             postLogoutRedirectUris = None,
+            mtlsCertificateHeader = Some(Patch.Deleted),
+            mtlsCertificateEncoding = Some(Patch.Deleted),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      // Turning a tenant's mutual TLS off is the one edit that has nothing to send but null,
+      // so it is the edit an "omitted means keep" rule makes impossible.
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.upsertSettings.calls == List(
+            settings(mtlsCertificateHeader = None, mtlsCertificateEncoding = None),
+          ),
+        )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a header whose encoding was cleared",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = Some(Patch.Modified("x-client-cert")),
+            mtlsCertificateEncoding = Some(Patch.Deleted),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      // Each field resolves on its own, so nothing but this check stops an edit that leaves
+      // the pair half-set -- which `auth` reads as no source at all rather than as an error.
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings falls back to existing settings when optional fields are omitted",
+
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -302,6 +383,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ipHeader = "X-Forwarded-For",
             acrVocabulary = None,
             postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -318,6 +401,8 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               userAgentTtlSeconds = 15552000,
               acrVocabulary = None,
               postLogoutRedirectUris = Nil,
+              mtlsCertificateHeader = None,
+              mtlsCertificateEncoding = None,
             ),
           ),
         )),

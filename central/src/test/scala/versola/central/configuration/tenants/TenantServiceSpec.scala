@@ -57,6 +57,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             acrVocabulary = None,
             postLogoutRedirectUris = Nil,
             requireDpopNonce = false,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
           )),
       )
     },

@@ -29,6 +29,8 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
         requireDpopNonce = false,
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
       for
         seen <- Ref.make(Option.empty[Request])

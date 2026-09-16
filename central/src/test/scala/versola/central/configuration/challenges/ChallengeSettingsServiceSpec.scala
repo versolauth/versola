@@ -25,6 +25,8 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
     requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
   )
 
   class Env(initial: Vector[ChallengeSettingsRecord] = Vector.empty):

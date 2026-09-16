@@ -396,6 +396,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
         requireDpopNonce = false,
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -418,6 +420,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
         requireDpopNonce = false,
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -441,6 +445,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
         requireDpopNonce = false,
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -532,6 +538,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         acrVocabulary = Some(vocabulary),
         postLogoutRedirectUris = List.empty,
         requireDpopNonce = false,
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

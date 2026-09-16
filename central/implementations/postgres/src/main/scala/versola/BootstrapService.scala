@@ -491,6 +491,8 @@ object BootstrapService:
       acrVocabulary = None,
       postLogoutRedirectUris = List("https://id.versola.kz/central/admin/"),
       requireDpopNonce = false,
+      mtlsCertificateHeader = None,
+      mtlsCertificateEncoding = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */

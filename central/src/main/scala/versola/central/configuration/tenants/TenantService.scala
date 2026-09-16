@@ -102,4 +102,8 @@ object TenantService:
         // Off, like every tenant that existed before the switch did: it is turned on per
         // tenant once that tenant's clients are known to retry on `use_dpop_nonce`.
         requireDpopNonce = false,
+        // Null until an operator names the header their proxy forwards a terminated
+        // certificate in; until then this tenant terminates no mutual TLS.
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
       )
