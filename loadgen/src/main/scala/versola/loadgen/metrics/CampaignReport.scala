@@ -68,7 +68,14 @@ case class CampaignHealth(
     refreshRejectedTotal: Long,
     flushDroppedTotal: Long,
     maxDriverCpu: Option[Double],
-    scheduleLagP99: Option[Duration],
+    /** Microseconds, not a `zio.Duration`, because this one is read off a rendered report rather
+      * than by another Scala process: a `Duration` encodes as an ISO-8601 string, which every
+      * consumer would then have to parse before it could be compared against the threshold
+      * printed next to it. The driver measures it in microseconds
+      * ([[versola.loadgen.coordinator.DriverVitals.scheduleLagP99Micros]]) and it now stays that
+      * way end to end.
+      */
+    scheduleLagP99Micros: Option[Long],
     latencyClampedTotal: Long,
 ) derives JsonCodec
 
@@ -76,6 +83,52 @@ case class CampaignHealth(
   * without going back to the raw histograms.
   */
 case class ReportCheck(name: String, passed: Boolean, detail: String) derives JsonCodec
+
+/** One phase as the campaign was planned to run it, which is the one part of the header that is
+  * an intention rather than a measurement -- the schedule is what the coordinator published, and
+  * a phase's actual boundaries are only recoverable from the snapshot timeline.
+  *
+  * `scale` is present for a flat phase and absent for a ramp, where `scaleFrom`/`scaleTo` are; the
+  * shape mirrors `CampaignPhaseConfig` rather than flattening it, because collapsing a ramp to
+  * one number is what makes a report claim a steady rate the campaign never held.
+  */
+case class RunPhase(
+    name: String,
+    durationMillis: Long,
+    scale: Option[Double],
+    scaleFrom: Option[Double],
+    scaleTo: Option[Double],
+) derives JsonCodec
+
+/** The distinct `expires_in` values one client was issued over the run. */
+case class ObservedAccessTokenTtl(clientId: String, expiresInSeconds: List[Long]) derives JsonCodec
+
+/** How the driver presented its access tokens.
+  *
+  * One case, because bearer is the only mode the driver implements. DPoP is a driver-side
+  * capability rather than a SUT setting -- auth accepts a proof on any request and falls back to
+  * bearer without one -- so this becomes a choice, not a discovery, when that lands.
+  */
+enum TokenMode derives JsonCodec:
+  case Bearer
+
+/** The run's own parameters, as `05-report-spec.md` §0 asks for them: what was driven, at what
+  * scale, against what the SUT actually answered.
+  *
+  * Everything here that can be measured is measured. `population` is the store's own count rather
+  * than `population.target` from config, and `shardCount` is the map that was in force rather
+  * than the one the campaign was started with -- a rebalanced campaign that reported its
+  * configured shard count would be describing a run that did not happen.
+  */
+case class CampaignRun(
+    phases: List[RunPhase],
+    population: Map[String, Long],
+    shardCount: Int,
+    shardEpoch: Long,
+    tokenMode: TokenMode,
+    observedTokenTypes: List[String],
+    accessTokenTtls: List[ObservedAccessTokenTtl],
+) derives JsonCodec
 
 /** The body of `GET /report/{campaign}` (§12): merged quantiles, the error taxonomy, and the
   * verdict.
@@ -95,6 +148,7 @@ case class CampaignReport(
     drivers: List[String],
     startEpochMillis: Long,
     endEpochMillis: Long,
+    run: CampaignRun,
     latency: List[LatencySummary],
     taxonomy: ErrorTaxonomy,
     health: CampaignHealth,
@@ -110,6 +164,7 @@ object CampaignReport:
       reports: List[DriverHistogramReport],
       taxonomy: ErrorTaxonomy,
       health: CampaignHealth,
+      run: CampaignRun,
       thresholds: AcceptanceThresholds,
   ): Either[String, CampaignReport] =
     for
@@ -123,7 +178,7 @@ object CampaignReport:
         case (Right(accumulated), one) => HistogramWire.decodeReport(one).map(accumulated ++ _)
     yield
       val merged = HistogramWire.merge(samples)
-      val (checks, notEvaluated) = evaluate(merged, taxonomy, health, thresholds)
+      val (checks, notEvaluated) = evaluate(merged, taxonomy, health, run, thresholds)
       // The interval each driver actually wrote a snapshot in, not this coordinator's own
       // uptime: a restarted coordinator has no memory of the campaign's start, but every row
       // it just merged carries the instant its driver captured it (see `report`'s comment on
@@ -133,6 +188,7 @@ object CampaignReport:
         drivers = reports.map(_.driverId).distinct.sorted,
         startEpochMillis = reports.map(_.capturedAtEpochMillis).min,
         endEpochMillis = reports.map(_.capturedAtEpochMillis).max,
+        run = run,
         latency = HistogramWire.summarise(merged).sortBy(_.id.toString),
         taxonomy = taxonomy,
         health = health,
@@ -145,6 +201,7 @@ object CampaignReport:
       merged: Map[MeasurementId, org.HdrHistogram.Histogram],
       taxonomy: ErrorTaxonomy,
       health: CampaignHealth,
+      run: CampaignRun,
       thresholds: AcceptanceThresholds,
   ): (List[ReportCheck], List[String]) =
     val absolute = thresholds.latency.map: threshold =>
@@ -175,14 +232,14 @@ object CampaignReport:
           )
         case _ => Right(s"p99 of ${threshold.id} relative to ${threshold.relativeTo}")
 
-    val health1 = health.scheduleLagP99 match
+    val health1 = health.scheduleLagP99Micros match
       case None => Right("schedule lag p99")
-      case Some(lag) =>
+      case Some(lagMicros) =>
         Left(
           ReportCheck(
             name = "schedule lag p99",
-            passed = lag.toNanos <= thresholds.scheduleLagP99.toNanos,
-            detail = s"${lag.toMillis}ms against a ${thresholds.scheduleLagP99.toMillis}ms ceiling",
+            passed = lagMicros * 1000L <= thresholds.scheduleLagP99.toNanos,
+            detail = s"${lagMicros / 1000L}ms against a ${thresholds.scheduleLagP99.toMillis}ms ceiling",
           ),
         )
 
@@ -222,7 +279,28 @@ object CampaignReport:
       ),
     )
 
-    val outcomes = absolute ++ relative ++ List(health1, health2)
+    // The run states the mode it drove in; the SUT states the mode it answered in. Neither is
+    // evidence on its own -- a driver that sends no proof and a server that issues bearer tokens
+    // agree, and that agreement is the claim -- so what is checked is that they did not diverge.
+    // A campaign whose tokens came back sender-constrained while the driver presented them as
+    // bearer measured a flow nobody asked for.
+    val expectedTokenType = run.tokenMode match
+      case TokenMode.Bearer => "bearer"
+    val unexpectedTypes = run.observedTokenTypes.filterNot(_.equalsIgnoreCase(expectedTokenType))
+    val tokenModeCheck =
+      if run.observedTokenTypes.isEmpty then Right("token mode")
+      else
+        Left(
+          ReportCheck(
+            name = "token mode",
+            passed = unexpectedTypes.isEmpty,
+            detail =
+              if unexpectedTypes.isEmpty then s"every token came back as $expectedTokenType"
+              else s"${unexpectedTypes.sorted.mkString(", ")} against a run driven as $expectedTokenType",
+          ),
+        )
+
+    val outcomes = absolute ++ relative ++ List(health1, health2, tokenModeCheck)
     (outcomes.collect { case Left(check) => check } ++ counters, outcomes.collect { case Right(missing) => missing })
 
   /** A measurement is only evaluable if something was actually recorded into it.

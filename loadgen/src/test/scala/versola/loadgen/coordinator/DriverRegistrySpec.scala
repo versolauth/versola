@@ -1,6 +1,6 @@
 package versola.loadgen.coordinator
 
-import versola.loadgen.metrics.{ErrorTaxonomy, FailedOutcome, PlannedOutcome, StepOutcome}
+import versola.loadgen.metrics.{ErrorTaxonomy, FailedOutcome, PlannedOutcome, StepOutcome, TokenObservations}
 import zio.test.*
 import zio.*
 
@@ -187,7 +187,7 @@ object DriverRegistrySpec extends ZIOSpecDefault:
         view <- drivers.view(t0, 0L)
       yield assertTrue(
         view.health.maxDriverCpu == Some(0.71),
-        view.health.scheduleLagP99 == Some(Duration.fromMillis(900)),
+        view.health.scheduleLagP99Micros == Some(900_000L),
         view.health.refreshRejectedTotal == 2L,
         view.health.flushDroppedTotal == 5L,
         view.health.latencyClampedTotal == 1L,
@@ -210,6 +210,35 @@ object DriverRegistrySpec extends ZIOSpecDefault:
           ),
         )
         view <- drivers.view(t0, 0L)
-      yield assertTrue(view.health.maxDriverCpu.isEmpty, view.health.scheduleLagP99.isEmpty)
+      yield assertTrue(view.health.maxDriverCpu.isEmpty, view.health.scheduleLagP99Micros.isEmpty)
     },
+    suite("what the SUT said about its tokens")(
+      // Each driver only ever talks to the clients its own shard's users belong to, so the
+      // campaign-wide answer is only visible once the fleet's observations are unioned.
+      test("unions every driver's observations, keeping the clients apart") {
+        for
+          drivers <- registry
+          _ <- drivers.accept(report("driver-0", t0, 1L).copy(observed = observed("mobile-otp", 900L)))
+          _ <- drivers.accept(report("driver-1", t0, 1L).copy(observed = observed("web-otp", 300L)))
+          view <- drivers.view(t0, 0L)
+        yield assertTrue(
+          view.observed.accessTokenTtlsByClient == Map("mobile-otp" -> Set(900L), "web-otp" -> Set(300L)),
+          view.observed.tokenTypes == Set("Bearer"),
+        )
+      },
+      // A restart re-baselines the counters beside these, because a dead process's tallies would
+      // otherwise be counted twice. A TTL is not a tally: what the SUT answered before the pod
+      // was replaced is still what it answered.
+      test("keeps what a replaced driver was told, and does not double-count it") {
+        for
+          drivers <- registry
+          _ <- drivers.accept(report("driver-0", t0, 500L).copy(observed = observed("mobile-otp", 900L)))
+          _ <- drivers.accept(report("driver-0", t0.plusSeconds(10), 1L).copy(observed = observed("mobile-otp", 300L)))
+          view <- drivers.view(t0.plusSeconds(10), 0L)
+        yield assertTrue(view.observed.accessTokenTtlsByClient == Map("mobile-otp" -> Set(900L, 300L)))
+      },
+    ),
   )
+
+  private def observed(clientId: String, ttl: Long): TokenObservations =
+    TokenObservations(Map(clientId -> Set(ttl)), Set("Bearer"), false)

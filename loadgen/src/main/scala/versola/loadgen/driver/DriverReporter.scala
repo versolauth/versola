@@ -1,7 +1,7 @@
 package versola.loadgen.driver
 
 import versola.loadgen.coordinator.{DriverReport, DriverVitals, PlanScenario}
-import versola.loadgen.metrics.{FailedOutcome, LatencyRecorder, ProcessCpu}
+import versola.loadgen.metrics.{FailedOutcome, LatencyRecorder, ProcessCpu, TokenObserver}
 import versola.loadgen.model.Platform
 import versola.loadgen.protocol.InflightRequests
 import versola.loadgen.scenario.{ArrivalTally, BusyUsers, ScenarioRecorder}
@@ -44,6 +44,7 @@ final class DriverReporter(
       clamped <- latencies.clampedTotal
       lagP99 <- lagQuantile.intervalP99Micros
       cpuRatio <- cpu.ratio
+      observed <- TokenObserver.current
     yield DriverReport(
       version = DriverReport.version,
       campaign = campaign,
@@ -65,6 +66,7 @@ final class DriverReporter(
         storeFlushDroppedTotal = dropped,
         latencyClampedTotal = clamped,
       ),
+      observed = observed,
     )
 
   /** Posts one report, and treats a refusal as a lost interval rather than as a driver fault.

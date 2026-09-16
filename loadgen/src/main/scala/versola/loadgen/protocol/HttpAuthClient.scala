@@ -1,6 +1,7 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
+import versola.loadgen.metrics.TokenObserver
 import zio.http.*
 import zio.http.Header.Authorization
 import zio.json.*
@@ -9,8 +10,13 @@ import zio.{Duration, IO, ZIO, ZLayer}
 /** The `/token` response, with only the fields a driver uses. A `derives JsonDecoder` case
   * class rather than the e2e client's `Json.Obj`: the AST costs one allocation per field per
   * response, on the one endpoint every single session hits (§3.2).
+  *
+  * `token_type` is `Option` despite being REQUIRED by RFC 6749 §5.1, because the report states
+  * the mode the run was driven in against the mode the SUT answered in, and a decode that failed
+  * on an omission would turn that finding into a dead campaign.
   */
 private case class TokenResponseBody(
+    token_type: Option[String],
     access_token: String,
     expires_in: Long,
     refresh_token: Option[String],
@@ -182,7 +188,7 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       )
       received <- exchange.send(tokenRequest(fields, client))
       tokens <-
-        if received.status == Status.Ok then decodeTokens(received.body)
+        if received.status == Status.Ok then decodeTokens(received.body, client.clientId)
         else ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, tokenEndpoint))
     yield tokens
 
@@ -190,7 +196,7 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
     exchange
       .send(tokenRequest(List("grant_type" -> "refresh_token", "refresh_token" -> token.value), client))
       .flatMap: received =>
-        if received.status == Status.Ok then decodeTokens(received.body)
+        if received.status == Status.Ok then decodeTokens(received.body, client.clientId)
         // A 400 is the token endpoint rejecting the refresh grant itself (RFC 6749 §5.2) --
         // the only thing `loadgen_refresh_rejected_total` (§11) is supposed to measure.
         else if received.status == Status.BadRequest then ZIO.fail(ProtocolError.RefreshRejected(refreshRejection(received)))
@@ -281,19 +287,18 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
       .addHeader(HttpExchange.formContentType)
     client.clientSecret.fold(request)(secret => request.addHeader(Authorization.Basic(client.clientId, secret)))
 
-  private def decodeTokens(body: String): IO[ProtocolError, Tokens] =
+  private def decodeTokens(body: String, clientId: String): IO[ProtocolError, Tokens] =
     ZIO
       .fromEither(body.fromJson[TokenResponseBody])
-      .mapBoth(
-        error => ProtocolError.MalformedResponse(tokenEndpoint, error),
-        raw =>
-          Tokens(
-            AccessToken(raw.access_token),
-            raw.refresh_token.map(RefreshToken.apply),
-            raw.id_token.map(IdToken.apply),
-            raw.expires_in,
-          ),
-      )
+      .mapError(error => ProtocolError.MalformedResponse(tokenEndpoint, error))
+      .tap(raw => ZIO.succeed(TokenObserver.record(clientId, raw.expires_in, raw.token_type)))
+      .map: raw =>
+        Tokens(
+          AccessToken(raw.access_token),
+          raw.refresh_token.map(RefreshToken.apply),
+          raw.id_token.map(IdToken.apply),
+          raw.expires_in,
+        )
 
 object HttpAuthClient:
   private[protocol] val conversationCookie = "SSO_CONVERSATION"
