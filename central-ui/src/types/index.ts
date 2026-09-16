@@ -267,6 +267,7 @@ export interface PaginatedResponse<T> {
 export interface Edge {
   id: string;
   hasOldKey?: boolean;  // True if old key exists during rotation
+  requireDpopNonce: boolean;  // RFC 9449 section 9 on the calls this edge proxies
 }
 
 export interface ServiceKey {

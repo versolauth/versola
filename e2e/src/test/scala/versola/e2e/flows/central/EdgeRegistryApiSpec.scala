@@ -64,6 +64,37 @@ object EdgeRegistryApiSpec extends CentralApiSpec:
       yield assertTrue(record.nonEmpty) &&
         assertTrue(record.flatMap(_.bool("hasOldKey")).contains(false))
     },
+    // RFC 9449 §9 at the resource server is central's to hold, not the edge's own config file:
+    // an operator turning it off for one edge should not need a redeploy to do it.
+    test("a registered edge requires a DPoP nonce until the console says otherwise") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-edge")
+        _ <- central.post(path, register(id))
+        registered <- read(central, id)
+        turnedOff <- central.put(
+          s"$path/dpop",
+          Json.Obj("requireDpopNonce" -> Json.Bool(false)),
+          "edgeId" -> id,
+        )
+        after <- read(central, id, expect = !_.bool("requireDpopNonce").contains(true))
+        _ <- cleanup(central, id)
+      yield assertTrue(registered.flatMap(_.bool("requireDpopNonce")).contains(true))
+        .label("an edge registered before anyone thought about the setting must still demand a nonce") &&
+        assertTrue(turnedOff.status == Status.NoContent) &&
+        assertTrue(after.flatMap(_.bool("requireDpopNonce")).contains(false))
+    },
+    test("setting the nonce requirement of an unregistered edge answers 404") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-edge")
+        result <- central.put(
+          s"$path/dpop",
+          Json.Obj("requireDpopNonce" -> Json.Bool(false)),
+          "edgeId" -> id,
+        )
+      yield assertTrue(result.status == Status.NotFound)
+    },
     test("the listing does not carry any private key material") {
       for
         central <- api

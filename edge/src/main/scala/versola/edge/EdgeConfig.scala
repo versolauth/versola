@@ -96,43 +96,34 @@ object EdgeConfig:
       batchSize: Int = 50000,
   )
 
-  /** RFC 9449 proof validation at the resource server.
+  /** RFC 9449 proof validation at the resource server: the parts that are facts about this
+    * deployment rather than decisions about policy.
+    *
+    * What is *not* here is deliberate. The accepted signing algorithms (§5.1) are read off the
+    * authorization server metadata document central holds, so `auth` and `edge` cannot come to
+    * disagree about what a client may sign with; whether a nonce is required (§9) is per edge
+    * in central, so it can be changed from the console rather than by redeploying the edge. See
+    * `DpopAlgorithmsSyncClient` and `DpopPolicySyncClient`.
     *
     * @param nonceSalt keys this edge's `DPoP-Nonce` space. §9 keeps the resource server's nonces
     *   separate from the authorization server's, so this is deliberately not auth's
     *   `dpop-nonces-secret`: a nonce minted by auth is not valid here.
-    * @param allowedAlgorithms signing algorithms an incoming proof's `alg` may use. Kept
-    *   independent of auth's list so a deployment can tighten the resource server without
-    *   having to re-issue tokens.
     * @param iatLeeway maximum distance between a proof's `iat` and now, in either direction.
     *   Also the window a proof is remembered for, so it sizes the replay guard.
     * @param nonceTtl how long a nonce this edge issued stays acceptable.
-    * @param requireNonce §9: whether every proof must carry a nonce this edge issued. On by
-    *   default, and the default is the one to keep: a proxied API call is the thing a captured
-    *   proof is actually worth replaying against, and the cost is one extra round trip per
-    *   `nonce-ttl` per client. Per edge rather than per resource or per endpoint because a
-    *   proof's `htm`/`htu` already bind it to one method and URL, so a nonce accepted across
-    *   this edge's resources buys an attacker nothing that splitting the space would deny.
-    *   Turning it off is a real reduction in what §9 gives you, not a tuning knob.
     */
   case class Dpop(
       nonceSalt: Secret.Bytes32,
-      allowedAlgorithms: Set[versola.util.Dpop.Algorithm],
       iatLeeway: Duration,
       nonceTtl: Duration,
-      requireNonce: Boolean = true,
   )
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for
-      * callers that want them without restating each one. RFC 9449 §5 mandates `ES256`;
-      * `PS256` is included for FAPI 2.0. `RS256` is verifiable but left out, matching auth's
-      * own default -- a deployment can opt back in explicitly.
+      * callers that want them without restating each one.
       */
     def default(nonceSalt: Secret.Bytes32): Dpop = Dpop(
       nonceSalt = nonceSalt,
-      allowedAlgorithms = Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256),
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(600),
-      requireNonce = true,
     )

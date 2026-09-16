@@ -779,19 +779,18 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  ]
        |}
        |
-       |# RFC 9449 proof validation on proxied calls, against edge-url below. Every
-       |# proof must carry a valid nonce (§9) while require-nonce is on, which costs
-       |# a client one round trip on its first request and after each nonce-ttl.
-       |# Leave it on: a proxied call is what a captured proof is worth replaying
-       |# against, so this is the one place §9 earns its keep.
+       |# RFC 9449 proof validation on proxied calls, against edge-url below. Only
+       |# what is a fact about this deployment lives here: the salt keying this
+       |# edge's own nonce space, and the two windows. What a proof may be signed
+       |# with (§5.1) is read off the metadata document central holds, so this edge
+       |# and auth cannot disagree about it; whether a nonce is required (§9) is
+       |# per edge in central -- change it in the console, not by redeploying.
        |# Remove this block entirely to turn DPoP off; a key-bound token is still
-       |# refused over Bearer either way.
+       |# refused over Bearer the same way.
        |dpop {
        |  nonce-salt = ${secretField(useOpenBao, edgeDpopNonceSalt, "EDGE_DPOP_NONCE_SALT")}
-       |  allowed-algorithms = ["ES256", "PS256"]
        |  iat-leeway = "60 seconds"
        |  nonce-ttl = "600 seconds"
-       |  require-nonce = true
        |}
        |
        |central {

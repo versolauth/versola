@@ -5,6 +5,7 @@ import com.nimbusds.jose.jwk.{ECKey, JWK, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.SignedJWT
 import zio.http.Method
+import zio.json.ast.Json
 import zio.{Duration, IO, ZIO}
 
 import java.net.URI
@@ -55,6 +56,23 @@ object Dpop:
     def fromJws(alg: JWSAlgorithm): Option[Algorithm] = values.find(_.jwsAlgorithm == alg)
 
     def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
+
+    /** The set an incoming proof's `alg` is checked against, read off the authorization server
+      * metadata document -- [[MetadataField]] is the only place it is written down, so `auth`
+      * (which serves the document) and `edge` (which syncs it) hold proofs to the same set
+      * clients discover.
+      *
+      * An algorithm the document names but [[Dpop.verify]] has no verifier for is dropped, so a
+      * proof can never be refused for an `alg` the deployment advertised. A field that names
+      * nothing recognizable therefore derives to an empty set and DPoP goes unusable: the
+      * operator asked for algorithms none of which exist here, and quietly substituting
+      * [[Default]] would accept the very keys they took the trouble to exclude. Only a field
+      * that is absent, or too malformed to read an intent off at all, falls back.
+      */
+    def fromMetadata(document: Json.Obj): Set[Algorithm] =
+      document.get(MetadataField) match
+        case None => Default
+        case Some(field) => field.as[Set[String]].toOption.fold(Default)(_.flatMap(fromName))
 
   /** RFC 9449 §10: the authorization request parameter by which a client commits, before a code
     * exists, to the key that code will be redeemed against. Its value is the same RFC 7638

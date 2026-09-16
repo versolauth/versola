@@ -20,7 +20,9 @@ import zio.test.*
   *
   * Requires an edge with a `dpop { }` block configured (as `scripts/gen-env.scala` generates
   * by default) -- without one, edge refuses the `DPoP` scheme outright and the bound-token
-  * tests below fail at the first call rather than telling you the assertion broke.
+  * tests below fail at the first call rather than telling you the assertion broke. Whether a
+  * nonce is demanded is not in that block: it is central's per-edge setting, registered edges
+  * default to requiring one, and the round trip below is that default being exercised.
   */
 object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
 
@@ -91,9 +93,9 @@ object DpopBoundTokenSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & E
 
   /** A proxied call under the `DPoP` scheme, including the §9 nonce round trip.
     *
-    * Edge demands a nonce for every proof once it is configured for DPoP, so the first call is
-    * expected to come back 401 carrying one. Exactly one retry: a second challenge would mean
-    * the nonce edge just issued is not one it accepts.
+    * Edge demands a nonce for every proof while central has it set to (the default for a
+    * registered edge), so the first call is expected to come back 401 carrying one. Exactly one
+    * retry: a second challenge would mean the nonce edge just issued is not one it accepts.
     */
   private def dpopProxy(
       method: Method,

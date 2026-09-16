@@ -768,7 +768,7 @@ export class VersolaChallengesList extends LitElement {
         <div class="option-tooltip-item">On, every proof this tenant's clients present at <code>/token</code> and <code>/userinfo</code> must carry a nonce. A request without one is not simply refused — it is answered with <code>use_dpop_nonce</code> and a fresh nonce in the <code>DPoP-Nonce</code> header, which the client is expected to retry over.</div>
         <div class="option-tooltip-item">Before turning it on: every client of this tenant that uses DPoP must implement that retry. One that does not stops being able to get or refresh a token — it will read the challenge as a plain failure. Clients that do not use DPoP at all are unaffected.</div>
         <div class="option-tooltip-item">The cost when it works is one extra round trip per client per nonce lifetime, not per request. Turning it back off takes effect at once and breaks nothing: a proof carrying a nonce is still accepted, the nonce just stops being required.</div>
-        <div class="option-tooltip-item">Applies to this tenant's clients only, and only to auth's own endpoints. Proxied API calls through an edge are governed by that edge's own <code>require-nonce</code> setting, which is on by default.</div>
+        <div class="option-tooltip-item">Applies to this tenant's clients only, and only to auth's own endpoints. Proxied API calls through an edge are governed by that edge's own <strong>DPoP Nonce</strong> setting on the Edges page, which is on by default.</div>
       `,
       'DPoP nonce requirement info',
     );

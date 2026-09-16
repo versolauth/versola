@@ -121,29 +121,16 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.versolaUrl == URL.decode("http://localhost:8080").toOption.get,
         )
       },
-      // RFC 9449 §9 was unconditional at edge before it became configurable, and every
-      // env.conf generated then has a dpop block with no require-nonce key. Those
-      // deployments must keep requiring a nonce rather than quietly stop -- an absent key
-      // is not a deployment asking for less.
-      test("requireNonce defaults to true when a dpop block omits require-nonce") {
+      // Neither key exists on EdgeConfig.Dpop any more -- what a proof may be signed with is
+      // read off central's metadata document, and whether a nonce is required is central's
+      // per-edge setting. Every env.conf generated before that still names both, and an edge
+      // that refused to start on a key it no longer reads would take the deployment down on
+      // upgrade rather than ignore two stale lines.
+      test("a dpop block still carrying require-nonce and allowed-algorithms parses") {
         val dpopBlock =
           s"""dpop {
              |  nonce-salt = "$secret32"
-             |  allowed-algorithms = ["ES256"]
-             |  iat-leeway = 60 seconds
-             |  nonce-ttl = 600 seconds
-             |}""".stripMargin
-        for config <- TypesafeConfigProvider
-            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = dpopBlock))
-            .kebabCase
-            .load(edgeConfigDescriptor)
-        yield assertTrue(config.dpop.exists(_.requireNonce))
-      },
-      test("require-nonce = false is honoured where a deployment sets it explicitly") {
-        val dpopBlock =
-          s"""dpop {
-             |  nonce-salt = "$secret32"
-             |  allowed-algorithms = ["ES256"]
+             |  allowed-algorithms = ["ES256", "PS256"]
              |  iat-leeway = 60 seconds
              |  nonce-ttl = 600 seconds
              |  require-nonce = false
@@ -152,7 +139,10 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = dpopBlock))
             .kebabCase
             .load(edgeConfigDescriptor)
-        yield assertTrue(config.dpop.exists(!_.requireNonce))
+        yield assertTrue(
+          config.dpop.exists(_.iatLeeway == zio.Duration.fromSeconds(60)),
+          config.dpop.exists(_.nonceTtl == zio.Duration.fromSeconds(600)),
+        )
       },
     ),
   )

@@ -22,6 +22,8 @@ object EdgeController extends Controller:
     deleteOldEdgeKeyEndpoint,
     deleteEdgeEndpoint,
     edgesRegistryEndpoint,
+    setEdgeDpopEndpoint,
+    edgeDpopSyncEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -35,6 +37,7 @@ object EdgeController extends Controller:
             EdgeResponse(
               id = edge.id,
               hasOldKey = edge.oldPublicKey.isDefined,
+              requireDpopNonce = edge.requireDpopNonce,
             ),
           ).toList,
         )
@@ -87,6 +90,39 @@ object EdgeController extends Controller:
       yield Response.status(Status.NoContent)
     }
 
+  val setEdgeDpopEndpoint =
+    Method.PUT / "configuration" / "edges" / "dpop" -> handler { (request: Request) =>
+      for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[EdgeService]
+        edgeId <- request.url.queryZIO[EdgeId]("edgeId")
+        body <- request.bodyAs[SetEdgeDpopRequest]
+        edge <- service.find(edgeId)
+        response <-
+          if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
+          else service.setRequireDpopNonce(edgeId, body.requireDpopNonce).as(Response.status(Status.NoContent))
+      yield response
+    }
+
+  /** What the named edge is to do about RFC 9449 §9 on the calls it proxies, for the edge
+    * itself -- the resource-server half of the same decision a tenant's `require_dpop_nonce`
+    * makes for `auth`'s endpoints.
+    *
+    * Restricted to edges, and an edge is served only its own row: an edge has no use for a
+    * peer's policy, and `authorizeInternal` has already proven which edge is asking by the key
+    * it signed the call with, so the id is not taken from the request.
+    */
+  val edgeDpopSyncEndpoint =
+    Method.GET / "configuration" / "edges" / "dpop" / "sync" -> handler { (request: Request) =>
+      for
+        callerEdgeId <- authorizeInternal(request)
+        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
+        service <- ZIO.service[EdgeService]
+        edge <- service.find(edgeId).someOrFail(Unauthorized)
+        response = EdgeDpopSyncResponse(requireDpopNonce = edge.requireDpopNonce)
+      yield Response.json(response.toJson)
+    }
+
   /** The registered signing keys of every edge, for auth to authenticate the edges that call
     * it directly (see `versola.util.EdgeAssertion`). Public keys only -- the same JWKs
     * `authorizeInternal` verifies an edge's own sync calls against.
@@ -126,6 +162,15 @@ case class RegisterEdgeRequest(
 case class EdgeResponse(
     id: EdgeId,
     hasOldKey: Boolean,
+    requireDpopNonce: Boolean,
+) derives Schema, JsonCodec
+
+case class SetEdgeDpopRequest(
+    requireDpopNonce: Boolean,
+) derives Schema, JsonCodec
+
+case class EdgeDpopSyncResponse(
+    requireDpopNonce: Boolean,
 ) derives Schema, JsonCodec
 
 case class GetAllEdgesResponse(

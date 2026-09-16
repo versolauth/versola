@@ -81,10 +81,17 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           deleteCalls.head == edgeId,
         )
     },
+    test("setRequireDpopNonce records the value against the named edge") {
+      val env = Env()
+      for
+        _ <- env.repository.setRequireDpopNonce.succeedsWith(())
+        _ <- env.service.setRequireDpopNonce(edgeId, false)
+      yield assertTrue(env.repository.setRequireDpopNonce.calls == List((edgeId, false)))
+    },
     test("getAllEdges returns edges from cache") {
       val edges = Vector(
-        EdgeRecord(edge2Id, testJwk, None),
-        EdgeRecord(edgeId, testJwk, None),
+        EdgeRecord(edge2Id, testJwk, None, requireDpopNonce = true),
+        EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true),
       )
       val env = Env(initial = edges)
       for all <- env.service.getAllEdges
@@ -94,7 +101,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("find returns edge from cache") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true))
       val env = Env(initial = edges)
       for
         found <- env.service.find(edgeId)
@@ -105,7 +112,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("sync reloads cache from repository") {
-      val edges = Vector(EdgeRecord(edgeId, testJwk, None))
+      val edges = Vector(EdgeRecord(edgeId, testJwk, None, requireDpopNonce = true))
       val env = Env()
       for
         _ <- env.repository.getAll.succeedsWith(edges)

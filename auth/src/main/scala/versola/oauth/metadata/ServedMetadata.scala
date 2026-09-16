@@ -20,20 +20,13 @@ import zio.json.ast.Json
 case class ServedMetadata(document: Json.Obj, dpopSigningAlgorithms: Set[Dpop.Algorithm])
 
 object ServedMetadata:
-  /** An algorithm the stored document names but [[Dpop.verify]] has no verifier for is dropped
-    * rather than advertised, so the served document can never promise one a proof would then be
-    * refused for. A document that names the field but nothing recognizable therefore derives to
-    * an empty set and DPoP goes unusable: the operator asked for algorithms none of which exist
-    * here, and quietly substituting the defaults would accept the very keys they took the
-    * trouble to exclude. Only a field that is absent, or too malformed to read an intent off at
-    * all, falls back to [[Dpop.Algorithm.Default]].
+  /** The algorithm set is [[Dpop.Algorithm.fromMetadata]]'s, and the served document is then
+    * normalized to name exactly that set -- so what clients discover here and what `edge`
+    * holds a proxied call's proof to, reading the same field off the same document, are one
+    * decision rather than two copies of one.
     */
   def derive(stored: Json.Obj): ServedMetadata =
-    val algorithms = stored.get(Dpop.Algorithm.MetadataField) match
-      case None => Dpop.Algorithm.Default
-      case Some(field) =>
-        field.as[Set[String]].toOption
-          .fold(Dpop.Algorithm.Default)(_.flatMap(Dpop.Algorithm.fromName))
+    val algorithms = Dpop.Algorithm.fromMetadata(stored)
     val advertised = Json.Arr(algorithms.toList.map(algorithm => Json.Str(algorithm.toString)).sortBy(_.value)*)
     val document = Json.Obj(
       (stored.fields.filterNot(_._1 == Dpop.Algorithm.MetadataField) :+

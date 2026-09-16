@@ -5,7 +5,7 @@ import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
-import versola.edge.dpop.{DpopReplayGuard, DpopVerifier}
+import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
 import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
@@ -53,6 +53,15 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val oauthClient = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
   private val svcClient = OAuthClient(id = ClientId("svc-1"), secret = Secret(Array.fill(48)(3.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
 
+  /** What central currently says about this edge -- the only thing DpopVerifier reads it for.
+    * Nonce required, algorithms as the metadata document defaults to. */
+  private val dpopPolicy: DpopPolicyService =
+    new DpopPolicyService:
+      override def allowedAlgorithms: UIO[Set[versola.util.Dpop.Algorithm]] =
+        ZIO.succeed(versola.util.Dpop.Algorithm.Default)
+      override def requireNonce: UIO[Boolean] = ZIO.succeed(true)
+      override def refreshNow: Task[Unit] = ZIO.unit
+
   class Env:
     val secureRandom = stub[SecureRandom]
     val loginRepository = stub[LoginRepository]
@@ -92,7 +101,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     )
 
     val replayGuard = DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries)
-    val dpopVerifier: DpopVerifier = DpopVerifier.Impl(edgeConfig, replayGuard)
+    val dpopVerifier: DpopVerifier = DpopVerifier.Impl(edgeConfig, replayGuard, dpopPolicy)
 
     val publicKeys: JWT.PublicKeys =
       val rsaKey = RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(edgeConfig.keyId).build()
@@ -2297,7 +2306,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.withResources(usersResource(usersEndpoint()))
         token <- env.signToken(cnfJkt = Some(dpopJkt))
         proof <- dpopProof(token, "/users")
-        unconfigured = DpopVerifier.Impl(env.edgeConfig.copy(dpop = None), DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries))
+        unconfigured = DpopVerifier.Impl(
+          env.edgeConfig.copy(dpop = None),
+          DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries),
+          dpopPolicy,
+        )
         service = env.buildService(client, security, unconfigured)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
         upstream <- capture.get

@@ -94,7 +94,7 @@ type ResourceEndpointDto = {
 };
 type ResourceResponseDto = { resourceId: string; resource: string; audience: string[]; endpoints: Array<ResourceEndpointDto & { id: ResourceEndpointId }>; internal: boolean; secretRotation: boolean };
 
-type EdgeResponseDto = { id: string; hasOldKey?: boolean };
+type EdgeResponseDto = { id: string; hasOldKey?: boolean; requireDpopNonce?: boolean };
 type EdgesResponse = { edges: EdgeResponseDto[] };
 type ServiceKeyResponseDto = { keyId: string; privateKey: string };
 
@@ -1208,7 +1208,18 @@ export async function fetchEdges(): Promise<Edge[]> {
   return sortById(response.edges.map(edge => ({
     id: edge.id,
     hasOldKey: edge.hasOldKey ?? false,
+    // An edge central has not answered for is read as requiring one, which is what every
+    // edge did before the setting existed.
+    requireDpopNonce: edge.requireDpopNonce ?? true,
   })));
+}
+
+export async function setEdgeDpopNonce(edgeId: string, requireDpopNonce: boolean): Promise<void> {
+  await requestVoid('/configuration/edges/dpop', {
+    method: 'PUT',
+    query: { edgeId },
+    body: { requireDpopNonce },
+  });
 }
 
 export async function registerEdge(id: string): Promise<ServiceKey> {

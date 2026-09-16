@@ -1493,6 +1493,33 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /configuration/edges/dpop:
+    put:
+      tags: [Edges]
+      summary: Set an edge's DPoP nonce requirement
+      description: |
+        RFC 9449 §9 for the calls this edge proxies. On costs each client one round trip per
+        nonce lifetime and breaks any client that does not retry on `use_dpop_nonce`; off is
+        not "prefer a nonce" but "never ask for one", since a challenge over a nonce the edge
+        does not insist on is one a nonce-less retry walks past (§11.3). The edge picks the
+        change up on its next configuration sync.
+      operationId: setEdgeDpop
+      parameters:
+        - $ref: '#/components/parameters/EdgeIdQuery'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetEdgeDpopRequest'
+      responses:
+        '204':
+          description: Setting recorded.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No edge is registered under that id.
+
   /configuration/edges/rotate-key:
     post:
       tags: [Edges]
@@ -3489,7 +3516,19 @@ components:
         hasOldKey:
           type: boolean
           description: Whether a rotation is open and the previous key still verifies.
-      required: [id, hasOldKey]
+        requireDpopNonce:
+          type: boolean
+          description: |
+            RFC 9449 §9: whether every DPoP proof this edge checks on a proxied call must
+            carry a nonce it issued. Governs that edge only, and only the calls it proxies —
+            auth's own endpoints follow the tenant setting of the same name.
+      required: [id, hasOldKey, requireDpopNonce]
+    SetEdgeDpopRequest:
+      type: object
+      properties:
+        requireDpopNonce:
+          type: boolean
+      required: [requireDpopNonce]
     GetAllEdgesResponse:
       type: object
       properties:

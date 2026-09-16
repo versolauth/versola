@@ -66,8 +66,21 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       dpop: Option[EdgeConfig.Dpop] = Some(
         EdgeConfig.Dpop.default(nonceSalt),
       ),
+      nonceRequired: Boolean = true,
+      algorithms: Set[Dpop.Algorithm] = Dpop.Algorithm.Default,
   ): DpopVerifier =
-    DpopVerifier.Impl(config(dpop), DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries))
+    DpopVerifier.Impl(
+      config(dpop),
+      DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries),
+      policy(nonceRequired, algorithms),
+    )
+
+  /** What central currently says about this edge, which is all the verifier reads it for. */
+  private def policy(nonceRequired: Boolean, algorithms: Set[Dpop.Algorithm]): DpopPolicyService =
+    new DpopPolicyService:
+      override def allowedAlgorithms: UIO[Set[Dpop.Algorithm]] = ZIO.succeed(algorithms)
+      override def requireNonce: UIO[Boolean] = ZIO.succeed(nonceRequired)
+      override def refreshNow: Task[Unit] = ZIO.unit
 
   private def config(dpop: Option[EdgeConfig.Dpop]): EdgeConfig =
     val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
@@ -201,6 +214,17 @@ object DpopVerifierSpec extends ZIOSpecDefault:
         result <- verify(service, proof(iat = now))
       yield assertTrue(result == Left(DpopVerifier.Error.NotConfigured))
     },
+    // §5.1: the set comes from the metadata document central holds, not from this edge's own
+    // config, so an `alg` auth would refuse at the token endpoint is refused here too.
+    test("refuses a proof signed with an algorithm the synced set does not name") {
+      val service = verifier(algorithms = Set(Dpop.Algorithm.PS256))
+      for
+        now <- Clock.instant
+        result <- verify(service, proof(iat = now, nonce = Some(DpopNonce.issue(nonceSalt, now))))
+      yield assertTrue(
+        result == Left(DpopVerifier.Error.InvalidProof(Dpop.Error.UnsupportedAlgorithm)),
+      )
+    },
     suite("nonce")(
       test("demands one, and supplies it, when this edge requires a nonce") {
         val service = verifier(
@@ -248,22 +272,18 @@ object DpopVerifierSpec extends ZIOSpecDefault:
           retried.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
         )
       },
-      // §11.3 the other way round: with `require-nonce = false` the claim is not consulted at
-      // all and no nonce is ever handed out, because a challenge over a nonce this edge does
-      // not insist on is one a nonce-less retry would walk straight past.
+      // §11.3 the other way round: where central has this edge not requiring one, the claim
+      // is not consulted at all and no nonce is ever handed out, because a challenge over a
+      // nonce this edge does not insist on is one a nonce-less retry would walk straight past.
       test("accepts a nonce-less proof where this edge does not require a nonce") {
-        val service = verifier(
-          Some(EdgeConfig.Dpop.default(nonceSalt).copy(requireNonce = false)),
-        )
+        val service = verifier(nonceRequired = false)
         for
           now <- Clock.instant
           result <- verify(service, proof(iat = now))
         yield assertTrue(result.isRight)
       },
       test("ignores a nonce it never issued where this edge does not require a nonce") {
-        val service = verifier(
-          Some(EdgeConfig.Dpop.default(nonceSalt).copy(requireNonce = false)),
-        )
+        val service = verifier(nonceRequired = false)
         for
           now <- Clock.instant
           result <- verify(service, proof(iat = now, nonce = Some("not-mine")))

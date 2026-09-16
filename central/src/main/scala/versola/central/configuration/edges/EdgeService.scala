@@ -15,6 +15,8 @@ trait EdgeService:
 
   def deleteOldEdgeKey(id: EdgeId): Task[Unit]
 
+  def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit]
+
   def deleteEdge(id: EdgeId): Task[Unit]
 
   def sync(): Task[Unit]
@@ -54,6 +56,9 @@ object EdgeService:
 
     override def deleteOldEdgeKey(id: EdgeId): Task[Unit] =
       edgeRepository.deleteOldEdgeKey(id)
+
+    override def setRequireDpopNonce(id: EdgeId, requireDpopNonce: Boolean): Task[Unit] =
+      edgeRepository.setRequireDpopNonce(id, requireDpopNonce)
 
     override def deleteEdge(id: EdgeId): Task[Unit] =
       edgeRepository.deleteEdge(id)
