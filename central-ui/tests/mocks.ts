@@ -202,6 +202,7 @@ type ChallengeSettingsDto = {
   otpLength: number;
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
+  requireDpopNonce?: boolean | null;
 };
 type LocaleDto = { code: string; name: string; isDefault: boolean; active: boolean };
 
@@ -220,6 +221,7 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   otpLength: 6,
   otpResendAfter: 60,
   passkeySettings: null,
+  requireDpopNonce: false,
 });
 
 type MyPermissionsDto = {
@@ -1203,6 +1205,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           otpLength: payload.otpLength,
           otpResendAfter: payload.otpResendAfter,
           passkeySettings: payload.passkeySettings ?? null,
+          requireDpopNonce: payload.requireDpopNonce ?? false,
         };
         await route.fulfill({ status: 204, body: '' });
         return;

@@ -3175,6 +3175,14 @@ components:
           type: array
           items:
             type: string
+        requireDpopNonce:
+          type: boolean
+          description: >-
+            RFC 9449 §8. When true, a DPoP proof presented at auth's token or userinfo
+            endpoint by one of this tenant's clients must carry a server-issued nonce; a
+            request without one is answered with `use_dpop_nonce` and a fresh nonce to retry
+            over. Costs each client an extra round trip and breaks any client that does not
+            implement the retry, so it is off for every tenant until switched on.
       required:
         - tenantId
         - allowedPrefixes
@@ -3187,6 +3195,7 @@ components:
         - userAgentTtlSeconds
         - ipHeader
         - postLogoutRedirectUris
+        - requireDpopNonce
     GetChallengeSettingsResponse:
       type: object
       properties:
@@ -3234,6 +3243,9 @@ components:
           type: [array, 'null']
           items:
             type: string
+        requireDpopNonce:
+          type: [boolean, 'null']
+          description: Keeps the stored value when omitted; defaults to false for a new tenant.
       required:
         - tenantId
         - allowedPrefixes

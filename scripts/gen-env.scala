@@ -780,9 +780,10 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}
        |
        |# RFC 9449 proof validation on proxied calls, against edge-url below. Every
-       |# proof must carry a valid nonce (§9) once this block is present -- there is
-       |# no setting that turns that off; the round trip it costs a client on its
-       |# first request (or after nonce-ttl) is the price of using DPoP here at all.
+       |# proof must carry a valid nonce (§9) while require-nonce is on, which costs
+       |# a client one round trip on its first request and after each nonce-ttl.
+       |# Leave it on: a proxied call is what a captured proof is worth replaying
+       |# against, so this is the one place §9 earns its keep.
        |# Remove this block entirely to turn DPoP off; a key-bound token is still
        |# refused over Bearer either way.
        |dpop {
@@ -790,6 +791,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  allowed-algorithms = ["ES256", "PS256"]
        |  iat-leeway = "60 seconds"
        |  nonce-ttl = "600 seconds"
+       |  require-nonce = true
        |}
        |
        |central {

@@ -99,4 +99,7 @@ object TenantService:
         ipHeader = "X-Real-IP",
         acrVocabulary = None,
         postLogoutRedirectUris = Nil,
+        // Off, like every tenant that existed before the switch did: it is turned on per
+        // tenant once that tenant's clients are known to retry on `use_dpop_nonce`.
+        requireDpopNonce = false,
       )

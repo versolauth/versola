@@ -107,17 +107,23 @@ object DpopVerifier:
             _ <- ZIO.fail(Error.Replayed).unless(fresh)
           yield proof
 
-    /** §4.3 step 10 / §9: every proof must carry a nonce this edge issued -- there is no
-      * configuration that skips this check. §11.3 forbids ever accepting a nonce-less proof
-      * once a nonce has been issued, and one always has been here, so a missing, stale, or
-      * unrecognized nonce is refused the same way: with a fresh one for the retry.
+    /** §4.3 step 10 / §9: where a nonce is required, every proof must carry one this edge
+      * issued. §11.3 forbids ever accepting a nonce-less proof once a nonce has been issued, so
+      * a missing, stale, or unrecognized nonce is refused the same way: with a fresh one for
+      * the retry.
+      *
+      * The other way round, `require-nonce = false` does not mean "prefer a nonce": the claim
+      * is not consulted and no nonce is ever issued. A challenge raised over a nonce this edge
+      * does not insist on would be one a nonce-less retry walks straight past -- the downgrade
+      * §11.3 names -- and nothing here is per-client state that could tell the two apart.
       */
     private def checkNonce(
         dpop: EdgeConfig.Dpop,
         proof: Dpop.Proof,
         now: Instant,
     ): IO[Error, Unit] =
-      proof.nonce match
+      if !dpop.requireNonce then ZIO.unit
+      else proof.nonce match
         case Some(nonce) =>
           DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
             case Right(_) => ZIO.unit

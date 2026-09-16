@@ -84,31 +84,31 @@ object CoreConfig:
 
   /** RFC 9449 DPoP proof validation settings.
     *
-    * The accepted signing algorithms are deliberately absent: they are
-    * `dpop_signing_alg_values_supported` in the authorization server metadata document and are
-    * read from there (see [[Dpop.Algorithm.MetadataField]]), so the set clients discover and
-    * the set a proof is held to are one value rather than two that can drift.
+    * Two things a deployment might expect to find here are deliberately absent, both for the
+    * same reason -- the value is already carried by something a request has to consult anyway:
+    *
+    *   - the accepted signing algorithms are `dpop_signing_alg_values_supported` in the
+    *     authorization server metadata document and are read from there (see
+    *     [[Dpop.Algorithm.MetadataField]]), so the set clients discover and the set a proof is
+    *     held to are one value rather than two that can drift;
+    *   - whether a nonce is required at all (§8) is a tenant setting
+    *     ([[versola.oauth.client.OAuthConfigurationService.requireDpopNonce]]). Turning it on
+    *     costs every client of that tenant an extra round trip and breaks any that does not
+    *     retry on `use_dpop_nonce`, so it has to be enablable one tenant at a time rather than
+    *     for every client a deployment serves at once.
     *
     * @param iatLeeway maximum allowed distance between a proof's `iat` and the time it's
     *   checked, in either direction. This is also the window a proof has to be remembered for,
     *   so widening it costs storage on the replay guard; implementations may cap it.
     * @param nonceTtl how long a server-issued `DPoP-Nonce` remains acceptable.
-    * @param requireNonce RFC 9449 §8/§9: when true, every proof this server checks must carry
-    *   a nonce it issued, and a request without one is answered with `use_dpop_nonce` and a
-    *   fresh nonce to retry with. Costs each client one extra round trip per endpoint, which is
-    *   why it is a deployment choice rather than the default -- unlike at edge, where a proxied
-    *   call is the only thing a captured proof could be replayed against and a nonce is
-    *   unconditional.
     */
   case class DpopConfig(
       iatLeeway: Duration,
       nonceTtl: Duration,
-      requireNonce: Boolean,
   )
 
   object DpopConfig:
     val default: DpopConfig = DpopConfig(
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(300),
-      requireNonce = false,
     )

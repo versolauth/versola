@@ -202,7 +202,7 @@ object DpopVerifierSpec extends ZIOSpecDefault:
       yield assertTrue(result == Left(DpopVerifier.Error.NotConfigured))
     },
     suite("nonce")(
-      test("demands one, and supplies it, when the deployment requires a nonce") {
+      test("demands one, and supplies it, when this edge requires a nonce") {
         val service = verifier(
           Some(EdgeConfig.Dpop.default(nonceSalt)),
         )
@@ -247,6 +247,27 @@ object DpopVerifierSpec extends ZIOSpecDefault:
           challenged.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
           retried.left.toOption.exists(_.isInstanceOf[DpopVerifier.Error.NonceRequired]),
         )
+      },
+      // §11.3 the other way round: with `require-nonce = false` the claim is not consulted at
+      // all and no nonce is ever handed out, because a challenge over a nonce this edge does
+      // not insist on is one a nonce-less retry would walk straight past.
+      test("accepts a nonce-less proof where this edge does not require a nonce") {
+        val service = verifier(
+          Some(EdgeConfig.Dpop.default(nonceSalt).copy(requireNonce = false)),
+        )
+        for
+          now <- Clock.instant
+          result <- verify(service, proof(iat = now))
+        yield assertTrue(result.isRight)
+      },
+      test("ignores a nonce it never issued where this edge does not require a nonce") {
+        val service = verifier(
+          Some(EdgeConfig.Dpop.default(nonceSalt).copy(requireNonce = false)),
+        )
+        for
+          now <- Clock.instant
+          result <- verify(service, proof(iat = now, nonce = Some("not-mine")))
+        yield assertTrue(result.isRight)
       },
     ),
     // §4.3(1): "the request contains at most one DPoP header field value". `rawHeader`

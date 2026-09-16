@@ -25,4 +25,7 @@ case class ChallengeSettingsRecord(
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: List[String],
+    /** RFC 9449 §8: whether a proof reaching auth's token or userinfo endpoint from one of
+      * this tenant's clients must carry a server-issued nonce. */
+    requireDpopNonce: Boolean,
 ) derives Schema, JsonCodec

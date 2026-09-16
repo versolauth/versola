@@ -28,6 +28,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         ipHeader = "X-Forwarded-For",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
+        requireDpopNonce = false,
       )
       for
         seen <- Ref.make(Option.empty[Request])

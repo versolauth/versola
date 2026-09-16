@@ -1403,6 +1403,7 @@ export async function upsertChallengeSettings(
   ipHeader: string,
   acrVocabulary?: Record<string, string[]> | null,
   postLogoutRedirectUris?: string[],
+  requireDpopNonce?: boolean,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1420,6 +1421,7 @@ export async function upsertChallengeSettings(
       ipHeader,
       acrVocabulary: acrVocabulary ?? null,
       postLogoutRedirectUris: postLogoutRedirectUris ?? null,
+      requireDpopNonce: requireDpopNonce ?? null,
     },
   });
 }

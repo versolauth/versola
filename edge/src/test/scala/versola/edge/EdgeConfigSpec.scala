@@ -60,7 +60,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
   // Also throwaway — Secret.Bytes32 just needs 32 raw bytes, base64url-encoded.
   private val secret32 = Base64.getUrlEncoder.withoutPadding.encodeToString(Array.fill(32)(7.toByte))
 
-  private def hocon(includeInternalUrl: Boolean): String =
+  private def hocon(includeInternalUrl: Boolean, dpopBlock: String = ""): String =
     val internalLine = if includeInternalUrl then """versola-internal-url = "http://auth:8080"""" else ""
     s"""id = "edge-default"
        |key-id = "test-key"
@@ -81,6 +81,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |edge-url = "http://edge:8095"
        |configuration-cache-refresh-interval = 5 minutes
        |$internalLine
+       |$dpopBlock
        |""".stripMargin
 
   def spec = suite("EdgeConfig")(
@@ -119,6 +120,39 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.internalUrl == config.versolaUrl,
           config.versolaUrl == URL.decode("http://localhost:8080").toOption.get,
         )
+      },
+      // RFC 9449 §9 was unconditional at edge before it became configurable, and every
+      // env.conf generated then has a dpop block with no require-nonce key. Those
+      // deployments must keep requiring a nonce rather than quietly stop -- an absent key
+      // is not a deployment asking for less.
+      test("requireNonce defaults to true when a dpop block omits require-nonce") {
+        val dpopBlock =
+          s"""dpop {
+             |  nonce-salt = "$secret32"
+             |  allowed-algorithms = ["ES256"]
+             |  iat-leeway = 60 seconds
+             |  nonce-ttl = 600 seconds
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = dpopBlock))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.dpop.exists(_.requireNonce))
+      },
+      test("require-nonce = false is honoured where a deployment sets it explicitly") {
+        val dpopBlock =
+          s"""dpop {
+             |  nonce-salt = "$secret32"
+             |  allowed-algorithms = ["ES256"]
+             |  iat-leeway = 60 seconds
+             |  nonce-ttl = 600 seconds
+             |  require-nonce = false
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = dpopBlock))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.dpop.exists(!_.requireNonce))
       },
     ),
   )

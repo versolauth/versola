@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ScopeToken
+import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
@@ -205,7 +205,7 @@ object UserInfoController extends Controller:
   ): ZIO[DpopService & EdgeAssertionService & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
     (token.confirmation.map(_.jkt), scheme) match
       case (Some(jkt), AuthScheme.Dpop) =>
-        verifyDpopProof(request, tokenString, jkt, config)
+        verifyDpopProof(request, tokenString, jkt, token.clientId, config)
 
       // The one refusal an edge can answer: it has already run these same checks at its
       // own boundary, and can neither forward nor re-mint the proof that satisfied them
@@ -252,20 +252,25 @@ object UserInfoController extends Controller:
       case assertion :: Nil => Some(assertion)
       case _ => None
 
+  /** RFC 9449 §8: whether a nonce is compulsory here is the tenant setting of the client the
+    * presented token was issued to -- the same answer the token endpoint gives that client, since
+    * a requirement one endpoint waives is one a client can route around. */
   private def verifyDpopProof(
       request: Request,
       tokenString: String,
       boundKeyThumbprint: String,
+      clientId: ClientId,
       config: CoreConfig,
-  ): ZIO[DpopService, Throwable | UserInfoError, Unit] =
+  ): ZIO[DpopService & OAuthConfigurationService, Throwable | UserInfoError, Unit] =
     for
       proofHeader <- singleDpopHeader(request)
+      requireNonce <- ZIO.serviceWithZIO[OAuthConfigurationService](_.requireDpopNonce(clientId))
       proof <- ZIO.serviceWithZIO[DpopService](
         _.verify(
           token = proofHeader,
           method = request.method,
           uri = userInfoEndpointUri(config),
-          requireNonce = config.dpopOrDefault.requireNonce,
+          requireNonce = requireNonce,
         ),
       ).mapError {
         case DpopService.Error.InvalidProof(reason) => UserInfoError.InvalidDpopProof(reason.toString)

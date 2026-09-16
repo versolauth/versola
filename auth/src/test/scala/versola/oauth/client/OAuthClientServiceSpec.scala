@@ -389,6 +389,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         ipHeader = "X-Forwarded-For",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -410,6 +411,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         ipHeader = "X-Custom-IP",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -432,6 +434,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         ipHeader = "X-Real-IP",
         acrVocabulary = None,
         postLogoutRedirectUris = List.empty,
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -522,6 +525,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         ipHeader = "X-Real-IP",
         acrVocabulary = Some(vocabulary),
         postLogoutRedirectUris = List.empty,
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

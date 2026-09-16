@@ -143,6 +143,9 @@ export interface ChallengeSettingsRecord {
   ipHeader: string;
   acrVocabulary?: Record<string, string[]> | null;
   postLogoutRedirectUris: string[];
+  /** RFC 9449 section 8: whether a DPoP proof from one of this tenant's clients must carry a
+   * nonce the authorization server issued. */
+  requireDpopNonce: boolean;
 }
 
 // Global (non-tenant-scoped) password policy

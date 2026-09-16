@@ -104,9 +104,11 @@ object UserInfoControllerSpec extends UnitSpecBase:
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
       edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
-      // The lookup `checkDpop` makes to learn the tenant an edge assertion for this token's
-      // client has to be scoped to; defaults to the fixture client every test above assumes.
-      oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = _.find.succeedsWith(Some(client1)),
+      // The lookups `checkDpop` makes against the token's client: the tenant an edge assertion
+      // has to be scoped to, and (RFC 9449 §8) whether that client's tenant demands a nonce.
+      // Defaults to the fixture client every test above assumes, with no nonce required.
+      oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = service =>
+        service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(false),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       config: CoreConfig = TestEnvConfig.coreConfig,
@@ -303,15 +305,12 @@ object UserInfoControllerSpec extends UnitSpecBase:
           nonce = nonce,
           ath = Some(Dpop.ath(boundAccessToken)),
         )
-        val nonceRequired = TestEnvConfig.coreConfig.copy(
-          dpop = Some(CoreConfig.DpopConfig.default.copy(requireNonce = true)),
-        )
-
         suite("DPoP nonce")(
-          // RFC 9449 §8 is a deployment choice rather than a property of this endpoint, so what
-          // has to be asserted is that the choice is what reaches the check.
+          // RFC 9449 §8 is the tenant setting of the client the token was issued to rather than
+          // a property of this endpoint, so what has to be asserted is that the setting is what
+          // reaches the check.
           userInfoTestCase(
-            description = "do not demand a nonce unless the deployment asks for one",
+            description = "do not demand a nonce unless the token's client tenant asks for one",
             request = boundRequest,
             expectedStatus = Status.Ok,
             setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
@@ -320,14 +319,15 @@ object UserInfoControllerSpec extends UnitSpecBase:
               ZIO.succeed(assertTrue(dpopService.verify.calls.map(_._4) == List(false))),
           ),
           userInfoTestCase(
-            description = "require a nonce on every proof once dpop.require-nonce is set",
+            description = "require a nonce on every proof once the token's client tenant asks for one",
             request = boundRequest,
             expectedStatus = Status.Ok,
             setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
             dpopSetup = _.verify.succeedsWith(boundProof(nonce = Some("srv-nonce"))),
             verifyDpop = dpopService =>
               ZIO.succeed(assertTrue(dpopService.verify.calls.map(_._4) == List(true))),
-            config = nonceRequired,
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
           ),
           // §9: the nonce travels in its own header rather than in the challenge, and the client
           // is expected to retry once over it -- so the refusal has to carry both.
@@ -341,7 +341,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
                 response.headers.get("WWW-Authenticate").exists(_.contains("use_dpop_nonce")),
                 response.headers.get("DPoP-Nonce").contains("fresh-nonce"),
               )),
-            config = nonceRequired,
+            oAuthConfigurationSetup = service =>
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
           ),
         )
       },

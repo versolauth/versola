@@ -23,4 +23,7 @@ case class ChallengeSettingsRecord(
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[PassedAuthFactor]]],
     postLogoutRedirectUris: List[String],
+    /** RFC 9449 §8: whether a proof from one of this tenant's clients must carry a
+      * server-issued nonce -- see [[versola.oauth.client.OAuthConfigurationService.requireDpopNonce]]. */
+    requireDpopNonce: Boolean,
 ) derives JsonCodec

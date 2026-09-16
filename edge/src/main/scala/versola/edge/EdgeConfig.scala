@@ -96,10 +96,7 @@ object EdgeConfig:
       batchSize: Int = 50000,
   )
 
-  /** RFC 9449 proof validation at the resource server. A proof must always carry a valid
-    * nonce (§9) once this block is present -- there is no way to configure this edge to skip
-    * that check, so a nonce is unconditionally handed out on a proof's first rejection and
-    * checked on every one after.
+  /** RFC 9449 proof validation at the resource server.
     *
     * @param nonceSalt keys this edge's `DPoP-Nonce` space. §9 keeps the resource server's nonces
     *   separate from the authorization server's, so this is deliberately not auth's
@@ -110,12 +107,20 @@ object EdgeConfig:
     * @param iatLeeway maximum distance between a proof's `iat` and now, in either direction.
     *   Also the window a proof is remembered for, so it sizes the replay guard.
     * @param nonceTtl how long a nonce this edge issued stays acceptable.
+    * @param requireNonce §9: whether every proof must carry a nonce this edge issued. On by
+    *   default, and the default is the one to keep: a proxied API call is the thing a captured
+    *   proof is actually worth replaying against, and the cost is one extra round trip per
+    *   `nonce-ttl` per client. Per edge rather than per resource or per endpoint because a
+    *   proof's `htm`/`htu` already bind it to one method and URL, so a nonce accepted across
+    *   this edge's resources buys an attacker nothing that splitting the space would deny.
+    *   Turning it off is a real reduction in what §9 gives you, not a tuning knob.
     */
   case class Dpop(
       nonceSalt: Secret.Bytes32,
       allowedAlgorithms: Set[versola.util.Dpop.Algorithm],
       iatLeeway: Duration,
       nonceTtl: Duration,
+      requireNonce: Boolean = true,
   )
 
   object Dpop:
@@ -129,4 +134,5 @@ object EdgeConfig:
       allowedAlgorithms = Set(versola.util.Dpop.Algorithm.ES256, versola.util.Dpop.Algorithm.PS256),
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(600),
+      requireNonce = true,
     )

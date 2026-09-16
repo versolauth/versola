@@ -56,6 +56,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             ipHeader = "X-Real-IP",
             acrVocabulary = None,
             postLogoutRedirectUris = Nil,
+            requireDpopNonce = false,
           )),
       )
     },

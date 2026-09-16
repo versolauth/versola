@@ -1,0 +1,11 @@
+-- RFC 9449 §8: whether auth's token and userinfo endpoints demand a server-issued
+-- `DPoP-Nonce` on every proof they check, for clients of this tenant.
+--
+-- Tenant-scoped rather than a per-deployment config value because turning it on breaks
+-- every client that has not implemented the `use_dpop_nonce` retry, so it has to be
+-- enablable for one tenant's clients at a time.
+--
+-- FALSE for existing tenants, and the default for new ones: a nonce costs each client an
+-- extra round trip per endpoint, and unlike a proxied API call a token request is not
+-- something a captured proof buys much against.
+ALTER TABLE challenge_settings ADD COLUMN require_dpop_nonce BOOLEAN NOT NULL DEFAULT FALSE;

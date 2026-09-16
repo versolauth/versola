@@ -89,6 +89,16 @@ trait OAuthConfigurationService:
 
   def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]]
 
+  /** RFC 9449 §8: whether a proof presented by this client must carry a nonce this server
+    * issued. A tenant-level setting rather than a per-request one: §11.3 forbids accepting a
+    * nonce-less proof from a client that has been handed a nonce, so the answer has to be
+    * fixed by the time the proof is read, and it has to be the same answer on every replica.
+    *
+    * A tenant with no settings row, and a client auth does not know, both read as `false` --
+    * the same answer every tenant gave before the switch existed. Erring the other way would
+    * mean a cache that has not loaded yet starts challenging clients that cannot retry. */
+  def requireDpopNonce(id: ClientId): UIO[Boolean]
+
   def getMetadata: UIO[Json.Obj]
 
   /** RFC 9449 §5.1: the signing algorithms an incoming DPoP proof's `alg` may use, as named by
@@ -393,6 +403,15 @@ object OAuthConfigurationService:
               .flatMap(_.acrVocabulary)
               .getOrElse(Map.empty)
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
+          )
+
+    override def requireDpopNonce(id: ClientId): UIO[Boolean] =
+      find(id).flatMap:
+        case None => ZIO.succeed(false)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(false)(_.requireDpopNonce),
           )
 
     override def getPostLogoutRedirectUris(tenantId: TenantId): UIO[List[URL]] =

@@ -82,6 +82,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
+    requireDpopNonce = false,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -260,6 +261,27 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getIpHeader(ClientId("missing"))
       yield assertTrue(result == "X-Real-IP")
     },
+    // RFC 9449 §8. The two negative cases matter more than the positive one: both are states
+    // the server can be in before it knows anything, and answering "nonce required" from
+    // either would challenge clients that have no nonce to give and no reason to expect one.
+    test("requireDpopNonce returns the setting of the client's tenant") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(requireDpopNonce = true)))
+        result <- env.requireDpopNonce(clientId1)
+      yield assertTrue(result)
+    },
+    test("requireDpopNonce is false for an unknown client") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(requireDpopNonce = true)))
+        result <- env.requireDpopNonce(ClientId("missing"))
+      yield assertTrue(!result)
+    },
+    test("requireDpopNonce is false when the client's tenant has no challenge settings row") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector.empty)
+        result <- env.requireDpopNonce(clientId1)
+      yield assertTrue(!result)
+    },
     test("getPasskeySettings returns settings for known client") {
       for
         env <- makeEnv()
@@ -427,6 +449,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     test("getPostLogoutRedirectUris decodes the tenant's configured URLs") {
       val settings = challengeSettings.copy(
         postLogoutRedirectUris = List("https://app.example/bye", "not a url"),
+        requireDpopNonce = false,
       )
       for
         env <- makeEnv(challengeSettingsVec = Vector(settings))

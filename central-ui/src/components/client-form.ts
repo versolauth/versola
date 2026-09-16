@@ -1722,14 +1722,28 @@ export class VersolaClientForm extends LitElement {
             ` : ''}
 
             <div class="form-group">
-              <label class="plain-checkbox-label">
-                <input
-                  type="checkbox"
-                  .checked=${!!this.formData.dpopBoundAccessTokens}
-                  @change=${() => this.toggleDpopBoundAccessTokens()}
-                />
-                Require DPoP-bound access tokens
-              </label>
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label class="plain-checkbox-label" style="margin-bottom: 0;">
+                  <input
+                    type="checkbox"
+                    .checked=${!!this.formData.dpopBoundAccessTokens}
+                    @change=${() => this.toggleDpopBoundAccessTokens()}
+                  />
+                  Require DPoP-bound access tokens
+                </label>
+                ${this.renderOptionInfo(
+                  'dpop-bound-access-tokens',
+                  'Require DPoP-bound access tokens',
+                  html`
+                    <div class="option-tooltip-item">DPoP (RFC 9449) binds an access token to a key pair the client holds, so a stolen token is useless without the private key. Whether a token comes back bound is normally decided per request — it is bound if that request carried a proof.</div>
+                    <div class="option-tooltip-item">Checked, this client declares it always uses DPoP: a token request from it with no <code>DPoP</code> header is refused with <code>invalid_dpop_proof</code> rather than answered with an unbound token. That closes the case where a caller who forgets the header, or an attacker who strips it, silently gets a plain bearer token back.</div>
+                    <div class="option-tooltip-item">Before turning it on: every deployed version of this client must already send a proof. Any that does not loses the ability to get a token immediately, on every grant type — including refresh, so its sessions end at their next refresh.</div>
+                    <div class="option-tooltip-item">This is a change in the client's own code rather than a setting on its side: it needs a key pair and a proof signed per request.</div>
+                    <div class="option-tooltip-item">Turning it back off is safe and takes effect at once — proofs keep being honoured, they just stop being compulsory.</div>
+                  `,
+                  'DPoP-bound access tokens info',
+                )}
+              </div>
               <div class="hint">
                 A token request from this client must carry a DPoP proof; one without it is
                 refused rather than answered with a bearer token.

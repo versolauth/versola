@@ -33,6 +33,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       userAgentTtlSeconds: Int = 444,
       acrVocabulary: Option[Map[String, List[String]]] = Some(Map("a" -> List("b"))),
       postLogoutRedirectUris: List[String] = List("https://existing.example/logout"),
+      requireDpopNonce: Boolean = false,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -48,6 +49,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ipHeader = "X-Forwarded-For",
       acrVocabulary = acrVocabulary,
       postLogoutRedirectUris = postLogoutRedirectUris,
+      requireDpopNonce = requireDpopNonce,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -226,6 +228,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ipHeader = "X-Forwarded-For",
             acrVocabulary = Some(Map("x" -> List("y"))),
             postLogoutRedirectUris = Some(List("https://new.example/logout")),
+            requireDpopNonce = Some(true),
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -242,6 +245,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               userAgentTtlSeconds = 40,
               acrVocabulary = Some(Map("x" -> List("y"))),
               postLogoutRedirectUris = List("https://new.example/logout"),
+              requireDpopNonce = true,
             ),
           ),
         )),
@@ -270,10 +274,13 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
+      // The stored settings carry the nonce requirement so the omission is load-bearing: an
+      // absent field must not be the console quietly turning §8 back off for a tenant.
       settingsSetup = service =>
-        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+        service.getSettings.succeedsWith(Some(settings(requireDpopNonce = true))) *>
+          service.upsertSettings.succeedsWith(()),
       settingsVerify = (_, service) =>
-        ZIO.succeed(assertTrue(service.upsertSettings.calls == List(settings()))),
+        ZIO.succeed(assertTrue(service.upsertSettings.calls == List(settings(requireDpopNonce = true)))),
     ),
     controllerTestCase(
       description = "PUT challenge-settings falls back to defaults when there are no existing settings and fields are omitted",

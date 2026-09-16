@@ -24,6 +24,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     ipHeader = "X-Real-IP",
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
+    requireDpopNonce = false,
   )
 
   class Env(initial: Vector[ChallengeSettingsRecord] = Vector.empty):
