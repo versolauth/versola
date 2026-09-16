@@ -309,8 +309,16 @@ object Flows:
         consentPartial <- setupConsent(consentFlow = partialConsentFlow)
         backChannelLogout <- setupBackChannelLogout()
         _       <- client.flushUserOutbox()
+        // The mutual-TLS settings are part of the shared bootstrap rather than of the one
+        // spec that uses them, because this call overwrites every field: a spec that set
+        // them itself would be undone by the next spec's bootstrap. Configuring them for the
+        // whole run costs the other specs nothing -- auth reads the header only for a client
+        // that authenticates by certificate or binds its tokens to one, and none of their
+        // clients do.
         _       <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
+          mtlsCertificateHeader = Some(OAuthClient.mtlsCertificateHeader),
+          mtlsCertificateEncoding = Some("urlEncodedPem"),
         )
         _       <- client.syncConfiguration()
         // The edge only accepts security events for a client it already knows about, and

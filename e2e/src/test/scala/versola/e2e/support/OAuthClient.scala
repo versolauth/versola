@@ -453,6 +453,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     */
   val edgeBackChannelLogoutUri: String = s"${config.edgeUrl}/logout/backchannel"
 
+  /** Adds the client certificate the tenant's proxy would have forwarded (RFC 8705 §6.5).
+    *
+    * There is no TLS handshake in these tests and there would not be one in production
+    * either — `auth` sits behind the proxy that terminated mTLS and only ever sees its
+    * header, so sending that header is the whole of what a client certificate means here.
+    */
+  private def withCertificate(request: Request, certificate: Option[String]): Request =
+    certificate.fold(request)(request.addHeader(OAuthClient.mtlsCertificateHeader, _))
+
   /** GET /authorize — generates PKCE + state, starts a new conversation, extracts the
     * SSO_CONVERSATION cookie, and returns everything the caller needs for subsequent steps.
     */
@@ -657,6 +666,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientSecret: Option[String] = None,
       redirectUri: Option[String] = None,
       dpop: Option[DpopProver] = None,
+      /** RFC 8705: the client certificate the tenant's proxy forwarded, if any. */
+      certificate: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
@@ -676,7 +687,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         prover.proof(Method.POST, s"${config.authUrl}/token")
           .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
       )
-      result <- Client.batched(proofed).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+      result <- Client.batched(withCertificate(proofed, certificate)).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
     yield result
 
   /** POST /token — refreshes an access token.
@@ -691,6 +702,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientSecret: Option[String] = None,
       scope: Option[String] = None,
       idempotencyKey: Option[String] = None,
+      /** RFC 8705 §3: a certificate-bound grant is only refreshable over the same certificate. */
+      certificate: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
@@ -702,7 +715,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val withKey = idempotencyKey.fold(req)(req.addHeader("Idempotency-Key", _))
-    Client.batched(withKey).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    Client.batched(withCertificate(withKey, certificate)).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /token — obtains a token for the client itself (RFC 6749 §4.4).
     *
@@ -717,6 +730,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       resources: Option[List[String]] = None,
       authorizationDetails: Option[String] = None,
       useBasicAuth: Boolean = true,
+      /** RFC 8705: the client certificate the tenant's proxy forwarded, if any. A client
+        * that registered an mTLS subject holds no secret, so it pairs this with
+        * `useBasicAuth = false` and names itself in `client_id` alone. */
+      certificate: Option[String] = None,
   ): Task[TokenResult] =
     // With `useBasicAuth = false` the client only names itself, in `client_id`, and sends
     // no secret at all - the one way a public client can present itself at /token.
@@ -730,13 +747,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
 
   /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
   def introspect(
       token: String,
       clientId: Option[String] = None,
       clientSecret: Option[String] = None,
+      /** RFC 8705 §2.1: what a caller that registered an mTLS subject authenticates with. */
+      certificate: Option[String] = None,
   ): Task[IntrospectResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for introspection requests"))
@@ -744,7 +763,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.authUrl}/introspect", body)
       .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
+    Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
   /** POST /revoke — revokes a token per RFC 7009. The endpoint answers 200 whether or not
     * the token existed, so the response is returned for the caller to assert on.
@@ -754,12 +773,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientId: String,
       clientSecret: String,
       tokenTypeHint: Option[String] = None,
+      /** RFC 8705 §2.1: what a caller that registered an mTLS subject authenticates with. */
+      certificate: Option[String] = None,
   ): Task[Response] =
     val body = formBody(Map("token" -> token) ++ tokenTypeHint.map("token_type_hint" -> _))
     val req = Request.post(s"${config.authUrl}/revoke", body)
       .addHeader(Authorization.Basic(clientId, clientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client))
+    Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client))
 
   /** POST /revoke with an arbitrary form body, bypassing [[revoke]]'s required `token` field --
     * lets tests exercise malformed requests, e.g. one missing `token` entirely.
@@ -799,6 +820,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       scope: String = "openid",
       responseType: String = "code",
       authorizationDetails: Option[String] = None,
+      /** RFC 8705 §2.1: what a caller that registered an mTLS subject authenticates with. */
+      certificate: Option[String] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -814,7 +837,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req = Request.post(s"${config.authUrl}/par", formBody(fields))
       .addHeader(Authorization.Basic(clientId, clientSecret))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    Client.batched(req).provide(ZLayer.succeed(client))
+    Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client))
       .flatMap(PushedAuthorizationResult.parse(_, verifier, state))
 
   /** GET /authorize?request_uri=… — redeems a pushed request (RFC 9126 §4). The `client_id` is
@@ -961,8 +984,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
       clientType: String = "web",
-      /** RFC 8705 §3.4: mandatory at decode time on `CreateClientRequest`, unlike
-        * `mtlsAuth`, since it isn't itself an `Option`. */
+      /** RFC 8705 §2.1: the certificate subject this client authenticates by, instead of a
+        * secret. Build it with `Fixtures.mutualTlsAuth`. */
+      mtlsAuth: Option[zio.json.ast.Json] = None,
+      /** RFC 8705 §3: binds this client's tokens to the certificate they were issued over,
+        * for a client that authenticates by secret. Implied by `mtlsAuth`. Mandatory at
+        * decode time on `CreateClientRequest`, unlike `mtlsAuth`, since it isn't itself an
+        * `Option`. */
       certificateBoundAccessTokens: Boolean = false,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
@@ -984,6 +1012,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = backChannelLogoutUri,
       clientType = clientType,
+      mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = certificateBoundAccessTokens,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
@@ -1131,7 +1160,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
           resp.body.asString.flatMap: body =>
             ZIO.fail(RuntimeException(s"syncEdgeConfiguration failed: status=${resp.status} body=$body"))
 
-  /** PUT /configuration/challenges/challenge-settings — sets the ACR vocabulary for a tenant (non-prod only).
+  /** PUT /configuration/challenges/challenge-settings — sets the ACR vocabulary and the
+    * mutual-TLS termination settings for a tenant (non-prod only).
     *
     * All other fields are overwritten with minimal test-safe defaults.
     * Call [[syncConfiguration]] afterwards to make Auth reload the cache.
@@ -1139,6 +1169,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
   def upsertChallengeSettings(
       tenantId: String = "default",
       acrVocabulary: Map[String, List[String]] = Map.empty,
+      /** RFC 8705 §6.5: the header this tenant's reverse proxy puts the client certificate
+        * it terminated mTLS for into. `None` is a tenant behind a proxy that terminates
+        * none, so `auth` never looks for a certificate. */
+      mtlsCertificateHeader: Option[String] = None,
+      /** `urlEncodedPem` (nginx) or `base64Der` (Traefik) — never independent of the header
+        * for a real proxy, which is why the two travel together. */
+      mtlsCertificateEncoding: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1155,7 +1192,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "otpResendAfter": 60,
          |  "passkeySettings": {"rpId":"localhost","rpName":"Versola","origins":["http://localhost:3000"],"userVerification":"preferred"},
          |  "ipHeader": "X-Forwarded-For",
-         |  "acrVocabulary": $vocabJson
+         |  "acrVocabulary": $vocabJson,
+         |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
+         |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)
@@ -1469,6 +1508,12 @@ object OAuthClient:
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
     ZLayer.fromFunction(OAuthClient(_, _))
 
+  /** The header the bootstrap configures the default tenant to read a client certificate
+    * from (see `Flows.layer`). ingress-nginx's name for it, so the fixture matches the
+    * pairing a deployment is most likely to use.
+    */
+  val mtlsCertificateHeader: String = "ssl-client-cert"
+
   private[support] def extractConversationCookie(response: Response): Option[String] =
     response.headers.getAll(Header.SetCookie)
       .collectFirst { case h if h.value.name == "SSO_CONVERSATION" => h.value.content }
@@ -1507,5 +1552,6 @@ object OAuthClient:
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
       clientType: String,
+      mtlsAuth: Option[zio.json.ast.Json],
       certificateBoundAccessTokens: Boolean,
   ) derives JsonEncoder
