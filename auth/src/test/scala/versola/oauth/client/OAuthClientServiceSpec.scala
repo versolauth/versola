@@ -2,7 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.metadata.MetadataSyncClient
+import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -111,7 +111,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val otpTemplateCache: ReloadingCache[Vector[OtpTemplateRecord]],
       val challengeSettingsCache: ReloadingCache[Vector[ChallengeSettingsRecord]],
       val systemSettingsCache: ReloadingCache[SystemSettingsRecord],
-      val metadataCache: ReloadingCache[Json.Obj],
+      val metadataCache: ReloadingCache[ServedMetadata],
       val resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
       val authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
   ):
@@ -173,7 +173,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       otpTemplateRef <- Ref.make(otpTemplates)
       challengeSettingsRef <- Ref.make(challengeSettings)
       systemSettingsRef <- Ref.make(systemSettings)
-      metadataRef <- Ref.make(Json.Obj())
+      metadataRef <- Ref.make(ServedMetadata.derive(Json.Obj()))
       resourceRef <- Ref.make(ResourceSyncClient.SyncResult(resources, Nil))
       authorizationDetailTypeRef <- Ref.make(authorizationDetailTypes)
     yield Env(
@@ -446,9 +446,9 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val metadata = Json.Obj("issuer" -> Json.Str("https://issuer.com"))
       for
         env <- makeEnv()
-        _ <- env.metadataCache.set(metadata)
+        _ <- env.metadataCache.set(ServedMetadata.derive(metadata))
         result <- env.service.getMetadata
-      yield assertTrue(result == metadata)
+      yield assertTrue(result.get("issuer").contains(Json.Str("https://issuer.com")))
     },
     test("getMetadata returns cached authorization detail metadata") {
       val metadata = Json.Obj(
@@ -457,9 +457,12 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       )
       for
         env <- makeEnv()
-        _ <- env.metadataCache.set(metadata)
+        _ <- env.metadataCache.set(ServedMetadata.derive(metadata))
         result <- env.service.getMetadata
-      yield assertTrue(result == metadata)
+      yield assertTrue(
+        result.get("authorization_details_types_supported")
+          .contains(Json.Arr(Json.Str("payment_initiation"))),
+      )
     },
     test("findAuthorizationDetailType resolves a type within the tenant only") {
       val paymentType = AuthorizationDetailTypeRecord(
@@ -497,7 +500,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       yield assertTrue(
         clients.isDefined,
         scopes == testScopes,
-        metadata == Json.Obj("a" -> Json.Num(1))
+        metadata.get("a").contains(Json.Num(1)),
       )
     },
     test("getAcrVocabulary returns vocabulary from challenge settings") {

@@ -89,6 +89,9 @@ object TokenEndpointController extends Controller:
   /** RFC 9449 §5: DPoP is opt-in per request here -- a request without a proof still yields
     * bearer tokens. Whether a given client is *required* to use DPoP is a separate, per-client
     * policy decision that isn't wired up yet.
+    *
+    * Whether a proof must also carry a server nonce (§8) follows `dpop.require-nonce`; where it
+    * does, the refusal below is `use_dpop_nonce` and carries one to retry with.
     */
   private def verifyDpopProof(
       request: Request,
@@ -105,7 +108,7 @@ object TokenEndpointController extends Controller:
             token = proof,
             method = Method.POST,
             uri = tokenEndpointUri(config),
-            requireNonce = false,
+            requireNonce = config.dpopOrDefault.requireNonce,
           ),
         )
           .mapBoth(

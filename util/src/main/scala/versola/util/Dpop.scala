@@ -33,8 +33,8 @@ object Dpop:
   /** Signing algorithms a DPoP proof may use. Chosen by the client based on the key it holds, so
     * this is independent of [[JWT.Algorithm]] (which governs this server's own token signing).
     * RFC 9449 \u00a75 requires `ES256` support; `PS256` is included for FAPI 2.0 deployments.
-    * `RS256` is supported here too -- whether it's actually accepted is a deployment choice, see
-    * `CoreConfig.DpopConfig`.
+    * `RS256` is supported here too -- whether it's actually accepted is a deployment choice,
+    * named by [[Algorithm.MetadataField]].
     */
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case ES256 extends Algorithm(JWSAlgorithm.ES256)
@@ -42,7 +42,19 @@ object Dpop:
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
 
   object Algorithm:
+    /** RFC 8414 §2 / RFC 9449 §5.1: the authorization server metadata field naming the set an
+      * incoming proof's `alg` is checked against. That document is the only place the set is
+      * written down, so what clients are told and what they are held to cannot disagree. */
+    val MetadataField = "dpop_signing_alg_values_supported"
+
+    /** The set assumed where the metadata document does not name it: `ES256` because §5
+      * mandates it, `PS256` for FAPI 2.0. `RS256` is left out -- FAPI disallows it outright, so
+      * a deployment that wants it has to ask. */
+    val Default: Set[Algorithm] = Set(ES256, PS256)
+
     def fromJws(alg: JWSAlgorithm): Option[Algorithm] = values.find(_.jwsAlgorithm == alg)
+
+    def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
 
   /** The proof's self-contained, already-validated claims.
     *

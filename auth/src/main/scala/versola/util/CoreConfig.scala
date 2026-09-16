@@ -84,26 +84,31 @@ object CoreConfig:
 
   /** RFC 9449 DPoP proof validation settings.
     *
-    * @param allowedAlgorithms signing algorithms an incoming proof's `alg` may use
-    *   (`dpop_signing_alg_values_supported`); the client picks based on the key it holds, so
-    *   this is independent of [[JwtConfig]] / this server's own signing algorithm.
+    * The accepted signing algorithms are deliberately absent: they are
+    * `dpop_signing_alg_values_supported` in the authorization server metadata document and are
+    * read from there (see [[Dpop.Algorithm.MetadataField]]), so the set clients discover and
+    * the set a proof is held to are one value rather than two that can drift.
+    *
     * @param iatLeeway maximum allowed distance between a proof's `iat` and the time it's
     *   checked, in either direction. This is also the window a proof has to be remembered for,
     *   so widening it costs storage on the replay guard; implementations may cap it.
     * @param nonceTtl how long a server-issued `DPoP-Nonce` remains acceptable.
+    * @param requireNonce RFC 9449 §8/§9: when true, every proof this server checks must carry
+    *   a nonce it issued, and a request without one is answered with `use_dpop_nonce` and a
+    *   fresh nonce to retry with. Costs each client one extra round trip per endpoint, which is
+    *   why it is a deployment choice rather than the default -- unlike at edge, where a proxied
+    *   call is the only thing a captured proof could be replayed against and a nonce is
+    *   unconditional.
     */
   case class DpopConfig(
-      allowedAlgorithms: Set[Dpop.Algorithm],
       iatLeeway: Duration,
       nonceTtl: Duration,
+      requireNonce: Boolean,
   )
 
   object DpopConfig:
-    /** RFC 9449 §5 mandates `ES256`; `PS256` is included for FAPI 2.0 deployments. `RS256` is
-      * supported by [[Dpop.verify]] but left out of the default allow-list -- FAPI disallows it
-      * outright, and non-FAPI deployments can opt back in explicitly. */
     val default: DpopConfig = DpopConfig(
-      allowedAlgorithms = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(300),
+      requireNonce = false,
     )

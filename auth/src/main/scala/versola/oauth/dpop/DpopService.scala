@@ -1,5 +1,6 @@
 package versola.oauth.dpop
 
+import versola.oauth.client.OAuthConfigurationService
 import versola.util.{CoreConfig, Dpop}
 import zio.http.Method
 import zio.{Clock, IO, ZIO, ZLayer}
@@ -10,6 +11,10 @@ import java.time.Instant
   * self-contained checks to [[Dpop.verify]], then enforces replay protection via
   * [[DpopProofRepository]] and, when the caller requires it, a fresh server nonce via
   * [[DpopNonceService]].
+  *
+  * The algorithms a proof may be signed with come from the authorization server metadata
+  * document, not from [[CoreConfig]] -- see
+  * [[OAuthConfigurationService.getDpopSigningAlgorithms]].
   */
 trait DpopService:
   /**
@@ -34,12 +39,17 @@ object DpopService:
     case Replayed
     case NonceRequired(nonce: String)
 
-  def live: ZLayer[DpopProofRepository & DpopNonceService & CoreConfig, Nothing, DpopService] =
-    ZLayer.fromFunction(Impl(_, _, _))
+  def live: ZLayer[
+    DpopProofRepository & DpopNonceService & OAuthConfigurationService & CoreConfig,
+    Nothing,
+    DpopService,
+  ] =
+    ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(
       proofRepository: DpopProofRepository,
       nonceService: DpopNonceService,
+      configurationService: OAuthConfigurationService,
       config: CoreConfig,
   ) extends DpopService:
 
@@ -53,9 +63,13 @@ object DpopService:
       for
         now <- Clock.instant
 
+        // §5.1: whatever the metadata document advertises, and nothing else -- see
+        // `OAuthConfigurationService.getDpopSigningAlgorithms`.
+        allowedAlgorithms <- configurationService.getDpopSigningAlgorithms
+
         proof <- Dpop.verify(
           token = token,
-          allowedAlgorithms = dpopConfig.allowedAlgorithms,
+          allowedAlgorithms = allowedAlgorithms,
           expectedMethod = method,
           expectedUri = uri,
           now = now,

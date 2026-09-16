@@ -265,7 +265,7 @@ object UserInfoController extends Controller:
           token = proofHeader,
           method = request.method,
           uri = userInfoEndpointUri(config),
-          requireNonce = false,
+          requireNonce = config.dpopOrDefault.requireNonce,
         ),
       ).mapError {
         case DpopService.Error.InvalidProof(reason) => UserInfoError.InvalidDpopProof(reason.toString)

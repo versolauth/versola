@@ -29,8 +29,8 @@ import versola.oauth.client.model.{
   ThemeRecord,
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
-import versola.oauth.metadata.{MetadataSyncClient, ServerMetadataRecord}
-import versola.util.{CacheSource, CoreConfig, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
+import versola.util.{CacheSource, CoreConfig, Dpop, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -91,6 +91,12 @@ trait OAuthConfigurationService:
 
   def getMetadata: UIO[Json.Obj]
 
+  /** RFC 9449 §5.1: the signing algorithms an incoming DPoP proof's `alg` may use, as named by
+    * `dpop_signing_alg_values_supported` in the document [[getMetadata]] serves. Read from the
+    * document rather than from [[CoreConfig]] so that advertising the set and enforcing it are
+    * the same act. */
+  def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]]
+
   /** Resolves an RFC 9396 `authorization_details` type to its registered schema, scoped to
     * the requesting client's tenant. */
   def findAuthorizationDetailType(
@@ -128,6 +134,14 @@ object OAuthConfigurationService:
         ZIO.serviceWithZIO[CoreConfig](config =>
           ReloadingCache.make[A](config.configurationCacheRefreshInterval),
         )
+    // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
+    // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --
+    // rather than on every `getMetadata`/`getDpopSigningAlgorithms` call.
+    val metadataCacheSource: URLayer[MetadataSyncClient, CacheSource[ServedMetadata]] =
+      ZLayer.fromFunction((client: MetadataSyncClient) =>
+        new CacheSource[ServedMetadata]:
+          override def getAll: Task[ServedMetadata] = client.getAll.map(ServedMetadata.derive),
+      )
     val syncClients =
       CentralSyncTokenService.live >+>
         ((OAuthClientSyncClient.live >+> cacheLayer[Map[ClientId, OAuthClientRecord]]) >+>
@@ -138,7 +152,7 @@ object OAuthConfigurationService:
           (OtpTemplateSyncClient.live >+> cacheLayer[Vector[OtpTemplateRecord]]) >+>
           (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
           (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
-          (MetadataSyncClient.live >+> cacheLayer[Json.Obj]) >+>
+          (MetadataSyncClient.live >+> metadataCacheSource >+> cacheLayer[ServedMetadata]) >+>
           (ResourceSyncClient.live >+> cacheLayer[ResourceSyncClient.SyncResult]) >+>
           (AuthorizationDetailTypeSyncClient.live >+> cacheLayer[Vector[AuthorizationDetailTypeRecord]]))
     syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
@@ -161,7 +175,7 @@ object OAuthConfigurationService:
       challengeSettingsRepository: ChallengeSettingsSyncClient,
       systemSettingsCache: ReloadingCache[SystemSettingsRecord],
       systemSettingsRepository: SystemSettingsSyncClient,
-      metadataCache: ReloadingCache[Json.Obj],
+      metadataCache: ReloadingCache[ServedMetadata],
       metadataRepository: MetadataSyncClient,
       resourceCache: ReloadingCache[ResourceSyncClient.SyncResult],
       resourceRepository: ResourceSyncClient,
@@ -388,7 +402,10 @@ object OAuthConfigurationService:
       )
 
     override def getMetadata: UIO[Json.Obj] =
-      metadataCache.get
+      metadataCache.get.map(_.document)
+
+    override def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]] =
+      metadataCache.get.map(_.dpopSigningAlgorithms)
 
     override def findAuthorizationDetailType(
         tenantId: TenantId,
@@ -427,7 +444,7 @@ object OAuthConfigurationService:
         systemSettings <- systemSettingsRepository.getAll
         _ <- systemSettingsCache.set(systemSettings)
         metadata <- metadataRepository.getAll
-        _ <- metadataCache.set(metadata)
+        _ <- metadataCache.set(ServedMetadata.derive(metadata))
         resources <- resourceRepository.getAll
         _ <- resourceCache.set(resources)
         authorizationDetailTypes <- authorizationDetailTypeRepository.getAll

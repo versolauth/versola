@@ -394,9 +394,10 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
 
 
-  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is a static mirror of
-  // CoreConfig.DpopConfig.default.allowedAlgorithms -- this script has no access to that type,
-  // so if the server-side default ever changes, update both.
+  // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is not a mirror of anything:
+  // auth reads the set a proof is checked against straight off this document, so editing it
+  // here is how a deployment narrows or widens what it accepts. An entry auth has no verifier
+  // for is dropped rather than advertised; drop the field entirely to fall back to its default.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
