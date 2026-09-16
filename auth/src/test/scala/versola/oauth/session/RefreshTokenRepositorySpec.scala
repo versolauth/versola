@@ -177,7 +177,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
-          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now.plus(60.days), now.plusSeconds(600))
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, None, now.plus(60.days), now.plusSeconds(600))
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
@@ -196,7 +196,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
           // A retry arriving late must not pull the expiry back in.
-          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now, now.plusSeconds(600))
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, None, now, now.plusSeconds(600))
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
@@ -210,7 +210,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.delete(refreshToken1)
 
-          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, scope1, now.plus(60.days), now.plusSeconds(600))
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, None, now.plus(60.days), now.plusSeconds(600))
         yield assertTrue(!renewed)
       },
       test("renewing a bound token in place persists a narrowed scope") {
@@ -223,12 +223,27 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           // rotates: the next refresh names no scope, so an unpersisted narrowing would be
           // silently undone and hand back what the client dropped.
           narrowed = record1.scope.take(1)
-          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, narrowed, now.plus(60.days), now.plusSeconds(600))
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, Some(narrowed), now.plus(60.days), now.plusSeconds(600))
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
           narrowed.size < record1.scope.size,
           found.exists(_.scope == narrowed),
+        )
+      },
+      test("renewing a bound token without a scope leaves the stored one alone") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnfJkt = Some("thumbprint-1"))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+
+          // RFC 6749 §6: a refresh naming no scope means "unchanged", so the row is already
+          // right and the column is left out of the statement rather than rewritten.
+          renewed <- env.repository.renewBoundToken(refreshToken1, accessToken2, None, now.plus(60.days), now.plusSeconds(600))
+          found <- env.repository.findToken(refreshToken1)
+        yield assertTrue(
+          renewed,
+          found.exists(_.scope == record1.scope),
         )
       },
       test("refresh token rotation: fail when old token already used") {
