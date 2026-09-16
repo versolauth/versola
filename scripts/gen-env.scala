@@ -583,6 +583,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  connection-timeout = "30 seconds"
        |  max-lifetime = "30 minutes"
        |  leak-detection-threshold = "60 seconds"
+       |  # Absent unless POSTGRES_POOL_METRICS_INTERVAL is set, which leaves HikariCP
+       |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
+       |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
+       |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
+       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |
        |cleanup {
@@ -705,6 +711,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  connection-timeout = "30 seconds"
        |  max-lifetime = "30 minutes"
        |  leak-detection-threshold = "60 seconds"
+       |  # Absent unless POSTGRES_POOL_METRICS_INTERVAL is set, which leaves HikariCP
+       |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
+       |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
+       |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
+       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |""".stripMargin
 
@@ -753,6 +765,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  connection-timeout = "30 seconds"
        |  max-lifetime = "30 minutes"
        |  leak-detection-threshold = "60 seconds"
+       |  # Absent unless POSTGRES_POOL_METRICS_INTERVAL is set, which leaves HikariCP
+       |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
+       |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
+       |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
+       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |
        |cleanup {

@@ -6,9 +6,9 @@ import zio.config.magnolia.DeriveConfig
 
 /** Configuration for the PostgreSQL HikariCP connection pool.
   *
-  * Every field except `notifications-url` is required (no defaults) — every service must
-  * set them explicitly in its `postgres { }` config block so that the connection budget is
-  * coordinated with `max_connections` across all service instances.
+  * Every field except `notifications-url` and `pool-metrics-interval` is required (no defaults) —
+  * every service must set them explicitly in its `postgres { }` config block so that the
+  * connection budget is coordinated with `max_connections` across all service instances.
   *
   * @param url
   *   JDBC URL of the database
@@ -37,6 +37,20 @@ import zio.config.magnolia.DeriveConfig
   * @param leakDetectionThreshold
   *   Amount of time a connection can be out of the pool before a leak warning is
   *   logged (HikariCP `leakDetectionThreshold`). Set to `0 seconds` to disable.
+  * @param poolMetricsInterval
+  *   How often the pool's own readings — size, busy, idle, threads waiting, connection-acquisition
+  *   wait time, connection timeouts — are published to the `db_client_connection_*` metrics of
+  *   [[DbMetrics]]. Absent means the pool publishes none of them and HikariCP is left without a
+  *   `MetricsTrackerFactory`, which is the state every service was in before this existed.
+  *
+  *   Opt-in rather than always-on because these series are not free in the only dimension that is
+  *   hard to take back: a scrape surface. Turning them on for auth/central/edge adds a metric
+  *   family to endpoints that alerts and boards are already written against, and the process that
+  *   wants them (a load campaign reading pool saturation against `max_connections`) is not the
+  *   process that pays for them. The interval is the knob rather than a boolean because it is the
+  *   one number an operator actually has to choose — a gauge written less often than Prometheus
+  *   scrapes reports a stale peak, and a gauge written far more often than that costs the pod
+  *   without telling anyone anything.
   */
 case class PostgresConfig(
     url: String,
@@ -48,6 +62,7 @@ case class PostgresConfig(
     connectionTimeout: Duration,
     maxLifetime: Duration,
     leakDetectionThreshold: Duration,
+    poolMetricsInterval: Option[Duration],
 )
 
 /** The DB password is a plain string in HOCON (not base64), so it's decoded via

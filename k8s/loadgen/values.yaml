@@ -275,6 +275,33 @@ metrics:
   # scrape-time labels rather than anything the application emits -- see each
   # board's own description panel.
   prometheusAnnotations: true
+  # One series family the pods do NOT publish by default, and cannot be made
+  # to from here: the HikariCP pool readings of dashboards/db-pools.json
+  # (`db_client_connection_*`). They come from `util`, which every service
+  # shares, so they are opt-in per pool via `postgres.pool-metrics-interval`
+  # -- an absent interval means no MetricsTrackerFactory and no publishing
+  # fiber at all.
+  #
+  # That knob lives in the mounted env.conf, not in these values: this chart
+  # consumes the file as an opaque Secret key (see `driver.config` above),
+  # exactly as it does for `store.postgres`' url and pool size. Add
+  #
+  #   store { postgres { pool-metrics-interval = "10 seconds" } }
+  #
+  # to the emulator's own config for the driver and coordinator pools, and
+  # set POSTGRES_POOL_METRICS_INTERVAL on the SUT's deployments for auth,
+  # central and edge (scripts/gen-env.scala leaves that override in place on
+  # each generated `postgres { }` block). Ten seconds against the 15s scrape
+  # the campaign runs: shorter wastes wakeups a scrape will never see,
+  # longer turns `max_over_time` of the queue gauge into a number that
+  # missed the peak.
+  #
+  # Still out of this chart's scope, and noted here so an empty board is not
+  # read as a broken one: `postgres_exporter`, a PgBouncer exporter,
+  # kube-state-metrics, cAdvisor and JVM metrics. The pool metrics are the
+  # application's own view -- what it asked for and how long it waited --
+  # and they say nothing about the pooler in front of the database or the
+  # server behind it.
 
 # The Grafana boards of dashboards/, as a ConfigMap for a Grafana dashboard
 # sidecar to pick up.

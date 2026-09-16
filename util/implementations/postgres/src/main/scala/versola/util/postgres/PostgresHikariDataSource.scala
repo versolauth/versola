@@ -70,6 +70,10 @@ object PostgresHikariDataSource:
           postgres <- ZIO.service[PostgresConfig]
           _ <- ZIO.fromEither(validate(postgres)).mapError(msg => new IllegalArgumentException(msg))
           _ <- ZIO.logInfo("Acquiring HikariDataSource...")
+          // Built here, and not beside the publishing fiber below, because HikariCP's tracker and
+          // that fiber are the two ends of one accumulator: the tracker has to be installed on the
+          // HikariConfig, which is gone by the time there is a HikariDataSource to poll.
+          poolMetrics = postgres.poolMetricsInterval.map(_ -> ConnectionWaitBuckets(DbMetrics.connectionWaitBoundaries.values))
           dataSource = HikariDataSource {
             val config = HikariConfig()
             config.setDriverClassName("org.postgresql.Driver")
@@ -83,7 +87,12 @@ object PostgresHikariDataSource:
             config.setConnectionTimeout(postgres.connectionTimeout.toMillis)
             config.setMaxLifetime(postgres.maxLifetime.toMillis)
             config.setLeakDetectionThreshold(postgres.leakDetectionThreshold.toMillis)
-            // poolName aids diagnostics; taken from the caller-provided service name.
+            poolMetrics.foreach((_, buckets) => config.setMetricsTrackerFactory(PoolMetrics.trackerFactory(buckets)))
+            // poolName aids diagnostics; taken from the caller-provided service name. It is also the
+            // `pool_name` label of the pool metrics, which is what distinguishes the two pools a
+            // multi-database process holds -- HikariCP's own "HikariPool-N" fallback numbers them in
+            // construction order, so leaving it unset makes those two series swap identities across
+            // a restart.
             serviceName.foreach(config.setPoolName)
             config
           }
@@ -129,8 +138,13 @@ object PostgresHikariDataSource:
             // applied (flagged in review).
             if migrate then flyway.migrate() else flyway.validate()
 
-        yield dataSource
-      )(dataSource => ZIO.attemptBlocking(dataSource.close()).orDie)
+        yield (dataSource, poolMetrics)
+      )((dataSource, _) => ZIO.attemptBlocking(dataSource.close()).orDie)
+        .flatMap: (dataSource, poolMetrics) =>
+          ZIO
+            .foreachDiscard(poolMetrics.toList): (interval, buckets) =>
+              PoolMetrics.publishing(dataSource, buckets, interval)
+            .as(dataSource)
 
 
   /** Validates pool-tuning values before they reach HikariCP.
@@ -167,6 +181,12 @@ object PostgresHikariDataSource:
       ):
         s"leak-detection-threshold (${postgres.leakDetectionThreshold}) must not exceed max-lifetime " +
           s"(${postgres.maxLifetime}) when max-lifetime > 0 (HikariCP silently disables it otherwise)",
+      // Not a HikariCP minimum -- this one is ours. A sub-second interval buys nothing (the gauges
+      // are levels, read at a resolution no Prometheus scrape can see) and costs a wakeup per pool
+      // per interval in every service on this pool, which is the overhead the metrics were made
+      // opt-in to avoid in the first place.
+      Option.when(postgres.poolMetricsInterval.exists(_.toMillis < 1000)):
+        s"pool-metrics-interval must be >= 1 second when set, got ${postgres.poolMetricsInterval.get}",
     ).flatten
 
     if errors.isEmpty then Right(())
