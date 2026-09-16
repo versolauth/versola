@@ -308,7 +308,26 @@ object PlanConfig:
     * makes `ArrivalProcess.shardRate` divide by zero rather than fail.
     */
   def validate(config: PlanConfig): Either[String, PlanConfig] =
-    Either.cond(config.shardCount > 0, config, s"plan.shard-count must be positive, got ${config.shardCount}")
+    for
+      _ <- Either.cond(config.shardCount > 0, (), s"plan.shard-count must be positive, got ${config.shardCount}")
+      // A campaign with no latency ceiling produces a verdict in which nothing about the SUT's
+      // speed was judged -- `passed = true` on a run that measured latency and graded none of it.
+      _ <- Either.cond(
+        config.acceptance.latency.nonEmpty,
+        (),
+        "plan.acceptance.latency states no thresholds, so no endpoint's latency would be judged",
+      )
+      _ <- config.acceptance.latency.find(_.ceiling.toNanos <= 0L) match
+        case Some(threshold) =>
+          Left(s"plan.acceptance.latency entry '${threshold.name}' has a non-positive ceiling: ${threshold.ceiling}")
+        case None => Right(())
+      // Two entries for one measurement produce two identically named checks, and `passed` would
+      // then depend on which ceiling the reader happened to look at.
+      _ <- config.acceptance.latency.groupBy(threshold => (threshold.scenario, threshold.name)).find(_._2.sizeIs > 1) match
+        case Some(((scenario, name), _)) =>
+          Left(s"plan.acceptance.latency names ${scenario.fold(name)(step => s"$step/$name")} more than once")
+        case None => Right(())
+    yield config
 
   given DeriveConfig[PlanConfig] = DeriveConfig
     .derived[PlanConfig]
@@ -319,16 +338,30 @@ object PlanConfig:
   */
 case class MeasurementRefConfig(scenario: Option[String], name: String)
 
-/** Which measurement each of the design doc §6.7 thresholds is about.
+/** One endpoint's absolute latency ceiling: §6's table states a different one per endpoint, so
+  * the measurement and its ceiling are stated together rather than the measurement being named
+  * here and its ceiling fixed in code.
+  *
+  * `ceiling` is a p99, as every latency criterion in §6.7 is; it is not called `p99` because the
+  * kebab-case provider renders that field name as `p-99`, which in a HOCON file reads as a typo.
+  */
+case class LatencyThresholdConfig(scenario: Option[String], name: String, ceiling: Duration)
+
+/** Which measurements the campaign is judged on, and at what ceiling.
   *
   * In configuration rather than as constants in the coordinator because the scenario and step
   * names belong to the scenario engine: a threshold naming a measurement nothing records is
   * reported as *not evaluated* by `CampaignReport`, so a hard-coded guess at the naming would
-  * turn the campaign's headline criteria into lines nobody checked. The figures themselves are
-  * not configurable -- they are the design doc's, via `AcceptanceThresholds.designDefaults`.
+  * turn the campaign's headline criteria into lines nobody checked.
+  *
+  * `latency` is a list because a verdict that only grades `/token` leaves §6's "assessment"
+  * column empty for every other endpoint the campaign drove. The relative criterion stays a pair
+  * of named measurements: a campaign says which two hops it is comparing, but how much overhead
+  * an edge hop may add is the design doc's 15 ms, not a knob
+  * ([[versola.loadgen.metrics.AcceptanceThresholds.edgeProxyMargin]]).
   */
 case class AcceptanceMeasurementsConfig(
-    tokenRefresh: MeasurementRefConfig,
+    latency: List[LatencyThresholdConfig],
     edgeProxy: MeasurementRefConfig,
     mockBackend: MeasurementRefConfig,
 )

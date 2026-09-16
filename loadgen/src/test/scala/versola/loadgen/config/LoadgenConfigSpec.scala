@@ -102,7 +102,11 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |plan {
       |  shard-count = 8
       |  acceptance {
-      |    token-refresh = { scenario = "mobile-otp", name = token-refresh }
+      |    latency = [
+      |      { scenario = "mobile-otp", name = token-refresh, ceiling = 120ms },
+      |      { scenario = "mobile-otp", name = proxy-accounts, ceiling = 200ms },
+      |      { name = mobile-otp-login, ceiling = 2s },
+      |    ]
       |    edge-proxy    = { scenario = "mobile-otp", name = proxy-accounts }
       |    mock-backend  = { name = mock-accounts }
       |  }
@@ -182,7 +186,12 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.campaign.diurnal.timezone == "Asia/Almaty",
           config.actions.map(_.name) == List("balance", "pay"),
           config.plan.map(_.shardCount) == Some(8),
-          config.plan.map(_.acceptance.tokenRefresh) == Some(MeasurementRefConfig(Some("mobile-otp"), "token-refresh")),
+          config.plan.map(_.acceptance.latency.head) ==
+            Some(LatencyThresholdConfig(Some("mobile-otp"), "token-refresh", Duration.fromMillis(120))),
+          // No scenario names a flow rather than a step here too, and the ceiling is the
+          // campaign's rather than a constant: §6 sets a different one per endpoint.
+          config.plan.map(_.acceptance.latency.last) ==
+            Some(LatencyThresholdConfig(None, "mobile-otp-login", Duration.fromSeconds(2))),
           // No scenario names a flow rather than a step (§11), so the absence has to survive the
           // decode as `None` instead of becoming an empty string.
           config.plan.map(_.acceptance.mockBackend) == Some(MeasurementRefConfig(None, "mock-accounts")),
@@ -269,6 +278,46 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       // A count of zero answers 500 to every driver's poll for the whole campaign:
       // `ShardAssignment.shardOf` requires a positive count and `ArrivalProcess.shardRate`
       // divides by it.
+      // Every one of these decodes to a `plan` block that boots and then grades the campaign on
+      // nothing, or grades one measurement twice with two different ceilings. `Option[PlanConfig]`
+      // turns a decode failure into `None` rather than an error, so the rejection has to happen
+      // in validation or it does not happen at all.
+      test("rejects an acceptance block that would judge no endpoint's latency") {
+        val withoutThresholds = hocon.replaceFirst(
+          "(?s)latency = \\[.*?\\]",
+          "latency = []",
+        )
+        for
+          empty <- TypesafeConfigProvider
+            .fromHoconString(withoutThresholds)
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(withoutThresholds.contains("latency = []"), empty.isFailure)
+      },
+      test("rejects a non-positive latency ceiling") {
+        for
+          zero <- TypesafeConfigProvider
+            .fromHoconString(hocon.replaceFirst("ceiling = 120ms", "ceiling = 0s"))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(zero.isFailure)
+      },
+      test("rejects the same measurement named twice, which would grade it against two ceilings") {
+        for
+          duplicated <- TypesafeConfigProvider
+            .fromHoconString(
+              hocon.replaceFirst(
+                "\\{ scenario = \"mobile-otp\", name = proxy-accounts, ceiling = 200ms \\},",
+                "{ scenario = \"mobile-otp\", name = token-refresh, ceiling = 200ms },",
+              ),
+            )
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(duplicated.isFailure)
+      },
       test("rejects a non-positive plan shard count") {
         for
           zero <- TypesafeConfigProvider

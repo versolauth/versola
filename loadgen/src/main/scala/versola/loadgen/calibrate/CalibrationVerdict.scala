@@ -44,11 +44,7 @@ object CalibrationVerdict:
     * figure `AcceptanceThresholds.designDefaults` states, read from there rather than repeated, so
     * the gate and the campaign cannot come to disagree about when a driver is the bottleneck.
     */
-  val scheduleLagP99: Duration = AcceptanceThresholds.designDefaults(
-    tokenRefresh = MeasurementId.Flow("unused"),
-    edgeProxy = MeasurementId.Flow("unused"),
-    mockBackend = MeasurementId.Flow("unused"),
-  ).scheduleLagP99
+  val scheduleLagP99: Duration = AcceptanceThresholds.scheduleLagP99
 
   /** How many samples a profile needs before its p99 is compared against a 2 ms tolerance.
     *
