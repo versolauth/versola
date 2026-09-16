@@ -136,6 +136,11 @@ object OAuthClientService:
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateAccessTokenTtl(
+          request.id,
+          Duration.fromSeconds(request.accessTokenTtl),
+          request.dpopBoundAccessTokens,
+        ))(ZIO.fail(_))
         secret <- request.clientType match
           case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case ClientType.native => ZIO.none
@@ -185,7 +190,11 @@ object OAuthClientService:
             tenantId = client.tenantId,
             authFlow = request.authFlow.applyTo(client.authFlow),
             registrationFlow = request.registrationFlow.applyTo(client.registrationFlow),
-          )
+          ) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateAccessTokenTtl(
+            clientId = request.clientId,
+            accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds).getOrElse(client.accessTokenTtl),
+            dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+          ))(ZIO.fail(_))
         _ <- clientRepository.updateClient(
           clientId = request.clientId,
           clientName = request.clientName,
