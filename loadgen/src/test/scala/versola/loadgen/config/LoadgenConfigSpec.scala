@@ -62,6 +62,16 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  roles { retail-user = 0.90, retail-basic = 0.10 }
       |}
       |
+      |clients {
+      |  mobile-otp          = "mobile-otp"
+      |  mobile-otp-password = "mobile-otp-password"
+      |  mobile-passkey      = "mobile-passkey"
+      |  mobile-redirect-uri = "versola://callback"
+      |  web-preset          = "web-otp"
+      |  scope               = "openid profile phone offline_access"
+      |  otp-length          = 6
+      |}
+      |
       |session {
       |  full-login-probability { mobile = 0.033, web = 0.85 }
       |  action-count { mobile-mean = 5, web-mean = 9, dispersion = 0.6 }
@@ -159,6 +169,11 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.store.writeBehind.batchSize == 500,
           config.population.target == 10000000L,
           config.population.classes.map(_.name) == List("heavy", "regular", "light", "dormant"),
+          config.clients.map(_.mobilePasskey) == Some("mobile-passkey"),
+          // Without `offline_access` the campaign is all full logins and no refreshes, which
+          // still passes every threshold while measuring something else entirely.
+          config.clients.map(_.scope) == Some("openid profile phone offline_access"),
+          config.clients.map(_.otpLength) == Some(6),
           config.session.actionCount.webMean == 9,
           config.session.refreshTokenTtl == zio.Duration.fromSeconds(2592000),
           config.campaign.phases.map(_.name) == List("warmup", "ramp", "steady"),

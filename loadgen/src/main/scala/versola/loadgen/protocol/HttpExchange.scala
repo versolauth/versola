@@ -31,11 +31,12 @@ private[protocol] final class HttpExchange(client: Client, requestTimeout: Durat
   private val http = client.batched
 
   def send(request: Request): IO[ProtocolError, Received] =
-    http
-      .request(request)
-      .timeoutFail(HttpExchange.timedOut)(requestTimeout)
-      .flatMap(response => response.body.asString.map(Received(response, _)))
-      .mapError(ProtocolError.Transport.apply)
+    InflightRequests.around:
+      http
+        .request(request)
+        .timeoutFail(HttpExchange.timedOut)(requestTimeout)
+        .flatMap(response => response.body.asString.map(Received(response, _)))
+        .mapError(ProtocolError.Transport.apply)
 
 private[protocol] object HttpExchange:
   /** One shared instance: filling in a stack trace per timed-out request is exactly the kind of

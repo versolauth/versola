@@ -3,17 +3,11 @@ package versola.loadgen.calibrate
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{CalibrationConfig, CampaignConfig, LoadgenConfig}
 import versola.loadgen.coordinator.SnapshotMerge
-import versola.loadgen.metrics.{HistogramSample, HistogramWire, LatencyRecorder, LatencySummary, MeasurementId}
+import versola.loadgen.metrics.{LatencyRecorder, LatencySummary}
 import versola.loadgen.protocol.{AccessToken, ActionClient, EdgeActionClient, EdgeCredential, LoadgenHttpClient}
-import versola.loadgen.scenario.BusinessActions
+import versola.loadgen.scenario.{BusinessActions, SnapshotPublisher}
 import versola.loadgen.scheduler.{ArrivalProcess, CampaignSchedule, RandomSource, ScheduleLag}
-import versola.loadgen.store.{
-  LoadgenMigrations,
-  MeasurementKind,
-  MetricSnapshotRepository,
-  MetricSnapshotRow,
-  PostgresMetricSnapshotRepository,
-}
+import versola.loadgen.store.{LoadgenMigrations, MetricSnapshotRepository, PostgresMetricSnapshotRepository}
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
@@ -48,7 +42,7 @@ object Calibration:
     * run: the handoff being on its production cadence is part of what is being calibrated, since
     * consecutive snapshots have to *partition* the recorded values for the merge to be a merge.
     */
-  val snapshotInterval: Duration = 60.seconds
+  val snapshotInterval: Duration = SnapshotPublisher.interval
 
   /** The `driver_id` the gate's snapshots are written under. One process, so one id; distinct
     * from any driver's so a calibration's rows are never mistaken for a campaign's.
@@ -135,15 +129,16 @@ object Calibration:
       interval: Duration,
       startedAt: Instant,
   ): ZIO[Scope, Throwable, List[LatencySummary]] =
+    val snapshotting = SnapshotPublisher(campaign, driverId, latencies, snapshots)
     for
-      publisher <- publish(campaign, latencies, snapshots).repeat(Schedule.spaced(interval)).forkScoped
+      publisher <- snapshotting.publish.repeat(Schedule.spaced(interval)).forkScoped
       _ <- loop.run
       _ <- drain(outcomes)
       _ <- publisher.interrupt
       // The interval the timer did not reach. Without it the run's last samples are in a recorder
       // nobody read, and the gate would be judged on a partial run -- worse, on one whose missing
       // part is always the same part.
-      _ <- publish(campaign, latencies, snapshots)
+      _ <- snapshotting.publish
       rows <- snapshots.loadCampaign(campaign, startedAt)
       summaries <- ZIO.fromEither(SnapshotMerge.summaries(rows)).mapError(IllegalStateException(_))
     yield summaries
@@ -171,47 +166,6 @@ object Calibration:
           )
 
   private val drainPoll: Duration = 100.millis
-
-  /** One snapshot interval: take and reset every recorder, and write what actually holds samples.
-    *
-    * Empty histograms are skipped rather than written as zero-count rows. They would decode and
-    * merge correctly, but a measurement that is present and empty is what
-    * `CampaignReport.measured` exists to tell apart from one that recorded something, and filling
-    * the table with rows that say nothing makes that distinction harder to see, not easier.
-    */
-  private[calibrate] def publish(
-      campaign: String,
-      latencies: LatencyRecorder,
-      snapshots: MetricSnapshotRepository,
-  ): Task[Unit] =
-    for
-      capturedAt <- Clock.instant
-      samples <- latencies.snapshot
-      rows = samples.filter(_.histogram.getTotalCount > 0L).map(rowOf(campaign, capturedAt, _))
-      _ <- snapshots.appendAll(rows)
-      _ <- ZIO.logDebug(s"Wrote ${rows.size} calibration snapshot rows at $capturedAt").when(rows.nonEmpty)
-    yield ()
-
-  /** Track F's label into the store's `(kind, scenario, name)` columns -- the inverse of
-    * [[SnapshotMerge.measurementOf]], which is what reads them back.
-    */
-  private[calibrate] def rowOf(campaign: String, capturedAt: Instant, sample: HistogramSample): MetricSnapshotRow =
-    val encoded = HistogramWire.encode(sample)
-    val (kind, scenario, name) = sample.id match
-      case MeasurementId.Step(scenario, step) => (MeasurementKind.Step, Some(scenario), step)
-      case MeasurementId.Flow(flow) => (MeasurementKind.Flow, None, flow)
-    MetricSnapshotRow(
-      campaign = campaign,
-      driverId = driverId,
-      capturedAt = capturedAt,
-      wireVersion = HistogramWire.version,
-      kind = kind,
-      scenario = scenario,
-      name = name,
-      unit = encoded.unit,
-      sampleCount = encoded.count,
-      histogram = encoded.encoding,
-    )
 
   /** #281 asks for "a 30-minute run at a known fixed rate". Every one of these is ordinary
     * campaign configuration, so this rejects only the shapes under which the rate is *not* fixed

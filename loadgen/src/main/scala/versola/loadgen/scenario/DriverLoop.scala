@@ -39,6 +39,7 @@ final class DriverLoop(
     lag: ScheduleLag,
     random: RandomSource,
     queueCapacity: Int,
+    tally: ArrivalTally = ArrivalTally.none,
 ):
 
   /** Runs until the campaign's horizon is reached or the fiber is interrupted, whichever comes
@@ -110,6 +111,7 @@ final class DriverLoop(
       case Right(Some(user)) =>
         val fiberRandom = random.split()
         LoadgenMetrics.arrival(scenarioLabel) *>
+          tally.record(user.platform) *>
           busy
             .withUser(user.id)(recorder.forArrival(user.id, arrival.intendedStart)(runner.run(user, fiberRandom)))
             .catchAll(reportDropped(user.id))
@@ -133,7 +135,14 @@ final class DriverLoop(
       val wait = Duration.fromInterval(now, intendedStart)
       ZIO.sleep(wait).when(!wait.isNegative && !wait.isZero).unit
 
-  private val scenarioLabel = "session"
+  private val scenarioLabel = DriverLoop.scenarioLabel
+
+object DriverLoop:
+  /** The one arrival stream a driver schedules, as `loadgen_arrivals_total` and
+    * `loadgen_schedule_lag_seconds` label it. Sessions are scheduled; what a session *does* is
+    * the state machine's decision, not a separately scheduled stream (see `PlanScenario`).
+    */
+  val scenarioLabel: String = "session"
 
 /** The one way a driver loop ends other than the horizon or an interruption. */
 final case class CampaignAbortedException(campaignAbort: CampaignAbort)
