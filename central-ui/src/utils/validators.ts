@@ -241,6 +241,27 @@ export function secondsToDays(seconds: number): number {
   return Math.max(1, Math.round(seconds / (24 * 60 * 60)));
 }
 
+/** Kept in sync with `InvalidRegistrationConfiguration` on the backend, which is the
+  * authoritative check - this only lets the admin catch the mistake before submitting. */
+export const MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS = 3600;
+export const MAX_ACCESS_TOKEN_TTL_SECONDS = 86400;
+
+/**
+ * Validates access token TTL. A DPoP-bound access token has no bearer-replay risk without
+ * the private key, so it may live long enough to be worth the write-load savings - but every
+ * access token, bound or not, is capped so a leaked deny-list entry or a stale permission
+ * grant cannot outlive it by more than a day.
+ */
+export function validateAccessTokenTtl(seconds: number, dpopBoundAccessTokens: boolean): { valid: boolean; error?: string } {
+  if (dpopBoundAccessTokens && seconds < MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS) {
+    return { valid: false, error: 'Must be at least 1 hour when DPoP-bound access tokens are required' };
+  }
+  if (seconds > MAX_ACCESS_TOKEN_TTL_SECONDS) {
+    return { valid: false, error: 'Must not exceed 24 hours' };
+  }
+  return { valid: true };
+}
+
 /**
  * Get error message for validation type
  */

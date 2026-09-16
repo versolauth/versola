@@ -15,6 +15,7 @@ import {
   secondsToTtl,
   daysToSeconds,
   secondsToDays,
+  validateAccessTokenTtl,
 } from '../utils/validators';
 
 @customElement('versola-client-form')
@@ -822,6 +823,10 @@ export class VersolaClientForm extends LitElement {
       }
     }
 
+    if (this.isAccessTokenTtlInvalid) {
+      return;
+    }
+
     const authFlow = this.formData.authFlow ?? null;
     if (authFlow) {
       const authFlowError = this.getAuthFlowValidationError(authFlow);
@@ -1050,10 +1055,25 @@ export class VersolaClientForm extends LitElement {
   }
 
   private toggleDpopBoundAccessTokens() {
-    this.formData = {
-      ...this.formData,
-      dpopBoundAccessTokens: !this.formData.dpopBoundAccessTokens,
-    };
+    const dpopBoundAccessTokens = !this.formData.dpopBoundAccessTokens;
+    this.formData = { ...this.formData, dpopBoundAccessTokens };
+    // Requiring DPoP makes the token sender-constrained, so the 1-hour floor applies -
+    // bump a shorter existing value up rather than surfacing an error on an untouched field.
+    if (dpopBoundAccessTokens && ttlToSeconds(this.ttlValue, this.ttlUnit) < 3600) {
+      this.ttlUnit = 'hours';
+      this.ttlValue = 1;
+    }
+  }
+
+  private get accessTokenTtlValidation() {
+    return validateAccessTokenTtl(
+      ttlToSeconds(this.ttlValue, this.ttlUnit),
+      !!this.formData.dpopBoundAccessTokens,
+    );
+  }
+
+  private get isAccessTokenTtlInvalid() {
+    return !this.accessTokenTtlValidation.valid;
   }
 
   private handleBackChannelLogoutUriInput(e: Event) {
@@ -1678,15 +1698,31 @@ export class VersolaClientForm extends LitElement {
             </div>
 
             <div class="form-group">
-              <label for="ttl">Access Token TTL *</label>
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;" for="ttl">Access Token TTL *</label>
+                ${this.renderOptionInfo(
+                  'access-token-ttl',
+                  'Access Token TTL',
+                  html`
+                    <div class="option-tooltip-item">This is a trade between three things that don't move together: database writes from refresh, how long a revoked grant can keep working, and how much state every edge node has to hold to enforce a revocation immediately.</div>
+                    <div class="option-tooltip-item">A refresh exchange writes to the database on every use. A refresh token bound to the same DPoP key as its access token carries no replay risk if leaked, so RFC 9700 lets the authorization server skip rotating it - unlike a plain (bearer) refresh token, which must rotate on every use to detect theft. Raising this TTL directly cuts that write volume, but only pays off for a client that has &quot;Require DPoP-bound access tokens&quot; checked, since that's what guarantees every token issued to it really is bound rather than sometimes plain bearer.</div>
+                    <div class="option-tooltip-item">That's why the minimum is 1 hour only when DPoP binding is required: a bound token is inert without the client's private key, so a long lifetime doesn't add replay exposure. For a client without that checked, an access token can still come back unbound, so a short TTL stays the main defense against a leaked token and the floor doesn't apply.</div>
+                    <div class="option-tooltip-item">The other side: revoking an access token before it expires (logout, a permission change, an incident) means pushing a deny-list entry to every edge node, which has to hold it in memory until the token would have expired anyway. A longer TTL means more entries held longer everywhere, and it caps how fast a permission change can take effect if nothing pushes it there explicitly.</div>
+                    <div class="option-tooltip-item">The 24-hour maximum applies regardless of binding for this reason: it's the ceiling on how stale a deny-list entry or an un-pushed permission change is allowed to get, no matter how safe the token is against replay.</div>
+                  `,
+                  'Access token TTL info',
+                )}
+              </div>
               <div class="array-input-group compact-inline-row">
                 <input
                   type="number"
                   id="ttl"
+                  class="${this.isAccessTokenTtlInvalid ? 'input-error' : ''}"
                   .value=${String(this.ttlValue)}
                   @input=${(e: Event) => this.ttlValue = parseInt((e.target as HTMLInputElement).value) || 1}
                   required
                   min="1"
+                  max="${this.ttlUnit === 'hours' ? '24' : '1440'}"
                   placeholder="${this.ttlUnit === 'hours' ? '1' : '10'}"
                   style="flex: 0 0 120px;"
                 />
@@ -1701,7 +1737,9 @@ export class VersolaClientForm extends LitElement {
                   </select>
                 </div>
               </div>
-              <div class="hint">${ttlToSeconds(this.ttlValue, this.ttlUnit)} seconds</div>
+              ${this.isAccessTokenTtlInvalid
+                ? html`<div class="error-message">${this.accessTokenTtlValidation.error}</div>`
+                : html`<div class="hint">${ttlToSeconds(this.ttlValue, this.ttlUnit)} seconds</div>`}
             </div>
 
             ${this.hasOfflineAccessScope ? html`
