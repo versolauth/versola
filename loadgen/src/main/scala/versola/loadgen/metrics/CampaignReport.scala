@@ -80,6 +80,11 @@ case class ReportCheck(name: String, passed: Boolean, detail: String) derives Js
 /** The body of `GET /report/{campaign}` (§12): merged quantiles, the error taxonomy, and the
   * verdict.
   *
+  * `startEpochMillis`/`endEpochMillis` are the oldest and newest snapshot the merge actually saw,
+  * not this coordinator's own uptime -- see `assemble`'s comment. Without them a dashboard has no
+  * way to scope itself to one run's data rather than showing whatever the query range happens to
+  * catch.
+  *
   * `notEvaluated` is separate from a failed check on purpose. A threshold whose measurement never
   * recorded a sample has not passed -- it was not tested - and folding that into `passed` in
   * either direction is a lie: `true` claims a criterion was met that nobody measured, `false`
@@ -88,6 +93,8 @@ case class ReportCheck(name: String, passed: Boolean, detail: String) derives Js
 case class CampaignReport(
     campaign: String,
     drivers: List[String],
+    startEpochMillis: Long,
+    endEpochMillis: Long,
     latency: List[LatencySummary],
     taxonomy: ErrorTaxonomy,
     health: CampaignHealth,
@@ -106,6 +113,7 @@ object CampaignReport:
       thresholds: AcceptanceThresholds,
   ): Either[String, CampaignReport] =
     for
+      _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
       _ <- reports.find(_.campaign != campaign) match
         case Some(foreign) =>
           Left(s"report for campaign '${foreign.campaign}' handed to the '$campaign' merge (driver ${foreign.driverId})")
@@ -116,9 +124,15 @@ object CampaignReport:
     yield
       val merged = HistogramWire.merge(samples)
       val (checks, notEvaluated) = evaluate(merged, taxonomy, health, thresholds)
+      // The interval each driver actually wrote a snapshot in, not this coordinator's own
+      // uptime: a restarted coordinator has no memory of the campaign's start, but every row
+      // it just merged carries the instant its driver captured it (see `report`'s comment on
+      // `Instant.EPOCH`), so the run's window is exactly what the data already says it is.
       CampaignReport(
         campaign = campaign,
         drivers = reports.map(_.driverId).distinct.sorted,
+        startEpochMillis = reports.map(_.capturedAtEpochMillis).min,
+        endEpochMillis = reports.map(_.capturedAtEpochMillis).max,
         latency = HistogramWire.summarise(merged).sortBy(_.id.toString),
         taxonomy = taxonomy,
         health = health,
