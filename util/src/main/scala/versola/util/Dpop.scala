@@ -84,8 +84,17 @@ object Dpop:
     /** A SHA-256 thumbprint base64url-encoded without padding: 43 characters of the URL-safe
       * alphabet. Checked rather than accepted verbatim so a value that could never equal a
       * proof's `jkt` is refused at `/authorize`, where the client can still be told why,
-      * instead of at redemption, where the code is already spent. */
-    private val Pattern = "[A-Za-z0-9_-]{43}".r
+      * instead of at redemption, where the code is already spent.
+      *
+      * 43 base64 characters carry 258 bits, two more than the 256 a SHA-256 digest has, so the
+      * last character's low 2 bits are unused. `computeThumbprint` always emits them as zero (the
+      * only canonical encoding), which restricts that character to one of 16 symbols rather than
+      * the full alphabet -- a value with anything else there decodes fine but can never equal a
+      * canonical thumbprint's *string* form, so unlike this check the equality at redemption
+      * (`OAuthTokenService`, byte-for-byte string comparison, not decode-and-compare) would never
+      * pass, permanently stranding the code it was requested against.
+      */
+    private val Pattern = "[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]".r
 
     def parse(value: String): Option[String] = Option.when(Pattern.matches(value))(value)
 

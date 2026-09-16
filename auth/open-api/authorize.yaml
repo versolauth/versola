@@ -312,7 +312,7 @@ components:
         here rather than at redemption, with `invalid_request`.
       schema:
         type: string
-        pattern: '^[A-Za-z0-9_-]{43}$'
+        pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
       example: 0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I
 
     RequestUri:
@@ -411,7 +411,7 @@ components:
           contentMediaType: application/json
         dpop_jkt:
           type: string
-          pattern: '^[A-Za-z0-9_-]{43}$'
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
         request_uri:
           type: string
 

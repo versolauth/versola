@@ -917,6 +917,21 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
       },
+      // 43 base64url characters carry 258 bits, two more than a SHA-256 digest's 256, so a
+      // canonical thumbprint's last character always has its low 2 bits zero -- one of 16
+      // symbols, not the full alphabet. 'I' (the real thumbprint's last character, above) is
+      // one of them; 'B' is not, and `computeThumbprint` can never produce it there, so this
+      // value could never equal a proof's `jkt` and must be refused here rather than stranding
+      // the code it would be attached to.
+      test("rejects a thumbprint whose last character no canonical thumbprint ends with") {
+        val env = Env()
+        val jkt = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4B"
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("dpop_jkt" -> jkt)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+      },
     ),
     suite("prompt")(
       test("accepts prompt=none alone") {
