@@ -322,6 +322,16 @@ object CalibrationSpec extends ZIOSpecDefault:
         val verdict = verdictOf(perfect(5000L), settled(5000L).copy(started = 10_001L, failed = 1L))
         assertTrue(!verdict.passed, verdict.checks.exists(check => check.name == "failed calls" && !check.passed))
       },
+      // Neither completed nor failed: `Calibration.drain` gave up at its deadline while this call
+      // was still in the air, and only logged it. Without this check the call would fall out of
+      // every other one -- the failed-calls check above would still read zero.
+      test("fails when a call is still in flight at the drain deadline") {
+        val verdict = verdictOf(perfect(5000L), settled(5000L).copy(started = 10_001L))
+        assertTrue(
+          !verdict.passed,
+          verdict.checks.exists(check => check.name == "every scheduled call settled" && !check.passed),
+        )
+      },
       // The one check that catches a lost snapshot interval or a merge that re-bucketed: the
       // quantiles stay perfectly plausible while describing a subset of the run.
       test("fails when the merged sample count does not account for every completed call") {

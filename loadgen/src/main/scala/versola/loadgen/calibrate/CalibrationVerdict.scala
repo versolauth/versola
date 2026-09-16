@@ -110,6 +110,17 @@ object CalibrationVerdict:
       detail = s"${outcomes.failed} of ${outcomes.started} scheduled calls did not complete",
     )
 
+    // `Calibration.drain` gives up at its deadline and only logs -- it does not fail the run
+    // itself, to avoid racing the very fiber it is waiting on. A call still in flight at that
+    // point is neither `completed` nor `failed`, so without this check it would simply fall out
+    // of every check above and the run could pass without every scheduled call having settled.
+    val settled = ReportCheck(
+      name = "every scheduled call settled",
+      passed = outcomes.inFlight == 0L,
+      detail = s"${outcomes.inFlight} of ${outcomes.started} scheduled calls were still in flight " +
+        "at the drain deadline",
+    )
+
     // The one check that is about the handoff rather than about the backend: every successful
     // call recorded exactly one sample, so the merged histograms must hold exactly as many as the
     // loop completed. A lost snapshot interval, a re-counted one, or a merge that re-bucketed
@@ -126,7 +137,7 @@ object CalibrationVerdict:
     )
 
     val checks = profiles.collect { case Left(pair) => pair }.flatten ++
-      lag.left.toOption.toList ++ List(failures, accounted)
+      lag.left.toOption.toList ++ List(failures, accounted, settled)
     val notEvaluated = profiles.collect { case Right(missing) => missing }.flatten ++ lag.toOption.toList
 
     CalibrationVerdict(

@@ -153,8 +153,10 @@ object Calibration:
     * Bounded by the request timeout plus a margin rather than unbounded: every call either
     * answers or is failed by [[LoadgenHttpClient.requestTimeout]], so anything still outstanding
     * past that is a fiber that will not settle, and waiting forever would hang the gate instead
-    * of failing it. A call lost to the timeout is already counted as a failure, which fails the
-    * verdict on its own.
+    * of failing it. This only logs rather than failing the run directly, to avoid racing the very
+    * fiber it is waiting on -- [[CalibrationVerdict]]'s "every scheduled call settled" check reads
+    * `outcomes` after this returns and fails the gate if anything is still unaccounted for, which
+    * is the same information without the race.
     */
   private def drain(outcomes: Ref[CalibrationOutcomes]): UIO[Unit] =
     outcomes.get
