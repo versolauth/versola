@@ -12,7 +12,8 @@ object CampaignReportSpec extends ZIOSpecDefault:
   private val edgeProxy = MeasurementId.Step("mobile-otp", "proxy-accounts")
   private val mockBackend = MeasurementId.Step("mockapi", "accounts")
 
-  private val thresholds = AcceptanceThresholds.designDefaults(tokenRefresh, edgeProxy, mockBackend)
+  private val thresholds =
+    AcceptanceThresholds.designDefaults(List(LatencyThreshold(tokenRefresh, Duration.fromMillis(120))), edgeProxy, mockBackend)
 
   private def sample(id: MeasurementId, micros: Long, count: Long): HistogramSample =
     val histogram = LatencyRecorder.emptyHistogram
@@ -268,6 +269,40 @@ object CampaignReportSpec extends ZIOSpecDefault:
         CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds).toOption.get.toJson
       assertTrue(json.contains("\"scheduleLagP99Micros\":180000"), !json.contains("PT"))
     },
+    // §6 grades a table of endpoints, not one. Before the acceptance list existed, every
+    // endpoint other than `/token` and the edge/backend pair had an empty assessment column no
+    // matter what the campaign measured.
+    suite("per-endpoint ceilings")(
+      test("grades every measurement the campaign named, each against its own ceiling") {
+        val perEndpoint = AcceptanceThresholds.designDefaults(
+          List(
+            LatencyThreshold(tokenRefresh, Duration.fromMillis(120)),
+            LatencyThreshold(edgeProxy, Duration.fromMillis(200)),
+          ),
+          edgeProxy,
+          mockBackend,
+        )
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, perEndpoint)
+        assertTrue(
+          report.map(_.checks.count(_.name.startsWith("p99 of"))) == Right(3),
+          report.map(_.passed) == Right(true),
+        )
+      },
+      // The point of per-endpoint ceilings: one slow endpoint fails the campaign even though it
+      // is well inside the ceiling that used to be applied to everything.
+      test("fails the campaign for an endpoint that passed the old single ceiling") {
+        val strict = AcceptanceThresholds.designDefaults(
+          List(LatencyThreshold(tokenRefresh, Duration.fromMillis(1))),
+          edgeProxy,
+          mockBackend,
+        )
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, strict)
+        assertTrue(
+          report.map(_.passed) == Right(false),
+          report.map(_.checks.filter(_.name == s"p99 of $tokenRefresh").map(_.passed)) == Right(List(false)),
+        )
+      },
+    ),
     suite("the run's header")(
       test("carries the plan, the population, the shard map in force and what the SUT answered") {
         val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)

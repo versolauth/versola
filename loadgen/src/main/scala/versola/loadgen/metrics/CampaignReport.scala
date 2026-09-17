@@ -33,22 +33,39 @@ case class AcceptanceThresholds(
 
 object AcceptanceThresholds:
 
-  /** The figures the design doc fixes. The measurement ids are parameters rather than constants
-    * because the scenario/step naming belongs to the scenario engine, and hard-coding a guess at
-    * it here would produce a verdict that silently evaluates nothing when the names differ.
+  /** §6.7's figures that are about the emulator rather than about one measurement: they judge
+    * whether the instrument was trustworthy, so unlike a per-endpoint latency ceiling they are
+    * the same for every campaign and are read from here rather than restated in config.
+    */
+  val scheduleLagP99: Duration = Duration.fromMillis(250)
+  val maxDriverCpu: Double = 0.4
+
+  /** "edge proxy p99 ≤ backend p99 + 15 ms". Fixed for the same reason, and separate from the
+    * absolute ceilings because the campaign states which two measurements it is about but not
+    * how much overhead an edge hop is allowed to add.
+    */
+  val edgeProxyMargin: Duration = Duration.fromMillis(15)
+
+  /** The figures the design doc fixes, around the per-measurement ceilings a campaign states.
+    *
+    * The latency list is a parameter rather than a constant because both halves of it belong to
+    * the campaign: the scenario/step naming belongs to the scenario engine, and the ceiling
+    * belongs to the endpoint -- §6's table sets a different one per endpoint, and a single
+    * hard-coded 120 ms would either fail every endpoint slower than `/token` or evaluate none of
+    * them.
     */
   def designDefaults(
-      tokenRefresh: MeasurementId,
+      latency: List[LatencyThreshold],
       edgeProxy: MeasurementId,
       mockBackend: MeasurementId,
   ): AcceptanceThresholds =
     AcceptanceThresholds(
-      latency = List(LatencyThreshold(tokenRefresh, Duration.fromMillis(120))),
-      relativeLatency = List(RelativeLatencyThreshold(edgeProxy, mockBackend, Duration.fromMillis(15))),
-      scheduleLagP99 = Duration.fromMillis(250),
+      latency = latency,
+      relativeLatency = List(RelativeLatencyThreshold(edgeProxy, mockBackend, edgeProxyMargin)),
+      scheduleLagP99 = scheduleLagP99,
       maxRefreshRejected = 0L,
       maxFlushDropped = 0L,
-      maxDriverCpu = 0.4,
+      maxDriverCpu = maxDriverCpu,
       maxErrorBudgetRatio = 0.0,
       // A clamped sample is an instrument failure, not a slow SUT: the reported tail becomes a
       // floor rather than a measurement, and §6.7 rests the whole report's credibility on the

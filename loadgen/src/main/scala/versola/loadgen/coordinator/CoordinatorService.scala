@@ -5,6 +5,7 @@ import versola.loadgen.metrics.{
   AcceptanceThresholds,
   CampaignReport,
   CampaignRun,
+  LatencyThreshold,
   LoadgenMetrics,
   MeasurementId,
   ObservedAccessTokenTtl,
@@ -391,7 +392,8 @@ object CoordinatorService:
       rates = rates,
       diurnal = diurnal,
       thresholds = AcceptanceThresholds.designDefaults(
-        tokenRefresh = measurementOf(plan.acceptance.tokenRefresh),
+        latency = plan.acceptance.latency.map: threshold =>
+          LatencyThreshold(measurementOf(MeasurementRefConfig(threshold.scenario, threshold.name)), threshold.ceiling),
         edgeProxy = measurementOf(plan.acceptance.edgeProxy),
         mockBackend = measurementOf(plan.acceptance.mockBackend),
       ),
