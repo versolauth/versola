@@ -3,6 +3,8 @@ package versola.loadgen.sut
 import versola.loadgen.store.{SutStatPhase, SutStatSnapshotRow}
 import zio.json.JsonCodec
 
+import java.time.Instant
+
 /** What one SUT database did over one campaign: the difference between the two `pg_stat_*`
   * readings bracketing the run (runbook 05-report-spec.md §3, 07-wal-tuning.md).
   *
@@ -55,9 +57,22 @@ object SutStatsDelta:
     // A differing major is a restart with a different binary, which resets every counter in the
     // cluster; the reset instants alone would not always show it, since a restarted server that
     // has never had its statistics reset reports no reset instant on either side.
+    //
+    // Five reset instants, not two: `pg_stat_reset_shared('io'/'checkpointer')` and
+    // `pg_stat_statements_reset()` each clear one section on their own, independently of
+    // `pg_stat_database`/`pg_stat_wal`'s. Missing either side of a pair -- the section was not
+    // captured, or the version does not have it -- is not by itself evidence of a reset; only two
+    // *readings* whose instants disagree are, which is what `resetSince` asks and a bare `!=`
+    // on the `Option`s would not: that would also fire the moment a database only started
+    // answering for a section (`pg_stat_statements` created between the two captures) rather
+    // than actually being reset, and [[statements]]'s own "absent before, present after" handling
+    // already accounts for that case correctly on its own.
     val reset =
-      before.statsResetAt != after.statsResetAt ||
-        before.walStatsResetAt != after.walStatsResetAt ||
+      resetSince(before.statsResetAt, after.statsResetAt) ||
+        resetSince(before.walStatsResetAt, after.walStatsResetAt) ||
+        resetSince(before.checkpointerStatsResetAt, after.checkpointerStatsResetAt) ||
+        resetSince(before.walIoStatsResetAt, after.walIoStatsResetAt) ||
+        resetSince(before.statementsStatsResetAt, after.statementsStatsResetAt) ||
         before.serverVersionNum != after.serverVersionNum
     SutStatsDelta(
       database = after.database,
@@ -88,6 +103,17 @@ object SutStatsDelta:
       start <- before
       end <- after
     yield difference(start, end)
+
+  /** Whether two readings of the same reset instant disagree, which is the only shape of evidence
+    * a reset actually leaves. One side missing is not that: it is a section that was not captured
+    * or that this major does not have, and [[counters]]'s own `paired`/`map` handling already
+    * treats an appearing or disappearing section correctly without this flagging the whole
+    * reading as reset over it.
+    */
+  private def resetSince(before: Option[Instant], after: Option[Instant]): Boolean =
+    (before, after) match
+      case (Some(start), Some(end)) => start != end
+      case _ => false
 
   private def subtract(before: Option[Long], after: Option[Long]): Option[Long] =
     paired(before, after)((start, end) => end - start)
@@ -173,15 +199,18 @@ object SutStatsDelta:
           )
 
   /** Matched on `queryid`, ordered by the time the run itself spent, not by the cumulative time
-    * the "after" reading is sorted on.
+    * the "after" reading is sorted on, and cut to [[SutStatsReader.statementLimit]] only *after*
+    * that ordering -- see [[SutStatsReader.statementRows]] for why the cut cannot happen any
+    * earlier: both `before` and `after` carry every statement the SUT is currently tracking; the
+    * top N *of the run* is decided here, from the difference, or a statement ranked just under
+    * the reader's old capture-time cut could climb over it between two boundaries and report its
+    * *entire lifetime total* as this campaign's delta.
     *
-    * A statement absent from the "before" reading counts from zero. Both reasons it can be absent
-    * say the same thing about the run: it was first executed during the campaign, or it was
-    * outside the top the reader keeps and has since climbed into it -- either way what it did
-    * before the run is small enough to be under the cut, and dropping the row instead would hide
-    * exactly the statement the campaign made expensive. A statement with no `queryid` -- Postgres
-    * with `compute_query_id` off -- has no identity to match on and is carried as its own
-    * cumulative total, which is the honest reading of a row that cannot be differenced.
+    * A statement absent from the "before" reading counts from zero: it was first executed during
+    * the campaign, which both `before` and `after` now capturing everything tracked makes the
+    * only remaining reason a `queryid` can be new. A statement with no `queryid` -- Postgres with
+    * `compute_query_id` off -- has no identity to match on and is carried as its own cumulative
+    * total, which is the honest reading of a row that cannot be differenced.
     */
   private def statements(before: List[SutStatementStats], after: List[SutStatementStats]): List[SutStatementStats] =
     val start = before.flatMap(statement => statement.queryId.map(_ -> statement)).toMap
@@ -199,3 +228,4 @@ object SutStatsDelta:
               walBytes = end.walBytes - from.walBytes,
             )
       .sortBy(statement => -statement.totalExecTimeMillis)
+      .take(SutStatsReader.statementLimit)

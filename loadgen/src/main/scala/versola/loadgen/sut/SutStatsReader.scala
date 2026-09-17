@@ -2,7 +2,7 @@ package versola.loadgen.sut
 
 import zio.{Task, ZIO}
 
-import java.sql.{Connection, ResultSet, Timestamp}
+import java.sql.{Connection, ResultSet, SQLException, Timestamp}
 import java.time.Instant
 
 /** One `pg_stat_*` reading of one SUT database, as [[SutStatsReader]] takes it: the statistics
@@ -12,6 +12,9 @@ case class SutStatsReading(
     serverVersionNum: Int,
     statsResetAt: Option[Instant],
     walStatsResetAt: Option[Instant],
+    checkpointerStatsResetAt: Option[Instant],
+    walIoStatsResetAt: Option[Instant],
+    statementsStatsResetAt: Option[Instant],
     stats: SutStats,
 )
 
@@ -30,9 +33,15 @@ case class SutStatsReading(
   */
 object SutStatsReader:
 
-  /** How many `pg_stat_statements` rows to keep. §3 shows five; the reader keeps more because the
-    * top five *of the run* are a difference, and a statement can be sixth by cumulative time and
-    * first by what the campaign added to it.
+  /** How many `pg_stat_statements` rows [[SutStatsDelta]] keeps in a campaign's difference.
+    * §3 shows five; kept at 20 here for the same reason it always was -- the top five *of the
+    * run* are a difference, and a statement can be sixth by the run's own time and first by
+    * cumulative time, or the other way round.
+    *
+    * Not a `LIMIT` on what this reader *captures*: see [[statementRows]] for why capturing only
+    * the top N by cumulative time, at each boundary independently, does not give this limit
+    * anything correct to keep. The cut this constant names happens once, after differencing, in
+    * [[SutStatsDelta]].
     */
   val statementLimit: Int = 20
 
@@ -57,18 +66,27 @@ object SutStatsReader:
       )
       val (activity, statsResetAt) = databaseActivity(connection)
       val (wal, walStatsResetAt) = if version.hasStatWal then walStats(connection) else (None, None)
+      val (checkpointerStats, checkpointerStatsResetAt) = checkpointer(connection, version)
+      val (walIoStats, walIoStatsResetAt) =
+        if version.hasStatIo then walIo(connection, version) else (None, None)
+      val (statementRows, statementsStatsResetAt) = statements(connection) match
+        case Some((rows, resetAt)) => (Some(rows), resetAt)
+        case None => (None, None)
       SutStatsReading(
         serverVersionNum = version.serverVersionNum,
         statsResetAt = statsResetAt,
         walStatsResetAt = walStatsResetAt,
+        checkpointerStatsResetAt = checkpointerStatsResetAt,
+        walIoStatsResetAt = walIoStatsResetAt,
+        statementsStatsResetAt = statementsStatsResetAt,
         stats = SutStats(
           counters = SutCounters(
             wal = wal,
-            checkpointer = checkpointer(connection, version),
-            walIo = if version.hasStatIo then walIo(connection, version) else None,
+            checkpointer = checkpointerStats,
+            walIo = walIoStats,
             database = activity,
             tables = tables(connection, version),
-            statements = statements(connection),
+            statements = statementRows,
           ),
           gauges = gauges(connection),
         ),
@@ -95,66 +113,79 @@ object SutStatsReader:
     * 07-wal-tuning.md's "чекпоинты по времени или по объёму", and [[SutCheckpointerStats.view]]
     * records which one answered.
     */
-  private def checkpointer(connection: Connection, version: PostgresVersion): Option[SutCheckpointerStats] =
-    if version.hasStatCheckpointer then
-      val totals = if version.hasCheckpointerTotals then ", num_done, slru_written" else ""
-      one(
-        connection,
-        s"SELECT num_timed, num_requested, write_time, sync_time, buffers_written$totals FROM pg_stat_checkpointer",
-      ): row =>
-        SutCheckpointerStats(
-          view = "pg_stat_checkpointer",
-          timed = row.getLong("num_timed"),
-          requested = row.getLong("num_requested"),
-          done = Option.when(version.hasCheckpointerTotals)(row.getLong("num_done")),
-          writeTimeMillis = row.getDouble("write_time"),
-          syncTimeMillis = row.getDouble("sync_time"),
-          buffersWritten = row.getLong("buffers_written"),
-          slruWritten = Option.when(version.hasCheckpointerTotals)(row.getLong("slru_written")),
-        )
-    else
-      one(
-        connection,
-        """SELECT checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time,
-          |       buffers_checkpoint
-          |FROM pg_stat_bgwriter""".stripMargin,
-      ): row =>
-        SutCheckpointerStats(
-          view = "pg_stat_bgwriter",
-          timed = row.getLong("checkpoints_timed"),
-          requested = row.getLong("checkpoints_req"),
-          done = None,
-          writeTimeMillis = row.getDouble("checkpoint_write_time"),
-          syncTimeMillis = row.getDouble("checkpoint_sync_time"),
-          buffersWritten = row.getLong("buffers_checkpoint"),
-          slruWritten = None,
-        )
+  private def checkpointer(connection: Connection, version: PostgresVersion): (Option[SutCheckpointerStats], Option[Instant]) =
+    val read =
+      if version.hasStatCheckpointer then
+        val totals = if version.hasCheckpointerTotals then ", num_done, slru_written" else ""
+        one(
+          connection,
+          s"SELECT num_timed, num_requested, write_time, sync_time, buffers_written, stats_reset$totals FROM pg_stat_checkpointer",
+        ): row =>
+          (
+            SutCheckpointerStats(
+              view = "pg_stat_checkpointer",
+              timed = row.getLong("num_timed"),
+              requested = row.getLong("num_requested"),
+              done = Option.when(version.hasCheckpointerTotals)(row.getLong("num_done")),
+              writeTimeMillis = row.getDouble("write_time"),
+              syncTimeMillis = row.getDouble("sync_time"),
+              buffersWritten = row.getLong("buffers_written"),
+              slruWritten = Option.when(version.hasCheckpointerTotals)(row.getLong("slru_written")),
+            ),
+            instant(row, "stats_reset"),
+          )
+      else
+        one(
+          connection,
+          """SELECT checkpoints_timed, checkpoints_req, checkpoint_write_time, checkpoint_sync_time,
+            |       buffers_checkpoint, stats_reset
+            |FROM pg_stat_bgwriter""".stripMargin,
+        ): row =>
+          (
+            SutCheckpointerStats(
+              view = "pg_stat_bgwriter",
+              timed = row.getLong("checkpoints_timed"),
+              requested = row.getLong("checkpoints_req"),
+              done = None,
+              writeTimeMillis = row.getDouble("checkpoint_write_time"),
+              syncTimeMillis = row.getDouble("checkpoint_sync_time"),
+              buffersWritten = row.getLong("buffers_checkpoint"),
+              slruWritten = None,
+            ),
+            instant(row, "stats_reset"),
+          )
+    (read.map((stats, _) => stats), read.flatMap((_, resetAt) => resetAt))
 
   /** Summed over every `backend_type` and `context`, because the question is how much I/O the
     * WAL cost the cluster and not which backend paid for it. Postgres 18 is where the WAL write
     * and fsync timings live now, so on 16 and 17 this view is read for the counts and the timings
     * it does carry, and 18 adds the byte volumes.
     */
-  private def walIo(connection: Connection, version: PostgresVersion): Option[SutWalIoStats] =
+  private def walIo(connection: Connection, version: PostgresVersion): (Option[SutWalIoStats], Option[Instant]) =
     val bytes = if version.hasStatIoBytes then ", coalesce(sum(read_bytes), 0) AS read_bytes, coalesce(sum(write_bytes), 0) AS write_bytes" else ""
-    one(
+    val read = one(
       connection,
       s"""SELECT coalesce(sum(reads), 0) AS reads, coalesce(sum(writes), 0) AS writes,
          |       coalesce(sum(fsyncs), 0) AS fsyncs, coalesce(sum(read_time), 0) AS read_time,
-         |       coalesce(sum(write_time), 0) AS write_time, coalesce(sum(fsync_time), 0) AS fsync_time$bytes
+         |       coalesce(sum(write_time), 0) AS write_time, coalesce(sum(fsync_time), 0) AS fsync_time,
+         |       max(stats_reset) AS stats_reset$bytes
          |FROM pg_stat_io
          |WHERE object = 'wal'""".stripMargin,
     ): row =>
-      SutWalIoStats(
-        reads = row.getLong("reads"),
-        writes = row.getLong("writes"),
-        fsyncs = row.getLong("fsyncs"),
-        readTimeMillis = row.getDouble("read_time"),
-        writeTimeMillis = row.getDouble("write_time"),
-        fsyncTimeMillis = row.getDouble("fsync_time"),
-        readBytes = Option.when(version.hasStatIoBytes)(row.getLong("read_bytes")),
-        writeBytes = Option.when(version.hasStatIoBytes)(row.getLong("write_bytes")),
+      (
+        SutWalIoStats(
+          reads = row.getLong("reads"),
+          writes = row.getLong("writes"),
+          fsyncs = row.getLong("fsyncs"),
+          readTimeMillis = row.getDouble("read_time"),
+          writeTimeMillis = row.getDouble("write_time"),
+          fsyncTimeMillis = row.getDouble("fsync_time"),
+          readBytes = Option.when(version.hasStatIoBytes)(row.getLong("read_bytes")),
+          writeBytes = Option.when(version.hasStatIoBytes)(row.getLong("write_bytes")),
+        ),
+        instant(row, "stats_reset"),
       )
+    (read.map((stats, _) => stats), read.flatMap((_, resetAt) => resetAt))
 
   private def databaseActivity(connection: Connection): (SutDatabaseActivity, Option[Instant]) =
     one(
@@ -217,31 +248,72 @@ object SutStatsReader:
     * cluster (07-wal-tuning.md, "Включить измерения"). Asked of `pg_extension` rather than
     * discovered by letting the `SELECT` fail: a failed statement aborts nothing here, but it does
     * log as an error on the SUT, once per capture, for an absence that is expected.
+    *
+    * `pg_extension` alone cannot tell the other way this section is absent, though: `CREATE
+    * EXTENSION pg_stat_statements` can succeed in a database whose cluster has never had the
+    * library added to `shared_preload_libraries` (that one needs a restart, the `CREATE
+    * EXTENSION` does not), and querying the view then raises rather than returning zero rows --
+    * "pg_stat_statements must be loaded via shared_preload_libraries". That exception is caught
+    * here and degrades this one section to `None` for the same reason the absence check exists at
+    * all: it must not take the rest of this reading down with it.
     */
-  private def statements(connection: Connection): Option[List[SutStatementStats]] =
+  private def statements(connection: Connection): Option[(List[SutStatementStats], Option[Instant])] =
     val installed = one(connection, "SELECT 1 AS present FROM pg_extension WHERE extname = 'pg_stat_statements'")(_ =>
       true,
     ).getOrElse(false)
-    Option.when(installed):
-      all(
-        connection,
-        s"""SELECT queryid, left(query, $queryTextLimit) AS query, calls, total_exec_time, rows,
-           |       wal_records, wal_fpi, wal_bytes
-           |FROM pg_stat_statements
-           |WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
-           |ORDER BY total_exec_time DESC
-           |LIMIT $statementLimit""".stripMargin,
-      ): row =>
-        SutStatementStats(
-          queryId = optionalLong(row, "queryid"),
-          query = Option(row.getString("query")).getOrElse(""),
-          calls = row.getLong("calls"),
-          totalExecTimeMillis = row.getDouble("total_exec_time"),
-          rows = row.getLong("rows"),
-          walRecords = row.getLong("wal_records"),
-          walFullPageImages = row.getLong("wal_fpi"),
-          walBytes = row.getLong("wal_bytes"),
-        )
+    if !installed then None
+    else
+      try
+        Some((statementRows(connection), statementsResetAt(connection)))
+      catch case _: SQLException => None
+
+  /** Every statement `pg_stat_statements` is currently tracking, not the top [[statementLimit]]
+    * by cumulative time -- that cut is applied once, by [[SutStatsDelta]], after differencing the
+    * two boundaries, and not here, before it. Applying it here would independently rank each
+    * boundary by its own lifetime total: a statement already running long before the campaign,
+    * ranked just under the cut in the "before" reading and pushed over it in the "after" one by
+    * the campaign's own load, would then have no "before" row to pair with, and its *entire
+    * lifetime total* -- not the campaign's share of it -- would stand as the delta. Capturing
+    * every tracked statement at both boundaries is what gives every statement that could ever
+    * enter the top [[statementLimit]] *of the delta* an accurate baseline to be differenced
+    * against.
+    *
+    * Bounded by `pg_stat_statements.max` rather than left as a bare `SELECT *`, so a row count
+    * this reader cannot exceed is read as the reader's own ceiling and not discovered by
+    * `LIMIT`-driven guesswork. `current_setting` on it can only fail the way the rest of this
+    * section already does -- not preloaded -- so it shares this method's `SQLException` handling
+    * rather than needing its own.
+    */
+  private def statementRows(connection: Connection): List[SutStatementStats] =
+    val capacity =
+      one(connection, "SELECT current_setting('pg_stat_statements.max')::int AS max")(_.getInt("max"))
+        .getOrElse(statementLimit)
+    all(
+      connection,
+      s"""SELECT queryid, left(query, $queryTextLimit) AS query, calls, total_exec_time, rows,
+         |       wal_records, wal_fpi, wal_bytes
+         |FROM pg_stat_statements
+         |WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+         |ORDER BY total_exec_time DESC
+         |LIMIT $capacity""".stripMargin,
+    ): row =>
+      SutStatementStats(
+        queryId = optionalLong(row, "queryid"),
+        query = Option(row.getString("query")).getOrElse(""),
+        calls = row.getLong("calls"),
+        totalExecTimeMillis = row.getDouble("total_exec_time"),
+        rows = row.getLong("rows"),
+        walRecords = row.getLong("wal_records"),
+        walFullPageImages = row.getLong("wal_fpi"),
+        walBytes = row.getLong("wal_bytes"),
+      )
+
+  /** `pg_stat_statements_info` (extension 1.9+, bundled from Postgres 14) has one row, carrying
+    * `pg_stat_statements_reset()`'s last instant the same way `pg_stat_wal.stats_reset` carries
+    * `pg_stat_reset_shared('wal')`'s.
+    */
+  private def statementsResetAt(connection: Connection): Option[Instant] =
+    one(connection, "SELECT stats_reset FROM pg_stat_statements_info")(row => instant(row, "stats_reset")).flatten
 
   private def gauges(connection: Connection): SutGauges =
     one(

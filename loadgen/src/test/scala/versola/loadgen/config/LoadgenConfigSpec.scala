@@ -3,7 +3,7 @@ package versola.loadgen.config
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
-import zio.{Duration, durationInt}
+import zio.{Config, Duration, durationInt}
 
 /** Pure config-parsing test for [[LoadgenConfig]], mirroring EdgeConfigSpec's pattern: a
   * kebab-case [[zio.ConfigProvider]] over a raw HOCON string, loaded via
@@ -254,6 +254,29 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           unnamed <- decodeSutStats(sutStatsWith("", "central")).exit
           named <- decodeSutStats(sutStatsWith("auth", "central")).exit
         yield assertTrue(empty.isFailure, duplicated.isFailure, unnamed.isFailure, named.isSuccess)
+      },
+      // `pg_stat_wal`, `pg_stat_checkpointer` and `pg_stat_io` answer for the whole cluster, so
+      // two names pointed at the same host:port -- accepted, unlike a duplicated name, because
+      // that is 03-postgres-topology.md's own developer-machine topology -- read those three
+      // identically. `clusterGroups` is the boot-time warning's input, not a validation: it
+      // reports the shared group rather than failing the decode.
+      test("names two sut-stats databases on the same host:port as one cluster group, and two on different hosts as none") {
+        val samePort = SutStatsConfig(
+          List(
+            SutStatsDatabaseConfig("auth", SutDatabaseConfig("jdbc:postgresql://combined:5432/auth", "stats", Config.Secret("x"))),
+            SutStatsDatabaseConfig("central", SutDatabaseConfig("jdbc:postgresql://combined:5432/central", "stats", Config.Secret("x"))),
+          ),
+        )
+        val distinct = SutStatsConfig(
+          List(
+            SutStatsDatabaseConfig("auth", SutDatabaseConfig("jdbc:postgresql://auth-db:5432/auth", "stats", Config.Secret("x"))),
+            SutStatsDatabaseConfig("central", SutDatabaseConfig("jdbc:postgresql://central-db:5432/central", "stats", Config.Secret("x"))),
+          ),
+        )
+        assertTrue(
+          SutStatsConfig.clusterGroups(samePort.databases) == List(List("auth", "central")),
+          SutStatsConfig.clusterGroups(distinct.databases) == Nil,
+        )
       },
       // A pepper of the wrong length is a population whose every password fails to verify, and
       // the 16-byte check is the only place that can still be said out loud -- once it has been

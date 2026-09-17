@@ -13,11 +13,13 @@ class PostgresSutStatSnapshotRepository(xa: TransactorZIO) extends SutStatSnapsh
       sql"""
         INSERT INTO vu_sut_stat_snapshots (
           campaign, database, phase, captured_at, server_version_num, stats_reset_at,
-          wal_stats_reset_at, statistics
+          wal_stats_reset_at, checkpointer_stats_reset_at, wal_io_stats_reset_at,
+          statements_stats_reset_at, statistics
         ) VALUES (
           ${snapshot.campaign}, ${snapshot.database}, ${snapshot.phase}, ${snapshot.capturedAt},
           ${snapshot.serverVersionNum}, ${snapshot.statsResetAt}, ${snapshot.walStatsResetAt},
-          ${snapshot.statistics}
+          ${snapshot.checkpointerStatsResetAt}, ${snapshot.walIoStatsResetAt},
+          ${snapshot.statementsStatsResetAt}, ${snapshot.statistics}
         )
         ON CONFLICT (campaign, database, phase) DO NOTHING
       """.update.run()
@@ -27,7 +29,8 @@ class PostgresSutStatSnapshotRepository(xa: TransactorZIO) extends SutStatSnapsh
     xa.connectMeasured("load-campaign-sut-stat-snapshots"):
       sql"""
         SELECT campaign, database, phase, captured_at, server_version_num, stats_reset_at,
-               wal_stats_reset_at, statistics
+               wal_stats_reset_at, checkpointer_stats_reset_at, wal_io_stats_reset_at,
+               statements_stats_reset_at, statistics
         FROM vu_sut_stat_snapshots
         WHERE campaign = $campaign
         ORDER BY database, phase

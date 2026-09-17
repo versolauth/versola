@@ -69,6 +69,9 @@ final class PostgresSutStatsCapture(
             serverVersionNum = reading.serverVersionNum,
             statsResetAt = reading.statsResetAt,
             walStatsResetAt = reading.walStatsResetAt,
+            checkpointerStatsResetAt = reading.checkpointerStatsResetAt,
+            walIoStatsResetAt = reading.walIoStatsResetAt,
+            statementsStatsResetAt = reading.statementsStatsResetAt,
             statistics = reading.stats,
           ),
         )

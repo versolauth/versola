@@ -1,7 +1,7 @@
 package versola.loadgen.coordinator
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.loadgen.config.LoadgenConfig
+import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
 import versola.loadgen.store.{LoadgenMigrations, PostgresMetricSnapshotRepository, PostgresSutStatSnapshotRepository, PostgresVirtualUserRepository}
 import versola.loadgen.sut.PostgresSutStatsCapture
 import versola.util.postgres.PostgresHikariDataSource
@@ -44,6 +44,13 @@ object Coordinator:
           case None =>
             "No 'sut-stats' block; the campaign report will carry no database section",
       )
+      _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))):
+        group =>
+          ZIO.logWarning(
+            s"sut-stats.databases [${group.mkString(", ")}] share one Postgres cluster: their " +
+              "pg_stat_wal/pg_stat_checkpointer/pg_stat_io figures will be identical and reported " +
+              "under every name in the group, so summing that section across databases double-counts it",
+          )
     yield service
 
   /** Migrated, not merely validated, for the one campaign that has no seed step: the registration

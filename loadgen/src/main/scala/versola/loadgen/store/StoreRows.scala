@@ -68,9 +68,12 @@ enum MeasurementKind:
 /** One `vu_sut_stat_snapshots` row (migration V0005): everything `pg_stat_*` said about one SUT
   * database at one boundary of one campaign (runbook 05-report-spec.md §3).
   *
-  * The two reset instants are outside [[statistics]] for the reason the migration gives: they
+  * The five reset instants are outside [[statistics]] for the reason the migration gives: they
   * decide whether a pair of rows may be differenced at all, and that has to be answerable without
-  * decoding the payload.
+  * decoding the payload. There are five and not two because `pg_stat_wal`/`pg_stat_database`
+  * (the original pair) are not the only counters that reset independently of each other:
+  * `pg_stat_reset_shared('io')`, `pg_stat_reset_shared('checkpointer')` and
+  * `pg_stat_statements_reset()` each clear one section and leave the rest of the reading alone.
   */
 case class SutStatSnapshotRow(
     campaign: String,
@@ -81,6 +84,9 @@ case class SutStatSnapshotRow(
     serverVersionNum: Int,
     statsResetAt: Option[Instant],
     walStatsResetAt: Option[Instant],
+    checkpointerStatsResetAt: Option[Instant],
+    walIoStatsResetAt: Option[Instant],
+    statementsStatsResetAt: Option[Instant],
     statistics: SutStats,
 )
 

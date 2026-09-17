@@ -62,6 +62,11 @@ object SutStatsReaderSpec extends ZIOSpecDefault:
             counters.checkpointer.flatMap(_.done).isDefined == version.hasCheckpointerTotals,
             counters.walIo.flatMap(_.writeBytes).isDefined == version.hasStatIoBytes,
             counters.tables.forall(_.autovacuumTimeMillis.isDefined == version.hasVacuumTimes),
+            // The checkpoint view always has a `stats_reset`, whichever of the two spellings
+            // answered; `pg_stat_io`'s only exists once the view itself does.
+            reading.checkpointerStatsResetAt.isDefined,
+            reading.walIoStatsResetAt.isDefined == version.hasStatIo,
+            reading.statementsStatsResetAt.isDefined == counters.statements.isDefined,
             // auth's schema, migrated by SutDatabases: the table the campaign is actually about.
             counters.tables.exists(_.table == "refresh_tokens"),
             reading.stats.gauges.databaseSizeBytes > 0L,
@@ -134,5 +139,29 @@ object SutStatsReaderSpec extends ZIOSpecDefault:
               finally rows.close()
             finally statement.close()
         yield assertTrue(reading.stats.counters.statements.isDefined == installed)
+    },
+    // `pg_extension` alone answers "was `CREATE EXTENSION` ever run", not "is the library in
+    // `shared_preload_libraries`" -- that one needs a cluster restart, `CREATE EXTENSION` does
+    // not. Creating the extension without it reproduces the gap directly: `pg_extension` says
+    // present, the view itself raises "must be loaded via shared_preload_libraries", and that
+    // must degrade this one section rather than fail the whole reading.
+    test("degrades to no statements section, not a failed read, when the extension is created without shared_preload_libraries") {
+      ZIO.scoped:
+        for
+          config <- SutDatabases.prepare(SutDatabases.authDatabase, SutSchema.SchemaOwner.Auth.migrationsDirectory)
+          connection <- SutDatabases.connect(config)
+          preloaded <- ZIO.attemptBlocking:
+            val statement = connection.prepareStatement("SHOW shared_preload_libraries")
+            try
+              val rows = statement.executeQuery()
+              try
+                rows.next()
+                rows.getString(1).contains("pg_stat_statements")
+              finally rows.close()
+            finally statement.close()
+          _ <- ZIO.acquireRelease(SutDatabases.statement(connection, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements")): _ =>
+            SutDatabases.statement(connection, "DROP EXTENSION IF EXISTS pg_stat_statements").orDie
+          reading <- SutStatsReader.read(connection)
+        yield assertTrue(reading.stats.counters.statements.isDefined == preloaded)
     },
   ) @@ TestAspect.timeout(3.minutes)

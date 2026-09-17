@@ -27,12 +27,18 @@ CREATE TABLE vu_sut_stat_snapshots (
     -- it, so a snapshot whose WAL section is absent can be told apart from one taken against a
     -- server that simply has no `pg_stat_wal`.
     server_version_num  INT         NOT NULL,
-    -- `pg_stat_database.stats_reset` and `pg_stat_wal.stats_reset`. Columns rather than fields
-    -- inside the payload because they are the precondition for differencing the pair at all:
-    -- 07-wal-tuning.md resets the counters before every step of its cycle, and a difference
-    -- taken across a reset is not a small error, it is the second reading on its own.
-    stats_reset_at      TIMESTAMPTZ,
-    wal_stats_reset_at  TIMESTAMPTZ,
+    -- `pg_stat_database.stats_reset`, `pg_stat_wal.stats_reset`, and the same column from
+    -- `pg_stat_checkpointer`/`pg_stat_bgwriter`, `pg_stat_io` and `pg_stat_statements_info`.
+    -- Columns rather than fields inside the payload because they are the precondition for
+    -- differencing the pair at all: 07-wal-tuning.md resets the counters before every step of
+    -- its cycle, and a difference taken across a reset is not a small error, it is the second
+    -- reading on its own. Five and not two because `pg_stat_reset_shared('io'/'checkpointer')`
+    -- and `pg_stat_statements_reset()` each reset one section independently of the other four.
+    stats_reset_at              TIMESTAMPTZ,
+    wal_stats_reset_at          TIMESTAMPTZ,
+    checkpointer_stats_reset_at TIMESTAMPTZ,
+    wal_io_stats_reset_at       TIMESTAMPTZ,
+    statements_stats_reset_at   TIMESTAMPTZ,
     -- The reading itself (`versola.loadgen.sut.SutStats`). One document rather than a column per
     -- statistic: the set of columns Postgres exposes changes with its major version -- 17 moved
     -- the checkpoint counters, 18 moved the WAL I/O timings and renamed `op_bytes` -- so a

@@ -63,6 +63,7 @@ final class CoordinatorService private (
     snapshots: MetricSnapshotRepository,
     rebalancer: ShardRebalancer,
     sutStats: Option[SutStatsCapture],
+    transitionLock: Semaphore,
 ):
 
   def plan: Task[LoadPlan] =
@@ -268,22 +269,30 @@ final class CoordinatorService private (
       _ <- controllerTick.repeat(Schedule.spaced(RegistrationController.interval)).forkScoped
     yield ()
 
+  /** Serialised by [[transitionLock]] end to end, capture included, and not just across the read
+    * of `control` and its write: `GET /plan` reads `control` with no lock of its own (§12's
+    * drivers cannot be made to take one), so a driver polling between an unlocked write and the
+    * capture that is supposed to precede it would receive a running plan and start traffic while
+    * the "before" snapshot was still being read, pulling that early traffic into the reading the
+    * report presents as the campaign's opening state. Holding `control`'s new value back until
+    * the capture completes is what a driver's poll is racing against; a plain `Ref` gives that no
+    * help; a lock a driver never has to touch does.
+    */
   private def transition(
       move: (CampaignControl, Instant) => Either[String, CampaignControl],
   ): IO[CoordinatorRefusal | Throwable, LoadPlan] =
-    for
-      now <- Clock.instant
-      moved <- control.modify: state =>
-        move(state, now) match
-          case Left(reason) => (Left(CoordinatorRefusal.Conflict(reason)), state)
-          case Right(next) => (Right((state.state, next)), next)
-      (previous, state) <- ZIO.fromEither(moved)
-      _ <- captureSutStats(previous, state.state)
-      factor <- registrationFactor.get
-      registered <- registeredCount
-      plan <- ZIO.fromEither(planAt(now, state, factor, registered)).mapError(IllegalStateException(_))
-      _ <- ZIO.logInfo(s"Campaign '${campaign.name}' is ${plan.state.label} (epoch ${plan.shards.epoch})")
-    yield plan
+    transitionLock.withPermit:
+      for
+        now <- Clock.instant
+        current <- control.get
+        next <- ZIO.fromEither(move(current, now)).mapError(CoordinatorRefusal.Conflict(_))
+        _ <- captureSutStats(current.state, next.state)
+        _ <- control.set(next)
+        factor <- registrationFactor.get
+        registered <- registeredCount
+        plan <- ZIO.fromEither(planAt(now, next, factor, registered)).mapError(IllegalStateException(_))
+        _ <- ZIO.logInfo(s"Campaign '${campaign.name}' is ${plan.state.label} (epoch ${plan.shards.epoch})")
+      yield plan
 
   /** The campaign's two boundaries, and only those two: 07-wal-tuning.md measures "до и после при
     * фиксированном числе транзакций", and a run is bracketed by the operator's start and stop.
@@ -297,6 +306,10 @@ final class CoordinatorService private (
     * waiting for sees the closing snapshot. That is a few queries against the SUT on a boundary
     * an operator is already waiting on, against a race that would silently produce a report with
     * no §3 in it.
+    *
+    * Called by [[transition]] before it commits `control`'s new value, not after: see that
+    * method's own doc for why the "before" capture in particular has to precede the write a
+    * driver's `GET /plan` can observe.
     */
   private def captureSutStats(previous: CampaignState, current: CampaignState): UIO[Unit] =
     ZIO.foreachDiscard(sutStats): capture =>
@@ -423,6 +436,7 @@ object CoordinatorService:
       factor <- Ref.make(1.0)
       population <- Ref.make(Map.empty[VirtualUserState, Long])
       registry <- DriverRegistry.make(config.campaign.name, staleAfter(config.coordinator.pollInterval))
+      transitionLock <- Semaphore.make(1L)
     yield CoordinatorService(
       campaign = config.campaign,
       pollInterval = config.coordinator.pollInterval,
@@ -442,6 +456,7 @@ object CoordinatorService:
       snapshots = snapshots,
       rebalancer = rebalancer,
       sutStats = sutStats,
+      transitionLock = transitionLock,
     )
 
   /** §11's two granularities, as configuration names them: a step belongs to a scenario, a flow

@@ -105,6 +105,9 @@ object SutStatsFixture:
       capturedAt: Instant,
       statsResetAt: Option[Instant],
       statistics: SutStats,
+      checkpointerStatsResetAt: Option[Instant] = None,
+      walIoStatsResetAt: Option[Instant] = None,
+      statementsStatsResetAt: Option[Instant] = None,
   ): SutStatSnapshotRow =
     SutStatSnapshotRow(
       campaign = campaign,
@@ -114,5 +117,8 @@ object SutStatsFixture:
       serverVersionNum = 180_000,
       statsResetAt = statsResetAt,
       walStatsResetAt = statsResetAt,
+      checkpointerStatsResetAt = checkpointerStatsResetAt,
+      walIoStatsResetAt = walIoStatsResetAt,
+      statementsStatsResetAt = statementsStatsResetAt,
       statistics = statistics,
     )

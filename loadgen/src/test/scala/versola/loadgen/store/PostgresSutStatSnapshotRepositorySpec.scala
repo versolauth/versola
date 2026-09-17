@@ -77,6 +77,24 @@ object PostgresSutStatSnapshotRepositorySpec extends LoadgenPostgresSpec, Databa
         found <- env.repository.loadCampaign("nightly")
       yield assertTrue(found.head.statsResetAt.isEmpty, found.head.walStatsResetAt.isEmpty)
     },
+    // The three sections that reset independently of `pg_stat_database`/`pg_stat_wal` round-trip
+    // through their own columns, not through the payload's JSONB -- see the migration's own
+    // comment for why they have to be answerable without decoding it.
+    test("the checkpointer, walIo and statements reset instants round-trip through their own columns") {
+      val snapshot = before("auth").copy(
+        checkpointerStatsResetAt = Some(started.minusSeconds(120L)),
+        walIoStatsResetAt = Some(started.minusSeconds(180L)),
+        statementsStatsResetAt = Some(started.minusSeconds(240L)),
+      )
+      for
+        _ <- env.repository.append(snapshot)
+        found <- env.repository.loadCampaign("nightly")
+      yield assertTrue(
+        found.head.checkpointerStatsResetAt == snapshot.checkpointerStatsResetAt,
+        found.head.walIoStatsResetAt == snapshot.walIoStatsResetAt,
+        found.head.statementsStatsResetAt == snapshot.statementsStatsResetAt,
+      )
+    },
     test("re-capturing a boundary that already landed keeps the first reading") {
       val snapshot = before("auth")
       for

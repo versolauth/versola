@@ -23,8 +23,14 @@ case class PostgresVersion(serverVersionNum: Int):
   /** `pg_stat_wal` exists from Postgres 14, and `wal_buffers_full` with it. */
   def hasStatWal: Boolean = major >= 14
 
-  /** `pg_stat_io` exists from Postgres 16; rows with `object = 'wal'` with it. */
-  def hasStatIo: Boolean = major >= 16
+  /** `pg_stat_io` exists from Postgres 16, but not yet with `object = 'wal'` rows: those arrived
+    * in 18 (`a051e71e28a`), alongside `pg_stat_wal`'s write/fsync timings the same release moved
+    * out of that view and into this one. [[hasStatIo]] is deliberately not "16 or later" -- on 16
+    * and 17 the query in [[SutStatsReader.walIo]] runs and returns no rows, and its
+    * `coalesce(sum(...), 0)` would then report every counter as a real zero rather than as the
+    * `None` this major actually means.
+    */
+  def hasStatIo: Boolean = major >= 18
 
   /** `read_bytes`/`write_bytes` replaced `op_bytes` in Postgres 18. */
   def hasStatIoBytes: Boolean = major >= 18

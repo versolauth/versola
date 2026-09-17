@@ -84,12 +84,108 @@ object SutStatsDeltaSpec extends ZIOSpecDefault:
       },
       // A restarted server reports no reset instant on either side, so the version is the only
       // evidence left that the counters started again from zero.
+
       test("treats a changed server version as a reset") {
         val before = SutStatsFixture.row(campaign, "auth", SutStatPhase.Before, started, None, SutStatsFixture.stats(1L, 100L))
         val after = SutStatsFixture
           .row(campaign, "auth", SutStatPhase.After, ended, None, SutStatsFixture.stats(4L, 900L))
           .copy(serverVersionNum = 190_000)
         assertTrue(SutStatsDelta.between(before, after).counters.isEmpty)
+      },
+      // `pg_stat_reset_shared('io'/'checkpointer')` and `pg_stat_statements_reset()` each clear
+      // one section without touching `pg_stat_database`/`pg_stat_wal`'s own reset instants, so a
+      // reset detector that only compared those two would miss exactly this and difference a
+      // "before" cumulative total against an "after" one that started counting from zero.
+      test("treats a checkpointer-only, walIo-only or statements-only reset as a reset of the whole reading") {
+        val laterReset = Some(started.plusSeconds(60L))
+        val checkpointerReset = SutStatsDelta.between(
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.Before,
+            started,
+            resetAt,
+            SutStatsFixture.stats(1L, 100L),
+            checkpointerStatsResetAt = resetAt,
+          ),
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.After,
+            ended,
+            resetAt,
+            SutStatsFixture.stats(4L, 900L),
+            checkpointerStatsResetAt = laterReset,
+          ),
+        )
+        val walIoReset = SutStatsDelta.between(
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.Before,
+            started,
+            resetAt,
+            SutStatsFixture.stats(1L, 100L),
+            walIoStatsResetAt = resetAt,
+          ),
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.After,
+            ended,
+            resetAt,
+            SutStatsFixture.stats(4L, 900L),
+            walIoStatsResetAt = laterReset,
+          ),
+        )
+        val statementsReset = SutStatsDelta.between(
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.Before,
+            started,
+            resetAt,
+            SutStatsFixture.stats(1L, 100L),
+            statementsStatsResetAt = resetAt,
+          ),
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.After,
+            ended,
+            resetAt,
+            SutStatsFixture.stats(4L, 900L),
+            statementsStatsResetAt = laterReset,
+          ),
+        )
+        assertTrue(
+          checkpointerReset.countersReset,
+          checkpointerReset.counters.isEmpty,
+          walIoReset.countersReset,
+          walIoReset.counters.isEmpty,
+          statementsReset.countersReset,
+          statementsReset.counters.isEmpty,
+        )
+      },
+      // A section that starts being captured between the two boundaries -- `pg_stat_statements`
+      // created mid-campaign, with the extension already preloaded -- is not a reset: nothing
+      // was cleared, the "before" reading simply could not see a section that did not exist yet.
+      // `counters`'s own `paired`/`map` handling already reports that correctly as "no difference
+      // of a section the before reading lacks" without this flagging the whole reading as reset.
+      test("does not treat a reset instant appearing where the before reading had none as a reset") {
+        val delta = SutStatsDelta.between(
+          SutStatsFixture.row(campaign, "auth", SutStatPhase.Before, started, resetAt, SutStatsFixture.stats(1L, 100L)),
+          SutStatsFixture.row(
+            campaign,
+            "auth",
+            SutStatPhase.After,
+            ended,
+            resetAt,
+            SutStatsFixture.stats(4L, 900L),
+            statementsStatsResetAt = Some(started.plusSeconds(60L)),
+          ),
+        )
+        assertTrue(!delta.countersReset, delta.counters.isDefined)
       },
       test("keeps a section absent on one major version absent in the difference") {
         val without = SutStatsFixture.stats(1L, 100L)
@@ -136,6 +232,33 @@ object SutStatsDeltaSpec extends ZIOSpecDefault:
           after.copy(counters = after.counters.copy(statements = Some(List(anonymous)))),
         )
         assertTrue(delta.counters.get.statements.get.map(_.calls) == List(3L * 10L))
+      },
+      // The reader now captures every statement `pg_stat_statements` is tracking, not the top
+      // statementLimit by lifetime total at each boundary independently -- precisely so this
+      // ranking can be decided once, from the difference. Ranking each boundary on its own before
+      // differencing would let a statement ranked just under that cut in "before" and pushed over
+      // it in "after" by unrelated lifetime activity report that whole lifetime total, not the
+      // run's share of it, as this campaign's delta.
+      test("keeps only the top statementLimit statements by the run's own time, decided after differencing") {
+        val ids = (1L to 25L).toList
+        val before = ids.map(id => SutStatsFixture.statement(queryId = Some(id), base = 100L))
+        // Every id's own delta is `id` milliseconds, despite an identical lifetime total before
+        // the run -- so the ids ranked lowest by lifetime total and the ids ranked lowest by the
+        // run's own time are different sets, and only the latter may be dropped.
+        val after = ids.map(id =>
+          SutStatsFixture.statement(queryId = Some(id), base = 100L).copy(totalExecTimeMillis = 100L * 100.0 + id.toDouble),
+        )
+        val beforeStats = SutStatsFixture.stats(1L, 100L)
+        val afterStats = SutStatsFixture.stats(2L, 900L)
+        val delta = pair(
+          beforeStats.copy(counters = beforeStats.counters.copy(statements = Some(before))),
+          afterStats.copy(counters = afterStats.counters.copy(statements = Some(after))),
+        )
+        val kept = delta.counters.get.statements.get
+        assertTrue(
+          kept.size == SutStatsReader.statementLimit,
+          kept.map(_.queryId.get).toSet == (6L to 25L).toSet,
+        )
       },
     ),
     suite("from")(
