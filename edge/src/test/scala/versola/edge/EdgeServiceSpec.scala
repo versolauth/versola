@@ -168,8 +168,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       }
 
     /** An access token revocation event: same signing and transport as a logout token, but it
-      * names one or more tokens (`revoked_jti`/`revoked_exp`) instead of a session.
-      * `revoked_jti` is always a JSON array on the wire, even for one token.
+      * names tokens (`revoked_jti`) or the families that issued them (`revoked_fam`), bounded
+      * by `revoked_exp`, instead of a session. Both are always JSON arrays on the wire, even
+      * when either names one thing.
       */
     def signRevocationToken(
         revokedJti: Option[List[String]],

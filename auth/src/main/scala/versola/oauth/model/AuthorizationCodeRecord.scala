@@ -1,7 +1,7 @@
 package versola.oauth.model
 
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -26,6 +26,11 @@ case class AuthorizationCodeRecord(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     accessToken: AccessToken,
+    /** The rotation family the exchange of this code will start. Generated here rather than at
+      * the exchange because a replay of the code has nothing else to name what the first
+      * exchange issued: the tokens themselves are not recorded, and the replaying caller
+      * presents none of them. */
+    familyId: RefreshTokenFamilyId,
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],

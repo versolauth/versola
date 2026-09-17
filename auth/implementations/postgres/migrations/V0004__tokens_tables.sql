@@ -14,16 +14,10 @@ CREATE TABLE refresh_tokens(
     -- the chain instead of being read as a replay. Only honoured while this row is the
     -- family's most recent exchange, so the key stops working the moment the chain moves on.
     idempotency_key BYTEA,
-    -- Not indexed: the only lookup against this column (revoking the token issued by a
-    -- replayed authorization code) is narrowed by session_id first, see
-    -- PostgresSessionRepository.deleteByAccessToken. Indexing it would tax every rotation and
-    -- every bound-token renewal to serve a rare admin-adjacent path.
-    access_token BYTEA NOT NULL,
-    -- When the access token named above expires. Recorded per row -- not derived from the
-    -- client's current access_token_ttl -- because that TTL is mutable: a family-revocation
-    -- push has to know how long the specific token it is revoking was actually valid for, not
-    -- how long a token minted today would be. See PostgresSessionRepository.revokeFamily.
-    access_token_expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- The access token each generation issued is deliberately not recorded here. A revocation
+    -- names the family instead (the access token's own fam claim), which reaches every token
+    -- the chain ever issued -- including the ones these columns could never have named: a
+    -- generation rotated away, or a row the cleanup sweep has taken.
     session_id BYTEA NOT NULL,
     public_session_id TEXT NOT NULL,
     user_id UUID NOT NULL,

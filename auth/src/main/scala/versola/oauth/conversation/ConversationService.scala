@@ -672,6 +672,7 @@ object ConversationService:
         publicSessionId <- authPropertyGenerator.nextPublicSessionId
         sessionIdMac <- securityService.mac(Secret(sessionId), config.security.sessionsSecret)
         accessToken <- authPropertyGenerator.nextAccessToken
+        familyId <- authPropertyGenerator.nextRefreshTokenFamilyId
         sessionTtl <- configService.getSessionTtl(conversation.clientId)
         sessionIdleTtl <- configService.getSessionIdleTtl(conversation.clientId)
         now <- Clock.instant
@@ -690,6 +691,7 @@ object ConversationService:
           uiLocales = conversation.uiLocales,
           nonce = conversation.nonce,
           accessToken = accessToken,
+          familyId = familyId,
           amr = amr,
           authTime = now,
           acr = conversation.targetAcr,

@@ -27,7 +27,7 @@ import versola.oauth.conversation.{ConversationRepository, ConversationResult, C
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, RefreshTokenFamilyId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
@@ -177,6 +177,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       _ <- env.sessionService.registerClient.succeedsWith(())
       _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode(Array.fill(16)(3.toByte)))
       _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(AccessToken(Array.fill(16)(4.toByte)))
+      _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
       _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(2.toByte)))
       _ <- env.authorizationCodeRepository.create.succeedsWith(())
       _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -298,6 +299,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -324,6 +326,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -349,6 +352,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.userRepository.find.succeedsWith(None)
@@ -373,6 +377,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -592,6 +597,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -649,6 +655,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -720,6 +727,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.registerClient.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
@@ -1536,6 +1544,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.sessionService.prolongIdle.succeedsWith(())
         _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(code)
         _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(accessToken)
+        _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
         _ <- env.securityService.mac.succeedsWith(codeMac)
         _ <- env.authorizationCodeRepository.create.succeedsWith(())
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())

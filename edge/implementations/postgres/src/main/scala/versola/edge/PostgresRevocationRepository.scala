@@ -41,8 +41,8 @@ class PostgresRevocationRepository(xa: TransactorZIO) extends RevocationReposito
     * swallowed.
     *
     * `issued_before` is null exactly for the kinds that have no issuance bound (`jti:`,
-    * `sid:`), and that is a property of the key rather than of the write, so the two sides
-    * of a conflict always agree on whether it is set.
+    * `fam:`, `sid:`), and that is a property of the key rather than of the write, so the two
+    * sides of a conflict always agree on whether it is set.
     *
     * `revoked_at` comes from Postgres's own `NOW()` rather than this replica's `Clock`. It
     * is compared, elsewhere, against other replicas' cursors, and a cursor only rewinds by a

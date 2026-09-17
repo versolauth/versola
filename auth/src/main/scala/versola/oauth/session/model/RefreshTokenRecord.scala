@@ -1,7 +1,7 @@
 package versola.oauth.session.model
 
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
-import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
+import versola.oauth.model.Nonce
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -19,11 +19,6 @@ case class RefreshTokenRecord(
     familyId: RefreshTokenFamilyId,
     sessionId: MAC.Of[SessionId],
     publicSessionId: PublicSessionId,
-    accessToken: AccessToken,
-    /** When `accessToken` expires. Carried on the row -- not recomputed from the client's
-      * current `accessTokenTtl` -- because that TTL is mutable and this has to describe the
-      * token actually issued, not one issued under today's configuration. */
-    accessTokenExpiresAt: Instant,
     userId: UserId,
     clientId: ClientId,
     /** The resolved resource audience carried into access tokens issued from this refresh token

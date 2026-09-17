@@ -64,8 +64,6 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     familyId = familyId1,
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
-    accessToken = accessToken1,
-    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,

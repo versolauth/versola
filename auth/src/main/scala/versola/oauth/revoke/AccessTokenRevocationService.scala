@@ -3,6 +3,7 @@ package versola.oauth.revoke
 import versola.oauth.client.model.OAuthClientRecord
 import versola.oauth.logout.BackChannelDispatcher
 import versola.oauth.model.AccessToken
+import versola.oauth.session.model.RefreshTokenFamilyId
 import zio.json.ast.Json
 import zio.{NonEmptyChunk, Task, ZIO, ZLayer}
 
@@ -26,13 +27,27 @@ trait AccessTokenRevocationService:
     */
   def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit]
 
+  /** Tells the client's back channel to stop accepting every access token a refresh-token
+    * family issued, named by the family rather than one `jti` at a time.
+    *
+    * What makes this the only workable shape for a leaked chain: the tokens it issued are not
+    * in hand. Auth keeps no record of them -- each one's `fam` claim is what ties it back here
+    * -- so one minted by a generation that has since rotated away, or by a row the cleanup
+    * sweep has taken, is covered by this and could not be covered by a list of ids.
+    *
+    * @param expiresAt an upper bound, and a coarser one than [[revoke]]'s of necessity:
+    *                  derived from the client's current `accessTokenTtl`, since no token is at
+    *                  hand to read an `exp` off.
+    */
+  def revokeFamily(client: OAuthClientRecord, family: RefreshTokenFamilyId, subject: String, expiresAt: Instant): Task[Unit]
+
   def isActive(token: AccessToken): Task[Boolean]
 
 object AccessTokenRevocationService:
   /** Distinct from OIDC's `backchannel-logout` event on purpose: that one ends an SSO
-    * session and every client's participation in it, while this names a single token and
-    * leaves the session running. Reusing it would let one client's `/revoke` log every
-    * other client sharing the session out.
+    * session and every client's participation in it, while this names the tokens of one
+    * grant and leaves the session running. Reusing it would let one client's `/revoke` log
+    * every other client sharing the session out.
     */
   private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
 
@@ -51,19 +66,26 @@ object AccessTokenRevocationService:
       * unless the client registered an endpoint for exactly that.
       */
     override def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit] =
+      // Not `jti`/`exp`: those are the event token's own id and lifetime (two minutes), and
+      // overwriting them would both strip the event of a replay id and leave the recipient
+      // reading the event's expiry as the revoked token's. `revoked_jti` is always an array,
+      // even for one token, so the recipient has one shape to parse rather than a
+      // singular-or-array ambiguity.
+      push(client, subject, expiresAt, "revoked_jti" -> Json.Arr(tokens.toChunk.map(t => Json.Str(t.encoded))))
+
+    /** `revoked_fam` in place of `revoked_jti`, an array for the same reason that one is. */
+    override def revokeFamily(client: OAuthClientRecord, family: RefreshTokenFamilyId, subject: String, expiresAt: Instant): Task[Unit] =
+      push(client, subject, expiresAt, "revoked_fam" -> Json.Arr(Json.Str(family)))
+
+    private def push(client: OAuthClientRecord, subject: String, expiresAt: Instant, revoked: (String, Json)): Task[Unit] =
       ZIO
         .foreachDiscard(client.backChannelLogoutUri): uri =>
           dispatcher.dispatch(
             audience = NonEmptyChunk(client.id),
             uri = uri,
             subject = subject,
-            // Not `jti`/`exp`: those are the event token's own id and lifetime (two minutes),
-            // and overwriting them would both strip the event of a replay id and leave the
-            // recipient reading the event's expiry as the revoked token's. `revoked_jti` is
-            // always an array, even for one token, so the recipient has one shape to parse
-            // rather than a singular-or-array ambiguity.
             customClaims = Json.Obj(
-              "revoked_jti" -> Json.Arr(tokens.toChunk.map(t => Json.Str(t.encoded))),
+              revoked,
               "revoked_exp" -> Json.Num(expiresAt.getEpochSecond),
               "events" -> Json.Obj(AccessTokenRevocationEvent -> Json.Obj()),
             ),
@@ -85,6 +107,9 @@ object AccessTokenRevocationService:
 
   private class NoopImpl extends AccessTokenRevocationService:
     override def revoke(client: OAuthClientRecord, tokens: NonEmptyChunk[AccessToken], subject: String, expiresAt: Instant): Task[Unit] =
+      ZIO.unit
+
+    override def revokeFamily(client: OAuthClientRecord, family: RefreshTokenFamilyId, subject: String, expiresAt: Instant): Task[Unit] =
       ZIO.unit
 
     override def isActive(token: AccessToken): Task[Boolean] =

@@ -3,7 +3,7 @@ package versola.oauth
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, Claim, ClientId, ScopeToken}
 import versola.oauth.model.*
-import versola.oauth.session.model.PublicSessionId
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
@@ -58,6 +58,9 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
   val accessToken1 = AccessToken(Array.fill(32)(5.toByte))
   val accessToken2 = AccessToken(Array.fill(32)(6.toByte))
 
+  val familyId1 = RefreshTokenFamilyId("family-1")
+  val familyId2 = RefreshTokenFamilyId("family-2")
+
   val amr1 = Set(AuthMethodRef.pwd)
   val authTime1 = java.time.Instant.ofEpochSecond(1700000000)
 
@@ -74,6 +77,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     uiLocales = None,
     nonce = None,
     accessToken = accessToken1,
+    familyId = familyId1,
     amr = amr1,
     authTime = authTime1,
     acr = None,
@@ -95,6 +99,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     uiLocales = Some(uiLocales1),
     nonce = None,
     accessToken = accessToken1,
+    familyId = familyId1,
     amr = amr1,
     authTime = authTime1,
     acr = None,
@@ -186,7 +191,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           _ <- env.repository.delete(code1)
         yield assertTrue(result == Right(()))
       },
-      test("markAsUsed returns Left with accessToken on second use") {
+      test("markAsUsed returns Left with the family the first exchange started") {
         for
           _ <- env.repository.create(code1, record, ttl)
           firstUse <- env.repository.markAsUsed(code1)
@@ -194,29 +199,29 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           _ <- env.repository.delete(code1)
         yield assertTrue(
           firstUse === Right(()),
-          secondUse === Left(accessToken1),
+          secondUse === Left(familyId1),
         )
       },
       test("code reuse detection workflow") {
         for
-          // Create authorization code with accessToken2
-          recordWithToken2 <- ZIO.succeed(record.copy(accessToken = accessToken2))
-          _ <- env.repository.create(code1, recordWithToken2, ttl)
+          // Create authorization code committed to a second family
+          recordWithFamily2 <- ZIO.succeed(record.copy(familyId = familyId2))
+          _ <- env.repository.create(code1, recordWithFamily2, ttl)
 
           // First exchange - mark as used
           firstUse <- env.repository.markAsUsed(code1)
 
-          // Second exchange attempt - should detect reuse and return the stored token
+          // Second exchange attempt - should detect reuse and return the stored family
           secondUse <- env.repository.markAsUsed(code1)
 
-          // Retrieve the stored token for verification
-          codeWithToken <- env.repository.find(code1)
+          // Retrieve the stored family for verification
+          codeWithFamily <- env.repository.find(code1)
 
           _ <- env.repository.delete(code1)
         yield assertTrue(
           firstUse === Right(()),
-          secondUse === Left(accessToken2),
-          codeWithToken.get.accessToken === accessToken2,
+          secondUse === Left(familyId2),
+          codeWithFamily.get.familyId === familyId2,
         )
       },
       test("concurrent markAsUsed attempts - only one should succeed") {
@@ -236,7 +241,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
         yield assertTrue(
           successCount == 1, // Exactly one should succeed
           reuseCount == 9, // The other 9 should detect reuse
-          results.collect { case Left(token) => token }.forall(_ === accessToken1),
+          results.collect { case Left(family) => family }.forall(_ === familyId1),
         )
       },
     )

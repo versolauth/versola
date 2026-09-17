@@ -5,7 +5,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
-import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
+import versola.oauth.model.{Nonce, RefreshToken}
 import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
@@ -38,7 +38,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given DbCodec[SessionRecord] = DbCodec.derived[SessionRecord]
 
   // ── refresh-token codecs ──────────────────────────────────────────────────
-  given DbCodec[AccessToken]                   = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
   given DbCodec[RefreshTokenFamilyId]          = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
   given SqlArrayCodec[ClientId]                = SqlArrayCodec.StringSqlArrayCodec.asInstanceOf[SqlArrayCodec[ClientId]]
   given DbCodec[ScopeToken]                    = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
@@ -188,8 +187,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-refresh-tokens-by-user"):
         sql"""
-          SELECT family_id, session_id, public_session_id, access_token, access_token_expires_at,
-                 user_id, client_id,
+          SELECT family_id, session_id, public_session_id, user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
                  amr, auth_time, acr, cnf_jkt
@@ -282,8 +280,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
             // A fresh chain: the family starts here, under the id the caller generated for it.
             sql"""
               INSERT INTO refresh_tokens (
-                id, family_id, session_id, public_session_id, access_token,
-                access_token_expires_at, user_id, client_id,
+                id, family_id, session_id, public_session_id, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
                 ui_locales, nonce, amr, auth_time, acr, cnf_jkt
               )
@@ -292,8 +289,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 ${record.familyId},
                 ${record.sessionId},
                 ${record.publicSessionId},
-                ${record.accessToken},
-                ${record.accessTokenExpiresAt},
                 ${record.userId},
                 ${record.clientId},
                 ${record.audience},
@@ -352,8 +347,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
                   AND idempotency_key IS NOT NULL
               )
               INSERT INTO refresh_tokens (
-                id, family_id, session_id, public_session_id, access_token,
-                access_token_expires_at, user_id, client_id,
+                id, family_id, session_id, public_session_id, user_id, client_id,
                 audience, authorization_details, scope, issued_at, expires_at, requested_claims,
                 ui_locales, nonce, amr, auth_time, acr, cnf_jkt
               )
@@ -362,8 +356,6 @@ class PostgresSessionRepository(xa: TransactorZIO)
                 retired.family_id,
                 ${record.sessionId},
                 ${record.publicSessionId},
-                ${record.accessToken},
-                ${record.accessTokenExpiresAt},
                 ${record.userId},
                 ${record.clientId},
                 ${record.audience},
@@ -397,8 +389,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
-          SELECT family_id, session_id, public_session_id, access_token, access_token_expires_at,
-                 user_id, client_id,
+          SELECT family_id, session_id, public_session_id, user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
                  amr, auth_time, acr, cnf_jkt
@@ -427,8 +418,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // whatever the cleanup sweep's cadence happens to be. A row past its `expires_at` is
         // physically present until swept, but must stop being honoured now.
         sql"""
-          SELECT tip.id, tip.family_id, tip.session_id, tip.public_session_id, tip.access_token,
-                 tip.access_token_expires_at, tip.user_id,
+          SELECT tip.id, tip.family_id, tip.session_id, tip.public_session_id, tip.user_id,
                  tip.client_id, tip.audience, tip.authorization_details, tip.scope,
                  tip.issued_at, tip.expires_at, tip.requested_claims, tip.ui_locales,
                  tip.nonce, tip.amr, tip.auth_time, tip.acr, tip.cnf_jkt
@@ -469,59 +459,42 @@ class PostgresSessionRepository(xa: TransactorZIO)
           .run()
           .headOption
           .map: (family, userId) =>
-            val revoked = sql"""
+            sql"""
               UPDATE refresh_tokens
               SET expires_at = $now
               WHERE family_id = $family AND expires_at > $now
-              RETURNING access_token, access_token_expires_at
-            """.query[(AccessToken, Instant)].run()
+            """.update.run()
 
-            // Each row's own access-token expiry, not the client's current accessTokenTtl
-            // (mutable, so it would misjudge a token minted under a different one): a token
-            // already past it is dead already, and pushing it to the client's back channel
-            // would revoke nothing.
-            val live = revoked.view.filter(_._2.isAfter(now)).toList
-
-            RevokedFamily(
-              userId = userId,
-              accessTokens = live.map(_._1),
-              // The whole batch is pushed as one edge event under a single expiresAt (see the
-              // caller), so that bound has to cover the furthest of them, not any one token's.
-              accessTokensExpireBy = live.map(_._2).maxOption,
-            )
+            // The access tokens the family issued are not enumerated, because they cannot be:
+            // the rows name no token, and a generation that has rotated away or been swept
+            // would be missing from any list built here. The caller pushes the family instead,
+            // which every one of them carries as its `fam` claim.
+            RevokedFamily(userId = userId, familyId = family)
       }
 
   override def renewBoundToken(
       token: MAC.Of[RefreshToken],
-      accessToken: AccessToken,
       scope: Option[Set[ScopeToken]],
       expiresAt: Instant,
-      accessTokenExpiresAt: Instant,
   ): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("renew-bound-refresh-token"):
         // A sender-constrained token is not rotated: a copy of it is inert without the private
-        // key, so there is no chain to advance and no predecessor to retire. The row is written
-        // once per refresh regardless, because `access_token` has to keep naming the token
-        // currently outstanding for revocation to be able to reach it -- so sliding `expires_at`
-        // in the same statement is free, and `GREATEST` keeps that idempotent under a retry.
+        // key, so there is no chain to advance and no predecessor to retire. What is left to
+        // write is the slid expiry, which `GREATEST` keeps idempotent under a retry -- the row
+        // no longer has to be re-pointed at the access token just issued, since revocation
+        // reaches that token through the family this row already names.
         //
         // `scope` is carried only when this refresh narrowed the grant: this row is the
         // grant's only record, so a narrowing that is not persisted here is one the next
         // refresh silently undoes -- but a refresh that named no scope leaves the stored
         // value already correct, and rewriting it costs a row version per refresh to store
         // what the row already holds.
-        //
-        // `access_token_expires_at` is replaced outright, not `GREATEST`-guarded like
-        // `expires_at`: it describes the access token this row now names, and that token's own
-        // expiry never needs to be the max of itself and a stale prior value.
         val renewed = scope match
           case Some(narrowed) =>
             sql"""
               UPDATE refresh_tokens
-              SET access_token = $accessToken,
-                  access_token_expires_at = $accessTokenExpiresAt,
-                  scope = $narrowed,
+              SET scope = $narrowed,
                   expires_at = GREATEST(expires_at, $expiresAt)
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
             """.update.run()
@@ -529,9 +502,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           case None =>
             sql"""
               UPDATE refresh_tokens
-              SET access_token = $accessToken,
-                  access_token_expires_at = $accessTokenExpiresAt,
-                  expires_at = GREATEST(expires_at, $expiresAt)
+              SET expires_at = GREATEST(expires_at, $expiresAt)
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
             """.update.run()
 
@@ -543,14 +514,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
         sql"""UPDATE refresh_tokens SET expires_at = $now WHERE id = $token""".update.run()
       .unit
 
-  override def deleteByAccessToken(sessionId: MAC.Of[SessionId], token: AccessToken): Task[Unit] =
+  override def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit] =
     Clock.instant.flatMap: now =>
-      xa.connectMeasured("delete-refresh-token-by-access-token"):
-        // access_token carries no index of its own; session_id does, and narrows this to a
-        // handful of rows before the residual access_token check runs.
+      xa.connectMeasured("delete-refresh-token-family"):
         sql"""
           UPDATE refresh_tokens SET expires_at = $now
-          WHERE session_id = $sessionId AND access_token = $token
+          WHERE family_id = $familyId AND expires_at > $now
         """.update.run()
       .unit
 

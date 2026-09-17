@@ -1,9 +1,9 @@
 package versola.oauth.token
 
-import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, RefreshToken}
-import versola.oauth.session.model.SessionId
-import versola.util.{MAC, Secret}
-import zio.{Duration, IO, Task}
+import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
+import versola.oauth.session.model.RefreshTokenFamilyId
+import versola.util.MAC
+import zio.{Duration, Task}
 
 trait AuthorizationCodeRepository:
 
@@ -21,7 +21,8 @@ trait AuthorizationCodeRepository:
    * Mark an authorization code as used.
    *
    * @param code The authorization code MAC
-   * @return Left(accessToken) if the code was already used (returns the stored access token for revocation),
+   * @return Left(familyId) if the code was already used -- the rotation family its first
+   *         exchange started, which is what a replay revokes
    *         Right(()) if this is the first use
    */
-  def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[AccessToken, Unit]]
+  def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[RefreshTokenFamilyId, Unit]]

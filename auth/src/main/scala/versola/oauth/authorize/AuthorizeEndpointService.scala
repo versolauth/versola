@@ -393,6 +393,7 @@ object AuthorizeEndpointService:
         _ <- sessionService.registerClient(sessionInfo.id, request.clientId)
         code <- authPropertyGenerator.nextAuthorizationCode
         accessToken <- authPropertyGenerator.nextAccessToken
+        familyId <- authPropertyGenerator.nextRefreshTokenFamilyId
         codeRecord = AuthorizationCodeRecord(
           sessionId = sessionInfo.id,
           publicSessionId = session.publicId,
@@ -407,6 +408,7 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
           accessToken = accessToken,
+          familyId = familyId,
           amr = amr,
           authTime = session.createdAt,
           acr = acr,

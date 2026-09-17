@@ -20,6 +20,7 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
+import versola.oauth.session.model.RefreshTokenFamilyId
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
@@ -518,6 +519,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
@@ -546,6 +548,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
@@ -590,6 +593,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
@@ -645,6 +649,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)
@@ -683,6 +688,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.securityService.mac.succeedsWith(testMac)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
           _ <- env.authorizationCodeRepository.create.succeedsWith(())
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.conversationRepository.delete.succeedsWith(true)

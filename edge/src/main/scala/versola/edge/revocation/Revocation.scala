@@ -31,9 +31,9 @@ enum RevocationKey:
 
   /** Every access token issued to this user across every session and every client.
     *
-    * Unlike the other two this one outlives what it revokes: the user can log in again
+    * Unlike the other three this one outlives what it revokes: the user can log in again
     * and must not be locked out by an entry aimed at the tokens they held before. Which
-    * is why an entry under this key carries [[Revocation.issuedBefore]] and the other two
+    * is why an entry under this key carries [[Revocation.issuedBefore]] and the others
     * do not.
     */
   case Sub(userId: String)

@@ -65,8 +65,6 @@ object RevocationServiceSpec extends UnitSpecBase:
     familyId = familyId1,
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
-    accessToken = accessToken1,
-    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,
@@ -124,18 +122,16 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepository.findToken.succeedsWith(Some(tokenRecord(now)))
           _ <- env.tokenRepository.delete.succeedsWith(())
-          _ <- env.accessTokenRevocationService.revoke.succeedsWith(())
+          _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
 
           service <- ZIO.service[RevocationService]
           result <- service.revokeRefreshToken(refreshToken1, credentials)
         yield assertTrue(
           result == (),
-          // The access token itself was never presented, but the record carries its exact
-          // expiry -- fixture deliberately sets this to 3600s while the client's own TTL is
-          // 10 minutes, so a regression back to deriving from `client.accessTokenTtl` would
-          // fail this assertion.
-          env.accessTokenRevocationService.revoke.calls ==
-            List((testClient, NonEmptyChunk(accessToken1), userId1.toString, tokenRecord(now).accessTokenExpiresAt)),
+          // No access token was presented and none is recorded against the chain, so the push
+          // names the family and bounds it by the client's own TTL from now.
+          env.accessTokenRevocationService.revokeFamily.calls ==
+            List((testClient, familyId1, userId1.toString, now.plus(testClient.accessTokenTtl))),
         )).provide(env.layer)
       },
       test("fail with InvalidClient when client authentication fails") {
@@ -244,6 +240,26 @@ object RevocationServiceSpec extends UnitSpecBase:
           // No `sid`: this must not end the SSO session the token belongs to.
           calls.head._4 == Json.Obj(
             "revoked_jti" -> Json.Arr(Json.Str(accessToken1.encoded)),
+            "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
+            "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
+          ),
+        )
+      },
+      test("names the family, not the tokens, when a leaked chain is revoked") {
+        val dispatcher = stub[BackChannelDispatcher]
+        val backChannelUri = URL.decode("https://rp.example/backchannel").toOption.get
+        val client = testClient.copy(backChannelLogoutUri = Some(backChannelUri))
+        val service = AccessTokenRevocationService.Impl(dispatcher)
+        for
+          now <- Clock.instant
+          _ <- dispatcher.dispatch.succeedsWith(())
+          _ <- service.revokeFamily(client, familyId1, userId1.toString, now.plusSeconds(300))
+          calls = dispatcher.dispatch.calls
+        yield assertTrue(
+          // Same event as a jti-scoped revocation, under a different claim: what changes is
+          // which tokens it reaches, not what the recipient does about it.
+          calls.head._4 == Json.Obj(
+            "revoked_fam" -> Json.Arr(Json.Str(familyId1)),
             "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
             "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
           ),

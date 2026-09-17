@@ -15,6 +15,10 @@ CREATE TABLE authorization_codes (
     nonce TEXT,
     used BOOLEAN NOT NULL,
     access_token BYTEA NOT NULL,
+    -- The rotation family the exchange of this code will start, generated here rather than at
+    -- the exchange so that a replay of the code -- which has only the code row to go on -- can
+    -- name what the first exchange issued and revoke it.
+    family_id TEXT NOT NULL,
     acr TEXT,
     amr JSONB NOT NULL,
     auth_time TIMESTAMP WITH TIME ZONE NOT NULL

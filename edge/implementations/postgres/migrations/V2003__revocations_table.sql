@@ -1,13 +1,14 @@
 -- Tokens (and whole sessions) that must stop being accepted before their `exp`.
 -- One key column rather than a composite key, so the generic cleanup manager can
--- batch on it: 'jti:<access token id>' kills one token, 'sid:<session id>' kills
--- every token issued under that SSO session, including ones this edge never saw,
--- and 'sub:<user id>' kills every token a user holds.
+-- batch on it: 'jti:<access token id>' kills one token, 'fam:<refresh token
+-- family id>' kills every token a refresh chain ever issued, 'sid:<session id>'
+-- kills every token issued under that SSO session, including ones this edge never
+-- saw, and 'sub:<user id>' kills every token a user holds.
 --
--- issued_before belongs to 'sub:' entries alone, which differ from the other two
+-- issued_before belongs to 'sub:' entries alone, which differ from the other
 -- kinds in that the user can log in again while the entry is still live: only
--- tokens issued before that instant are rejected. Null for 'jti:' and 'sid:',
--- where nothing can issue a token under the key any more.
+-- tokens issued before that instant are rejected. Null for the rest, where
+-- nothing can issue a token under the key any more.
 CREATE TABLE revocations (
     revoked_key   TEXT PRIMARY KEY,
     revoked_at    TIMESTAMP WITH TIME ZONE NOT NULL,

@@ -14,9 +14,9 @@ trait TokenRevocationService:
     */
   def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit]
 
-  /** As [[revokeToken]], for several tokens sharing one `expiresAt` -- a leaked refresh-token
-    * family's access tokens, all bounded by the same client TTL from the same instant. One
-    * durable write covers the whole batch instead of one per token.
+  /** As [[revokeToken]], for several tokens sharing one `expiresAt` -- one event naming a
+    * batch of them, all bounded by the same instant. One durable write covers the whole
+    * batch instead of one per token.
     */
   def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit]
 

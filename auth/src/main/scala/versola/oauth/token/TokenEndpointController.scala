@@ -140,6 +140,7 @@ object TokenEndpointController extends Controller:
         "tenant_id" -> Json.Str(tokens.tenantId),
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
+        tokens.refreshTokenFamilyId.map(family => "fam" -> Json.Str(family)) ++
         tokens.cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt))) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
