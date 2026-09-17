@@ -212,7 +212,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           _            <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
           _            <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
@@ -244,7 +244,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           _            <- env.repository.create(atomicSessionId, session1, 0.seconds, None, None)
           _            <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
@@ -279,7 +279,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           _           <- env.repository.create(atomicSessionId, session1, 0.seconds, None, None)
           _           <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
@@ -311,7 +311,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           liveToken        = MAC(Array.fill(32)(79.toByte))
           otherUserToken   = MAC(Array.fill(32)(80.toByte))
@@ -383,7 +383,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           _          <- env.repository.create(atomicSessionId, session1, 5.minutes, None, None)
           _          <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
@@ -446,7 +446,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
             amr                  = Set(AuthMethodRef.pwd),
             authTime             = now,
             acr                  = None,
-            cnfJkt               = None,
+            cnf                  = None,
           )
           _          <- env.repository.create(atomicSessionId, session1.copy(publicId = atomicPublicId), 5.minutes, None, None)
           _          <- env.repository.createRefreshToken(atomicTokenId, None, record, None)

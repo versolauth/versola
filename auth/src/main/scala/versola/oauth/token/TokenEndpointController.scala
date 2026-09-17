@@ -141,7 +141,7 @@ object TokenEndpointController extends Controller:
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.refreshTokenFamilyId.map(family => "fam" -> Json.Str(family)) ++
-        tokens.cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt))) ++
+        tokens.cnf.map("cnf" -> _.toJsonObj) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
@@ -168,8 +168,10 @@ object TokenEndpointController extends Controller:
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
       accessToken = serializedAT,
-      // RFC 9449 §5: a bound token is presented with the `DPoP` scheme, not `Bearer`.
-      tokenType = if tokens.cnfJkt.isDefined then "DPoP" else "Bearer",
+      // RFC 9449 §5: a DPoP-bound token is presented with the `DPoP` scheme, not `Bearer`.
+      // Only that binding changes the scheme -- RFC 8705 §3.1 leaves a certificate-bound
+      // token a `Bearer` one, since the constraint travels on the TLS connection.
+      tokenType = if tokens.cnf.exists(_.jkt.isDefined) then "DPoP" else "Bearer",
       expiresIn = tokens.accessTokenTtl.toSeconds,
       refreshToken = tokens.refreshToken.map(Base64.urlEncode),
       scope = Option.when(tokens.scope.nonEmpty)(tokens.scope.mkString(" ")),

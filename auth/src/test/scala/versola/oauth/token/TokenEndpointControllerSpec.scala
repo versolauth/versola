@@ -11,7 +11,7 @@ import versola.oauth.dpop.DpopService
 import versola.util.Dpop
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
+import versola.oauth.model.{AccessToken, AuthorizationCode, Cnf, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.session.model.RefreshTokenFamilyId
 import versola.oauth.userinfo.UserInfoService
@@ -61,7 +61,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
@@ -1072,7 +1072,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         setup = services =>
           services.dpopService.verify.succeedsWith(proof1) *>
             services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(
-              issuedTokens.copy(cnfJkt = Some(jkt1)),
+              issuedTokens.copy(cnf = Some(Cnf.dpop(jkt1))),
             ),
         verify = response =>
           for

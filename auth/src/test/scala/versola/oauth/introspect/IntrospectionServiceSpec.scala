@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.model.{AccessToken, AccessTokenPayload, Confirmation, RefreshToken}
+import versola.oauth.model.{AccessToken, AccessTokenPayload, Cnf, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
@@ -58,6 +58,8 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
@@ -77,7 +79,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     amr = Set(AuthMethodRef.pwd),
     authTime = now,
     acr = None,
-    cnfJkt = None,
+    cnf = None,
   )
 
   def accessTokenPayload(now: Instant, audience: Vector[ResourceUri] = Vector.empty) = AccessTokenPayload(
@@ -185,7 +187,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           now <- Clock.instant
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
           payload = accessTokenPayload(now, audience = Vector(publicResource))
-            .copy(confirmation = Some(Confirmation("test-key-thumbprint")))
+            .copy(confirmation = Some(Cnf.dpop("test-key-thumbprint")))
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
@@ -373,7 +375,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
         (for
           now <- Clock.instant
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-          record = tokenRecord(now).copy(cnfJkt = Some("test-key-thumbprint"))
+          record = tokenRecord(now).copy(cnf = Some(Cnf.dpop("test-key-thumbprint")))
 
           _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)

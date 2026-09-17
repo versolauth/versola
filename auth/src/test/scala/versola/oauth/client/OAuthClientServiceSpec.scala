@@ -41,6 +41,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -64,6 +66,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -87,6 +91,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(

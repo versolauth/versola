@@ -81,8 +81,10 @@ object IntrospectionService:
         scope = Some(token.scope.mkString(" ")),
         username = None,
         // RFC 9449 §6.2: a DPoP-bound token introspects as such, echoing its confirmation.
-        tokenType = Some(if token.confirmation.isDefined then "DPoP" else "Bearer"),
-        cnf = token.confirmation.map(c => Json.Obj("jkt" -> Json.Str(c.jkt))),
+        // A certificate-bound one stays `Bearer` -- RFC 8705 §3.1 binds the token without
+        // changing how it is presented -- and says so through `cnf` alone.
+        tokenType = Some(if token.confirmation.exists(_.jkt.isDefined) then "DPoP" else "Bearer"),
+        cnf = token.confirmation.map(_.toJsonObj),
         exp = Some(token.expiresAt.getEpochSecond),
         iat = Some(token.issuedAt.getEpochSecond),
         nbf = token.notBefore.map(_.getEpochSecond),
@@ -133,8 +135,8 @@ object IntrospectionService:
             clientId = Some(record.clientId),
             sub = Some(record.userId.toString),
             // RFC 9449 §6.2: same as above, for a refresh-token-derived introspection.
-            tokenType = Some(if record.cnfJkt.isDefined then "DPoP" else "Bearer"),
-            cnf = record.cnfJkt.map(jkt => Json.Obj("jkt" -> Json.Str(jkt))),
+            tokenType = Some(if record.cnf.exists(_.jkt.isDefined) then "DPoP" else "Bearer"),
+            cnf = record.cnf.map(_.toJsonObj),
             username = None,
             exp = Some(record.expiresAt.getEpochSecond),
             nbf = None,

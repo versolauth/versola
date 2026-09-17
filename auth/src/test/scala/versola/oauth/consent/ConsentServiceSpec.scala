@@ -45,6 +45,8 @@ object ConsentServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private def clientWith(

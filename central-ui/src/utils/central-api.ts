@@ -1077,6 +1077,9 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       consentFlow: consentFlowToBackend(client.consentFlow),
       dpopBoundAccessTokens: client.dpopBoundAccessTokens,
       clientType: client.clientType ?? 'web',
+      // Not yet exposed in the dashboard: a client can only get mTLS auth or
+      // certificate-bound tokens through the sync API for now.
+      certificateBoundAccessTokens: false,
     },
   });
 

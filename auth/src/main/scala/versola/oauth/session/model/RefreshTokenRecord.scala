@@ -2,6 +2,7 @@ package versola.oauth.session.model
 
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.model.Nonce
+import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -38,7 +39,8 @@ case class RefreshTokenRecord(
     amr: Set[AuthMethodRef],
     authTime: Instant,
     acr: Option[Acr],
-    /** RFC 9449 §5: the JWK thumbprint this grant is bound to, `None` for a bearer grant.
-      * A bound grant may only be refreshed by a proof carrying the same thumbprint. */
-    cnfJkt: Option[String],
+    /** The RFC 7800 confirmation this grant is bound to, `None` when it is unbound. A bound
+      * grant may only be refreshed by presenting the same key it was issued to: an RFC 9449
+      * proof carrying `jkt`, or the RFC 8705 certificate matching `x5t#S256`. */
+    cnf: Option[Cnf],
 ) derives CanEqual, Equal

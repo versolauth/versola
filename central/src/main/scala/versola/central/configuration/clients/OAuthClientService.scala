@@ -168,6 +168,8 @@ object OAuthClientService:
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(_.toDomain),
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+          mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
+          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -215,6 +217,8 @@ object OAuthClientService:
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(toConsentFlowPatch),
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+          mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
+          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
         )
       yield ()
 
@@ -278,6 +282,17 @@ object OAuthClientService:
     private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
       case Patch.Deleted     => Patch.Deleted
       case Patch.Modified(v) => URL.decode(v.trim).toOption.fold(Patch.Deleted)(Patch.Modified(_))
+
+    /** RFC 8705 §2.1.2 compares the registered value against the certificate literally, so
+      * surrounding whitespace an operator pastes in would silently stop every certificate
+      * from matching. Trimming is the only normalisation applied: the RFC 4514 form of a
+      * subject DN is otherwise significant, down to attribute order. */
+    private def normaliseMtlsAuth(auth: MutualTlsAuth): MutualTlsAuth =
+      auth.copy(subjectValue = auth.subjectValue.trim)
+
+    private def toMtlsAuthPatch(patch: Patch[MutualTlsAuth]): Patch[MutualTlsAuth] = patch match
+      case Patch.Deleted        => Patch.Deleted
+      case Patch.Modified(auth) => Patch.Modified(normaliseMtlsAuth(auth))
 
     private def toConsentFlowPatch(patch: Patch[ConsentFlowDto]): Patch[ConsentFlow] = patch match
       case Patch.Deleted        => Patch.Deleted

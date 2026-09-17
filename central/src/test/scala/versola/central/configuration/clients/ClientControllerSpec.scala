@@ -76,6 +76,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -102,6 +104,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
     backChannelLogoutUri = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = None,
   )
 
   private val clients = Vector(
@@ -128,6 +132,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tosUri = None,
       consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
       dpopBoundAccessTokens = false,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -152,6 +158,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tosUri = None,
       consentFlow = None,
       dpopBoundAccessTokens = false,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
     ),
   )
 
@@ -287,6 +295,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
                 ),
                 dpopBoundAccessTokens = false,
+                mtlsAuth = None,
+                certificateBoundAccessTokens = false,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -310,6 +320,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 tosUri = None,
                 consentFlow = None,
                 dpopBoundAccessTokens = false,
+                mtlsAuth = None,
+                certificateBoundAccessTokens = false,
               ),
             ),
           ),
