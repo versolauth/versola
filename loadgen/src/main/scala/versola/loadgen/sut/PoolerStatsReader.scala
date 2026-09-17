@@ -20,7 +20,7 @@ case class PoolerStatsReading(version: String, stats: PoolerStats)
   * parameters to bind in any case: a `SHOW` command takes none.
   *
   * **It cannot be opened without also disarming pgjdbc's connect-time `SET`.** See
-  * [[PoolerStatsCapture.connect]]'s `replication=database` for why: every released PgBouncer
+  * [[PoolerStatsCapture]] and its `replication=database` for why: every released PgBouncer
   * rejects that statement and drops the connection before this reader ever runs a `SHOW`.
   *
   * **A `SHOW` command takes no column list.** [[SutStatsReader]] writes the columns it wants and

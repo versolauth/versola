@@ -70,7 +70,7 @@ final class PgBouncerStatsCapture(
         )
       yield ()
 
-  /** [[SutStatsCapture.connect]]'s bare connection with its two timeouts, plus two properties
+  /** [[SutStatsCapture]]'s own bare connection with its two timeouts, plus two properties
     * neither of which is a tuning knob: without both, pgjdbc cannot open this connection at all.
     *
     * `preferQueryMode=simple` -- PgBouncer's console implements only the simple query protocol
