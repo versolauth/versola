@@ -354,7 +354,7 @@ object ScopeApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.token("probe_scope")
         _ <- central.post(path, Fixtures.scope(id))
-        listed <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("scopes"))
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("scopes")))(_.nonEmpty)
         _ <- cleanup(central, id)
       yield assertTrue(listed.size == 1)
     },

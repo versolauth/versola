@@ -312,7 +312,7 @@ object RoleApiSpec extends CentralApiSpec:
         central <- api
         roleId <- CentralApi.id("e2e-role")
         _ <- central.post(path, Fixtures.role(roleId))
-        listed <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("roles"))
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("roles")))(_.nonEmpty)
         _ <- cleanup(central, roleId)
       yield assertTrue(listed.size == 1)
     },
