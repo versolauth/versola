@@ -74,6 +74,11 @@ trait SessionRepository:
     *
     * `idempotencyKey` is recorded against the token being retired, so that the exchange can
     * be recognised later if the client repeats it -- see [[findIdempotentRetry]].
+    *
+    * `record.familyId` starts a family and is read only when `previous` is empty. A rotation
+    * takes the family off the row it retires instead: that row is read under the family lock
+    * in the same statement, so the successor cannot be filed under a family the caller read
+    * before the chain moved.
     */
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],

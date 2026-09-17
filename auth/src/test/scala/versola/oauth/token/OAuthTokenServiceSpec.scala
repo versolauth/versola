@@ -7,7 +7,7 @@ import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, Authoriza
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
@@ -31,6 +31,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
   val publicSessionId1 = PublicSessionId("public-session-1")
+  val familyId1 = RefreshTokenFamilyId("family-1")
   val redirectUri1 = URL.decode("https://example.com/callback").toOption.get
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"), ScopeToken.OfflineAccess)
   val scope2 = Set(ScopeToken("read"))
@@ -153,6 +154,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   /** A refresh token record bound to `cnfJkt`, or unbound when it is `None`. */
   def boundRecord(now: Instant, cnfJkt: Option[String]) = RefreshTokenRecord(
+    familyId = familyId1,
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
@@ -183,6 +185,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       now <- Clock.instant
 
       tokenRecord = RefreshTokenRecord(
+        familyId = familyId1,
         sessionId = sessionId1,
         publicSessionId = publicSessionId1,
         accessToken = accessToken1,
@@ -286,6 +289,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           )
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
           createCalls = env.tokenRepo.createRefreshToken.calls
         yield assertTrue(
@@ -340,6 +344,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.accessToken == accessToken1,
@@ -355,6 +360,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidClient),
@@ -370,6 +376,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeNotFound),
@@ -407,6 +414,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, wrongRedirectUri, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.RedirectUriMismatch),
@@ -447,6 +455,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           now <- Clock.instant
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeReplayed),
@@ -493,6 +502,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.accessToken == accessToken1,
@@ -534,6 +544,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.tenantId.contains("default"),
@@ -576,6 +587,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           env.userRepo.findRolesByUserAndTenant.calls.nonEmpty,
@@ -591,6 +603,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -654,6 +667,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -759,6 +773,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tipRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -848,6 +863,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tipRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -911,6 +927,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -953,6 +970,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -993,6 +1011,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -1044,6 +1063,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -1089,6 +1109,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -1153,6 +1174,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -1225,6 +1247,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           now <- Clock.instant
 
           tokenRecord = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId = sessionId1,
             publicSessionId = publicSessionId1,
             accessToken = accessToken1,
@@ -1472,6 +1495,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(
             CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
@@ -1548,6 +1572,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1))
         yield assertTrue(
           result.cnfJkt.contains(jkt1),
@@ -1570,6 +1595,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None)
         yield assertTrue(
           result.cnfJkt.isEmpty,
@@ -1712,6 +1738,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1))
         yield assertTrue(result.cnfJkt.contains(jkt1))
       },
@@ -1725,6 +1752,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt2)).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeKeyMismatch),
@@ -1743,6 +1771,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.CodeKeyMismatch))
       },
@@ -1756,6 +1785,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
+          _ <- env.propertyGenerator.nextRefreshTokenFamilyId.succeedsWith(familyId1)
           result <- env.service.exchangeAuthorizationCode(request, credentials, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidDpopProof("client is registered for DPoP-bound access tokens")),

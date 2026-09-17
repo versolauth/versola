@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
 import versola.oauth.model.AccessToken
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -25,6 +25,8 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val publicId2      = PublicSessionId("public-session-2")
   val publicId3      = PublicSessionId("public-session-3")
   val atomicPublicId = PublicSessionId("public-session-atomic")
+
+  val familyId1 = RefreshTokenFamilyId("family-1")
 
   val clientId1 = ClientId("client-1")
   val clientId2 = ClientId("client-2")
@@ -195,6 +197,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),
@@ -228,6 +231,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(32)(1.toByte)),
@@ -264,6 +268,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(32)(1.toByte)),
@@ -297,6 +302,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(32)(1.toByte)),
@@ -369,6 +375,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now   <- Clock.instant
           record = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),
@@ -433,6 +440,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now   <- Clock.instant
           record = RefreshTokenRecord(
+            familyId = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
             accessToken          = AccessToken(Array.fill(16)(1.toByte)),

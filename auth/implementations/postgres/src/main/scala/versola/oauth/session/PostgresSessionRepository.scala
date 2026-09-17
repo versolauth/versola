@@ -6,7 +6,7 @@ import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
 import versola.oauth.model.{AccessToken, Nonce, RefreshToken}
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -39,6 +39,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   // ── refresh-token codecs ──────────────────────────────────────────────────
   given DbCodec[AccessToken]                   = DbCodec.ByteArrayCodec.biMap(AccessToken(_), identity[Array[Byte]])
+  given DbCodec[RefreshTokenFamilyId]          = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
   given SqlArrayCodec[ClientId]                = SqlArrayCodec.StringSqlArrayCodec.asInstanceOf[SqlArrayCodec[ClientId]]
   given DbCodec[ScopeToken]                    = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
   given listStringDbCodec: DbCodec[List[String]]     = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
@@ -187,7 +188,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-refresh-tokens-by-user"):
         sql"""
-          SELECT session_id, public_session_id, access_token, access_token_expires_at,
+          SELECT family_id, session_id, public_session_id, access_token, access_token_expires_at,
                  user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
@@ -263,7 +264,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
     sql"""
       SELECT 1 FROM pg_advisory_xact_lock(
         ${PostgresSessionRepository.RefreshTokenFamilyLockNamespace},
-        (SELECT hashtext(encode(family_id, 'hex')) FROM refresh_tokens WHERE id = $token)
+        (SELECT hashtext(family_id) FROM refresh_tokens WHERE id = $token)
       )
     """.query[Int].run()
     ()
@@ -278,7 +279,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       xa.transactMeasured("create-refresh-token") {
         previous match
           case None =>
-            // A fresh chain: the token is the root of its own family.
+            // A fresh chain: the family starts here, under the id the caller generated for it.
             sql"""
               INSERT INTO refresh_tokens (
                 id, family_id, session_id, public_session_id, access_token,
@@ -288,7 +289,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
               )
               VALUES (
                 $refreshToken,
-                $refreshToken,
+                ${record.familyId},
                 ${record.sessionId},
                 ${record.publicSessionId},
                 ${record.accessToken},
@@ -315,6 +316,9 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
             // Retire the predecessor, move the idempotency key onto it, and insert the
             // successor -- one statement, one round trip.
+            //
+            // The successor's family comes off the row being retired, not off `record`: the
+            // caller's copy was read before the lock was taken, this one is read under it.
             //
             // `retired`'s row lock is what orders two rotations of the same token against each
             // other: the second blocks there and then matches no row. Ordering a rotation
@@ -393,7 +397,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
       now    <- Clock.instant
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
-          SELECT session_id, public_session_id, access_token, access_token_expires_at,
+          SELECT family_id, session_id, public_session_id, access_token, access_token_expires_at,
                  user_id, client_id,
                  audience, authorization_details, scope, issued_at,
                  expires_at, requested_claims, ui_locales, nonce,
@@ -423,7 +427,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
         // whatever the cleanup sweep's cadence happens to be. A row past its `expires_at` is
         // physically present until swept, but must stop being honoured now.
         sql"""
-          SELECT tip.id, tip.session_id, tip.public_session_id, tip.access_token,
+          SELECT tip.id, tip.family_id, tip.session_id, tip.public_session_id, tip.access_token,
                  tip.access_token_expires_at, tip.user_id,
                  tip.client_id, tip.audience, tip.authorization_details, tip.scope,
                  tip.issued_at, tip.expires_at, tip.requested_claims, tip.ui_locales,
@@ -461,7 +465,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
           SELECT family_id, user_id
           FROM refresh_tokens
           WHERE id = $token AND client_id = $clientId AND rotated_at IS NOT NULL
-        """.query[(MAC.Of[RefreshToken], UserId)]
+        """.query[(RefreshTokenFamilyId, UserId)]
           .run()
           .headOption
           .map: (family, userId) =>
