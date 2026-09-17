@@ -961,6 +961,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
       clientType: String = "web",
+      /** RFC 8705 §3.4: mandatory at decode time on `CreateClientRequest`, unlike
+        * `mtlsAuth`, since it isn't itself an `Option`. */
+      certificateBoundAccessTokens: Boolean = false,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -981,6 +984,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = backChannelLogoutUri,
       clientType = clientType,
+      certificateBoundAccessTokens = certificateBoundAccessTokens,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1503,4 +1507,5 @@ object OAuthClient:
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
       clientType: String,
+      certificateBoundAccessTokens: Boolean,
   ) derives JsonEncoder

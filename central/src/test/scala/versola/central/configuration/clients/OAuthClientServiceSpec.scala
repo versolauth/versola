@@ -269,6 +269,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
             None,
             None,
+            None,
           ),
         ),
       )
@@ -351,8 +352,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.updateClient(updateRequest.copy(mtlsAuth = Some(Patch.Deleted)))
         calls = env.repository.updateClient.calls
       yield assertTrue(
-        calls.head._19 == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
-        calls(1)._19 == Some(Patch.Deleted),
+        calls.head._20 == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        calls(1)._20 == Some(Patch.Deleted),
       )
     },
     test("registerClient rejects a non-HTTPS logoUri instead of silently dropping it") {
@@ -485,7 +486,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _) = env.repository.updateClient.calls.head
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _, _) = env.repository.updateClient.calls.head
       yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {
