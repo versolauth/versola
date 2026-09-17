@@ -1,5 +1,7 @@
 package versola.loadgen.store
 
+import versola.loadgen.sut.SutStats
+
 import java.time.Instant
 
 /** One `vu_events` row (migration V0003): a sampled step, written on the deferred path.
@@ -62,3 +64,28 @@ case class MetricSnapshotRow(
   */
 enum MeasurementKind:
   case Step, Flow
+
+/** One `vu_sut_stat_snapshots` row (migration V0005): everything `pg_stat_*` said about one SUT
+  * database at one boundary of one campaign (runbook 05-report-spec.md §3).
+  *
+  * The two reset instants are outside [[statistics]] for the reason the migration gives: they
+  * decide whether a pair of rows may be differenced at all, and that has to be answerable without
+  * decoding the payload.
+  */
+case class SutStatSnapshotRow(
+    campaign: String,
+    /** The operator's label for the database, as `sut-stats.databases[].name` states it. */
+    database: String,
+    phase: SutStatPhase,
+    capturedAt: Instant,
+    serverVersionNum: Int,
+    statsResetAt: Option[Instant],
+    walStatsResetAt: Option[Instant],
+    statistics: SutStats,
+)
+
+/** Which boundary of the campaign a [[SutStatSnapshotRow]] was taken at. A capture is a procedure
+  * over a run, not a gauge -- one row of either phase answers nothing on its own.
+  */
+enum SutStatPhase:
+  case Before, After

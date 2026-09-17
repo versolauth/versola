@@ -15,7 +15,8 @@ import versola.loadgen.metrics.{
 }
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
-import versola.loadgen.store.{MetricSnapshotRepository, VirtualUserRepository}
+import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
+import versola.loadgen.sut.{SutStatsCapture, SutStatsDelta}
 import zio.*
 
 import java.time.Instant
@@ -61,6 +62,7 @@ final class CoordinatorService private (
     users: VirtualUserRepository,
     snapshots: MetricSnapshotRepository,
     rebalancer: ShardRebalancer,
+    sutStats: Option[SutStatsCapture],
 ):
 
   def plan: Task[LoadPlan] =
@@ -155,8 +157,11 @@ final class CoordinatorService private (
         state <- control.get
         fleet <- drivers.view(now, state.shards.epoch)
         counts <- population.get
+        databases <- sutDeltas(name)
         report <- ZIO
-          .fromEither(CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds))
+          .fromEither(
+            CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds, databases),
+          )
           .mapError(IllegalStateException(_))
       yield report
 
@@ -186,6 +191,15 @@ final class CoordinatorService private (
       accessTokenTtls = fleet.observed.accessTokenTtlsByClient.toList.sorted.map: (clientId, ttls) =>
         ObservedAccessTokenTtl(clientId, ttls.toList.sorted),
     )
+
+  /** §3 of the report, or `None` when there is nothing to show: no SUT credentials, or a campaign
+    * that has not been stopped and so has only the snapshot it opened with.
+    *
+    * An empty list is collapsed to `None` rather than serialised as `[]`, so a report carries the
+    * section only when the section says something.
+    */
+  private def sutDeltas(name: String): Task[Option[List[SutStatsDelta]]] =
+    ZIO.foreach(sutStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
 
   /** Phase two of the rebalance, once the drain window has elapsed: rewrite `vu_users.shard`,
     * then promote the published map.
@@ -262,13 +276,35 @@ final class CoordinatorService private (
       moved <- control.modify: state =>
         move(state, now) match
           case Left(reason) => (Left(CoordinatorRefusal.Conflict(reason)), state)
-          case Right(next) => (Right(next), next)
-      state <- ZIO.fromEither(moved)
+          case Right(next) => (Right((state.state, next)), next)
+      (previous, state) <- ZIO.fromEither(moved)
+      _ <- captureSutStats(previous, state.state)
       factor <- registrationFactor.get
       registered <- registeredCount
       plan <- ZIO.fromEither(planAt(now, state, factor, registered)).mapError(IllegalStateException(_))
       _ <- ZIO.logInfo(s"Campaign '${campaign.name}' is ${plan.state.label} (epoch ${plan.shards.epoch})")
     yield plan
+
+  /** The campaign's two boundaries, and only those two: 07-wal-tuning.md measures "до и после при
+    * фиксированном числе транзакций", and a run is bracketed by the operator's start and stop.
+    *
+    * A resume is not a start. `CampaignControl.start` serves both -- it is how a pause ends -- and
+    * re-capturing there would move the opening reading forward into the middle of the run, so the
+    * transition is matched on rather than the command. Stopping an idle campaign still captures:
+    * it costs one query and the pairing in [[SutStatsDelta.from]] discards the unmatched row.
+    *
+    * Awaited rather than forked, so that a `GET /report` issued straight after the stop it was
+    * waiting for sees the closing snapshot. That is a few queries against the SUT on a boundary
+    * an operator is already waiting on, against a race that would silently produce a report with
+    * no §3 in it.
+    */
+  private def captureSutStats(previous: CampaignState, current: CampaignState): UIO[Unit] =
+    ZIO.foreachDiscard(sutStats): capture =>
+      (previous, current) match
+        case (CampaignState.Idle, CampaignState.Running) => capture.capture(campaign.name, SutStatPhase.Before)
+        case (before, CampaignState.Stopped) if before != CampaignState.Stopped =>
+          capture.capture(campaign.name, SutStatPhase.After)
+        case _ => ZIO.unit
 
   /** The ramp only runs while the campaign does: a paused campaign's registered count stops
     * moving, and a controller still comparing it against an advancing curve would wind the factor
@@ -375,6 +411,7 @@ object CoordinatorService:
       users: VirtualUserRepository,
       snapshots: MetricSnapshotRepository,
       rebalancer: ShardRebalancer,
+      sutStats: Option[SutStatsCapture],
   ): IO[String, CoordinatorService] =
     for
       plan <- ZIO.fromOption(config.plan).orElseFail("role = coordinator requires a 'plan' configuration block")
@@ -404,6 +441,7 @@ object CoordinatorService:
       users = users,
       snapshots = snapshots,
       rebalancer = rebalancer,
+      sutStats = sutStats,
     )
 
   /** §11's two granularities, as configuration names them: a step belongs to a scenario, a flow

@@ -93,3 +93,10 @@ object StoreCodes:
     MeasurementKind.Step -> 0,
     MeasurementKind.Flow -> 1,
   )
+
+  val sutStatPhase: Codes[SutStatPhase] = codes(
+    "sut stat phase",
+    SutStatPhase.values,
+    SutStatPhase.Before -> 0,
+    SutStatPhase.After -> 1,
+  )

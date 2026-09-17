@@ -2,11 +2,8 @@ package versola.loadgen.coordinator
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.LoadgenConfig
-import versola.loadgen.store.{
-  LoadgenMigrations,
-  PostgresMetricSnapshotRepository,
-  PostgresVirtualUserRepository,
-}
+import versola.loadgen.store.{LoadgenMigrations, PostgresMetricSnapshotRepository, PostgresSutStatSnapshotRepository, PostgresVirtualUserRepository}
+import versola.loadgen.sut.PostgresSutStatsCapture
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -29,12 +26,23 @@ object Coordinator:
           users = PostgresVirtualUserRepository(xa),
           snapshots = PostgresMetricSnapshotRepository(xa),
           rebalancer = PostgresShardRebalancer(xa),
+          // Absent for a coordinator that was given no SUT credentials, which is a deployment and
+          // not a mistake: the report then carries every section but §3's.
+          sutStats = config.sutStats.map: stats =>
+            PostgresSutStatsCapture(stats.databases, PostgresSutStatSnapshotRepository(xa)),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run
       _ <- ZIO.logInfo(
         s"Coordinator ready for campaign '${config.campaign.name}'; " +
           s"drivers poll every ${config.coordinator.pollInterval.render}",
+      )
+      _ <- ZIO.logInfo(
+        config.sutStats match
+          case Some(stats) =>
+            s"pg_stat_* snapshots will bracket the campaign for ${stats.databases.map(_.name).mkString(", ")}"
+          case None =>
+            "No 'sut-stats' block; the campaign report will carry no database section",
       )
     yield service
 

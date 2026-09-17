@@ -149,6 +149,13 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  hash-parallelism = 16
       |  batch-size       = 10000
       |}
+      |
+      |sut-stats {
+      |  databases = [
+      |    { name = auth,    database { url = "jdbc:postgresql://auth-db:5432/auth",       user = "stats", password = "[redacted]]" } },
+      |    { name = central, database { url = "jdbc:postgresql://central-db:5432/central", user = "stats", password = "[redacted]]" } },
+      |  ]
+      |}
       |""".stripMargin
 
   /** The provision and seed blocks dropped, as a coordinator's config file leaves them -- the
@@ -211,6 +218,11 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           // base64url, the same string auth reads as PASSWORDS_SECRET -- not the raw UTF-8 bytes
           // of it, which would silently hash the whole population against the wrong pepper.
           config.seed.map(_.passwordsSecret.toSeq) == Some((0 to 15).map(_.toByte)),
+          // §3 of the report is one block per SUT database, so the block is a list of named
+          // databases rather than the fixed pair the seeder writes into.
+          config.sutStats.map(_.databases.map(_.name)) == Some(List("auth", "central")),
+          config.sutStats.map(_.databases.head.database.url) == Some("jdbc:postgresql://auth-db:5432/auth"),
+          config.sutStats.map(_.databases.head.database.user) == Some("stats"),
         )
       },
       // A driver holds no admin credentials, so requiring the block here would fail its decode
@@ -221,6 +233,27 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .kebabCase
             .load(loadgenConfigDescriptor)
         yield assertTrue(config.provision == None, config.seed == None)
+      },
+      // Reading another service's database is a privilege somebody has to grant, and a campaign
+      // whose report has no database section is still a campaign.
+      test("decodes a coordinator config that holds no SUT database credentials") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hoconWithoutProvision)
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+        yield assertTrue(config.sutStats == None)
+      },
+      // An empty list boots a coordinator that reports no database section and says nothing about
+      // why, which is indistinguishable from one configured without the block at all. Duplicate
+      // names collide on `(campaign, database, phase)`, and the report then shows one database's
+      // statistics under the other's name.
+      test("rejects an empty, unnamed or duplicated sut-stats database list") {
+        for
+          empty <- decodeSutStats("sut-stats { databases = [] }").exit
+          duplicated <- decodeSutStats(sutStatsWith("auth", "auth")).exit
+          unnamed <- decodeSutStats(sutStatsWith("", "central")).exit
+          named <- decodeSutStats(sutStatsWith("auth", "central")).exit
+        yield assertTrue(empty.isFailure, duplicated.isFailure, unnamed.isFailure, named.isSuccess)
       },
       // A pepper of the wrong length is a population whose every password fails to verify, and
       // the 16-byte check is the only place that can still be said out loud -- once it has been
@@ -423,6 +456,24 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  write { p-50 = 13500micros, p-99 = 50ms }
       |}
       |""".stripMargin
+
+  /** Two SUT databases under the names given, so the rejections above differ from the accepted
+    * case in exactly the field each of them is about.
+    */
+  private def sutStatsWith(first: String, second: String): String =
+    s"""sut-stats {
+       |  databases = [
+       |    { name = "$first",  database { url = "jdbc:postgresql://auth-db:5432/auth", user = stats, password = "[redacted]]" } },
+       |    { name = "$second", database { url = "jdbc:postgresql://c-db:5432/central", user = stats, password = "[redacted]]" } },
+       |  ]
+       |}
+       |""".stripMargin
+
+  private def decodeSutStats(block: String) =
+    TypesafeConfigProvider
+      .fromHoconString(hoconWithoutProvision + block)
+      .kebabCase
+      .load(loadgenConfigDescriptor)
 
   private def decodeCalibration(block: String) =
     TypesafeConfigProvider
