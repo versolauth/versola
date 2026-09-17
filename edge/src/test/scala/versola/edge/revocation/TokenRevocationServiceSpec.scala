@@ -132,7 +132,7 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repository.activeSince.succeedsWith(onePage())
         _ <- repository.revokeAll.succeedsWith(())
         _ <- service.sync
-        _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
+        _ <- service.revokeTokens(NonEmptyChunk.single(jti), farFuture)
         // Nothing has told this replica the write landed yet -- not a notification, not a
         // catch-up -- so it answers no differently than one that never made the write.
         beforeNotified <- service.isRevoked(List(jti), issuedAt)
@@ -403,7 +403,7 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // revocation there is nothing for this replica to work out for itself.
         service <- TokenRevocationService.make(repository, clientServiceOf(client("web", 5.minutes)))
         _ <- repository.revokeAll.succeedsWith(())
-        _ <- service.revokeFamilies(NonEmptyChunk(RefreshTokenFamilyId("family-1")), farFuture)
+        _ <- service.revokeTokens(NonEmptyChunk.single(fam), farFuture)
         recorded = repository.revokeAll.calls.head.head
       yield assertTrue(
         recorded.key == fam,

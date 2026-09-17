@@ -440,19 +440,20 @@ object EdgeService:
         case (None, None) => ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
 
     /** An event names the tokens it revokes either individually or by the refresh chain that
-      * issued them. Both are accepted, and one event may carry both: the sender picks whichever
-      * names what it means to end, and neither reading is a superset of the other.
+      * issued them. Both readings are accepted, and an event carrying both is read as naming
+      * everything either one does -- neither is a superset of the other, and an event is one
+      * revocation however many keys it took to express it, so it is written as one.
       */
     private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
-      val jtis = claims.revokedTokenIds.flatMap(NonEmptyChunk.fromIterableOption)
-      val families = claims.revokedFamilies.flatMap(NonEmptyChunk.fromIterableOption)
+      val named =
+        claims.revokedTokenIds.getOrElse(Nil).map(RevocationKey.Jti(_)) :::
+          claims.revokedFamilies.getOrElse(Nil).map(RevocationKey.Fam(_))
       for
-        _ <- ZIO.fail(InvalidLogoutToken("access token revocation carries no revoked_jti or revoked_fam claim"))
-          .when(jtis.isEmpty && families.isEmpty)
+        keys <- ZIO.fromOption(NonEmptyChunk.fromIterableOption(named))
+          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti or revoked_fam claim"))
         expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
-        _ <- ZIO.foreachDiscard(jtis)(revocationService.revokeTokens(_, Instant.ofEpochSecond(expiresAt)))
-        _ <- ZIO.foreachDiscard(families)(revocationService.revokeFamilies(_, Instant.ofEpochSecond(expiresAt)))
+        _ <- revocationService.revokeTokens(keys, Instant.ofEpochSecond(expiresAt))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
