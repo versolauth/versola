@@ -449,7 +449,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           _ <- harness.service.start
           _ <- harness.service.stop
           report <- harness.service.report(campaign)
-        yield assertTrue(report.databases.isEmpty, report.poolers.isEmpty)
+        yield assertTrue(report.databases.isEmpty, report.poolers.isEmpty, report.poolerQueue.isEmpty)
       },
       test("carries the pooler section once both boundaries have been captured") {
         for
@@ -470,6 +470,48 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           stopped.poolers.exists(_.forall(!_.countersRestarted)),
           stopped.poolers.exists(_.forall(_.counters.isDefined)),
         )
+      },
+      // The half of §4 a bracket cannot answer. Unlike the delta beside it this is already worth
+      // reporting mid-run, and it has to stop accumulating when the run does -- a coordinator
+      // that lives on for a day after the stop must not report a day of empty readings as the
+      // campaign's queue.
+      test("samples the pooler queue while the campaign runs, and only while it runs") {
+        ZIO.scoped:
+          for
+            users <- FakeVirtualUsers.make()
+            snapshots <- FakeMetricSnapshots.make(
+              CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+            )
+            poolerStats <- FakePoolerStats.make
+            harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, None, Some(poolerStats))
+            _ <- harness.service.run
+            _ <- TestClock.adjust(1.minute)
+            idle <- poolerStats.sampleCount
+            _ <- harness.service.start
+            _ <- TestClock.adjust(1.minute)
+            running <- harness.service.report(campaign)
+            takenWhileRunning <- poolerStats.sampleCount
+            _ <- harness.service.pause
+            _ <- TestClock.adjust(1.minute)
+            takenWhilePaused <- poolerStats.sampleCount
+            _ <- harness.service.stop
+            _ <- TestClock.adjust(1.minute)
+            takenAfterStop <- poolerStats.sampleCount
+            stopped <- harness.service.report(campaign)
+          yield assertTrue(
+            idle == 0,
+            takenWhileRunning > 0,
+            takenWhilePaused == takenWhileRunning,
+            takenAfterStop == takenWhileRunning,
+            // The delta needs both boundaries; the peaks do not, which is what makes the section
+            // answerable during the run the operator is watching.
+            running.poolers.isEmpty,
+            running.poolerQueue.map(_.map(_.pooler)) == Some(List("auth-pooler")),
+            stopped.poolerQueue.exists(_.forall(_.samples == takenWhileRunning.toLong)),
+            // The fake's reading climbs with every sample, so the peak is the last one taken and
+            // never the first -- a bracket of the same series would have reported the boundary.
+            stopped.poolerQueue.exists(_.forall(_.peakClientsWaiting == takenWhileRunning.toLong)),
+          )
       },
       // The two sections are configured independently, so each has to be able to arrive without
       // the other: a developer's stack has databases and no pooler, and a coordinator granted

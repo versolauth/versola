@@ -1,6 +1,6 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.sut.{PoolerStatsDelta, SutStatsDelta}
+import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}
 
@@ -191,6 +191,20 @@ case class CampaignReport(
       * series, which a bracket is not; see [[versola.loadgen.sut.PoolerPoolStats.maxWaitMicros]].
       */
     poolers: Option[List[PoolerStatsDelta]],
+    /** The rest of §4: what the queue in front of each database reached over the run, sampled off
+      * the same admin consoles on a timer because [[poolers]] cannot answer it.
+      *
+      * Independent of [[poolers]] in both directions. A campaign that was started but never
+      * stopped has samples and no delta, which is the report an operator asks for *during* a run;
+      * a coordinator that took over after the start has a delta it can compute from the table and
+      * no samples from before its own boot. Both are the section the data supports rather than a
+      * section withheld because its other half is missing.
+      *
+      * Outside `checks` for [[databases]]'s reason, and with one more: a sampled peak is a lower
+      * bound (see [[versola.loadgen.sut.PoolerQueuePeak]]), and a criterion that can only ever
+      * fail a run and never clear one is not a threshold.
+      */
+    poolerQueue: Option[List[PoolerQueuePeak]],
 ) derives JsonCodec
 
 object CampaignReport:
@@ -204,6 +218,7 @@ object CampaignReport:
       thresholds: AcceptanceThresholds,
       databases: Option[List[SutStatsDelta]],
       poolers: Option[List[PoolerStatsDelta]],
+      poolerQueue: Option[List[PoolerQueuePeak]],
   ): Either[String, CampaignReport] =
     for
       _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
@@ -235,6 +250,7 @@ object CampaignReport:
         passed = checks.forall(_.passed) && notEvaluated.isEmpty,
         databases = databases,
         poolers = poolers,
+        poolerQueue = poolerQueue,
       )
 
   private def evaluate(

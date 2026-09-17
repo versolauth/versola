@@ -9,7 +9,7 @@ import versola.loadgen.store.{
   PostgresSutStatSnapshotRepository,
   PostgresVirtualUserRepository,
 }
-import versola.loadgen.sut.{PgBouncerStatsCapture, PostgresSutStatsCapture}
+import versola.loadgen.sut.{PgBouncerStatsCapture, PoolerQueueRecorder, PostgresSutStatsCapture}
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -26,6 +26,7 @@ object Coordinator:
   def make(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, CoordinatorService] =
     for
       xa <- storeTransactor
+      poolerQueue <- PoolerQueueRecorder.make
       service <- CoordinatorService
         .make(
           config = config,
@@ -39,7 +40,7 @@ object Coordinator:
           // Independently absent from `sutStats`: a developer's stack has databases and no
           // pooler, and 04-pgbouncer.md's target topology has both.
           poolerStats = config.poolerStats.map: stats =>
-            PgBouncerStatsCapture(stats.poolers, PostgresPoolerStatSnapshotRepository(xa)),
+            PgBouncerStatsCapture(stats.poolers, PostgresPoolerStatSnapshotRepository(xa), poolerQueue),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run
@@ -57,7 +58,8 @@ object Coordinator:
       _ <- ZIO.logInfo(
         config.poolerStats match
           case Some(stats) =>
-            s"PgBouncer admin console readings will bracket the campaign for ${stats.poolers.map(_.name).mkString(", ")}"
+            s"PgBouncer admin console readings will bracket the campaign for ${stats.poolers.map(_.name).mkString(", ")}, " +
+              s"and SHOW POOLS will be sampled every ${PoolerQueueRecorder.sampleInterval.render} while it runs"
           case None =>
             "No 'pooler-stats' block; the campaign report will carry no pooler section",
       )

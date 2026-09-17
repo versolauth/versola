@@ -14,6 +14,8 @@ import versola.loadgen.store.{
   VirtualUserRepository,
 }
 import versola.loadgen.sut.{
+  PoolerQueuePeak,
+  PoolerQueueRecorder,
   PoolerStatsCapture,
   PoolerStatsDelta,
   PoolerStatsFixture,
@@ -237,11 +239,22 @@ object FakeSutStats:
 /** [[FakeSutStats]] for `vu_pooler_stat_snapshots`, and for the same reason: what the coordinator
   * owns is which transitions are boundaries, and the admin console commands are
   * [[versola.loadgen.sut.PoolerStatsReader]]'s subject against a real PgBouncer.
+  *
+  * The queue sampler is the real [[versola.loadgen.sut.PoolerQueueRecorder]] rather than a third
+  * `Ref`: the arithmetic in it is [[versola.loadgen.sut.PoolerQueueSpec]]'s, and what a
+  * coordinator test needs to see is that the timer reached it in the states it should have. The
+  * reading fed in grows with the sample count so a peak is distinguishable from a first reading.
   */
-final class FakePoolerStats(rows: Ref[Vector[PoolerStatSnapshotRow]], captures: Ref[Int]) extends PoolerStatsCapture:
+final class FakePoolerStats(
+    rows: Ref[Vector[PoolerStatSnapshotRow]],
+    captures: Ref[Int],
+    samples: Ref[Int],
+    queue: PoolerQueueRecorder,
+) extends PoolerStatsCapture:
 
   override def capture(campaign: String, phase: SutStatPhase): UIO[Unit] =
     for
+      _ <- ZIO.when(phase == SutStatPhase.Before)(queue.arm(campaign))
       taken <- captures.updateAndGet(_ + 1)
       now <- Clock.instant
       row = PoolerStatsFixture.row(
@@ -257,17 +270,29 @@ final class FakePoolerStats(rows: Ref[Vector[PoolerStatSnapshotRow]], captures: 
         else current :+ row
     yield ()
 
+  override def sample: UIO[Unit] =
+    for
+      taken <- samples.updateAndGet(_ + 1)
+      _ <- queue.record("auth-pooler", List(PoolerStatsFixture.pool("auth", "versola", clientsWaiting = taken.toLong)))
+    yield ()
+
   override def deltas(campaign: String): Task[List[PoolerStatsDelta]] =
     rows.get.map(recorded => PoolerStatsDelta.from(recorded.filter(_.campaign == campaign)))
 
+  override def peaks(campaign: String): UIO[List[PoolerQueuePeak]] = queue.peaks(campaign)
+
   def phases: UIO[List[SutStatPhase]] = rows.get.map(_.map(_.phase).toList)
+
+  def sampleCount: UIO[Int] = samples.get
 
 object FakePoolerStats:
   def make: UIO[FakePoolerStats] =
     for
       rows <- Ref.make(Vector.empty[PoolerStatSnapshotRow])
       captures <- Ref.make(0)
-    yield FakePoolerStats(rows, captures)
+      samples <- Ref.make(0)
+      queue <- PoolerQueueRecorder.make
+    yield FakePoolerStats(rows, captures, samples, queue)
 
 /** Records the shard counts it was asked to re-shard onto, and can be made to fail -- the drain
   * protocol's behaviour when the bulk `UPDATE` does not land is the part of it that is easiest to

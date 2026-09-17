@@ -16,10 +16,12 @@ import java.util.Properties
   * decision, a second deployment or a PgBouncer exporter that exists in the cluster no more than
   * `postgres_exporter` does.
   *
-  * What it does not reach is the half of §4 that is not cumulative: the peak of the queue and the
-  * wait quantile. Two boundaries cannot produce either, and [[PoolerPoolStats.maxWaitMicros]]
-  * says so where the field is. The run's total wait over the run's queries is what a bracket can
-  * answer, and it is the figure §4 requires an answer to.
+  * The bracket does not reach the half of §4 that is not cumulative: the peak of the queue and
+  * the wait quantile. Two boundaries cannot produce either, and [[PoolerPoolStats.maxWaitMicros]]
+  * says so where the field is. That half is [[sample]]'s, off the same console on a timer, and
+  * [[PoolerQueuePeak]] states what a sampled series does and does not entitle the report to
+  * claim. The run's total wait over the run's queries stays the bracket's, and it is the figure
+  * §4 requires an answer to.
   */
 trait PoolerStatsCapture:
 
@@ -28,25 +30,68 @@ trait PoolerStatsCapture:
     */
   def capture(campaign: String, phase: SutStatPhase): UIO[Unit]
 
+  /** Reads `SHOW POOLS` off every configured pooler once and folds it into the campaign's queue
+    * accumulation. Driven on [[PoolerQueueRecorder.sampleInterval]] by the coordinator, which is
+    * what decides that only a running campaign is sampled.
+    *
+    * Cannot fail, for [[capture]]'s reason, and logs a failure below warning level unlike
+    * [[capture]]: this runs every few seconds for the length of the run, so a pooler that is
+    * unreachable for an hour would put several hundred warnings in the coordinator's log for one
+    * fact. [[PoolerQueuePeak.samples]] is where that fact belongs, and it carries it.
+    */
+  def sample: UIO[Unit]
+
   /** The differences for every pooler that has both of its boundaries recorded. */
   def deltas(campaign: String): Task[List[PoolerStatsDelta]]
+
+  /** The queue peaks and wait quantiles accumulated since the campaign's opening boundary. */
+  def peaks(campaign: String): UIO[List[PoolerQueuePeak]]
 
 final class PgBouncerStatsCapture(
     poolers: List[PoolerConfig],
     snapshots: PoolerStatSnapshotRepository,
+    queue: PoolerQueueRecorder,
 ) extends PoolerStatsCapture:
 
+  /** Arms the accumulation before the boundary rather than after it: the "before" capture is what
+    * the coordinator holds a driver's `GET /plan` back until, so anything armed after it would
+    * miss the opening seconds of traffic that the capture exists to precede.
+    */
   override def capture(campaign: String, phase: SutStatPhase): UIO[Unit] =
+    ZIO.when(phase == SutStatPhase.Before)(queue.arm(campaign)) *>
+      ZIO.foreachDiscard(poolers): target =>
+        captureOne(campaign, phase, target).catchAllCause: cause =>
+          ZIO.logWarningCause(
+            s"Could not read the '${target.name}' PgBouncer admin console " +
+              s"${SutStatsCapture.label(phase)} campaign '$campaign'; the report will have no pooler section for it",
+            cause,
+          )
+
+  override def sample: UIO[Unit] =
     ZIO.foreachDiscard(poolers): target =>
-      captureOne(campaign, phase, target).catchAllCause: cause =>
-        ZIO.logWarningCause(
-          s"Could not read the '${target.name}' PgBouncer admin console " +
-            s"${SutStatsCapture.label(phase)} campaign '$campaign'; the report will have no pooler section for it",
-          cause,
-        )
+      sampleOne(target).catchAllCause: cause =>
+        ZIO.logDebugCause(s"Could not sample the '${target.name}' PgBouncer queue", cause)
 
   override def deltas(campaign: String): Task[List[PoolerStatsDelta]] =
     snapshots.loadCampaign(campaign).map(PoolerStatsDelta.from)
+
+  override def peaks(campaign: String): UIO[List[PoolerQueuePeak]] = queue.peaks(campaign)
+
+  /** A connection per sample, closed with the scope, rather than one held for the run.
+    *
+    * The admin console is the one thing in the stack this must not be clever about: a connection
+    * parked on it for ten hours survives no PgBouncer restart, no `RELOAD`, and no network blip,
+    * and the failure mode is a sampler that reports `samples` climbing while reading a socket
+    * that answers nothing. Reconnecting every interval costs one login against the console's own
+    * process and makes a restart cost one dropped sample.
+    */
+  private def sampleOne(target: PoolerConfig): Task[Unit] =
+    ZIO.scoped:
+      for
+        connection <- connect(target.admin)
+        pools <- PoolerStatsReader.readPools(connection)
+        _ <- queue.record(target.name, pools)
+      yield ()
 
   private def captureOne(campaign: String, phase: SutStatPhase, target: PoolerConfig): Task[Unit] =
     ZIO.scoped:
