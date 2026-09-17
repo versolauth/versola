@@ -22,6 +22,28 @@ object DbMetricsSpec extends ZIOSpecDefault:
   private def autoDerivedOp: Task[Int] =
     DbMetrics.measured("auto-op")(ZIO.succeed(1))
 
+  private def poolLabels(poolName: String) =
+    Set(MetricLabel("db_system", "postgresql"), MetricLabel("pool_name", poolName))
+
+  private def waitHistogram(poolName: String) =
+    Metric.histogram("db_client_connection_wait_time_seconds", DbMetrics.connectionWaitBoundaries).tagged(poolLabels(poolName))
+
+  private def gauge(name: String, poolName: String, extraLabels: MetricLabel*): UIO[Double] =
+    Metric.gauge(name).tagged(poolLabels(poolName) ++ extraLabels).value.map(_.value)
+
+  private def buckets = ConnectionWaitBuckets(DbMetrics.connectionWaitBoundaries.values)
+
+  /** Waits spanning the whole range the boundaries cover: below the first boundary, exactly on it,
+    * several times inside one bucket so a mean has something to average, and past the last finite
+    * boundary (~26 s) so the overflow bucket is exercised too.
+    */
+  private val waitNanos =
+    Chunk(12_000L, 100_000L, 260_000L, 310_000L, 470_000L, 1_200_000L, 41_000_000L, 780_000_000L, 31_000_000_000L)
+
+  private def replay(poolName: String, drained: ConnectionWaitBuckets.Drained): UIO[Unit] =
+    ZIO.foreachDiscard(drained.replays): (seconds, count) =>
+      DbMetrics.connectionWait(poolName, seconds).repeatN((count - 1L).toInt)
+
   def spec = suite("DbMetrics")(
     suite("repositoryName")(
       test("derives the simple class name from a method location") {
@@ -58,4 +80,106 @@ object DbMetricsSpec extends ZIOSpecDefault:
         count <- histogramCount("versola.util.postgres.DbMetricsSpec.autoDerivedOp", "auto-op", "success")
       yield assertTrue(result == 1, count == 1L)
     },
+    suite("ConnectionWaitBuckets")(
+      test("replaying a drain reproduces the buckets, count and sum of the raw observations") {
+        val pool = "replay-equivalence"
+        // The claim [[ConnectionWaitBuckets]] rests on, checked against the only authority on it:
+        // a histogram of the same shape fed every observation individually.
+        val reference = Metric.histogram("db_metrics_spec_reference_wait_seconds", DbMetrics.connectionWaitBoundaries)
+        val accumulator = buckets
+        for
+          _ <- ZIO.foreachDiscard(waitNanos): nanos =>
+            ZIO.succeed(accumulator.record(nanos)) *> reference.update(nanos.toDouble / 1e9)
+          _ <- replay(pool, accumulator.drain())
+          replayed <- waitHistogram(pool).value
+          expected <- reference.value
+        yield assertTrue(
+          replayed.buckets == expected.buckets,
+          replayed.count == expected.count,
+          math.abs(replayed.sum - expected.sum) <= 1e-9 * expected.sum,
+        )
+      },
+      test("a drain covers only what arrived since the previous one") {
+        val accumulator = buckets
+        accumulator.record(500_000L)
+        val first = accumulator.drain()
+        val second = accumulator.drain()
+        accumulator.record(500_000L)
+        accumulator.record(500_000L)
+        val third = accumulator.drain()
+        assertTrue(
+          first.replays.map(_._2).sum == 1L,
+          second.replays.isEmpty,
+          third.replays.map(_._2).sum == 2L,
+        )
+      },
+      test("a wait past the last finite boundary keeps its own value rather than being clamped to it") {
+        val accumulator = buckets
+        accumulator.record(45_000_000_000L)
+        val replays = accumulator.drain().replays
+        assertTrue(replays == Chunk(45.0 -> 1L))
+      },
+      test("a drain concurrent with records takes a bucket's count and sum as a matched pair") {
+        // Every record lands in the same bucket, so each one races the drainer on the same pair.
+        // Taking one half without the other is invisible in the totals -- it is carried into the
+        // next drain either way -- and shows up only as a mean outside the bucket it came from:
+        // a count drained without its nanos replays as zero seconds, which is the first bucket.
+        val accumulator = buckets
+        val elapsedNanos = 470_000L
+        val seconds = elapsedNanos.toDouble / 1e9
+        val lower = DbMetrics.connectionWaitBoundaries.values.filter(_ < seconds).maxOption.getOrElse(0.0)
+        val upper = DbMetrics.connectionWaitBoundaries.values.filter(_ >= seconds).min
+        val fibers = 8
+        val perFiber = 5_000
+        for
+          collected <- Ref.make(Chunk.empty[(Double, Long)])
+          drainer <- (ZIO.succeed(accumulator.drain().replays).flatMap(replays => collected.update(_ ++ replays)) *>
+            ZIO.yieldNow).forever.forkDaemon
+          _ <- ZIO.foreachParDiscard(1 to fibers): _ =>
+            ZIO.succeed:
+              var i = 0
+              while i < perFiber do
+                accumulator.record(elapsedNanos)
+                i += 1
+          _ <- drainer.interrupt
+          replays <- collected.get.map(_ ++ accumulator.drain().replays)
+        yield assertTrue(
+          replays.map(_._2).sum == (fibers * perFiber).toLong,
+          replays.forall((mean, _) => mean > lower && mean <= upper),
+          math.abs(replays.map((mean, count) => mean * count).sum - fibers * perFiber * seconds) <= 1e-9,
+        )
+      },
+      test("timeouts are reported as a delta, so a counter can add them") {
+        val accumulator = buckets
+        accumulator.recordTimeout()
+        accumulator.recordTimeout()
+        val first = accumulator.drain().timeouts
+        accumulator.recordTimeout()
+        val second = accumulator.drain().timeouts
+        assertTrue(first == 2L, second == 1L)
+      },
+    ),
+    suite("pool metrics")(
+      test("poolOccupancy splits the connection count by state and publishes the pool's limits") {
+        val pool = "occupancy"
+        for
+          _ <- DbMetrics.poolOccupancy(pool, used = 7, idle = 3, max = 15, idleMin = 5, pendingRequests = 2)
+          used <- gauge("db_client_connection_count", pool, MetricLabel("state", "used"))
+          idle <- gauge("db_client_connection_count", pool, MetricLabel("state", "idle"))
+          max <- gauge("db_client_connection_max", pool)
+          idleMin <- gauge("db_client_connection_idle_min", pool)
+          pending <- gauge("db_client_connection_pending_requests", pool)
+        yield assertTrue(used == 7.0, idle == 3.0, max == 15.0, idleMin == 5.0, pending == 2.0)
+      },
+      test("connectionTimeouts adds increments and ignores a non-positive one") {
+        val pool = "timeouts"
+        val counter = Metric.counter("db_client_connection_timeouts_total").tagged(poolLabels(pool))
+        for
+          _ <- DbMetrics.connectionTimeouts(pool, 3L)
+          _ <- DbMetrics.connectionTimeouts(pool, 0L)
+          _ <- DbMetrics.connectionTimeouts(pool, 2L)
+          count <- counter.value.map(_.count)
+        yield assertTrue(count == 5.0)
+      },
+    ),
   )

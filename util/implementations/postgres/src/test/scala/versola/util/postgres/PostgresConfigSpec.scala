@@ -44,6 +44,7 @@ object PostgresConfigSpec extends ZIOSpecDefault:
     connectionTimeout = 30.seconds,
     maxLifetime = 30.minutes,
     leakDetectionThreshold = Duration.Zero,
+    poolMetricsInterval = None,
   )
 
   def spec = suite("PostgresConfig")(
@@ -84,6 +85,18 @@ object PostgresConfigSpec extends ZIOSpecDefault:
       test("does not find a nested block at the default top-level path") {
         for result <- TypesafeConfigProvider.fromHoconString(nestedHocon).kebabCase.load(postgresConfig).exit
         yield assertTrue(result.isFailure)
+      },
+      test("leaves pool metrics off when pool-metrics-interval is absent") {
+        for config <- TypesafeConfigProvider.fromHoconString(fullHocon).kebabCase.load(postgresConfig)
+        yield assertTrue(config.poolMetricsInterval.isEmpty)
+      },
+      test("reads pool-metrics-interval when the block opts in") {
+        val withPoolMetrics =
+          fullHocon.stripSuffix("}") ++
+            """|  pool-metrics-interval = "10 seconds"
+               |}""".stripMargin
+        for config <- TypesafeConfigProvider.fromHoconString(withPoolMetrics).kebabCase.load(postgresConfig)
+        yield assertTrue(config.poolMetricsInterval.contains(10.seconds))
       },
       test("does not leak the raw password through toString (regression for #64)") {
         for config <- TypesafeConfigProvider.fromHoconString(fullHocon).kebabCase.load(postgresConfig)
@@ -130,6 +143,12 @@ object PostgresConfigSpec extends ZIOSpecDefault:
           PostgresHikariDataSource
             .validate(validConfig.copy(maxLifetime = Duration.Zero, leakDetectionThreshold = 60.seconds)) == Right(())
         )
+      },
+      test("rejects a poolMetricsInterval below 1 second") {
+        assertTrue(PostgresHikariDataSource.validate(validConfig.copy(poolMetricsInterval = Some(500.millis))).isLeft)
+      },
+      test("accepts a poolMetricsInterval of 1 second or more") {
+        assertTrue(PostgresHikariDataSource.validate(validConfig.copy(poolMetricsInterval = Some(1.second))) == Right(()))
       },
     ),
   )

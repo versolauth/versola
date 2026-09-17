@@ -1,0 +1,759 @@
+{
+  "uid": "versola-loadgen-db-pools",
+  "title": "Versola loadgen \u2014 database pools",
+  "description": "HikariCP connection-pool occupancy, acquisition wait and timeouts for every process on util/implementations/postgres \u2014 the report's pool section. Metric names and label sets come from util/implementations/postgres/src/main/scala/versola/util/postgres/DbMetrics.scala; namespace, job and pod are added at scrape time. A pool only appears here if its postgres { } block sets pool-metrics-interval.",
+  "tags": [
+    "versola",
+    "loadgen",
+    "postgres"
+  ],
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(db_client_connection_max, namespace)",
+        "refresh": 1,
+        "includeAll": false,
+        "multi": false,
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "job",
+        "label": "Service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(db_client_connection_max{namespace=\"$namespace\"}, job)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "hide": 0,
+        "allValue": ".*"
+      },
+      {
+        "name": "pool_name",
+        "label": "Pool",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(db_client_connection_max{namespace=\"$namespace\", job=~\"$job\"}, pool_name)",
+        "refresh": 1,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "hide": 0,
+        "allValue": ".*"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "What this board reads",
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Every `db_client_connection_*` series here comes from the **application's own** HikariCP pool, published by `util/implementations/postgres`' `DbMetrics` and scraped off the diagnostics port (`DPORT`, `/metrics`) of whichever process owns the pool \u2014 auth, central and edge for the system under test, `loadgen` itself for the emulator's bookkeeping store. `namespace`, `job` and `pod` are **scrape-time** labels; `pool_name` is the application's, set from the service name the process passes to `PostgresHikariDataSource`.\n\n**A pool publishes nothing unless it was asked to.** `postgres.pool-metrics-interval` is absent by default, and an absent interval means no `MetricsTrackerFactory` and no publishing fiber. An empty board is a pool that was not opted in, not a pool that is idle \u2014 check the service's `postgres { }` block before reading anything into it.\n\nNothing here is PgBouncer or `pg_stat_*`. This is the pool *inside* the JVM: what the application asked for and how long it waited. The pooler's own view (`SHOW POOLS`' `cl_active`, `sv_idle`, `maxwait`) and the server's need exporters this chart does not install."
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Pool occupancy \u2014 busy, idle and the limit",
+      "description": "Busy is checked out to a caller, idle is available; their sum is what HikariCP currently holds, which climbs to `db_client_connection_max` on demand and back down to `db_client_connection_idle_min`. Summed across pods, so this is the fleet's draw on the database's `max_connections` rather than one pod's.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(db_client_connection_count{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\", state=\"used\"})",
+          "legendFormat": "busy"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(db_client_connection_count{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\", state=\"idle\"})",
+          "legendFormat": "idle"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(db_client_connection_max{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})",
+          "legendFormat": "limit (size \u00d7 pods)"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(db_client_connection_idle_min{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})",
+          "legendFormat": "minimum idle"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Pool saturation \u2014 busy / limit",
+      "description": "The one line that says whether the pool is the constraint. At 1.0 every connection is checked out and the next caller waits; read it together with the queue panel beside it, because a pool that is full with nothing queued behind it is a pool being used rather than a pool being run out of.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (job) (db_client_connection_count{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\", state=\"used\"}) / sum by (job) (db_client_connection_max{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Threads waiting for a connection",
+      "description": "Callers blocked in `getConnection`. A gauge sampled every `pool-metrics-interval`, so a queue shorter than that interval can pass between two readings \u2014 the peak stat below is `max_over_time` of the same series and inherits the same resolution. Anything sustained above zero is pool wait leaking into every latency the SUT reports.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (job, pool_name) (db_client_connection_pending_requests{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})",
+          "legendFormat": "{{job}} / {{pool_name}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Connection acquisition wait",
+      "description": "How long `getConnection` took. Per-pod bucket quantiles summed by `le` before the quantile is taken, so this is a quantile of the fleet's acquisitions and not an average of per-pod quantiles. Sub-millisecond is a pool handing over an idle connection; anything that climbs toward `connection-timeout` is the pool queueing, and it is additive to every endpoint that touches the database.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 15
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Pool wait p99 against auth /token p99",
+      "description": "The mandatory conclusion of the report's pool section: how many of the milliseconds in `/token`'s p99 are spent waiting for a connection rather than doing work. Two p99s of different populations, so the share is an indication and not a decomposition \u2014 the endpoint's slowest requests and the pool's longest waits are not guaranteed to be the same requests. The `job` variable has to include auth for the second line to appear.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 23
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval])))",
+          "legendFormat": "pool wait p99"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\", route=~\"/token.*\"}[$__rate_interval])))",
+          "legendFormat": "/token p99"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Peak busy connections",
+      "description": "`max_over_time` of the fleet's busy count across the selected range \u2014 the report's \"peak occupied\". Compare against the limit stat beside it.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max_over_time(sum(db_client_connection_count{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\", state=\"used\"})[$__range:])",
+          "legendFormat": "peak busy",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Total pool capacity",
+      "description": "Pool size \u00d7 pods, as the pools themselves report it rather than as the chart's `maximumPoolSize` \u00d7 `replicaCount` \u2014 a pod that failed to start is not capacity.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(db_client_connection_max{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})",
+          "legendFormat": "capacity",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Peak threads waiting",
+      "description": "The report's \"peak in queue\". Zero over a whole campaign is the pool never having been the constraint.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max_over_time(sum(db_client_connection_pending_requests{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"})[$__range:])",
+          "legendFormat": "peak queued",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Connection timeouts",
+      "description": "Callers that gave up after `connection-timeout` without ever getting a connection. Any non-zero value is a request the SUT failed for a reason that is entirely inside its own pool.",
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 31
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "area",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(increase(db_client_connection_timeouts_total{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__range]))",
+          "legendFormat": "timeouts",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Pool occupancy by pool",
+      "description": "The same busy count, broken out by `job` and `pool_name` instead of summed. `pool_name` is what separates the two pools a multi-database process holds \u2014 `loadgen` in its seeder role has its own bookkeeping store *and* the system under test's database, with different hosts and different sizes.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (job, pool_name) (db_client_connection_count{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\", state=\"used\"})",
+          "legendFormat": "{{job}} / {{pool_name}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Connection timeout rate",
+      "description": "The counter behind the timeout stat, as a rate, so a burst can be placed on the campaign's timeline rather than only counted.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (job, pool_name) (rate(db_client_connection_timeouts_total{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval]))",
+          "legendFormat": "{{job}} / {{pool_name}}"
+        }
+      ]
+    }
+  ]
+}

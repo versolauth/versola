@@ -26,6 +26,7 @@ object PostgresSpec:
             connectionTimeout = 30.seconds,
             maxLifetime = 30.minutes,
             leakDetectionThreshold = Duration.Zero,
+            poolMetricsInterval = None,
           )
 
   val transactor =
