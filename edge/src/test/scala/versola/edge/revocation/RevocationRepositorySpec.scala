@@ -1,7 +1,7 @@
 package versola.edge.revocation
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.edge.model.AccessTokenId
+import versola.edge.model.{AccessTokenId, RefreshTokenFamilyId}
 import versola.util.DatabaseSpecBase
 import zio.test.*
 
@@ -28,6 +28,8 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
 
   private def jti(id: String) = RevocationKey.Jti(AccessTokenId(id))
 
+  private def fam(id: String) = RevocationKey.Fam(RefreshTokenFamilyId(id))
+
   private def sub(id: String) = RevocationKey.Sub(id)
 
   override def testCases(env: RevocationRepositorySpec.Env) =
@@ -49,6 +51,15 @@ trait RevocationRepositorySpec extends DatabaseSpecBase[RevocationRepositorySpec
           second.revocations.map(_.key) == List(jti("c")),
           !second.hasMore,
         )
+      } @@ TestAspect.withLiveClock,
+      // Every kind of key shares one text column, so a kind the reader cannot decode back is
+      // a row it silently drops -- an entry that revokes nothing, on a list whose whole job is
+      // to revoke.
+      test("round-trips a family key through the durable list") {
+        for
+          _ <- env.repository.revokeAll(List(Revocation(fam("family-1"), farFuture, None)))
+          page <- env.repository.activeSince(RevocationCursor.Beginning, limit = 10)
+        yield assertTrue(page.revocations.map(_.key) == List(fam("family-1")))
       } @@ TestAspect.withLiveClock,
       test("excludes rows already expired") {
         for

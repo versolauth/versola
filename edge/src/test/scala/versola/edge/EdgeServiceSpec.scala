@@ -168,14 +168,16 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       }
 
     /** An access token revocation event: same signing and transport as a logout token, but it
-      * names one or more tokens (`revoked_jti`/`revoked_exp`) instead of a session.
-      * `revoked_jti` is always a JSON array on the wire, even for one token.
+      * names tokens (`revoked_jti`) or the families that issued them (`revoked_fam`), bounded
+      * by `revoked_exp`, instead of a session. Both are always JSON arrays on the wire, even
+      * when either names one thing.
       */
     def signRevocationToken(
         revokedJti: Option[List[String]],
         revokedExpiresAt: Option[Instant],
         events: java.util.Map[String, ?],
         audience: String = "web-app",
+        revokedFam: Option[List[String]] = None,
     ): Task[String] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -192,6 +194,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .claim("events", events)
           revokedExpiresAt.foreach(exp => builder.claim("revoked_exp", exp.getEpochSecond))
           revokedJti.foreach(jtis => builder.claim("revoked_jti", jtis.asJava))
+          revokedFam.foreach(families => builder.claim("revoked_fam", families.asJava))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           jwt.serialize()
@@ -204,7 +207,6 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def stubRevocations: UIO[Unit] =
       revocationService.revokeSession.succeedsWith(()) *>
         revocationService.revokeUser.succeedsWith(()) *>
-        revocationService.revokeToken.succeedsWith(()) *>
         revocationService.revokeTokens.succeedsWith(())
 
     def withPresets(values: AuthorizationPreset*): UIO[Unit] =
@@ -934,7 +936,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // A client revoking one of its own tokens must not log every other client of that
         // SSO session out, which revoking the session would do.
         env.revocationService.revokeSession.calls.isEmpty,
-        env.revocationService.revokeTokens.calls == List((NonEmptyChunk(AccessTokenId("revoked-token")), now.plusSeconds(300))),
+        env.revocationService.revokeTokens.calls ==
+          List((NonEmptyChunk(RevocationKey.Jti(AccessTokenId("revoked-token"))), now.plusSeconds(300))),
       )
     },
     test("revokes every named token on an access token revocation event naming several") {
@@ -955,8 +958,67 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         )
         _ <- service.backChannelLogout(token)
       yield assertTrue(
+        env.revocationService.revokeTokens.calls == List((
+          NonEmptyChunk(
+            RevocationKey.Jti(AccessTokenId("revoked-token-1")),
+            RevocationKey.Jti(AccessTokenId("revoked-token-2")),
+          ),
+          now.plusSeconds(300),
+        )),
+      )
+    },
+    test("revokes a whole refresh-token family on an event naming one, leaving the session alone") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.stubRevocations
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(
+          revokedJti = None,
+          revokedExpiresAt = Some(now.plusSeconds(300)),
+          events = revocationEvent,
+          revokedFam = Some(List("family-1")),
+        )
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        // A leaked chain is one client's grant, not the SSO session every client shares.
+        env.revocationService.revokeSession.calls.isEmpty,
         env.revocationService.revokeTokens.calls ==
-          List((NonEmptyChunk(AccessTokenId("revoked-token-1"), AccessTokenId("revoked-token-2")), now.plusSeconds(300))),
+          List((NonEmptyChunk(RevocationKey.Fam(RefreshTokenFamilyId("family-1"))), now.plusSeconds(300))),
+      )
+    },
+    test("writes an event naming both a token and a family once, covering both") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.stubRevocations
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(
+          revokedJti = Some(List("revoked-token")),
+          revokedExpiresAt = Some(now.plusSeconds(300)),
+          events = revocationEvent,
+          revokedFam = Some(List("family-1")),
+        )
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        // One event is one revocation, however many keys it took to say what it revokes.
+        env.revocationService.revokeTokens.calls == List((
+          NonEmptyChunk(
+            RevocationKey.Jti(AccessTokenId("revoked-token")),
+            RevocationKey.Fam(RefreshTokenFamilyId("family-1")),
+          ),
+          now.plusSeconds(300),
+        )),
       )
     },
     test("rejects an access token revocation event that names no token") {
@@ -972,7 +1034,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         token <- env.signRevocationToken(revokedJti = None, revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         result <- service.backChannelLogout(token).either
       yield assertTrue(
-        rejection(result).contains("access token revocation carries no revoked_jti claim"),
+        rejection(result).contains("access token revocation carries no revoked_jti or revoked_fam claim"),
         env.revocationService.revokeTokens.calls.isEmpty,
       )
     },

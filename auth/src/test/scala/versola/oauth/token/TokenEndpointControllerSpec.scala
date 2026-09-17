@@ -13,6 +13,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
+import versola.oauth.session.model.RefreshTokenFamilyId
 import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
@@ -56,6 +57,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     tenantId = TenantId("default"),
     roles = List.empty,
     sessionId = None,
+    refreshTokenFamilyId = None,
     amr = Set(AuthMethodRef.pwd),
     authTime = Some(java.time.Instant.ofEpochSecond(1700000000)),
     acr = None,
@@ -1032,6 +1034,36 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         expectedStatus = Status.BadRequest,
         verify = response =>
           response.body.asString.map(body => assertTrue(body.contains("invalid_dpop_proof"))),
+      ),
+      tokenEndpointTestCase(
+        // The edge revokes a leaked chain by this claim, so a token issued without it is one
+        // no family revocation can reach.
+        description = "carries the refresh-token family in fam",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(
+            issuedTokens.copy(refreshTokenFamilyId = Some(RefreshTokenFamilyId("family-1"))),
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
+          yield assertTrue(claims.getStringClaim("fam") == "family-1"),
+      ),
+      tokenEndpointTestCase(
+        description = "omits fam from a token no refresh-token family stands behind",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
+          yield assertTrue(claims.getStringClaim("fam") == null),
       ),
       tokenEndpointTestCase(
         description = "issues a DPoP-bound token and echoes the binding in cnf.jkt",

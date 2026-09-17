@@ -1,8 +1,8 @@
 package versola.oauth.session
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
-import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord}
+import versola.oauth.model.RefreshToken
+import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*
@@ -74,6 +74,11 @@ trait SessionRepository:
     *
     * `idempotencyKey` is recorded against the token being retired, so that the exchange can
     * be recognised later if the client repeats it -- see [[findIdempotentRetry]].
+    *
+    * `record.familyId` starts a family and is read only when `previous` is empty. A rotation
+    * takes the family off the row it retires instead: that row is read under the family lock
+    * in the same statement, so the successor cannot be filed under a family the caller read
+    * before the chain moved.
     */
   def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
@@ -112,11 +117,9 @@ trait SessionRepository:
     * the family can be trusted anymore, however many generations have passed since.
     *
     * Every member is expired in place (collected by the cleanup manager's `expires_at` sweep
-    * like any other expiry in this table, rather than deleted inline). Members whose access
-    * token has not yet expired -- per each row's own `access_token_expires_at`, not the
-    * client's current `accessTokenTtl`, which is mutable -- are returned so the caller can
-    * push their access tokens to the client's back channel; the rest are already dead and not
-    * worth pushing.
+    * like any other expiry in this table, rather than deleted inline). The family's id comes
+    * back with it, since that -- not a list of the access tokens its generations issued, which
+    * this table does not keep -- is what the caller pushes to the client's back channel.
     *
     * Returns `None` when `token` is not a retired member of a family owned by `clientId`:
     * unknown, still live, or belonging to someone else. Scoping to `clientId` keeps one
@@ -127,37 +130,32 @@ trait SessionRepository:
       clientId: ClientId,
   ): Task[Option[RevokedFamily]]
 
-  /** Refreshes a sender-constrained (DPoP-bound) token in place: re-points `access_token` at
-    * the one just issued, narrows `scope` to what this refresh was granted and slides the
-    * expiry, without rotating. Rotation exists to detect a stolen token being used; a bound
-    * token cannot be used by whoever copied it, so the chain, its retained generations and the
-    * idempotency key that makes rotation retryable are all unnecessary here.
+  /** Refreshes a sender-constrained (DPoP-bound) token in place: narrows `scope` to what this
+    * refresh was granted and slides the expiry, without rotating. Rotation exists to detect a
+    * stolen token being used; a bound token cannot be used by whoever copied it, so the chain,
+    * its retained generations and the idempotency key that makes rotation retryable are all
+    * unnecessary here.
     *
-    * `scope` is written for the same reason the rotating path writes it into the successor:
-    * RFC 6749 §6 narrowing has to outlive the request that asked for it, or the next refresh
-    * -- which names no scope of its own -- would hand back what the client just dropped. This
-    * row is the grant's only record, so leaving it alone would keep the wider scope
-    * authoritative.
-    *
-    * `accessTokenExpiresAt` is written for the same reason: a family revocation reads this
-    * row's own expiry, not the client's current `accessTokenTtl`, to decide whether the token
-    * it names is still worth pushing to the edge.
+    * `scope` is `Some` only when this refresh actually narrowed the grant. A narrowing has to
+    * outlive the request that asked for it (RFC 6749 §6), or the next refresh -- which names
+    * no scope of its own -- would hand back what the client just dropped; this row is the
+    * grant's only record, so leaving it alone would keep the wider scope authoritative. When
+    * the request named no scope, or named the one already stored, the stored value is already
+    * correct and writing it buys a row version for nothing.
     *
     * Returns false when the token is gone, expired or retired.
     */
   def renewBoundToken(
       token: MAC.Of[RefreshToken],
-      accessToken: AccessToken,
-      scope: Set[ScopeToken],
+      scope: Option[Set[ScopeToken]],
       expiresAt: Instant,
-      accessTokenExpiresAt: Instant,
   ): Task[Boolean]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]
 
-  /** Revokes the one refresh token issued alongside `token`, an access token being rejected as
-    * the product of a replayed authorization code. `sessionId` narrows the search to a handful
-    * of rows before `token` is checked, since `access_token` carries no index of its own -- see
-    * the schema comment on `refresh_tokens.access_token`.
+  /** Revokes the chain the first exchange of a replayed authorization code started, named by
+    * the family the code committed to. Nothing beyond the code row is needed to find it, which
+    * is the point: the replaying caller presents no token of that chain, and the tokens it
+    * issued are not recorded anywhere for the code to point at.
     */
-  def deleteByAccessToken(sessionId: MAC.Of[SessionId], token: AccessToken): Task[Unit]
+  def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit]

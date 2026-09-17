@@ -13,6 +13,7 @@ import versola.oauth.conversation.model.{AuthId, ConversationRecord, Conversatio
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
+import versola.oauth.session.model.RefreshTokenFamilyId
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
@@ -467,6 +468,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
@@ -521,6 +523,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
@@ -557,6 +560,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)

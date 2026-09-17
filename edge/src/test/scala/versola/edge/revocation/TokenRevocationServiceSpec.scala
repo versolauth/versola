@@ -2,7 +2,7 @@ package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
 import versola.edge.{AuthorizationPresetsSyncClient, EdgeConfig, OAuthClientService, OAuthClientsSyncClient}
-import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, EdgeId, OAuthClient, PresetId, SessionId}
+import versola.edge.model.{AccessTokenId, AuthorizationPreset, ClientId, EdgeId, OAuthClient, PresetId, RefreshTokenFamilyId, SessionId}
 import versola.util.{ReloadingCache, Secret}
 import zio.*
 import zio.http.URL
@@ -18,6 +18,7 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val sid = RevocationKey.Sid(SessionId("session-1"))
   private val sub = RevocationKey.Sub("user-1")
   private val otherJti = RevocationKey.Jti(AccessTokenId("token-2"))
+  private val fam = RevocationKey.Fam(RefreshTokenFamilyId("family-1"))
 
   private val farFuture = Instant.EPOCH.plusSeconds(3600)
 
@@ -131,7 +132,7 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- repository.activeSince.succeedsWith(onePage())
         _ <- repository.revokeAll.succeedsWith(())
         _ <- service.sync
-        _ <- service.revokeToken(AccessTokenId("token-1"), farFuture)
+        _ <- service.revokeTokens(NonEmptyChunk.single(jti), farFuture)
         // Nothing has told this replica the write landed yet -- not a notification, not a
         // catch-up -- so it answers no differently than one that never made the write.
         beforeNotified <- service.isRevoked(List(jti), issuedAt)
@@ -382,6 +383,32 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // predates it would have.
         recorded.expiresAt == revokedAt.plusSeconds(5.minutes.toSeconds),
         recorded.issuedBefore.contains(revokedAt),
+      )
+    },
+    test("reports a token revoked when the family that issued it is listed") {
+      val repository = stub[RevocationRepository]
+      for
+        service <- TokenRevocationService.make(repository, clientService)
+        _ <- repository.activeSince.succeedsWith(onePage(revocation(fam)))
+        _ <- service.sync
+        // The chain leaked, so every token it ever issued goes -- including this one, which
+        // the entry never names individually.
+        revoked <- service.isRevoked(List(jti, fam, sid, sub), issuedAt)
+      yield assertTrue(revoked)
+    },
+    test("writes a family revocation under the bound it was given, unaltered") {
+      val repository = stub[RevocationRepository]
+      for
+        // Auth derived the bound from the client's TTL and sent it; unlike a session or user
+        // revocation there is nothing for this replica to work out for itself.
+        service <- TokenRevocationService.make(repository, clientServiceOf(client("web", 5.minutes)))
+        _ <- repository.revokeAll.succeedsWith(())
+        _ <- service.revokeTokens(NonEmptyChunk.single(fam), farFuture)
+        recorded = repository.revokeAll.calls.head.head
+      yield assertTrue(
+        recorded.key == fam,
+        recorded.expiresAt == farFuture,
+        recorded.issuedBefore.isEmpty,
       )
     },
     test("a user-wide revocation covers a token issued in the same second as itself") {

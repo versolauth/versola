@@ -6,7 +6,7 @@ import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, Claim, ClientId, ResourceUri, ScopeToken}
 import versola.oauth.model.*
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, SessionId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
@@ -49,6 +49,7 @@ class PostgresAuthorizationCodeRepository(
   private given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
   private given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
   private given DbCodec[PublicSessionId] = DbCodec.StringCodec.biMap(PublicSessionId(_), identity[String])
+  private given DbCodec[RefreshTokenFamilyId] = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
   private given JsonBDbCodec[AuthorizationDetail] = jsonBCodec
   // The column is a nullable array; the model's `Option[List[...]]` maps onto it directly via
   // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
@@ -63,7 +64,7 @@ class PostgresAuthorizationCodeRepository(
         sql"""
           SELECT session_id, public_session_id, client_id, user_id, redirect_uri,
                  scope, code_challenge, code_challenge_method,
-                 requested_claims, ui_locales, nonce, access_token,
+                 requested_claims, ui_locales, nonce, access_token, family_id,
                  amr, auth_time, acr, resources, authorization_details, dpop_jkt
           FROM authorization_codes
           WHERE code = $code AND expires_at > $now"""
@@ -93,6 +94,7 @@ class PostgresAuthorizationCodeRepository(
             ui_locales,
             nonce,
             access_token,
+            family_id,
             amr,
             auth_time,
             acr,
@@ -116,6 +118,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.uiLocales}::text[],
             ${record.nonce},
             ${record.accessToken},
+            ${record.familyId},
             ${record.amr},
             ${record.authTime},
             ${record.acr},
@@ -133,7 +136,7 @@ class PostgresAuthorizationCodeRepository(
       sql"""DELETE FROM authorization_codes WHERE code = $code""".update.run()
     .unit
 
-  override def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[AccessToken, Unit]] =
+  override def markAsUsed(code: MAC.Of[AuthorizationCode]): Task[Either[RefreshTokenFamilyId, Unit]] =
     xa.connectMeasured("mark-authorization-code-used"):
       val affectedRows = sql"""
         UPDATE authorization_codes
@@ -147,8 +150,8 @@ class PostgresAuthorizationCodeRepository(
       else
         // UPDATE affected 0 rows - either code doesn't exist or already used
         // Check which case it is
-        sql"""SELECT access_token FROM authorization_codes WHERE code = $code"""
-          .query[AccessToken].run().headOption
+        sql"""SELECT family_id FROM authorization_codes WHERE code = $code"""
+          .query[RefreshTokenFamilyId].run().headOption
           .toLeft(())
 
 

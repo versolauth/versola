@@ -11,7 +11,7 @@ import versola.user.UserRepository
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import versola.util.http.Observability
 import zio.prelude.These
-import zio.{Duration, IO, NonEmptyChunk, Task, ZIO, ZLayer}
+import zio.{Duration, IO, Task, ZIO, ZLayer}
 
 trait OAuthTokenService:
 
@@ -48,6 +48,11 @@ object OAuthTokenService:
   private case class BoundRenewal(
       token: RefreshToken,
       mac: MAC.Of[RefreshToken],
+      // `Some` only when this refresh actually narrowed the grant. RFC 6749 §6 lets the
+      // request omit `scope` to mean "unchanged", and a request that repeats what is stored
+      // means the same: in both cases the row already holds the right value, so the renewal
+      // leaves the column alone rather than paying a row version to rewrite it.
+      narrowedScope: Option[Set[ScopeToken]],
   )
 
   /** Which token the refresh actually continues from, and whether getting there needed the
@@ -131,19 +136,22 @@ object OAuthTokenService:
         _ <- Observability.setUserId(codeRecord.userId.toString)
 
         _ <- authorizationCodeRepository.markAsUsed(codeMac).flatMap:
-          case Left(at) =>
-            zio.Clock.instant.flatMap: replayedAt =>
-              // The replayed code's access token is not in hand here, only its id, so its
-              // lifetime is bounded by the client's TTL rather than read from the token.
-              accessTokenRevocationService.revoke(
+          case Left(family) =>
+            for
+              replayedAt <- zio.Clock.instant
+              // What the first exchange issued is not in hand here, and is not recorded: the
+              // push names the family the code committed to, which every token that exchange
+              // and its rotations produced carries. Its lifetime is bounded by the client's
+              // TTL rather than read from any token, for want of one to read it from.
+              _ <- accessTokenRevocationService.revokeFamily(
                 client = client,
-                tokens = NonEmptyChunk(at),
+                family = family,
                 subject = codeRecord.userId.toString,
                 expiresAt = replayedAt.plus(client.accessTokenTtl),
               )
-            *>
-              sessionRepository.deleteByAccessToken(codeRecord.sessionId, at) *>
-              ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
+              _ <- sessionRepository.deleteByFamily(family)
+              _ <- ZIO.fail(TokenEndpointError.InvalidGrant.CodeReplayed)
+            yield ()
 
           case Right(_) =>
             ZIO.unit
@@ -156,10 +164,11 @@ object OAuthTokenService:
           accessToken = accessToken,
           client = client,
           record = RefreshTokenRecord(
+            // Committed to at `/authorize`, not generated here: a replay of this code has only
+            // the code row to name what the first exchange issued.
+            familyId = codeRecord.familyId,
             sessionId = codeRecord.sessionId,
             publicSessionId = codeRecord.publicSessionId,
-            accessToken = accessToken,
-            accessTokenExpiresAt = now.plus(client.accessTokenTtl),
             userId = codeRecord.userId,
             clientId = codeRecord.clientId,
             audience = codeRecord.resources,
@@ -299,8 +308,6 @@ object OAuthTokenService:
           accessToken = accessToken,
           client = client,
           record = tokenRecord.copy(
-            accessToken = accessToken,
-            accessTokenExpiresAt = now.plus(client.accessTokenTtl),
             scope = scope.getOrElse(tokenRecord.scope),
             issuedAt = now,
             expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
@@ -313,7 +320,7 @@ object OAuthTokenService:
           // the idempotency key that makes rotation retryable all stop paying for themselves.
           // A retry can only be reached through a retired row, which a bound token never has.
           boundRenewal = Option.when(tokenRecord.cnfJkt.isDefined && !resolved.retried)(
-            BoundRenewal(refreshToken, resolved.previousToken),
+            BoundRenewal(refreshToken, resolved.previousToken, scope.filter(_ != tokenRecord.scope)),
           ),
           accessTokenAudience = audience,
           accessTokenAuthorizationDetails = details,
@@ -382,9 +389,9 @@ object OAuthTokenService:
     /** RFC 9700 §4.14.2: a refresh token presented after it was already rotated away means the
       * chain leaked -- to an attacker who redeemed it first, or back to its rightful owner
       * after an attacker's redemption already won the rotation race. Either way neither party
-      * can be trusted with the chain's live end anymore, so it is expired and its access token
-      * pushed to the client's back channel, forcing a full re-authorization instead of leaving
-      * a live session for whoever asks next.
+      * can be trusted with the chain's live end anymore, so it is expired and the family named
+      * to the client's back channel, forcing a full re-authorization instead of leaving a live
+      * session for whoever asks next.
       *
       * Scoped to the leaked family, not the wider SSO session: one client's leak should not
       * log the user out of every other client sharing the session. Within the family it is
@@ -398,24 +405,21 @@ object OAuthTokenService:
     private def detectReplay(client: OAuthClientRecord, replayed: MAC.Of[RefreshToken]): Task[Boolean] =
       sessionRepository.revokeFamily(replayed, client.id).flatMap:
         case Some(family) =>
-          // As with authorization-code replay, the live access tokens are not in hand here,
-          // only their ids -- but unlike that path, each one's actual expiry already sits on
-          // the row `revokeFamily` read it from, not derived from the client's current
-          // accessTokenTtl, which is mutable and could misjudge a token minted under a
-          // different one. One event names every one of them, rather than one push per
-          // token, bounded by the furthest of their expiries so the batch still covers all.
-          val revocation = for
-            tokens <- NonEmptyChunk.fromIterableOption(family.accessTokens)
-            expiresAt <- family.accessTokensExpireBy
-          yield (tokens, expiresAt)
-
-          ZIO
-            .foreachDiscard(revocation): (tokens, expiresAt) =>
-              accessTokenRevocationService.revoke(
+          // The access tokens the chain issued are not in hand, and are not recorded anywhere
+          // either: the push names the family they all carry as their `fam` claim, which
+          // reaches every generation -- including ones this table no longer holds a row for.
+          // The bound is the client's current accessTokenTtl from now, the only measure left
+          // once no token is being named individually. It is mutable, so a TTL lowered since a
+          // token was minted makes the entry expire before that token does; the alternative,
+          // recording every issued token's expiry against the chain, is what naming the family
+          // exists to avoid.
+          zio.Clock.instant
+            .flatMap: revokedAt =>
+              accessTokenRevocationService.revokeFamily(
                 client = client,
-                tokens = tokens,
+                family = family.familyId,
                 subject = family.userId.toString,
-                expiresAt = expiresAt,
+                expiresAt = revokedAt.plus(client.accessTokenTtl),
               )
             .as(true)
         case None =>
@@ -533,6 +537,8 @@ object OAuthTokenService:
         tenantId = client.tenantId,
         roles = Nil,
         sessionId = None,
+        // The one grant with no chain behind it, so there is no family for the token to name.
+        refreshTokenFamilyId = None,
         amr = Set.empty,
         authTime = None,
         acr = None,
@@ -560,9 +566,7 @@ object OAuthTokenService:
             // failure mode is the grant having been revoked between the read and this write.
             case Some(renewal) =>
               Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
-                sessionRepository.renewBoundToken(
-                  renewal.mac, record.accessToken, record.scope, record.expiresAt, record.accessTokenExpiresAt,
-                )
+                sessionRepository.renewBoundToken(renewal.mac, renewal.narrowedScope, record.expiresAt)
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)
 
@@ -600,6 +604,7 @@ object OAuthTokenService:
         tenantId = client.tenantId,
         roles = roles,
         sessionId = Some(record.publicSessionId),
+        refreshTokenFamilyId = Some(record.familyId),
         amr = record.amr,
         authTime = Some(record.authTime),
         acr = record.acr,

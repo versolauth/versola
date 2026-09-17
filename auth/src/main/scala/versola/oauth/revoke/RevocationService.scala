@@ -6,7 +6,7 @@ import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
-import zio.{IO, NonEmptyChunk, Task, ZIO, ZLayer}
+import zio.{Clock, IO, NonEmptyChunk, Task, ZIO, ZLayer}
 
 trait RevocationService:
   def revokeRefreshToken(
@@ -57,17 +57,18 @@ object RevocationService:
           case None =>
             ZIO.unit
           case Some(record) =>
-            // The access token itself was not presented here, but `record.accessTokenExpiresAt`
-            // is its exact, per-token expiry -- recorded on the row at issuance, not recomputed
-            // from the client's current (mutable) `accessTokenTtl` -- so there is nothing to
-            // approximate here.
-            sessionRepository.delete(tokenMac) *>
-              accessTokenRevocationService.revoke(
-                client = client,
-                tokens = NonEmptyChunk(record.accessToken),
-                subject = record.userId.toString,
-                expiresAt = record.accessTokenExpiresAt,
-              )
+            // No access token was presented here, and none is recorded against the chain, so
+            // the push names the family every token this grant issued carries. The bound is
+            // the client's current `accessTokenTtl` from now: an approximation, and the only
+            // one available once the tokens themselves are not being named.
+            Clock.instant.flatMap: revokedAt =>
+              sessionRepository.delete(tokenMac) *>
+                accessTokenRevocationService.revokeFamily(
+                  client = client,
+                  family = record.familyId,
+                  subject = record.userId.toString,
+                  expiresAt = revokedAt.plus(client.accessTokenTtl),
+                )
       yield ()
 
     override def revokeAccessToken(

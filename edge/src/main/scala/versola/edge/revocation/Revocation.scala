@@ -1,19 +1,28 @@
 package versola.edge.revocation
 
-import versola.edge.model.{AccessTokenId, SessionId}
+import versola.edge.model.{AccessTokenId, RefreshTokenFamilyId, SessionId}
 
 import java.time.Instant
 
 /** What a token has to be checked against to be rejected before its `exp`.
   *
-  * Three kinds, each the narrowest key that covers what its caller means to end: a
-  * client's `/revoke` replaces one token and leaves the session running, a logout ends
-  * one SSO session and leaves the user's other sessions running, and an administrator
-  * ending a user's access means all of them at once.
+  * Four kinds, each the narrowest key that covers what its caller means to end: a
+  * client's `/revoke` replaces one token and leaves the session running, a leaked refresh
+  * chain takes down everything it ever issued and leaves the session's other grants running,
+  * a logout ends one SSO session and leaves the user's other sessions running, and an
+  * administrator ending a user's access means all of them at once.
   */
 enum RevocationKey:
   /** One access token, named by its `jti`. */
   case Jti(id: AccessTokenId)
+
+  /** Every access token this refresh-token family ever issued, named by their shared `fam`.
+    *
+    * Auth revokes a leaked chain without enumerating what it issued: the tokens are named
+    * collectively by the family they came from, so a token minted by a generation auth no
+    * longer keeps a record of is still covered.
+    */
+  case Fam(id: RefreshTokenFamilyId)
 
   /** Every access token carrying this `sid`, including ones this edge has no
     * `edge_sessions` row for (a bearer token presented straight to the proxy).
@@ -22,25 +31,28 @@ enum RevocationKey:
 
   /** Every access token issued to this user across every session and every client.
     *
-    * Unlike the other two this one outlives what it revokes: the user can log in again
+    * Unlike the other three this one outlives what it revokes: the user can log in again
     * and must not be locked out by an entry aimed at the tokens they held before. Which
-    * is why an entry under this key carries [[Revocation.issuedBefore]] and the other two
+    * is why an entry under this key carries [[Revocation.issuedBefore]] and the others
     * do not.
     */
   case Sub(userId: String)
 
   def encoded: String = this match
     case Jti(id)     => s"${RevocationKey.JtiPrefix}$id"
+    case Fam(id)     => s"${RevocationKey.FamPrefix}$id"
     case Sid(id)     => s"${RevocationKey.SidPrefix}$id"
     case Sub(userId) => s"${RevocationKey.SubPrefix}$userId"
 
 object RevocationKey:
   private val JtiPrefix = "jti:"
+  private val FamPrefix = "fam:"
   private val SidPrefix = "sid:"
   private val SubPrefix = "sub:"
 
   def decode(encoded: String): Option[RevocationKey] =
     if encoded.startsWith(JtiPrefix) then nonEmptyId(encoded, JtiPrefix).map(id => Jti(AccessTokenId(id)))
+    else if encoded.startsWith(FamPrefix) then nonEmptyId(encoded, FamPrefix).map(id => Fam(RefreshTokenFamilyId(id)))
     else if encoded.startsWith(SidPrefix) then nonEmptyId(encoded, SidPrefix).map(id => Sid(SessionId(id)))
     else if encoded.startsWith(SubPrefix) then nonEmptyId(encoded, SubPrefix).map(Sub(_))
     else None
@@ -49,10 +61,16 @@ object RevocationKey:
     Some(encoded.stripPrefix(prefix)).filter(_.nonEmpty)
 
   /** Everything that could have revoked the token these claims came from, widening as it
-    * goes: the token itself, then the session it belongs to, then its user.
+    * goes: the token itself, then the refresh chain that issued it, then the session it
+    * belongs to, then its user.
     */
-  def of(jti: AccessTokenId, sid: Option[SessionId], subject: String): List[RevocationKey] =
-    Jti(jti) :: sid.map(Sid(_)).toList ::: List(Sub(subject))
+  def of(
+      jti: AccessTokenId,
+      family: Option[RefreshTokenFamilyId],
+      sid: Option[SessionId],
+      subject: String,
+  ): List[RevocationKey] =
+    Jti(jti) :: family.map(Fam(_)).toList ::: sid.map(Sid(_)).toList ::: List(Sub(subject))
 
 /** @param expiresAt when the revoked token would have expired on its own, after which the
   *                  entry stops mattering: a token past its `exp` is rejected by signature

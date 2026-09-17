@@ -7,7 +7,7 @@ import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId,
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, Confirmation, RefreshToken}
 import versola.oauth.session.SessionRepository
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
@@ -26,6 +26,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   val userId1 = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
   val sessionId1 = MAC(Array.fill(32)(1.toByte))
   val publicSessionId1 = PublicSessionId("public-session-1")
+  val familyId1 = RefreshTokenFamilyId("family-1")
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
   
   val refreshToken1 = RefreshToken(Array.fill(32)(10.toByte))
@@ -60,10 +61,9 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(
+    familyId = familyId1,
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
-    accessToken = accessToken1,
-    accessTokenExpiresAt = now.plusSeconds(3600),
     userId = userId1,
     clientId = clientId1,
     audience = List.empty,

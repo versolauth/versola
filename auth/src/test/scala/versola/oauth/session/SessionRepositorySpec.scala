@@ -2,8 +2,7 @@ package versola.oauth.session
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ScopeToken}
-import versola.oauth.model.AccessToken
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId, SessionRecord, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -25,6 +24,8 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   val publicId2      = PublicSessionId("public-session-2")
   val publicId3      = PublicSessionId("public-session-3")
   val atomicPublicId = PublicSessionId("public-session-atomic")
+
+  val familyId1 = RefreshTokenFamilyId("family-1")
 
   val clientId1 = ClientId("client-1")
   val clientId2 = ClientId("client-2")
@@ -195,10 +196,9 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(16)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -228,10 +228,9 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -264,10 +263,9 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -290,17 +288,16 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           found       <- env.repository.findRefreshTokensByUserId(userId1)
         yield assertTrue(
           sessionGone.isEmpty,
-          found.exists(_.accessToken.encoded == record.accessToken.encoded),
+          found.exists(_.familyId == record.familyId),
         )
       },
       test("findRefreshTokensByUserId excludes another user's tokens, expired tokens, and rotated-away ones") {
         for
           now    <- Clock.instant
           record  = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(32)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -321,30 +318,31 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           expiredToken     = MAC(Array.fill(32)(81.toByte))
           rotatedAwayToken = MAC(Array.fill(32)(82.toByte))
           successorToken   = MAC(Array.fill(32)(83.toByte))
-          liveAccessToken       = AccessToken(Array.fill(32)(2.toByte))
-          expiredAccessToken    = AccessToken(Array.fill(32)(3.toByte))
-          rotatedAccessToken    = AccessToken(Array.fill(32)(4.toByte))
-          successorAccessToken  = AccessToken(Array.fill(32)(5.toByte))
+          liveFamily      = RefreshTokenFamilyId("family-live")
+          expiredFamily   = RefreshTokenFamilyId("family-expired")
+          rotatedFamily   = RefreshTokenFamilyId("family-rotated")
           _ <- env.repository.create(atomicSessionId, session1, ttl, None, None)
-          _ <- env.repository.createRefreshToken(liveToken, None, record.copy(accessToken = liveAccessToken), None)
+          _ <- env.repository.createRefreshToken(liveToken, None, record.copy(familyId = liveFamily), None)
           _ <- env.repository.createRefreshToken(otherUserToken, None, record.copy(userId = userId2), None)
           _ <- env.repository.createRefreshToken(
             expiredToken,
             None,
-            record.copy(accessToken = expiredAccessToken, expiresAt = now.plusSeconds(1)),
+            record.copy(familyId = expiredFamily, expiresAt = now.plusSeconds(1)),
             None,
           )
-          _ <- env.repository.createRefreshToken(rotatedAwayToken, None, record.copy(accessToken = rotatedAccessToken), None)
+          _ <- env.repository.createRefreshToken(rotatedAwayToken, None, record.copy(familyId = rotatedFamily), None)
           _ <- env.repository.createRefreshToken(
             successorToken,
             Some(rotatedAwayToken),
-            record.copy(accessToken = successorAccessToken),
+            record,
             None,
           )
           _     <- TestClock.adjust(2.seconds)
           found <- env.repository.findRefreshTokensByUserId(userId1)
         yield assertTrue(
-          found.map(_.accessToken.encoded).toSet == Set(liveAccessToken.encoded, successorAccessToken.encoded),
+          // The successor inherits the family of the row it retired, so the rotated-away
+          // generation is represented here by its live successor rather than by itself.
+          found.map(_.familyId).toSet == Set(liveFamily, rotatedFamily),
         )
       },
       test("invalidate returns the deleted session and removes it") {
@@ -369,10 +367,9 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now   <- Clock.instant
           record = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(16)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,
@@ -433,10 +430,9 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         for
           now   <- Clock.instant
           record = RefreshTokenRecord(
+            familyId             = familyId1,
             sessionId            = atomicSessionId,
             publicSessionId      = atomicPublicId,
-            accessToken          = AccessToken(Array.fill(16)(1.toByte)),
-            accessTokenExpiresAt = now.plusSeconds(3600),
             userId               = userId1,
             clientId             = clientId1,
             audience             = List.empty,

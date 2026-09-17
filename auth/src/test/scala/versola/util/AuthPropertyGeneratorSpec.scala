@@ -50,6 +50,17 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
         (id: String) == versola.util.Base64.urlEncode(Array.fill(16)(16.toByte)),
       )
     },
+    test("nextRefreshTokenFamilyId draws 16 bytes and base64url-encodes them") {
+      for
+        lengths <- Ref.make(List.empty[Int])
+        generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
+        id <- generator.nextRefreshTokenFamilyId
+        seen <- lengths.get
+      yield assertTrue(
+        seen == List(16),
+        (id: String) == versola.util.Base64.urlEncode(Array.fill(16)(16.toByte)),
+      )
+    },
     test("nextAccessToken draws 16 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])

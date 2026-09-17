@@ -1,6 +1,6 @@
 package versola.edge.revocation
 
-import versola.edge.model.{AccessTokenId, SessionId}
+import versola.edge.model.SessionId
 import versola.edge.{EdgeConfig, OAuthClientService}
 import zio.*
 
@@ -8,17 +8,16 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentHashMap
 
 trait TokenRevocationService:
-  /** One token dies and the session it belongs to does not, which is what keeps a client's
-    * `/revoke` from logging every other client of that SSO session out. The token's real
-    * `exp` is known to the caller, since auth had it in hand.
+  /** Tokens die and the sessions they belong to do not, which is what keeps a client's
+    * `/revoke` from logging every other client of that SSO session out.
+    *
+    * Each key is the narrowest thing that covers what the caller meant to end: a `jti` for
+    * one token, whose real `exp` auth had in hand, or a `fam` for every token a refresh chain
+    * issued, bounded by the client's TTL because auth holds none of them to read an `exp`
+    * off. They arrived on one event under one `expiresAt`, so they are written once rather
+    * than once per key.
     */
-  def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit]
-
-  /** As [[revokeToken]], for several tokens sharing one `expiresAt` -- a leaked refresh-token
-    * family's access tokens, all bounded by the same client TTL from the same instant. One
-    * durable write covers the whole batch instead of one per token.
-    */
-  def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit]
+  def revokeTokens(keys: NonEmptyChunk[RevocationKey], expiresAt: Instant): Task[Unit]
 
   /** One SSO session ends: every token bearing this `sid`, including bearer tokens this
     * edge has no session row for and ones superseded by rotation.
@@ -125,11 +124,8 @@ object TokenRevocationService:
       lastSync: Ref[Instant],
   ) extends TokenRevocationService:
 
-    override def revokeToken(jti: AccessTokenId, expiresAt: Instant): Task[Unit] =
-      revokeTokens(NonEmptyChunk.single(jti), expiresAt)
-
-    override def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit] =
-      repository.revokeAll(jtis.map(jti => Revocation(RevocationKey.Jti(jti), expiresAt, issuedBefore = None)).toList)
+    override def revokeTokens(keys: NonEmptyChunk[RevocationKey], expiresAt: Instant): Task[Unit] =
+      repository.revokeAll(keys.map(Revocation(_, expiresAt, issuedBefore = None)).toList)
 
     /** The entry only has to outlive the longest-lived token the session could have been
       * issued. Edge never sees a token's `iat`, but `exp = iat + accessTokenTtl` and
