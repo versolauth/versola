@@ -1,12 +1,9 @@
 package versola.loadgen.coordinator
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.loadgen.config.LoadgenConfig
-import versola.loadgen.store.{
-  LoadgenMigrations,
-  PostgresMetricSnapshotRepository,
-  PostgresVirtualUserRepository,
-}
+import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
+import versola.loadgen.store.{LoadgenMigrations, PostgresMetricSnapshotRepository, PostgresSutStatSnapshotRepository, PostgresVirtualUserRepository}
+import versola.loadgen.sut.PostgresSutStatsCapture
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -29,6 +26,10 @@ object Coordinator:
           users = PostgresVirtualUserRepository(xa),
           snapshots = PostgresMetricSnapshotRepository(xa),
           rebalancer = PostgresShardRebalancer(xa),
+          // Absent for a coordinator that was given no SUT credentials, which is a deployment and
+          // not a mistake: the report then carries every section but §3's.
+          sutStats = config.sutStats.map: stats =>
+            PostgresSutStatsCapture(stats.databases, PostgresSutStatSnapshotRepository(xa)),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run
@@ -36,6 +37,20 @@ object Coordinator:
         s"Coordinator ready for campaign '${config.campaign.name}'; " +
           s"drivers poll every ${config.coordinator.pollInterval.render}",
       )
+      _ <- ZIO.logInfo(
+        config.sutStats match
+          case Some(stats) =>
+            s"pg_stat_* snapshots will bracket the campaign for ${stats.databases.map(_.name).mkString(", ")}"
+          case None =>
+            "No 'sut-stats' block; the campaign report will carry no database section",
+      )
+      _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))):
+        group =>
+          ZIO.logWarning(
+            s"sut-stats.databases [${group.mkString(", ")}] share one Postgres cluster: their " +
+              "pg_stat_wal/pg_stat_checkpointer/pg_stat_io figures will be identical and reported " +
+              "under every name in the group, so summing that section across databases double-counts it",
+          )
     yield service
 
   /** Migrated, not merely validated, for the one campaign that has no seed step: the registration

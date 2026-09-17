@@ -38,6 +38,7 @@ case class LoadgenConfig(
     provision: Option[ProvisionConfig],
     seed: Option[SeedConfig],
     calibration: Option[CalibrationConfig],
+    sutStats: Option[SutStatsConfig],
 )
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all five --
@@ -499,6 +500,90 @@ object SeedConfig:
 
   given DeriveConfig[SeedConfig] = DeriveConfig
     .derived[SeedConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
+
+/** One system-under-test database the coordinator takes `pg_stat_*` snapshots of, under the name
+  * the report shows it by (runbook 05-report-spec.md §3: "по одному блоку на каждую базу, раз
+  * базы разделены по сервисам").
+  *
+  * A list of named databases rather than the fixed `auth`/`central` pair [[SeedConfig]] has,
+  * because the two blocks answer different questions. The seeder writes a population into the two
+  * schemas it knows the shape of; this one only reads statistics, which every database answers
+  * identically, and the topology it is pointed at is the deployment's to state -- three instances
+  * at campaign scale (runbook 03-postgres-topology.md), one combined instance on a developer's
+  * machine.
+  */
+case class SutStatsDatabaseConfig(name: String, database: SutDatabaseConfig)
+
+/** What a coordinator needs to answer §3 of the report: credentials to the SUT's databases, which
+  * no role but `seed` has held until now.
+  *
+  * Optional for the same reason [[ShardConfig]], [[ProvisionConfig]] and [[SeedConfig]] are, and
+  * with one addition: a coordinator whose config file omits the block is a supported deployment,
+  * not a misconfigured one. Reading another service's database is a privilege somebody has to
+  * grant, and a campaign whose report is missing its database section is still a campaign; a
+  * coordinator that refused to boot without it would make every other section hostage to that
+  * grant.
+  */
+case class SutStatsConfig(databases: List[SutStatsDatabaseConfig])
+
+object SutStatsConfig:
+  /** Configured databases grouped by the Postgres cluster their URL names, kept only where a
+    * group has more than one member -- runbook 03-postgres-topology.md's "три инстанса на проде,
+    * один совмещённый инстанс у разработчика" is exactly the shape that produces one.
+    *
+    * `pg_stat_wal`, `pg_stat_checkpointer` and `pg_stat_io` answer for the whole cluster, unlike
+    * every other view this reads, which [[versola.loadgen.sut.SutStatsReader]] already scopes to
+    * `current_database()`. Two configured databases on the same cluster therefore read those
+    * three identically and report them under two names -- correct for each name alone, but a
+    * downstream sum across the report's database sections would count that activity twice. This
+    * is read at boot only, to warn about it; the capture itself does not act on it; deleting a
+    * name's own copy would need to know which name's copy is the coordinator's story and there is
+    * no such name -- both are equally the cluster's.
+    */
+  def clusterGroups(databases: List[SutStatsDatabaseConfig]): List[List[String]] =
+    databases
+      .groupBy(target => clusterKey(target.database.url))
+      .values
+      .map(_.map(_.name))
+      .filter(_.size > 1)
+      .toList
+      .sortBy(_.head)
+
+  /** The URL's host and port, which is what makes two JDBC URLs the same Postgres cluster
+    * regardless of which database each names. Falls back to the whole URL for one this cannot
+    * parse, which undercounts rather than overcounts: two unparsed URLs then compare unequal
+    * even if they are in fact the same cluster, so this only ever fails to warn, never warns
+    * about two clusters that do not share one.
+    */
+  private def clusterKey(url: String): String =
+    scala.util.Try(java.net.URI.create(url.stripPrefix("jdbc:")).getAuthority).toOption.flatMap(Option(_)).getOrElse(url)
+
+  /** Same idiom as [[SeedConfig.validate]]'s, and the same reason: both failures are silent where
+    * they land. An empty list produces a coordinator that boots with the block, logs nothing and
+    * reports no database section -- indistinguishable from one configured without the block at
+    * all. Duplicate names produce two snapshots competing for one `(campaign, database, phase)`
+    * row, where the second is dropped by the identity index and the report shows one database's
+    * statistics under another's name.
+    */
+  def validate(config: SutStatsConfig): Either[String, SutStatsConfig] =
+    val names = config.databases.map(_.name)
+    for
+      _ <- Either.cond(config.databases.nonEmpty, (), "sut-stats.databases must name at least one database")
+      _ <- Either.cond(names.forall(_.nonEmpty), (), "sut-stats.databases[].name must not be empty")
+      _ <- Either.cond(
+        names.distinct.size == names.size,
+        (),
+        s"sut-stats.databases[].name must be unique, got ${names.mkString(", ")}",
+      )
+    yield config
+
+  /** Anchored in the companion for [[StoreConfig]]'s reason: deriving this reaches
+    * [[SutDatabaseConfig]]'s `Config.Secret` password, whose derivation is in scope here and not
+    * wherever `deriveConfig[LoadgenConfig]` is called.
+    */
+  given DeriveConfig[SutStatsConfig] = DeriveConfig
+    .derived[SutStatsConfig]
     .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
 
 /** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/

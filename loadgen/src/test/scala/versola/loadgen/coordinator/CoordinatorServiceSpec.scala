@@ -3,8 +3,10 @@ package versola.loadgen.coordinator
 import versola.loadgen.config.LoadgenConfig
 import versola.loadgen.metrics.{ErrorTaxonomy, MeasurementId, StepOutcome}
 import versola.loadgen.model.VirtualUserState
-import zio.test.*
+import versola.loadgen.store.SutStatPhase
+import versola.loadgen.sut.SutStatsCapture
 import zio.*
+import zio.test.*
 
 import java.time.Instant
 
@@ -34,10 +36,18 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
       users: FakeVirtualUsers,
       snapshots: FakeMetricSnapshots,
   ) =
+    harnessWith(config, users, snapshots, None)
+
+  private def harnessWith(
+      config: ZIO[Any, zio.Config.Error, LoadgenConfig],
+      users: FakeVirtualUsers,
+      snapshots: FakeMetricSnapshots,
+      sutStats: Option[SutStatsCapture],
+  ) =
     for
       loaded <- config
       rebalancer <- FakeRebalancer.make
-      service <- CoordinatorService.make(loaded, users, snapshots, rebalancer).mapError(RuntimeException(_))
+      service <- CoordinatorService.make(loaded, users, snapshots, rebalancer, sutStats).mapError(RuntimeException(_))
       _ <- TestClock.setTime(t0)
     yield Harness(service, users, snapshots, rebalancer)
 
@@ -401,6 +411,43 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           !report.passed,
         )
       },
+      test("carries the SUT's database section once both boundaries have been captured") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+          )
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          _ <- harness.service.start
+          // A run in progress has one reading and no difference, which is not §3 with a hole in
+          // it -- it is a statement the report is not yet able to make.
+          running <- harness.service.report(campaign)
+          _ <- TestClock.adjust(1.hour)
+          _ <- harness.service.stop
+          stopped <- harness.service.report(campaign)
+        yield assertTrue(
+          running.databases.isEmpty,
+          stopped.databases.map(_.map(_.database)) == Some(List("auth")),
+          stopped.databases.exists(_.forall(!_.countersReset)),
+          stopped.databases.exists(_.forall(_.counters.isDefined)),
+          stopped.databases.exists(_.forall(delta => delta.afterEpochMillis - delta.beforeEpochMillis == 3_600_000L)),
+        )
+      },
+      // A coordinator holding no SUT credentials is a supported deployment: every other section
+      // of the report is unaffected by the grant it was not given.
+      test("omits the database section entirely when no SUT credentials are configured") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+          )
+          harness <- harness(CoordinatorFixture.coordinatorConfig, users, snapshots)
+          _ <- harness.service.start
+          _ <- harness.service.stop
+          report <- harness.service.report(campaign)
+        yield assertTrue(report.databases.isEmpty)
+      },
       test("refuses a campaign it is not running, and one with no snapshots at all") {
         for
           harness <- steady
@@ -419,8 +466,67 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           snapshots <- FakeMetricSnapshots.make()
           rebalancer <- FakeRebalancer.make
           config <- CoordinatorFixture.coordinatorConfig
-          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer).either
+          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer, None).either
         yield assertTrue(refused.isLeft)
+      },
+    ),
+    suite("sut snapshots")(
+      test("the start and the stop of a run are the two boundaries captured") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          _ <- harness.service.start
+          opening <- sutStats.phases
+          _ <- harness.service.stop
+          both <- sutStats.phases
+        yield assertTrue(
+          opening == List(SutStatPhase.Before),
+          both == List(SutStatPhase.Before, SutStatPhase.After),
+        )
+      },
+      // A resume runs the same `start` command as a start, and re-capturing there would move the
+      // opening reading into the middle of the run -- every counter before it lost.
+      test("a pause and a resume are not boundaries") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          _ <- harness.service.start
+          _ <- TestClock.adjust(10.minutes)
+          _ <- harness.service.pause
+          _ <- TestClock.adjust(10.minutes)
+          _ <- harness.service.start
+          phases <- sutStats.phases
+          opening <- sutStats.deltas(campaign)
+          _ <- harness.service.stop
+          deltas <- sutStats.deltas(campaign)
+        yield assertTrue(
+          phases == List(SutStatPhase.Before),
+          opening.isEmpty,
+          deltas.map(_.beforeEpochMillis) == List(t0.toEpochMilli),
+        )
+      },
+      // `CampaignControl.stop` is idempotent, and so is the capture behind it: the second call
+      // makes no transition, and even if it did the identity index keeps the first reading.
+      test("stopping an already stopped campaign captures nothing further") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          _ <- harness.service.start
+          _ <- harness.service.stop
+          _ <- TestClock.adjust(1.hour)
+          _ <- harness.service.stop
+          phases <- sutStats.phases
+          deltas <- sutStats.deltas(campaign)
+        yield assertTrue(
+          phases == List(SutStatPhase.Before, SutStatPhase.After),
+          deltas.map(_.afterEpochMillis) == List(t0.toEpochMilli),
+        )
       },
     ),
   )

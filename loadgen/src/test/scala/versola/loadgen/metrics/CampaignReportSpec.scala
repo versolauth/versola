@@ -1,5 +1,7 @@
 package versola.loadgen.metrics
 
+import versola.loadgen.store.SutStatPhase
+import versola.loadgen.sut.{SutStatsDelta, SutStatsFixture}
 import zio.json.*
 import zio.test.*
 import zio.{Chunk, Duration}
@@ -30,6 +32,8 @@ object CampaignReportSpec extends ZIOSpecDefault:
     scheduleLagP99Micros = Some(180_000L),
     latencyClampedTotal = 0L,
   )
+
+  private val startedAt = Instant.parse("2026-09-10T18:00:00Z")
 
   private val campaignRun = CampaignRun(
     phases = List(RunPhase("steady", 36_000_000L, Some(1.0), None, None)),
@@ -64,7 +68,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       )
     },
     test("passes a campaign that meets every criterion") {
-      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(true),
         report.map(_.notEvaluated) == Right(Nil),
@@ -78,14 +82,14 @@ object CampaignReportSpec extends ZIOSpecDefault:
         HistogramWire.report("c3", "driver-0", Instant.parse("2026-09-10T18:00:00Z"), Chunk(sample(tokenRefresh, 90_000L, 10L))),
         HistogramWire.report("c3", "driver-1", Instant.parse("2026-09-10T18:05:00Z"), Chunk(sample(tokenRefresh, 90_000L, 10L))),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.startEpochMillis) == Right(Instant.parse("2026-09-10T18:00:00Z").toEpochMilli),
         report.map(_.endEpochMillis) == Right(Instant.parse("2026-09-10T18:05:00Z").toEpochMilli),
       )
     },
     test("refuses to build a window with no driver reports to take it from") {
-      assertTrue(CampaignReport.assemble("c3", Nil, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds).isLeft)
+      assertTrue(CampaignReport.assemble("c3", Nil, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None).isLeft)
     },
     test("fails on the token endpoint's absolute p99") {
       val reports = List(
@@ -97,7 +101,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           sample(mockBackend, 30_000L, 10L),
         ),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.checks.filterNot(_.passed).map(_.name)) == Right(List(s"p99 of $tokenRefresh")),
@@ -113,7 +117,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           sample(mockBackend, 30_000L, 10L),
         ),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.checks.count(_.passed == false)) == Right(1),
@@ -125,7 +129,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
         .recordMany(StepOutcome.Planned(PlannedOutcome.StepUp), 30_000L)
         .recordMany(StepOutcome.Planned(PlannedOutcome.Forbidden), 1_000L)
         .recordMany(StepOutcome.Planned(PlannedOutcome.Unauthorized), 4_000L)
-      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, taxonomy, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, taxonomy, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(true),
         report.map(_.taxonomy.budgetConsumed) == Right(0L),
@@ -139,7 +143,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       val taxonomy = ErrorTaxonomy.empty
         .recordMany(StepOutcome.ok, 99_999L)
         .record(StepOutcome.Failed(FailedOutcome.Transport))
-      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, taxonomy, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, taxonomy, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.checks.filterNot(_.passed).map(_.name)) == Right(List("error budget")),
@@ -153,7 +157,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
         scheduleLagP99Micros = Some(900_000L),
         latencyClampedTotal = 0L,
       )
-      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, unhealthy, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, unhealthy, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.checks.filterNot(_.passed).map(_.name).sorted) == Right(
@@ -163,7 +167,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
     },
     test("an unmeasured threshold is reported as not evaluated, not as a pass") {
       val reports = List(driverReport("c3", "driver-0", sample(tokenRefresh, 90_000L, 10L)))
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.notEvaluated) == Right(List(s"p99 of $edgeProxy relative to $mockBackend")),
@@ -177,7 +181,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       // driver -- so one is the limit, and everything else about the run being healthy is exactly
       // when this needs to still fail.
       val clamped = healthyRun.copy(latencyClampedTotal = 1L)
-      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, clamped, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, clamped, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.checks.filterNot(_.passed).map(_.name)) == Right(List("clamped latencies")),
@@ -197,7 +201,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           HistogramSample(mockBackend, LatencyRecorder.emptyHistogram),
         ),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.passed) == Right(false),
         report.map(_.notEvaluated.sorted) == Right(
@@ -217,7 +221,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           HistogramSample(mockBackend, LatencyRecorder.emptyHistogram),
         ),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.notEvaluated) == Right(List(s"p99 of $edgeProxy relative to $mockBackend")),
         report.map(_.checks.forall(_.passed)) == Right(true),
@@ -229,7 +233,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
         driverReport("c3", "driver-1", sample(tokenRefresh, 1000L, 100L)),
         driverReport("c3", "driver-0", sample(tokenRefresh, 2000L, 100L)),
       )
-      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
       assertTrue(
         report.map(_.drivers) == Right(List("driver-0", "driver-1")),
         report.map(_.latency.map(_.count)) == Right(List(200L)),
@@ -244,12 +248,12 @@ object CampaignReportSpec extends ZIOSpecDefault:
         driverReport("c7-20m", "driver-1", sample(tokenRefresh, 1000L, 1L)),
       )
       assertTrue(
-        CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds).isLeft,
+        CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None).isLeft,
       )
     },
     test("serialises to JSON for GET /report/{campaign}") {
       val report =
-        CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds).toOption.get
+        CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None).toOption.get
       val json = report.toJson
       assertTrue(
         json.fromJson[CampaignReport].map(_.passed) == Right(true),
@@ -260,13 +264,40 @@ object CampaignReportSpec extends ZIOSpecDefault:
         json.fromJson[CampaignReport].map(_.run) == Right(campaignRun),
       )
     },
+    // §3 of the report is evidence, not a verdict: a WAL rate has no pass mark, so the section
+    // must not touch `passed` in either direction.
+    test("carries the SUT's database deltas through the merge and the JSON without judging them") {
+      val deltas = List(
+        SutStatsDelta.between(
+          SutStatsFixture.row("c3-10m-steady", "auth", SutStatPhase.Before, startedAt, None, SutStatsFixture.stats(1L, 100L)),
+          SutStatsFixture.row(
+            "c3-10m-steady",
+            "auth",
+            SutStatPhase.After,
+            startedAt.plusSeconds(3_600L),
+            None,
+            SutStatsFixture.stats(4L, 900L),
+          ),
+        ),
+      )
+      val report =
+        CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, Some(deltas))
+      val json = report.toOption.get.toJson
+      assertTrue(
+        report.map(_.passed) == Right(true),
+        report.map(_.checks.size) == Right(9),
+        json.fromJson[CampaignReport].map(_.databases.map(_.map(_.database))) == Right(Some(List("auth"))),
+        json.fromJson[CampaignReport].map(_.databases.flatMap(_.head.counters).map(_.wal.map(_.bytes))) ==
+          Right(Some(Some(3L * 1024L))),
+      )
+    },
     // The reason the field is microseconds and not a `zio.Duration`: a consumer comparing the
     // measured lag against the ceiling printed beside it should not first have to parse
     // "PT0.18S". Asserting on the rendered JSON rather than on the round-trip, because a
     // round-trip succeeds either way.
     test("states schedule lag as a number a dashboard can plot, not an ISO-8601 string") {
       val json =
-        CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds).toOption.get.toJson
+        CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None).toOption.get.toJson
       assertTrue(json.contains("\"scheduleLagP99Micros\":180000"), !json.contains("PT"))
     },
     // §6 grades a table of endpoints, not one. Before the acceptance list existed, every
@@ -282,7 +313,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           edgeProxy,
           mockBackend,
         )
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, perEndpoint)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, perEndpoint, None)
         assertTrue(
           report.map(_.checks.count(_.name.startsWith("p99 of"))) == Right(3),
           report.map(_.passed) == Right(true),
@@ -296,7 +327,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           edgeProxy,
           mockBackend,
         )
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, strict)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, strict, None)
         assertTrue(
           report.map(_.passed) == Right(false),
           report.map(_.checks.filter(_.name == s"p99 of $tokenRefresh").map(_.passed)) == Right(List(false)),
@@ -305,7 +336,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
     ),
     suite("the run's header")(
       test("carries the plan, the population, the shard map in force and what the SUT answered") {
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
         assertTrue(
           report.map(_.run.phases.map(_.name)) == Right(List("steady")),
           report.map(_.run.population) == Right(Map("registered" -> 10_000_000L)),
@@ -315,14 +346,14 @@ object CampaignReportSpec extends ZIOSpecDefault:
         )
       },
       test("passes the token-mode check when every token came back as the mode the run drove") {
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None)
         assertTrue(report.map(_.checks.filter(_.name == "token mode").map(_.passed)) == Right(List(true)))
       },
       // The divergence the header exists to surface: the driver presented bearer tokens and the
       // SUT issued sender-constrained ones, so the campaign measured a flow nobody asked for.
       test("fails the campaign when the SUT answered in a mode the run did not drive") {
         val diverged = campaignRun.copy(observedTokenTypes = List("Bearer", "DPoP"))
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, diverged, thresholds)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, diverged, thresholds, None)
         assertTrue(
           report.map(_.passed) == Right(false),
           report.map(_.checks.filter(_.name == "token mode").map(_.detail)) ==
@@ -333,7 +364,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       // tested -- which is the same distinction `notEvaluated` draws for an unmeasured threshold.
       test("leaves the token mode unevaluated rather than passing it when nothing was observed") {
         val silent = campaignRun.copy(observedTokenTypes = Nil)
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, silent, thresholds)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, silent, thresholds, None)
         assertTrue(
           report.map(_.notEvaluated) == Right(List("token mode")),
           report.map(_.passed) == Right(false),
@@ -342,7 +373,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
       },
       test("a lowercase bearer is the same mode, since RFC 6749 §5.1 makes the value case-insensitive") {
         val lowercase = campaignRun.copy(observedTokenTypes = List("bearer"))
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, lowercase, thresholds)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, lowercase, thresholds, None)
         assertTrue(report.map(_.passed) == Right(true))
       },
     ),

@@ -1,5 +1,6 @@
 package versola.loadgen.metrics
 
+import versola.loadgen.sut.SutStatsDelta
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}
 
@@ -172,6 +173,15 @@ case class CampaignReport(
     checks: List[ReportCheck],
     notEvaluated: List[String],
     passed: Boolean,
+    /** What the run cost each of the SUT's databases (runbook 05-report-spec.md §3): the
+      * difference between the `pg_stat_*` snapshots bracketing the campaign. `None` for a
+      * coordinator configured without SUT database credentials, and for one configured with them
+      * whose campaign has not been stopped yet -- a delta needs both ends.
+      *
+      * Outside `checks` deliberately. Nothing here is a threshold: §3 is the sizing evidence the
+      * report exists to produce, and a WAL rate has no pass mark to fail against.
+      */
+    databases: Option[List[SutStatsDelta]],
 ) derives JsonCodec
 
 object CampaignReport:
@@ -183,6 +193,7 @@ object CampaignReport:
       health: CampaignHealth,
       run: CampaignRun,
       thresholds: AcceptanceThresholds,
+      databases: Option[List[SutStatsDelta]],
   ): Either[String, CampaignReport] =
     for
       _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
@@ -191,7 +202,7 @@ object CampaignReport:
           Left(s"report for campaign '${foreign.campaign}' handed to the '$campaign' merge (driver ${foreign.driverId})")
         case None => Right(())
       samples <- reports.foldLeft[Either[String, Chunk[HistogramSample]]](Right(Chunk.empty)):
-        case (Left(error), _)          => Left(error)
+        case (Left(error), _) => Left(error)
         case (Right(accumulated), one) => HistogramWire.decodeReport(one).map(accumulated ++ _)
     yield
       val merged = HistogramWire.merge(samples)
@@ -212,6 +223,7 @@ object CampaignReport:
         checks = checks,
         notEvaluated = notEvaluated,
         passed = checks.forall(_.passed) && notEvaluated.isEmpty,
+        databases = databases,
       )
 
   private def evaluate(

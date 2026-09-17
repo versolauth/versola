@@ -7,13 +7,16 @@ import versola.loadgen.store.{
   MeasurementKind,
   MetricSnapshotRepository,
   MetricSnapshotRow,
+  SutStatPhase,
+  SutStatSnapshotRow,
   UserTouch,
   VirtualUserRepository,
 }
+import versola.loadgen.sut.{SutStatsCapture, SutStatsDelta, SutStatsFixture}
 import versola.util.Secret
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
-import zio.{Chunk, IO, Ref, Task, UIO, ZIO}
+import zio.{Chunk, Clock, IO, Ref, Task, UIO, ZIO}
 
 import java.time.Instant
 import java.util.UUID
@@ -183,6 +186,45 @@ final class FakeMetricSnapshots(rows: Ref[Vector[MetricSnapshotRow]]) extends Me
 object FakeMetricSnapshots:
   def make(rows: MetricSnapshotRow*): UIO[FakeMetricSnapshots] =
     Ref.make(rows.toVector).map(FakeMetricSnapshots(_))
+
+/** `vu_sut_stat_snapshots` in a `Ref`, with the identity index's first-capture-wins behaviour,
+  * and a reading that grows with every capture so a delta computed from a pair is non-zero.
+  *
+  * The reading itself is the fixture's rather than a real `pg_stat_*` query: what the coordinator
+  * owns is *when* the two boundaries are captured, and the queries are [[SutStatsReaderSpec]]'s
+  * subject against a real server.
+  */
+final class FakeSutStats(rows: Ref[Vector[SutStatSnapshotRow]], captures: Ref[Int]) extends SutStatsCapture:
+
+  override def capture(campaign: String, phase: SutStatPhase): UIO[Unit] =
+    for
+      taken <- captures.updateAndGet(_ + 1)
+      now <- Clock.instant
+      row = SutStatsFixture.row(
+        campaign = campaign,
+        database = "auth",
+        phase = phase,
+        capturedAt = now,
+        statsResetAt = None,
+        statistics = SutStatsFixture.stats(base = taken.toLong, sizeBytes = taken.toLong * 1024L),
+      )
+      _ <- rows.update: current =>
+        if current.exists(existing => (existing.campaign, existing.database, existing.phase) == (campaign, "auth", phase))
+        then current
+        else current :+ row
+    yield ()
+
+  override def deltas(campaign: String): Task[List[SutStatsDelta]] =
+    rows.get.map(recorded => SutStatsDelta.from(recorded.filter(_.campaign == campaign)))
+
+  def phases: UIO[List[SutStatPhase]] = rows.get.map(_.map(_.phase).toList)
+
+object FakeSutStats:
+  def make: UIO[FakeSutStats] =
+    for
+      rows <- Ref.make(Vector.empty[SutStatSnapshotRow])
+      captures <- Ref.make(0)
+    yield FakeSutStats(rows, captures)
 
 /** Records the shard counts it was asked to re-shard onto, and can be made to fail -- the drain
   * protocol's behaviour when the bulk `UPDATE` does not land is the part of it that is easiest to

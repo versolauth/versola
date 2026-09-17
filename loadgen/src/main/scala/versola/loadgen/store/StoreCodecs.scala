@@ -3,13 +3,15 @@ package versola.loadgen.store
 import com.augustnagro.magnum.DbCodec
 import versola.loadgen.model.*
 import versola.loadgen.protocol.{EdgeSession, RefreshToken, SsoSession}
+import versola.loadgen.sut.SutStats
 import versola.util.postgres.BasicCodecs
 
 import java.time.Instant
 
 /** magnum codecs shared by the Postgres repositories: the `SMALLINT` enum columns of
-  * V0001/V0002/V0004 via [[StoreCodes]], and the protocol newtypes the session credentials are
-  * typed as. Mixed in rather than imported so `DbCodec.derived` for the row types finds them.
+  * V0001/V0002/V0004/V0005 via [[StoreCodes]], V0005's `JSONB` payload, and the protocol newtypes
+  * the session credentials are typed as. Mixed in rather than imported so `DbCodec.derived` for
+  * the row types finds them.
   */
 private[store] trait StoreCodecs extends BasicCodecs:
   given DbCodec[Instant] = DbCodec.InstantCodec
@@ -21,6 +23,9 @@ private[store] trait StoreCodecs extends BasicCodecs:
   given DbCodec[VirtualUserState] = StoreCodecs.smallInt(StoreCodes.userState)
   given DbCodec[SessionKind] = StoreCodecs.smallInt(StoreCodes.sessionKind)
   given DbCodec[MeasurementKind] = StoreCodecs.smallInt(StoreCodes.measurementKind)
+  given DbCodec[SutStatPhase] = StoreCodecs.smallInt(StoreCodes.sutStatPhase)
+
+  given DbCodec[SutStats] = jsonBCodec[SutStats]
 
   given DbCodec[RefreshToken] = DbCodec.StringCodec.biMap(RefreshToken(_), _.value)
   given DbCodec[EdgeSession] = DbCodec.StringCodec.biMap(EdgeSession(_), _.value)
