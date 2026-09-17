@@ -18,6 +18,7 @@ import versola.edge.model.{
   PresetId,
   PresetNotFound,
   RefreshToken,
+  RefreshTokenFamilyId,
   Resource,
   ResourceEndpoint,
   ResourceEndpointId,
@@ -116,9 +117,10 @@ object EdgeService:
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
 
-  /** Auth's own event for a single revoked access token. Deliberately not the OIDC logout
-    * event: that one ends the whole session for every client sharing it, which is not what
-    * one client revoking one of its tokens may trigger.
+  /** Auth's own event for revoked access tokens, named either one `jti` at a time or by the
+    * refresh-token family they came from. Deliberately not the OIDC logout event: that one
+    * ends the whole session for every client sharing it, which is not what one client
+    * revoking one of its tokens may trigger.
     */
   private val AccessTokenRevocationEvent = "versola:event:access-token-revocation"
 
@@ -128,11 +130,11 @@ object EdgeService:
     * Logout token (spec §2.4) or an access token revocation. Back-Channel Logout requires a
     * `sub`, a `sid` or both, and reads a token without a `sid` as covering every session of
     * that subject, which is what an administrator ending a user's access sends.
-    * `revoked_jti`/`revoked_exp` describe the token(s) a revocation names; they are
-    * deliberately not `jti`/`exp`, which belong to the event token itself. `revoked_jti` is
-    * always a JSON array, even when it names one token, so there is one shape to decode
-    * rather than a singular-or-array ambiguity; every token it names shares the one
-    * `revoked_exp` bound.
+    * `revoked_jti`/`revoked_fam`/`revoked_exp` describe the token(s) a revocation names; they
+    * are deliberately not `jti`/`exp`, which belong to the event token itself. `revoked_jti`
+    * and `revoked_fam` are always JSON arrays, even when either names one thing, so there is
+    * one shape to decode rather than a singular-or-array ambiguity; everything they name
+    * shares the one `revoked_exp` bound.
     */
   private case class LogoutTokenClaims(
       @jsonField("iss") issuer: String,
@@ -146,6 +148,7 @@ object EdgeService:
         */
       @jsonField("toe") timeOfEvent: Option[Long],
       @jsonField("revoked_jti") revokedTokenIds: Option[List[AccessTokenId]],
+      @jsonField("revoked_fam") revokedFamilies: Option[List[RefreshTokenFamilyId]],
       @jsonField("revoked_exp") revokedTokenExpiresAt: Option[Long],
       nonce: Option[String],
       events: Map[String, Json],
@@ -436,13 +439,20 @@ object EdgeService:
           revocationService.revokeUser(subject, Instant.ofEpochSecond(claims.timeOfEvent.getOrElse(claims.issuedAt)))
         case (None, None) => ZIO.fail(InvalidLogoutToken("logout token carries neither a sid nor a sub claim"))
 
+    /** An event names the tokens it revokes either individually or by the refresh chain that
+      * issued them. Both are accepted, and one event may carry both: the sender picks whichever
+      * names what it means to end, and neither reading is a superset of the other.
+      */
     private def revokeToken(claims: EdgeService.LogoutTokenClaims): IO[Throwable | InvalidLogoutToken, Unit] =
+      val jtis = claims.revokedTokenIds.flatMap(NonEmptyChunk.fromIterableOption)
+      val families = claims.revokedFamilies.flatMap(NonEmptyChunk.fromIterableOption)
       for
-        jtis <- ZIO.fromOption(claims.revokedTokenIds.flatMap(NonEmptyChunk.fromIterableOption))
-          .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_jti claim"))
+        _ <- ZIO.fail(InvalidLogoutToken("access token revocation carries no revoked_jti or revoked_fam claim"))
+          .when(jtis.isEmpty && families.isEmpty)
         expiresAt <- ZIO.fromOption(claims.revokedTokenExpiresAt)
           .orElseFail(InvalidLogoutToken("access token revocation carries no revoked_exp claim"))
-        _ <- revocationService.revokeTokens(jtis, Instant.ofEpochSecond(expiresAt))
+        _ <- ZIO.foreachDiscard(jtis)(revocationService.revokeTokens(_, Instant.ofEpochSecond(expiresAt)))
+        _ <- ZIO.foreachDiscard(families)(revocationService.revokeFamilies(_, Instant.ofEpochSecond(expiresAt)))
       yield ()
 
     /** OIDC Back-Channel Logout §2.6: the token must come from the configured OP, be
@@ -629,7 +639,7 @@ object EdgeService:
     private def checkRevoked(claims: AccessTokenClaims): IO[Outcome, Unit] =
       revocationService
         .isRevoked(
-          RevocationKey.of(claims.jti, claims.sid, claims.subject),
+          RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
           Instant.ofEpochSecond(claims.issuedAt),
         )
         .flatMap(revoked => ZIO.fail(Outcome.Unauthorized).when(revoked))

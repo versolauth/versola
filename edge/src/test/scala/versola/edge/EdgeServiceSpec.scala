@@ -176,6 +176,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         revokedExpiresAt: Option[Instant],
         events: java.util.Map[String, ?],
         audience: String = "web-app",
+        revokedFam: Option[List[String]] = None,
     ): Task[String] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -192,6 +193,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .claim("events", events)
           revokedExpiresAt.foreach(exp => builder.claim("revoked_exp", exp.getEpochSecond))
           revokedJti.foreach(jtis => builder.claim("revoked_jti", jtis.asJava))
+          revokedFam.foreach(families => builder.claim("revoked_fam", families.asJava))
           val jwt = SignedJWT(header, builder.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           jwt.serialize()
@@ -205,7 +207,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       revocationService.revokeSession.succeedsWith(()) *>
         revocationService.revokeUser.succeedsWith(()) *>
         revocationService.revokeToken.succeedsWith(()) *>
-        revocationService.revokeTokens.succeedsWith(())
+        revocationService.revokeTokens.succeedsWith(()) *>
+        revocationService.revokeFamilies.succeedsWith(())
 
     def withPresets(values: AuthorizationPreset*): UIO[Unit] =
       presetCache.set(values.map(p => p.id -> p).toMap)
@@ -959,6 +962,31 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           List((NonEmptyChunk(AccessTokenId("revoked-token-1"), AccessTokenId("revoked-token-2")), now.plusSeconds(300))),
       )
     },
+    test("revokes a whole refresh-token family on an event naming one, leaving the session alone") {
+      val env = new Env
+      val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
+      for
+        _ <- env.withClients(Fixtures.client)
+        _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+        _ <- env.stubRevocations
+        security <- ZIO.service[SecurityService]
+        client <- ZIO.service[Client]
+        service = env.buildService(client, security)
+        now <- Clock.instant
+        token <- env.signRevocationToken(
+          revokedJti = None,
+          revokedExpiresAt = Some(now.plusSeconds(300)),
+          events = revocationEvent,
+          revokedFam = Some(List("family-1")),
+        )
+        _ <- service.backChannelLogout(token)
+      yield assertTrue(
+        // A leaked chain is one client's grant, not the SSO session every client shares.
+        env.revocationService.revokeSession.calls.isEmpty,
+        env.revocationService.revokeFamilies.calls ==
+          List((NonEmptyChunk(RefreshTokenFamilyId("family-1")), now.plusSeconds(300))),
+      )
+    },
     test("rejects an access token revocation event that names no token") {
       val env = new Env
       val revocationEvent = Collections.singletonMap(accessTokenRevocationEvent, Collections.emptyMap())
@@ -972,8 +1000,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         token <- env.signRevocationToken(revokedJti = None, revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         result <- service.backChannelLogout(token).either
       yield assertTrue(
-        rejection(result).contains("access token revocation carries no revoked_jti claim"),
+        rejection(result).contains("access token revocation carries no revoked_jti or revoked_fam claim"),
         env.revocationService.revokeTokens.calls.isEmpty,
+        env.revocationService.revokeFamilies.calls.isEmpty,
       )
     },
     test("rejects an access token revocation event that names no revoked_exp") {

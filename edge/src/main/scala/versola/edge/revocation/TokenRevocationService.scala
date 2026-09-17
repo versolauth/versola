@@ -1,6 +1,6 @@
 package versola.edge.revocation
 
-import versola.edge.model.{AccessTokenId, SessionId}
+import versola.edge.model.{AccessTokenId, RefreshTokenFamilyId, SessionId}
 import versola.edge.{EdgeConfig, OAuthClientService}
 import zio.*
 
@@ -19,6 +19,13 @@ trait TokenRevocationService:
     * durable write covers the whole batch instead of one per token.
     */
   def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit]
+
+  /** A leaked refresh chain: every access token it ever issued, named collectively rather than
+    * one `jti` at a time. `expiresAt` bounds the entry the same way [[revokeToken]]'s does,
+    * except that auth derives it from the client's TTL -- the tokens themselves are not in
+    * hand there, so it is an upper bound rather than any one token's `exp`.
+    */
+  def revokeFamilies(families: NonEmptyChunk[RefreshTokenFamilyId], expiresAt: Instant): Task[Unit]
 
   /** One SSO session ends: every token bearing this `sid`, including bearer tokens this
     * edge has no session row for and ones superseded by rotation.
@@ -130,6 +137,9 @@ object TokenRevocationService:
 
     override def revokeTokens(jtis: NonEmptyChunk[AccessTokenId], expiresAt: Instant): Task[Unit] =
       repository.revokeAll(jtis.map(jti => Revocation(RevocationKey.Jti(jti), expiresAt, issuedBefore = None)).toList)
+
+    override def revokeFamilies(families: NonEmptyChunk[RefreshTokenFamilyId], expiresAt: Instant): Task[Unit] =
+      repository.revokeAll(families.map(fam => Revocation(RevocationKey.Fam(fam), expiresAt, issuedBefore = None)).toList)
 
     /** The entry only has to outlive the longest-lived token the session could have been
       * issued. Edge never sees a token's `iat`, but `exp = iat + accessTokenTtl` and
