@@ -157,10 +157,13 @@ object OAuthTokenService:
         accessToken = codeRecord.accessToken
         _ <- Observability.setToken(accessToken.encoded)
 
+        familyId <- authPropertyGenerator.nextRefreshTokenFamilyId
+
         issuedTokens <- issueTokens(
           accessToken = accessToken,
           client = client,
           record = RefreshTokenRecord(
+            familyId = familyId,
             sessionId = codeRecord.sessionId,
             publicSessionId = codeRecord.publicSessionId,
             accessToken = accessToken,

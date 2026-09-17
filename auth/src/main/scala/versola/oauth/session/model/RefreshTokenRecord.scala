@@ -12,6 +12,11 @@ import java.time.Instant
 given Equal[Instant] = Equal.default
 
 case class RefreshTokenRecord(
+    /** The rotation family this token belongs to. Generated when the chain starts and
+      * inherited by every successor, so a token replayed any number of generations later
+      * still names the family that has to be revoked. On a rotation the stored value wins:
+      * see `SessionRepository.createRefreshToken`. */
+    familyId: RefreshTokenFamilyId,
     sessionId: MAC.Of[SessionId],
     publicSessionId: PublicSessionId,
     accessToken: AccessToken,

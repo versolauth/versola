@@ -1,7 +1,7 @@
 package versola.util
 
 import versola.oauth.model.{AccessToken, AuthorizationCode, RefreshToken}
-import versola.oauth.session.model.{PublicSessionId, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, SessionId}
 import zio.{UIO, ZLayer}
 
 trait AuthPropertyGenerator:
@@ -10,6 +10,7 @@ trait AuthPropertyGenerator:
   def nextPublicSessionId: UIO[PublicSessionId]
   def nextAccessToken: UIO[AccessToken]
   def nextRefreshToken: UIO[RefreshToken]
+  def nextRefreshTokenFamilyId: UIO[RefreshTokenFamilyId]
 
 object AuthPropertyGenerator:
   def live = ZLayer.fromFunction(Impl(_))
@@ -29,6 +30,12 @@ object AuthPropertyGenerator:
 
     override def nextRefreshToken: UIO[RefreshToken] =
       secureRandom.nextBytes(32).map(RefreshToken(_))
+
+    // 16 bytes, like the public session id and unlike the refresh token itself: this names a
+    // family, it is not presented to claim one, so it needs to be unguessable only in the
+    // sense that it must not be enumerable.
+    override def nextRefreshTokenFamilyId: UIO[RefreshTokenFamilyId] =
+      secureRandom.nextBytes(16).map(RefreshTokenFamilyId.fromBytes)
 
 
 

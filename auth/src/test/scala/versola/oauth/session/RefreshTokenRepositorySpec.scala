@@ -3,7 +3,7 @@ package versola.oauth.session
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ScopeToken}
 import versola.oauth.model.{AccessToken, RefreshToken}
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, MAC}
 import zio.*
@@ -23,6 +23,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
 
   val publicSessionId1 = PublicSessionId("public-session-1")
   val publicSessionId2 = PublicSessionId("public-session-2")
+
+  val familyId1 = RefreshTokenFamilyId("family-1")
+  val familyId2 = RefreshTokenFamilyId("family-2")
 
   val refreshToken1 = MAC(Array.fill(32)(20.toByte))
   val refreshToken2 = MAC(Array.fill(32)(21.toByte))
@@ -51,6 +54,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   val idempotencyKey2 = MAC(Array.fill(32)(41.toByte))
 
   def tokenRecord1(now: Instant, ttl: Duration) = RefreshTokenRecord(
+    familyId = familyId1,
     sessionId = sessionId1,
     publicSessionId = publicSessionId1,
     accessToken = accessToken1,
@@ -72,6 +76,7 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
   )
 
   def tokenRecord2(now: Instant, ttl: Duration) = RefreshTokenRecord(
+    familyId = familyId2,
     sessionId = sessionId2,
     publicSessionId = publicSessionId2,
     accessToken = accessToken2,
@@ -154,6 +159,21 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
         yield assertTrue(
           foundBefore.exists(_ === record),
           foundAfter.isEmpty,
+        )
+      },
+      test("a chain is filed under the family id it was handed, and successors inherit it") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          root <- env.repository.findToken(refreshToken1)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1.copy(familyId = familyId2), None)
+          tip <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          root.map(_.familyId).contains(familyId1),
+          // The successor takes its family off the row it retires, so the id on the record --
+          // deliberately a different one here -- is ignored on a rotation.
+          tip.map(_.familyId).contains(familyId1),
         )
       },
       test("refresh token rotation: old token deleted, new token created") {
