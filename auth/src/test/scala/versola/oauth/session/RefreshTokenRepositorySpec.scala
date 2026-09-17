@@ -388,6 +388,28 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           stillLive <- env.repository.findToken(refreshToken1)
         yield assertTrue(stillLive.isDefined)
       },
+      test("a rotation racing deleteByFamily never leaves a live successor behind") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- env.repository.createRefreshToken(refreshToken2, Some(refreshToken1), record1, None)
+
+          // Same invariant as the rotation-versus-revokeFamily race above: whichever order
+          // they land in, no member of the family is left live. What makes it hold here is
+          // that `deleteByFamily` names the family rather than a token of it and still takes
+          // the family lock -- without it the update expires only what its snapshot saw, and
+          // a rotation committing afterward leaves a member that outlives the `fam` deny-list
+          // entry and so keeps the replayed grant refreshable.
+          //
+          // `zipPar` does not force that interleaving, so this pins the invariant rather than
+          // reproducing the race: it passes against an unlocked implementation too.
+          _ <- env.repository.createRefreshToken(refreshToken3, Some(refreshToken2), record1, None).either
+            .zipPar(env.repository.deleteByFamily(familyId1))
+
+          live <- ZIO.foreach(List(refreshToken1, refreshToken2, refreshToken3))(env.repository.findToken)
+        yield assertTrue(live.forall(_.isEmpty))
+      },
       test("revokeFamily is idempotent: a second replay finds the family already dead") {
         for
           now <- Clock.instant

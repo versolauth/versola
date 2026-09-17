@@ -267,6 +267,23 @@ class PostgresSessionRepository(xa: TransactorZIO)
     """.query[Int].run()
     ()
 
+  /** As [[lockFamily]], for a caller that already holds the family id and so needs no row to
+    * resolve it. The same namespace and the same `hashtext(family_id)` key, so it contends
+    * with the token-addressed form: a rotation locking through its predecessor and a
+    * revocation locking by id exclude each other.
+    *
+    * Unlike [[lockFamily]] the key is never NULL, so a family with no rows left still locks --
+    * which is what a caller naming a family nothing has inserted into yet depends on.
+    */
+  private def lockFamilyById(familyId: RefreshTokenFamilyId)(using DbCon): Unit =
+    sql"""
+      SELECT 1 FROM pg_advisory_xact_lock(
+        ${PostgresSessionRepository.RefreshTokenFamilyLockNamespace},
+        hashtext($familyId)
+      )
+    """.query[Int].run()
+    ()
+
   override def createRefreshToken(
       refreshToken: MAC.Of[RefreshToken],
       previous: Option[MAC.Of[RefreshToken]],
@@ -516,7 +533,13 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   override def deleteByFamily(familyId: RefreshTokenFamilyId): Task[Unit] =
     Clock.instant.flatMap: now =>
-      xa.connectMeasured("delete-refresh-token-family"):
+      xa.transactMeasured("delete-refresh-token-family"):
+        // The same lock rotation takes, for the same reason `revokeFamily` takes it: without
+        // it this update only expires the rows its snapshot can see, and an exchange or
+        // rotation committing afterward leaves the family a live member. That member outlives
+        // the `fam` deny-list entry, so the grant this call is meant to end stays refreshable.
+        lockFamilyById(familyId)
+
         sql"""
           UPDATE refresh_tokens SET expires_at = $now
           WHERE family_id = $familyId AND expires_at > $now

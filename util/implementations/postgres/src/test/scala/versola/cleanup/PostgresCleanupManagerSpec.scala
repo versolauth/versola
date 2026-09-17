@@ -77,14 +77,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
               INSERT INTO authorization_codes
                 (code, client_id, user_id, session_id, public_session_id, redirect_uri, scope,
                  resources, code_challenge, code_challenge_method, expires_at,
-                 used, access_token, amr, auth_time)
+                 used, access_token, amr, auth_time, family_id)
               VALUES
                 (decode('0101', 'hex'), 'c1', $userId1, decode('02', 'hex'), 'sid1', 'https://x.com', ARRAY['openid'],
                  ARRAY[]::text[], 'ch', 'S256', NOW() - INTERVAL '1 minute',
-                 false, decode('03', 'hex'), '[]'::jsonb, NOW()),
+                 false, decode('03', 'hex'), '[]'::jsonb, NOW(), 'fam1'),
                 (decode('0202', 'hex'), 'c1', $userId2, decode('02', 'hex'), 'sid2', 'https://x.com', ARRAY['openid'],
                  ARRAY[]::text[], 'ch', 'S256', NOW() + INTERVAL '5 minutes',
-                 false, decode('04', 'hex'), '[]'::jsonb, NOW())
+                 false, decode('04', 'hex'), '[]'::jsonb, NOW(), 'fam2')
             """.update.run()
           _             <- manager.runBatch("authorization_codes", 1000, "code")
           expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0101', 'hex')".query[Long].run().head)
