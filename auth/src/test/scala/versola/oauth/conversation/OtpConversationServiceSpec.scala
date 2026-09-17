@@ -468,7 +468,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
@@ -523,7 +523,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
@@ -560,7 +560,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.authPropertyGenerator.nextSessionId.succeedsWith(testSessionId)
           _ <- env.authPropertyGenerator.nextPublicSessionId.succeedsWith(testPublicSessionId)
           _ <- env.authPropertyGenerator.nextAccessToken.succeedsWith(testAccessToken)
-          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId(\"family-1\"))
+          _ <- env.authPropertyGenerator.nextRefreshTokenFamilyId.succeedsWith(RefreshTokenFamilyId("family-1"))
           _ <- env.securityService.mac.returnsZIOOnCall:
             case 1 => ZIO.succeed(testSessionIdMac)
             case 2 => ZIO.succeed(testCodeMac)
