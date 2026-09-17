@@ -218,7 +218,7 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
         central <- api
         name <- CentralApi.token("probe_detail")
         _ <- central.post(path, Fixtures.detailType(name))
-        listed <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("types"))
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("types")))(_.nonEmpty)
         _ <- cleanup(central, name)
       yield assertTrue(listed.size == 1)
     },

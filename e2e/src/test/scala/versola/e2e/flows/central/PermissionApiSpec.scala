@@ -282,8 +282,7 @@ object PermissionApiSpec extends CentralApiSpec:
         central <- api
         permission <- CentralApi.permission("probe")
         _ <- central.post(path, Fixtures.permission(permission))
-        listed <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1")
-          .flatMap(_.items("permissions"))
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("permissions")))(_.nonEmpty)
         _ <- cleanup(central, permission)
       yield assertTrue(listed.size == 1)
     },
