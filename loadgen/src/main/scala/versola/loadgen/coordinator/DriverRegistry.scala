@@ -1,6 +1,6 @@
 package versola.loadgen.coordinator
 
-import versola.loadgen.metrics.{CampaignHealth, ErrorTaxonomy}
+import versola.loadgen.metrics.{CampaignHealth, ErrorTaxonomy, TokenObservations}
 import zio.json.JsonCodec
 import zio.{Duration, IO, Ref, UIO, ZIO}
 
@@ -47,6 +47,11 @@ case class DriverVitals(
   *   the shard map the driver is running. A driver still on an old epoch after its drain deadline
   *   has passed is the one failure mode of the rebalance protocol that matters, and it is visible
   *   only here.
+  * @param observed
+  *   what the SUT answered about the tokens it issued, which no other channel carries and which
+  *   the report's header states per client. Not part of [[DriverVitals]] because nothing here is
+  *   a reading about the driver's own health: a driver is no less trustworthy for having been
+  *   told a short TTL.
   */
 case class DriverReport(
     version: Int,
@@ -58,14 +63,17 @@ case class DriverReport(
     arrivals: Map[PlanScenario, Long],
     taxonomy: ErrorTaxonomy,
     vitals: DriverVitals,
+    observed: TokenObservations,
 ) derives JsonCodec
 
 object DriverReport:
   /** Bumped whenever this envelope's shape changes, and rejected rather than guessed at, for the
     * same reason `HistogramWire.version` is: a campaign spans days, so a rolling driver upgrade
     * mid-run is exactly when a silently misread report would be most expensive.
+    *
+    * 2 adds `observed`.
     */
-  val version: Int = 1
+  val version: Int = 2
 
 /** What a driver's earlier incarnations recorded, kept across a restart of that driver.
   *
@@ -78,6 +86,7 @@ final case class CarriedTotals(
     refreshRejectedTotal: Long,
     storeFlushDroppedTotal: Long,
     latencyClampedTotal: Long,
+    observed: TokenObservations,
 ):
   def plus(report: DriverReport): CarriedTotals =
     CarriedTotals(
@@ -85,10 +94,13 @@ final case class CarriedTotals(
       refreshRejectedTotal = refreshRejectedTotal + report.vitals.refreshRejectedTotal,
       storeFlushDroppedTotal = storeFlushDroppedTotal + report.vitals.storeFlushDroppedTotal,
       latencyClampedTotal = latencyClampedTotal + report.vitals.latencyClampedTotal,
+      // A union, not a sum, so unlike the counters beside it this needs no re-baselining: what a
+      // dead process was told about a TTL stays true, and being told it twice is not two facts.
+      observed = observed.merge(report.observed),
     )
 
 object CarriedTotals:
-  val empty: CarriedTotals = CarriedTotals(ErrorTaxonomy.empty, 0L, 0L, 0L)
+  val empty: CarriedTotals = CarriedTotals(ErrorTaxonomy.empty, 0L, 0L, 0L, TokenObservations.empty)
 
 /** The last two reports from one driver -- the minimum a rate needs -- plus whatever the
   * driver's previous incarnations recorded before their counters were re-baselined.
@@ -116,6 +128,7 @@ final case class FleetView(
     achievedPerSecond: Map[PlanScenario, Double],
     taxonomy: ErrorTaxonomy,
     health: CampaignHealth,
+    observed: TokenObservations,
 )
 
 /** The coordinator's view of its drivers: the latest report from each, and the one before it.
@@ -176,6 +189,10 @@ final class DriverRegistry private (
         // their latency is already in the merge. Only the *rate* is a statement about now.
         taxonomy = ErrorTaxonomy.mergeAll(reports.map(_.latest.taxonomy) ++ reports.map(_.carried.taxonomy)),
         health = health(reports),
+        // Stale drivers count here for the same reason they count in the taxonomy, and more
+        // plainly: a TTL the SUT issued an hour ago is not retracted by the driver that saw it
+        // going quiet.
+        observed = TokenObservations.mergeAll(reports.map(_.latest.observed) ++ reports.map(_.carried.observed)),
       )
 
   private def isStale(report: DriverReport, now: Instant): Boolean =
@@ -226,7 +243,7 @@ final class DriverRegistry private (
       refreshRejectedTotal = vitals.map(_.refreshRejectedTotal).sum + carried.map(_.refreshRejectedTotal).sum,
       flushDroppedTotal = vitals.map(_.storeFlushDroppedTotal).sum + carried.map(_.storeFlushDroppedTotal).sum,
       maxDriverCpu = vitals.flatMap(_.cpuRatio).maxOption,
-      scheduleLagP99 = vitals.flatMap(_.scheduleLagP99Micros).maxOption.map(micros => Duration.fromNanos(micros * 1000L)),
+      scheduleLagP99Micros = vitals.flatMap(_.scheduleLagP99Micros).maxOption,
       latencyClampedTotal = vitals.map(_.latencyClampedTotal).sum + carried.map(_.latencyClampedTotal).sum,
     )
 

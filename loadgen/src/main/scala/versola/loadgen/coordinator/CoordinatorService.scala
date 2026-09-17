@@ -4,9 +4,13 @@ import versola.loadgen.config.{CampaignConfig, LoadgenConfig, MeasurementRefConf
 import versola.loadgen.metrics.{
   AcceptanceThresholds,
   CampaignReport,
+  CampaignRun,
   LoadgenMetrics,
   MeasurementId,
+  ObservedAccessTokenTtl,
   PopulationState,
+  RunPhase,
+  TokenMode,
 }
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
@@ -149,10 +153,38 @@ final class CoordinatorService private (
         reports <- ZIO.fromEither(SnapshotMerge.toReports(rows)).mapError(IllegalStateException(_))
         state <- control.get
         fleet <- drivers.view(now, state.shards.epoch)
+        counts <- population.get
         report <- ZIO
-          .fromEither(CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, thresholds))
+          .fromEither(CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds))
           .mapError(IllegalStateException(_))
       yield report
+
+  /** The run's header: the plan as published, the population as counted, and what the SUT said
+    * about the tokens it issued.
+    *
+    * The shard map is the one in force rather than `plan.shard-count` from config, for the same
+    * reason the population is a count rather than `population.target`: a campaign that was
+    * rebalanced, or seeded short, would otherwise report the run somebody intended instead of the
+    * one that happened.
+    */
+  private def runOf(state: CampaignControl, counts: Map[VirtualUserState, Long], fleet: FleetView): CampaignRun =
+    CampaignRun(
+      phases = campaign.phases.map: phase =>
+        RunPhase(
+          name = phase.name,
+          durationMillis = phase.duration.toMillis,
+          scale = phase.scale,
+          scaleFrom = phase.scaleFrom,
+          scaleTo = phase.scaleTo,
+        ),
+      population = counts.map((state, count) => state.toString.toLowerCase -> count),
+      shardCount = state.shards.shardCount,
+      shardEpoch = state.shards.epoch,
+      tokenMode = TokenMode.Bearer,
+      observedTokenTypes = fleet.observed.tokenTypes.toList.sorted,
+      accessTokenTtls = fleet.observed.accessTokenTtlsByClient.toList.sorted.map: (clientId, ttls) =>
+        ObservedAccessTokenTtl(clientId, ttls.toList.sorted),
+    )
 
   /** Phase two of the rebalance, once the drain window has elapsed: rewrite `vu_users.shard`,
     * then promote the published map.

@@ -1,7 +1,7 @@
 package versola.loadgen.coordinator
 
 import versola.loadgen.config.{LoadgenConfig, LoadgenConfigSpec, LoadgenRole}
-import versola.loadgen.metrics.{ErrorTaxonomy, HistogramSample, HistogramWire, LatencyRecorder, MeasurementId}
+import versola.loadgen.metrics.{ErrorTaxonomy, HistogramSample, HistogramWire, LatencyRecorder, MeasurementId, TokenObservations}
 import versola.loadgen.model.{ActivityClass, CredentialKind, Platform, UserRole, VirtualUser, VirtualUserState}
 import versola.loadgen.store.{
   MeasurementKind,
@@ -82,6 +82,7 @@ object CoordinatorFixture:
       at: Instant,
       arrivals: Map[PlanScenario, Long],
       taxonomy: ErrorTaxonomy,
+      observed: TokenObservations = TokenObservations.empty,
   ): DriverReport =
     DriverReport(
       version = DriverReport.version,
@@ -93,6 +94,7 @@ object CoordinatorFixture:
       arrivals = arrivals,
       taxonomy = taxonomy,
       vitals = healthyVitals,
+      observed = observed,
     )
 
   val healthyVitals: DriverVitals =
