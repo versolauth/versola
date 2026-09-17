@@ -313,7 +313,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           edgeProxy,
           mockBackend,
         )
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, perEndpoint)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, perEndpoint, None)
         assertTrue(
           report.map(_.checks.count(_.name.startsWith("p99 of"))) == Right(3),
           report.map(_.passed) == Right(true),
@@ -327,7 +327,7 @@ object CampaignReportSpec extends ZIOSpecDefault:
           edgeProxy,
           mockBackend,
         )
-        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, strict)
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, strict, None)
         assertTrue(
           report.map(_.passed) == Right(false),
           report.map(_.checks.filter(_.name == s"p99 of $tokenRefresh").map(_.passed)) == Right(List(false)),
