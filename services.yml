@@ -18,6 +18,31 @@ services:
     ports:
       - "5432:5432"
 
+  # The pooler the coordinator reads section 4 of the campaign report off
+  # (`PoolerStatsReaderSpec`). Not on the path of any service here -- auth,
+  # central and edge still connect straight to postgres above -- so running
+  # the stack without it changes nothing except that the one spec fails.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    container_name: pgbouncer
+    restart: always
+    depends_on:
+      - postgres
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: auth
+      DB_USER: ${PG_USER:-dev}
+      DB_PASSWORD: [redacted]}
+      AUTH_TYPE: [redacted]
+      # `SHOW CONFIG` is refused to a stats-only login, and the spec reads
+      # `max_client_conn` and `default_pool_size` from it.
+      ADMIN_USERS: ${PG_USER:-dev}
+      POOL_MODE: transaction
+      LISTEN_PORT: 6432
+    ports:
+      - "6432:6432"
+
   jaeger:
     image: jaegertracing/jaeger
     container_name: jaeger

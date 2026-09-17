@@ -4,7 +4,7 @@ import versola.loadgen.config.LoadgenConfig
 import versola.loadgen.metrics.{ErrorTaxonomy, MeasurementId, StepOutcome}
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.store.SutStatPhase
-import versola.loadgen.sut.SutStatsCapture
+import versola.loadgen.sut.{PoolerStatsCapture, SutStatsCapture}
 import zio.*
 import zio.test.*
 
@@ -36,18 +36,21 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
       users: FakeVirtualUsers,
       snapshots: FakeMetricSnapshots,
   ) =
-    harnessWith(config, users, snapshots, None)
+    harnessWith(config, users, snapshots, None, None)
 
   private def harnessWith(
       config: ZIO[Any, zio.Config.Error, LoadgenConfig],
       users: FakeVirtualUsers,
       snapshots: FakeMetricSnapshots,
       sutStats: Option[SutStatsCapture],
+      poolerStats: Option[PoolerStatsCapture],
   ) =
     for
       loaded <- config
       rebalancer <- FakeRebalancer.make
-      service <- CoordinatorService.make(loaded, users, snapshots, rebalancer, sutStats).mapError(RuntimeException(_))
+      service <- CoordinatorService
+        .make(loaded, users, snapshots, rebalancer, sutStats, poolerStats)
+        .mapError(RuntimeException(_))
       _ <- TestClock.setTime(t0)
     yield Harness(service, users, snapshots, rebalancer)
 
@@ -418,7 +421,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
             CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
           )
           sutStats <- FakeSutStats.make
-          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
           _ <- harness.service.start
           // A run in progress has one reading and no difference, which is not §3 with a hole in
           // it -- it is a statement the report is not yet able to make.
@@ -446,7 +449,43 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           _ <- harness.service.start
           _ <- harness.service.stop
           report <- harness.service.report(campaign)
-        yield assertTrue(report.databases.isEmpty)
+        yield assertTrue(report.databases.isEmpty, report.poolers.isEmpty)
+      },
+      test("carries the pooler section once both boundaries have been captured") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+          )
+          poolerStats <- FakePoolerStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, None, Some(poolerStats))
+          _ <- harness.service.start
+          running <- harness.service.report(campaign)
+          _ <- TestClock.adjust(1.hour)
+          _ <- harness.service.stop
+          stopped <- harness.service.report(campaign)
+        yield assertTrue(
+          running.poolers.isEmpty,
+          stopped.poolers.map(_.map(_.pooler)) == Some(List("auth-pooler")),
+          stopped.poolers.exists(_.forall(!_.countersRestarted)),
+          stopped.poolers.exists(_.forall(_.counters.isDefined)),
+        )
+      },
+      // The two sections are configured independently, so each has to be able to arrive without
+      // the other: a developer's stack has databases and no pooler, and a coordinator granted
+      // only the pooler's console is the other half of the same case.
+      test("the pooler section arrives without the database section, and the reverse") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+          )
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.start
+          _ <- harness.service.stop
+          report <- harness.service.report(campaign)
+        yield assertTrue(report.databases.isDefined, report.poolers.isEmpty)
       },
       test("refuses a campaign it is not running, and one with no snapshots at all") {
         for
@@ -466,7 +505,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           snapshots <- FakeMetricSnapshots.make()
           rebalancer <- FakeRebalancer.make
           config <- CoordinatorFixture.coordinatorConfig
-          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer, None).either
+          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer, None, None).either
         yield assertTrue(refused.isLeft)
       },
     ),
@@ -476,7 +515,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           users <- FakeVirtualUsers.make()
           snapshots <- FakeMetricSnapshots.make()
           sutStats <- FakeSutStats.make
-          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
           _ <- harness.service.start
           opening <- sutStats.phases
           _ <- harness.service.stop
@@ -493,7 +532,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           users <- FakeVirtualUsers.make()
           snapshots <- FakeMetricSnapshots.make()
           sutStats <- FakeSutStats.make
-          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
           _ <- harness.service.start
           _ <- TestClock.adjust(10.minutes)
           _ <- harness.service.pause
@@ -516,7 +555,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           users <- FakeVirtualUsers.make()
           snapshots <- FakeMetricSnapshots.make()
           sutStats <- FakeSutStats.make
-          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats))
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
           _ <- harness.service.start
           _ <- harness.service.stop
           _ <- TestClock.adjust(1.hour)
@@ -526,6 +565,33 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
         yield assertTrue(
           phases == List(SutStatPhase.Before, SutStatPhase.After),
           deltas.map(_.afterEpochMillis) == List(t0.toEpochMilli),
+        )
+      },
+      // §3 and §4 are differenced against each other in the report -- pooler wait against the
+      // database's own transaction count -- so the two brackets have to be the same bracket.
+      test("the pooler is captured at the same two transitions as the databases") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          poolerStats <- FakePoolerStats.make
+          harness <- harnessWith(
+            CoordinatorFixture.coordinatorConfig,
+            users,
+            snapshots,
+            Some(sutStats),
+            Some(poolerStats),
+          )
+          _ <- harness.service.start
+          _ <- TestClock.adjust(10.minutes)
+          _ <- harness.service.pause
+          _ <- harness.service.start
+          _ <- harness.service.stop
+          databases <- sutStats.phases
+          poolers <- poolerStats.phases
+        yield assertTrue(
+          databases == List(SutStatPhase.Before, SutStatPhase.After),
+          poolers == databases,
         )
       },
     ),

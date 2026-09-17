@@ -16,7 +16,7 @@ import versola.loadgen.metrics.{
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
 import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
-import versola.loadgen.sut.{SutStatsCapture, SutStatsDelta}
+import versola.loadgen.sut.{PoolerStatsCapture, PoolerStatsDelta, SutStatsCapture, SutStatsDelta}
 import zio.*
 
 import java.time.Instant
@@ -63,6 +63,7 @@ final class CoordinatorService private (
     snapshots: MetricSnapshotRepository,
     rebalancer: ShardRebalancer,
     sutStats: Option[SutStatsCapture],
+    poolerStats: Option[PoolerStatsCapture],
     transitionLock: Semaphore,
 ):
 
@@ -159,9 +160,11 @@ final class CoordinatorService private (
         fleet <- drivers.view(now, state.shards.epoch)
         counts <- population.get
         databases <- sutDeltas(name)
+        poolers <- poolerDeltas(name)
         report <- ZIO
           .fromEither(
-            CampaignReport.assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds, databases),
+            CampaignReport
+              .assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds, databases, poolers),
           )
           .mapError(IllegalStateException(_))
       yield report
@@ -201,6 +204,12 @@ final class CoordinatorService private (
     */
   private def sutDeltas(name: String): Task[Option[List[SutStatsDelta]]] =
     ZIO.foreach(sutStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
+
+  /** §4's pooler half, on [[sutDeltas]]'s conditions and independently of them: a stack with a
+    * PgBouncer and no SUT credentials reports this section and not §3.
+    */
+  private def poolerDeltas(name: String): Task[Option[List[PoolerStatsDelta]]] =
+    ZIO.foreach(poolerStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
 
   /** Phase two of the rebalance, once the drain window has elapsed: rewrite `vu_users.shard`,
     * then promote the published map.
@@ -312,12 +321,22 @@ final class CoordinatorService private (
     * driver's `GET /plan` can observe.
     */
   private def captureSutStats(previous: CampaignState, current: CampaignState): UIO[Unit] =
-    ZIO.foreachDiscard(sutStats): capture =>
-      (previous, current) match
-        case (CampaignState.Idle, CampaignState.Running) => capture.capture(campaign.name, SutStatPhase.Before)
-        case (before, CampaignState.Stopped) if before != CampaignState.Stopped =>
-          capture.capture(campaign.name, SutStatPhase.After)
-        case _ => ZIO.unit
+    ZIO.foreachDiscard(boundaryOf(previous, current)): phase =>
+      // The pooler is read after the databases rather than in parallel with them. Both readings
+      // are of the same instant only approximately, and where they disagree the database's is
+      // the one the report leans on -- so the pooler's boundary is the one that should absorb
+      // the other's latency, not the one that adds to it.
+      ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
+        ZIO.foreachDiscard(poolerStats)(_.capture(campaign.name, phase))
+
+  /** Which boundary, if either, a transition is. Shared by both captures so that §3 and §4 can
+    * never end up bracketing different things.
+    */
+  private def boundaryOf(previous: CampaignState, current: CampaignState): Option[SutStatPhase] =
+    (previous, current) match
+      case (CampaignState.Idle, CampaignState.Running) => Some(SutStatPhase.Before)
+      case (before, CampaignState.Stopped) if before != CampaignState.Stopped => Some(SutStatPhase.After)
+      case _ => None
 
   /** The ramp only runs while the campaign does: a paused campaign's registered count stops
     * moving, and a controller still comparing it against an advancing curve would wind the factor
@@ -425,6 +444,7 @@ object CoordinatorService:
       snapshots: MetricSnapshotRepository,
       rebalancer: ShardRebalancer,
       sutStats: Option[SutStatsCapture],
+      poolerStats: Option[PoolerStatsCapture],
   ): IO[String, CoordinatorService] =
     for
       plan <- ZIO.fromOption(config.plan).orElseFail("role = coordinator requires a 'plan' configuration block")
@@ -456,6 +476,7 @@ object CoordinatorService:
       snapshots = snapshots,
       rebalancer = rebalancer,
       sutStats = sutStats,
+      poolerStats = poolerStats,
       transitionLock = transitionLock,
     )
 

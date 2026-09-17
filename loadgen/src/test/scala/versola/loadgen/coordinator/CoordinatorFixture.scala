@@ -7,12 +7,20 @@ import versola.loadgen.store.{
   MeasurementKind,
   MetricSnapshotRepository,
   MetricSnapshotRow,
+  PoolerStatSnapshotRow,
   SutStatPhase,
   SutStatSnapshotRow,
   UserTouch,
   VirtualUserRepository,
 }
-import versola.loadgen.sut.{SutStatsCapture, SutStatsDelta, SutStatsFixture}
+import versola.loadgen.sut.{
+  PoolerStatsCapture,
+  PoolerStatsDelta,
+  PoolerStatsFixture,
+  SutStatsCapture,
+  SutStatsDelta,
+  SutStatsFixture,
+}
 import versola.util.Secret
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
@@ -225,6 +233,41 @@ object FakeSutStats:
       rows <- Ref.make(Vector.empty[SutStatSnapshotRow])
       captures <- Ref.make(0)
     yield FakeSutStats(rows, captures)
+
+/** [[FakeSutStats]] for `vu_pooler_stat_snapshots`, and for the same reason: what the coordinator
+  * owns is which transitions are boundaries, and the admin console commands are
+  * [[versola.loadgen.sut.PoolerStatsReader]]'s subject against a real PgBouncer.
+  */
+final class FakePoolerStats(rows: Ref[Vector[PoolerStatSnapshotRow]], captures: Ref[Int]) extends PoolerStatsCapture:
+
+  override def capture(campaign: String, phase: SutStatPhase): UIO[Unit] =
+    for
+      taken <- captures.updateAndGet(_ + 1)
+      now <- Clock.instant
+      row = PoolerStatsFixture.row(
+        campaign = campaign,
+        pooler = "auth-pooler",
+        phase = phase,
+        capturedAt = now,
+        statistics = PoolerStatsFixture.stats(base = taken.toLong),
+      )
+      _ <- rows.update: current =>
+        if current.exists(existing => (existing.campaign, existing.pooler, existing.phase) == (campaign, "auth-pooler", phase))
+        then current
+        else current :+ row
+    yield ()
+
+  override def deltas(campaign: String): Task[List[PoolerStatsDelta]] =
+    rows.get.map(recorded => PoolerStatsDelta.from(recorded.filter(_.campaign == campaign)))
+
+  def phases: UIO[List[SutStatPhase]] = rows.get.map(_.map(_.phase).toList)
+
+object FakePoolerStats:
+  def make: UIO[FakePoolerStats] =
+    for
+      rows <- Ref.make(Vector.empty[PoolerStatSnapshotRow])
+      captures <- Ref.make(0)
+    yield FakePoolerStats(rows, captures)
 
 /** Records the shard counts it was asked to re-shard onto, and can be made to fail -- the drain
   * protocol's behaviour when the bulk `UPDATE` does not land is the part of it that is easiest to

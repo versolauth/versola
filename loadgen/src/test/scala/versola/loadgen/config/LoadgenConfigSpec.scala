@@ -255,6 +255,25 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           named <- decodeSutStats(sutStatsWith("auth", "central")).exit
         yield assertTrue(empty.isFailure, duplicated.isFailure, unnamed.isFailure, named.isSuccess)
       },
+      // V0006's identity index is `(campaign, pooler, phase)`, so a duplicated name has
+      // sut-stats' consequence: the second reading is dropped and one pooler's numbers appear
+      // under the other's name.
+      test("rejects an empty, unnamed or duplicated pooler-stats list, and defaults the block to absent") {
+        for
+          absent <- decodeSutStats("")
+          empty <- decodeSutStats("pooler-stats { poolers = [] }").exit
+          duplicated <- decodeSutStats(poolerStatsWith("auth-pooler", "auth-pooler")).exit
+          unnamed <- decodeSutStats(poolerStatsWith("", "edge-pooler")).exit
+          named <- decodeSutStats(poolerStatsWith("auth-pooler", "edge-pooler"))
+        yield assertTrue(
+          absent.poolerStats.isEmpty,
+          empty.isFailure,
+          duplicated.isFailure,
+          unnamed.isFailure,
+          named.poolerStats.map(_.poolers.map(_.name)) == Some(List("auth-pooler", "edge-pooler")),
+          named.poolerStats.exists(_.poolers.head.admin.url.endsWith("/pgbouncer")),
+        )
+      },
       // `pg_stat_wal`, `pg_stat_checkpointer` and `pg_stat_io` answer for the whole cluster, so
       // two names pointed at the same host:port -- accepted, unlike a duplicated name, because
       // that is 03-postgres-topology.md's own developer-machine topology -- read those three
@@ -483,6 +502,15 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
   /** Two SUT databases under the names given, so the rejections above differ from the accepted
     * case in exactly the field each of them is about.
     */
+  private def poolerStatsWith(first: String, second: String): String =
+    s"""pooler-stats {
+       |  poolers = [
+       |    { name = "$first",  admin { url = "jdbc:postgresql://auth-pgb:6432/pgbouncer", user = stats, password = "[redacted]" } },
+       |    { name = "$second", admin { url = "jdbc:postgresql://edge-pgb:6432/pgbouncer", user = stats, password = "[redacted]" } },
+       |  ]
+       |}
+       |""".stripMargin
+
   private def sutStatsWith(first: String, second: String): String =
     s"""sut-stats {
        |  databases = [
