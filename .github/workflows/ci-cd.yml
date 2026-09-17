@@ -42,6 +42,30 @@ jobs:
           --health-timeout=5s
           --health-retries=10
           --health-start-period=10s
+      # The coordinator reads `SHOW STATS`/`SHOW POOLS` off a PgBouncer admin console
+      # to build section 4 of the campaign report, and every risk in that reader is a
+      # property of the console rather than of the code -- the query protocol it
+      # accepts and the columns this build spells. `PoolerStatsReaderSpec` needs a
+      # real one.
+      #
+      # It needs no healthy postgres behind it and is therefore not ordered against
+      # the service above: the admin console answers out of PgBouncer's own process,
+      # and the pool it reports on is allowed to be empty.
+      pgbouncer:
+        image: edoburu/pgbouncer:latest
+        env:
+          DB_HOST: postgres
+          DB_PORT: 5432
+          DB_NAME: auth
+          DB_USER: dev
+          DB_PASSWORD: 1234
+          AUTH_TYPE: plain
+          # `SHOW CONFIG` is admin-only, and the spec asserts the two limits it supplies.
+          ADMIN_USERS: dev
+          POOL_MODE: transaction
+          LISTEN_PORT: 6432
+        ports:
+          - 6432:6432
 
     steps:
       - uses: actions/checkout@v4
