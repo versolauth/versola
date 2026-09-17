@@ -45,7 +45,7 @@ object CoordinatorRoutesSpec extends ZIOSpecDefault:
         CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
       )
       rebalancer <- FakeRebalancer.make
-      service <- CoordinatorService.make(config, users, snapshots, rebalancer, None).mapError(RuntimeException(_))
+      service <- CoordinatorService.make(config, users, snapshots, rebalancer, None, None).mapError(RuntimeException(_))
       _ <- TestClock.setTime(t0)
     yield service
 

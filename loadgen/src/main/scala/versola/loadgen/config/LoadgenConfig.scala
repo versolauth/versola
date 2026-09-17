@@ -39,6 +39,7 @@ case class LoadgenConfig(
     seed: Option[SeedConfig],
     calibration: Option[CalibrationConfig],
     sutStats: Option[SutStatsConfig],
+    poolerStats: Option[PoolerStatsConfig],
 )
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all five --
@@ -584,6 +585,47 @@ object SutStatsConfig:
     */
   given DeriveConfig[SutStatsConfig] = DeriveConfig
     .derived[SutStatsConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
+
+/** One PgBouncer the coordinator reads the admin console of, under the name the report shows it
+  * by (runbook 05-report-spec.md §4).
+  *
+  * @param admin
+  *   the admin console, which is a [[SutDatabaseConfig]] because it is reached exactly like a
+  *   database: a JDBC URL naming PgBouncer's virtual `pgbouncer` database on its listen port, and
+  *   a user in `admin_users` or `stats_users`. `stats_users` is enough for everything
+  *   [[versola.loadgen.sut.PoolerStatsReader]] needs except `SHOW CONFIG`, which it degrades over.
+  */
+case class PoolerConfig(name: String, admin: SutDatabaseConfig)
+
+/** What a coordinator needs to answer §4's pooler half. Optional for [[SutStatsConfig]]'s reason,
+  * and independently of it: 04-pgbouncer.md installs the pooler before campaign 1, but a
+  * developer's stack runs without one and its campaigns are still campaigns.
+  */
+case class PoolerStatsConfig(poolers: List[PoolerConfig])
+
+object PoolerStatsConfig:
+  /** [[SutStatsConfig.validate]]'s rules, for [[SutStatsConfig.validate]]'s reasons: an empty list
+    * is indistinguishable from an omitted block, and duplicate names collide on the identity index
+    * of V0006 so that one pooler's statistics appear under another's name.
+    */
+  def validate(config: PoolerStatsConfig): Either[String, PoolerStatsConfig] =
+    val names = config.poolers.map(_.name)
+    for
+      _ <- Either.cond(config.poolers.nonEmpty, (), "pooler-stats.poolers must name at least one pooler")
+      _ <- Either.cond(names.forall(_.nonEmpty), (), "pooler-stats.poolers[].name must not be empty")
+      _ <- Either.cond(
+        names.distinct.size == names.size,
+        (),
+        s"pooler-stats.poolers[].name must be unique, got ${names.mkString(", ")}",
+      )
+    yield config
+
+  /** Anchored in the companion for [[SutStatsConfig]]'s reason -- the same `Config.Secret`
+    * password is reached through [[PoolerConfig.admin]].
+    */
+  given DeriveConfig[PoolerStatsConfig] = DeriveConfig
+    .derived[PoolerStatsConfig]
     .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
 
 /** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/

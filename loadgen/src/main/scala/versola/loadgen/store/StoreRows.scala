@@ -1,6 +1,6 @@
 package versola.loadgen.store
 
-import versola.loadgen.sut.SutStats
+import versola.loadgen.sut.{PoolerStats, SutStats}
 
 import java.time.Instant
 
@@ -90,8 +90,27 @@ case class SutStatSnapshotRow(
     statistics: SutStats,
 )
 
-/** Which boundary of the campaign a [[SutStatSnapshotRow]] was taken at. A capture is a procedure
-  * over a run, not a gauge -- one row of either phase answers nothing on its own.
+/** One `vu_pooler_stat_snapshots` row (migration V0006): what one PgBouncer's admin console said
+  * at one boundary of one campaign (runbook 05-report-spec.md §4).
+  *
+  * No reset instants, unlike [[SutStatSnapshotRow]]'s five, because the admin console publishes
+  * none: its totals are since process start and it reports no start time. [[version]] stands in
+  * for them as far as it can -- see the column's comment in the migration, and
+  * [[versola.loadgen.sut.PoolerStatsDelta.countersRestarted]] for what that leaves uncovered.
+  */
+case class PoolerStatSnapshotRow(
+    campaign: String,
+    /** The operator's label for the pooler, as `pooler-stats.poolers[].name` states it. */
+    pooler: String,
+    phase: SutStatPhase,
+    capturedAt: Instant,
+    version: String,
+    statistics: PoolerStats,
+)
+
+/** Which boundary of the campaign a [[SutStatSnapshotRow]] or [[PoolerStatSnapshotRow]] was taken
+  * at. A capture is a procedure over a run, not a gauge -- one row of either phase answers
+  * nothing on its own.
   */
 enum SutStatPhase:
   case Before, After

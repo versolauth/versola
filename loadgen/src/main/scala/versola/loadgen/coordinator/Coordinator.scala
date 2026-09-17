@@ -2,8 +2,14 @@ package versola.loadgen.coordinator
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
-import versola.loadgen.store.{LoadgenMigrations, PostgresMetricSnapshotRepository, PostgresSutStatSnapshotRepository, PostgresVirtualUserRepository}
-import versola.loadgen.sut.PostgresSutStatsCapture
+import versola.loadgen.store.{
+  LoadgenMigrations,
+  PostgresMetricSnapshotRepository,
+  PostgresPoolerStatSnapshotRepository,
+  PostgresSutStatSnapshotRepository,
+  PostgresVirtualUserRepository,
+}
+import versola.loadgen.sut.{PgBouncerStatsCapture, PostgresSutStatsCapture}
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -30,6 +36,10 @@ object Coordinator:
           // not a mistake: the report then carries every section but §3's.
           sutStats = config.sutStats.map: stats =>
             PostgresSutStatsCapture(stats.databases, PostgresSutStatSnapshotRepository(xa)),
+          // Independently absent from `sutStats`: a developer's stack has databases and no
+          // pooler, and 04-pgbouncer.md's target topology has both.
+          poolerStats = config.poolerStats.map: stats =>
+            PgBouncerStatsCapture(stats.poolers, PostgresPoolerStatSnapshotRepository(xa)),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run
@@ -43,6 +53,13 @@ object Coordinator:
             s"pg_stat_* snapshots will bracket the campaign for ${stats.databases.map(_.name).mkString(", ")}"
           case None =>
             "No 'sut-stats' block; the campaign report will carry no database section",
+      )
+      _ <- ZIO.logInfo(
+        config.poolerStats match
+          case Some(stats) =>
+            s"PgBouncer admin console readings will bracket the campaign for ${stats.poolers.map(_.name).mkString(", ")}"
+          case None =>
+            "No 'pooler-stats' block; the campaign report will carry no pooler section",
       )
       _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))):
         group =>

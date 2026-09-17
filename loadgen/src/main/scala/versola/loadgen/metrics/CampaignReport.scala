@@ -1,6 +1,6 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.sut.SutStatsDelta
+import versola.loadgen.sut.{PoolerStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}
 
@@ -182,6 +182,15 @@ case class CampaignReport(
       * report exists to produce, and a WAL rate has no pass mark to fail against.
       */
     databases: Option[List[SutStatsDelta]],
+    /** What the run cost each PgBouncer in front of those databases (runbook 05-report-spec.md
+      * §4): the difference between the admin console readings bracketing the campaign. `None` on
+      * [[databases]]'s conditions, and independently of it -- a stack with a pooler and no SUT
+      * credentials, or the reverse, is a configuration and not a mistake.
+      *
+      * Only the cumulative half of §4. The peak of the queue and the wait quantile need a time
+      * series, which a bracket is not; see [[versola.loadgen.sut.PoolerPoolStats.maxWaitMicros]].
+      */
+    poolers: Option[List[PoolerStatsDelta]],
 ) derives JsonCodec
 
 object CampaignReport:
@@ -194,6 +203,7 @@ object CampaignReport:
       run: CampaignRun,
       thresholds: AcceptanceThresholds,
       databases: Option[List[SutStatsDelta]],
+      poolers: Option[List[PoolerStatsDelta]],
   ): Either[String, CampaignReport] =
     for
       _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
@@ -224,6 +234,7 @@ object CampaignReport:
         notEvaluated = notEvaluated,
         passed = checks.forall(_.passed) && notEvaluated.isEmpty,
         databases = databases,
+        poolers = poolers,
       )
 
   private def evaluate(
