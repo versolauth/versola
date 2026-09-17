@@ -4,7 +4,7 @@ import com.zaxxer.hikari.HikariDataSource
 import com.zaxxer.hikari.metrics.{IMetricsTracker, MetricsTrackerFactory, PoolStats}
 import zio.*
 
-import java.util.concurrent.atomic.{AtomicLong, AtomicLongArray}
+import java.util.concurrent.atomic.AtomicLong
 
 /** The connection-acquisition wait, accumulated where HikariCP reports it and read where ZIO can
   * publish it.
@@ -14,8 +14,9 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicLongArray}
   * is an effect, its unsafe counterpart is `private[zio]`, and running a fiber per acquisition would
   * put a scheduler hop in front of every `getConnection` in every service on this pool.
   *
-  * So the tracker writes into the same buckets the histogram uses -- two atomic adds, no allocation,
-  * no ZIO -- and a fiber replays the difference since its last read into the real histogram. The
+  * So the tracker writes into the same buckets the histogram uses -- two adds under that bucket's
+  * own monitor, no allocation, no ZIO -- and a fiber replays the difference since its last read into
+  * the real histogram. The
   * replay is exact rather than approximate, which is the whole reason the sums are kept alongside
   * the counts: a bucket holding `n` observations that total `s` is reproduced by observing `s / n`
   * exactly `n` times. Their mean lies strictly inside the bucket's own interval (every value in it
@@ -25,13 +26,17 @@ import java.util.concurrent.atomic.{AtomicLong, AtomicLongArray}
   * quantile.
   *
   * Counters are cumulative and are never reset, so a concurrent `record` during a `drain` is carried
-  * into the next one rather than dropped.
+  * into the next one rather than dropped. A bucket's count and sum are only meaningful together --
+  * a count read without its matching nanos replays a mean that is too low, and the other order one
+  * that is too high -- so both are written and read under a monitor held per bucket, not per pool:
+  * two acquisitions that waited long enough to land in different buckets do not contend.
   */
 private[postgres] final class ConnectionWaitBuckets(boundaries: Chunk[Double]):
 
   private val bounds = boundaries.sorted.toArray
-  private val counts = AtomicLongArray(bounds.length)
-  private val sumNanos = AtomicLongArray(bounds.length)
+  private val locks = Array.fill(bounds.length)(Object())
+  private val counts = Array.ofDim[Long](bounds.length)
+  private val sumNanos = Array.ofDim[Long](bounds.length)
   private val timeouts = AtomicLong()
 
   private val drainedCounts = Array.ofDim[Long](bounds.length)
@@ -40,8 +45,9 @@ private[postgres] final class ConnectionWaitBuckets(boundaries: Chunk[Double]):
 
   def record(elapsedNanos: Long): Unit =
     val bucket = indexOf(elapsedNanos.toDouble / 1e9)
-    counts.getAndIncrement(bucket)
-    sumNanos.getAndAdd(bucket, elapsedNanos)
+    locks(bucket).synchronized:
+      counts(bucket) += 1L
+      sumNanos(bucket) += elapsedNanos
 
   def recordTimeout(): Unit =
     timeouts.getAndIncrement()
@@ -53,9 +59,12 @@ private[postgres] final class ConnectionWaitBuckets(boundaries: Chunk[Double]):
     val replays = Chunk.newBuilder[(Double, Long)]
     var i = 0
     while i < bounds.length do
-      val count = counts.get(i) - drainedCounts(i)
+      var count = 0L
+      var nanos = 0L
+      locks(i).synchronized:
+        count = counts(i) - drainedCounts(i)
+        nanos = sumNanos(i) - drainedSumNanos(i)
       if count > 0L then
-        val nanos = sumNanos.get(i) - drainedSumNanos(i)
         drainedCounts(i) += count
         drainedSumNanos(i) += nanos
         // Clamped to the bucket's upper bound so floating-point rounding of the mean cannot push a

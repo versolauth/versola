@@ -119,6 +119,36 @@ object DbMetricsSpec extends ZIOSpecDefault:
         val replays = accumulator.drain().replays
         assertTrue(replays == Chunk(45.0 -> 1L))
       },
+      test("a drain concurrent with records takes a bucket's count and sum as a matched pair") {
+        // Every record lands in the same bucket, so each one races the drainer on the same pair.
+        // Taking one half without the other is invisible in the totals -- it is carried into the
+        // next drain either way -- and shows up only as a mean outside the bucket it came from:
+        // a count drained without its nanos replays as zero seconds, which is the first bucket.
+        val accumulator = buckets
+        val elapsedNanos = 470_000L
+        val seconds = elapsedNanos.toDouble / 1e9
+        val lower = DbMetrics.connectionWaitBoundaries.values.filter(_ < seconds).maxOption.getOrElse(0.0)
+        val upper = DbMetrics.connectionWaitBoundaries.values.filter(_ >= seconds).min
+        val fibers = 8
+        val perFiber = 5_000
+        for
+          collected <- Ref.make(Chunk.empty[(Double, Long)])
+          drainer <- (ZIO.succeed(accumulator.drain().replays).flatMap(replays => collected.update(_ ++ replays)) *>
+            ZIO.yieldNow).forever.forkDaemon
+          _ <- ZIO.foreachParDiscard(1 to fibers): _ =>
+            ZIO.succeed:
+              var i = 0
+              while i < perFiber do
+                accumulator.record(elapsedNanos)
+                i += 1
+          _ <- drainer.interrupt
+          replays <- collected.get.map(_ ++ accumulator.drain().replays)
+        yield assertTrue(
+          replays.map(_._2).sum == (fibers * perFiber).toLong,
+          replays.forall((mean, _) => mean > lower && mean <= upper),
+          math.abs(replays.map((mean, count) => mean * count).sum - fibers * perFiber * seconds) <= 1e-9,
+        )
+      },
       test("timeouts are reported as a delta, so a counter can add them") {
         val accumulator = buckets
         accumulator.recordTimeout()
