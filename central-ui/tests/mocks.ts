@@ -203,6 +203,15 @@ type ChallengeSettingsDto = {
   otpResendAfter: number;
   passkeySettings?: PasskeySettingsDto | null;
   requireDpopNonce?: boolean | null;
+  signingKeyId?: string | null;
+};
+type JwksKeyDto = { kid: string; kty: string; alg?: string; use?: string };
+type JwksKeySummaryDto = {
+  kid: string;
+  algorithm?: string | null;
+  keyType?: string | null;
+  curve?: string | null;
+  canSign: boolean;
 };
 type LocaleDto = { code: string; name: string; isDefault: boolean; active: boolean };
 
@@ -222,7 +231,21 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   otpResendAfter: 60,
   passkeySettings: null,
   requireDpopNonce: false,
+  signingKeyId: null,
 });
+
+// One key central generated (both halves, so it can sign) and one seeded from
+// `bootstrap.jwks` (public half only, so it can only verify) -- the two states the key list
+// and the signing-key picker have to tell apart.
+const defaultJwksKeys: JwksKeyDto[] = [
+  { kid: 'ps-kid', kty: 'RSA', alg: 'PS256', use: 'sig' },
+  { kid: 'bootstrap-kid', kty: 'RSA', use: 'sig' },
+];
+
+const defaultJwksKeySummaries: JwksKeySummaryDto[] = [
+  { kid: 'ps-kid', algorithm: 'PS256', keyType: 'RSA', curve: null, canSign: true },
+  { kid: 'bootstrap-kid', algorithm: null, keyType: 'RSA', curve: null, canSign: false },
+];
 
 type MyPermissionsDto = {
   resources: Record<string, { permissions: string[] }>;
@@ -245,6 +268,8 @@ export type MockConfigState = {
   systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
+  jwksKeys: JwksKeyDto[];
+  jwksKeySummaries: JwksKeySummaryDto[];
   authorizationDetailTypes: Record<string, AuthorizationDetailTypeDto[]>; // keyed by tenantId
   locales: LocaleDto[];
   localeActivationMissing: Record<string, string[]>;
@@ -316,6 +341,8 @@ const defaultState: MockConfigState = {
   },
   otpTemplates: {},
   challengeSettings: {},
+  jwksKeys: defaultJwksKeys,
+  jwksKeySummaries: defaultJwksKeySummaries,
   authorizationDetailTypes: {},
   locales: [],
   localeActivationMissing: {},
@@ -342,6 +369,8 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
+    jwksKeys: clone(overrides.jwksKeys ?? defaultState.jwksKeys),
+    jwksKeySummaries: clone(overrides.jwksKeySummaries ?? defaultState.jwksKeySummaries),
     authorizationDetailTypes: clone({ ...defaultState.authorizationDetailTypes, ...overrides.authorizationDetailTypes }),
     locales: clone(overrides.locales ?? defaultState.locales),
     localeActivationMissing: clone(overrides.localeActivationMissing ?? defaultState.localeActivationMissing),
@@ -1219,8 +1248,47 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           otpResendAfter: payload.otpResendAfter,
           passkeySettings: payload.passkeySettings ?? null,
           requireDpopNonce: payload.requireDpopNonce ?? false,
+          signingKeyId: payload.signingKeyId ?? null,
         };
         await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/jwks') {
+      if (method === 'GET') {
+        await route.fulfill(json({ keys: state.jwksKeys }));
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/jwks/keys') {
+      if (method === 'GET') {
+        await route.fulfill(json({ keys: state.jwksKeySummaries }));
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/jwks/generate') {
+      if (method === 'POST') {
+        const alg = url.searchParams.get('alg') ?? 'PS256';
+        const kid = `generated-${alg.toLowerCase()}`;
+        state.jwksKeys = [...state.jwksKeys, { kid, kty: alg === 'ES256' ? 'EC' : 'RSA', alg, use: 'sig' }];
+        state.jwksKeySummaries = [...state.jwksKeySummaries, {
+          kid,
+          algorithm: alg,
+          keyType: alg === 'ES256' ? 'EC' : 'RSA',
+          curve: alg === 'ES256' ? 'P-256' : null,
+          canSign: true,
+        }];
+        await route.fulfill(json({ kid, alg }, 201));
+        return;
+      }
+    }
+
+    if (pathname === '/configuration/server-metadata') {
+      if (method === 'GET') {
+        await route.fulfill(json({ issuer: 'https://auth.example' }));
         return;
       }
     }

@@ -9,6 +9,7 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  JwksKeySummary,
   MtlsCertificateEncoding,
   SystemSettingsRecord,
   PasskeySettings,
@@ -1186,8 +1187,25 @@ export async function fetchJwks(): Promise<{ keys: Record<string, unknown>[] }> 
   return request<{ keys: Record<string, unknown>[] }>('/configuration/jwks');
 }
 
+/** Each stored key's `alg`/`kty` and whether central can sign with it -- what the JWKS view
+ * needs to mark a key verify-only, and what the signing-key picker chooses from. */
+export async function fetchJwksKeys(): Promise<JwksKeySummary[]> {
+  const response = await request<{ keys: JwksKeySummary[] }>('/configuration/jwks/keys');
+  return response.keys ?? [];
+}
+
 export async function createJwk(jwk: Record<string, unknown>): Promise<void> {
   await requestVoid('/configuration/jwks', { method: 'POST', body: jwk });
+}
+
+/** Generates a keypair for `alg` and publishes its public half, keeping the private one.
+ * Publishing a key does not put it into use -- a tenant still has to select it, which is what
+ * makes a rotation safe: every verifier learns the key before anything signs with it. */
+export async function generateJwk(alg: string): Promise<{ kid: string; alg: string }> {
+  return request<{ kid: string; alg: string }>('/configuration/jwks/generate', {
+    method: 'POST',
+    query: { alg },
+  });
 }
 
 export async function updateJwk(jwk: Record<string, unknown>): Promise<void> {
@@ -1421,6 +1439,7 @@ export async function upsertChallengeSettings(
   requireDpopNonce?: boolean,
   mtlsCertificateHeader?: string | null,
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
+  signingKeyId?: string | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1441,6 +1460,7 @@ export async function upsertChallengeSettings(
       requireDpopNonce: requireDpopNonce ?? null,
       mtlsCertificateHeader: mtlsCertificateHeader ?? null,
       mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
+      signingKeyId: signingKeyId ?? null,
     },
   });
 }
