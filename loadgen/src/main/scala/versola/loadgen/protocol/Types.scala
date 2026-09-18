@@ -213,6 +213,15 @@ enum EdgeCredential:
     */
   case Dpop(token: AccessToken, key: DpopKey)
 
+object EdgeCredential:
+  /** The mobile credential for a token the run's mode decides the shape of. Every place a mobile
+    * session takes a new access token -- a login, a refresh, a step-up -- has to make the same
+    * choice, and one of them picking `Bearer` on a DPoP run leaves that session unbound for the
+    * rest of its life while the campaign still reports the mode it was driven in.
+    */
+  def mobile(token: AccessToken, key: Option[DpopKey]): EdgeCredential =
+    key.fold(EdgeCredential.Bearer(token))(EdgeCredential.Dpop(token, _))
+
 /** `rotatedSession` carries the `EDGE_SESSION` edge issued on this response, when it issued one
   * (a refresh happened, or it simply re-set the cookie) -- the caller must adopt it for its next
   * call or the session dies mid-run and reads as a phantom SUT failure (§8.4). Always `None` on

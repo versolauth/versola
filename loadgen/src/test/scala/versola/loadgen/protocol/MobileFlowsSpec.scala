@@ -43,7 +43,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
       actions <- EdgeActionClient.make(client, targets, StubSut.requestTimeout)
     yield MobileFlows(auth, actions, StubSut.registry, recorder, Otp.nonProd(6), StubSut.origin)
 
-  private def request(clientId: String): LoginRequest = LoginRequest(Some(clientId), "openid phone", None, None)
+  private def request(clientId: String): LoginRequest = LoginRequest(Some(clientId), "openid phone", None, None, None)
 
   def spec = suite("MobileFlows")(
     test("§8.1 phone + OTP walks authorize, two challenge pages, two submits and the code exchange") {

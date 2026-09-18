@@ -362,9 +362,12 @@ final class SessionRunner(
       acrValues: List[String],
   ): IO[ProtocolError, Option[RunningSession]] =
     val clientId = clients.mobileClientFor(user.credential)
+    // The same key the session's first token was bound to, not a fresh choice: a step-up replaces
+    // the token pair, so one taken without it would leave the rest of the session unbound.
+    val key = keyFor(user)
     for
       credentials <- loginCredentials(user)
-      result <- mobile.stepUp(LoginRequest(Some(clientId), clients.scope, Some(acrValues), session.ssoSession), credentials)
+      result <- mobile.stepUp(LoginRequest(Some(clientId), clients.scope, Some(acrValues), session.ssoSession, key), credentials)
       (tokens, ssoSession) = result
       now <- Clock.instant
       accessExpiresAt = now.plusSeconds(tokens.expiresInSeconds)
@@ -381,7 +384,7 @@ final class SessionRunner(
         .mapError(storeFailure("step-up"))
     yield Some(
       session.copy(
-        credential = EdgeCredential.Bearer(tokens.accessToken),
+        credential = EdgeCredential.mobile(tokens.accessToken, key),
         refreshToken = tokens.refreshToken.orElse(session.refreshToken),
         idToken = tokens.idToken.orElse(session.idToken),
         ssoSession = ssoSession.orElse(session.ssoSession),
@@ -577,7 +580,7 @@ object SessionRunner:
         kind = SessionKind.MobileToken,
         // The key that signed the proof at `/token` is the key edge checks every action against,
         // so the credential carries it rather than the call site looking it up again.
-        credential = key.fold(EdgeCredential.Bearer(tokens.accessToken))(EdgeCredential.Dpop(tokens.accessToken, _)),
+        credential = EdgeCredential.mobile(tokens.accessToken, key),
         refreshToken = tokens.refreshToken.orElse(row.refreshToken),
         ssoSession = row.ssoSession,
         idToken = tokens.idToken,

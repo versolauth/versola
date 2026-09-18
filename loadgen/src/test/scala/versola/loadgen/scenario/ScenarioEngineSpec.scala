@@ -99,6 +99,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       actions: List[BusinessActionConfig],
       routes: Routes[Any, Nothing],
       sut: ScenarioSut.State,
+      dpop: Option[DpopKeyPool] = None,
   ): ZIO[Scope & TransactorZIO & TestClient & Client, Throwable, Harness] =
     for
       _ <- TestClient.addRoutes(routes)
@@ -115,7 +116,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       sessions <- ZIO.serviceWith[TransactorZIO](PostgresDeviceSessionRepository(_))
       business <- ZIO.fromEither(BusinessActions.from(actions)).mapError(AssertionError(_))
       thinkTime = ThinkTimeTable.build(settings.thinkTime, RandomSource.seeded(1L))
-      runner = SessionRunner(mobile, web, sessions, buffer, business, SessionIds.make(shard), thinkTime, clients, settings, None)
+      runner = SessionRunner(mobile, web, sessions, buffer, business, SessionIds.make(shard), thinkTime, clients, settings, dpop)
     yield Harness(runner, sessions, sut, recorder, buffer)
 
   /** A protocol error is not a `Throwable`, and these tests want a failure to end the test
@@ -264,6 +265,30 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
         hops.count(_ == "POST /challenge/otp") == 2,
         stored.forall(_.acr.contains(ScenarioSut.stepUpAcr)),
         stored.forall(!_.rotationInFlight),
+      )
+    },
+    // A step-up is a second login for a session that already exists, and the tokens it returns
+    // replace the ones the session was using. Taken without the key those were bound to, the rest
+    // of the session runs unbound: edge sees `Bearer` on a token carrying `cnf.jkt` and refuses
+    // it, and the campaign still reports the mode it believes it drove.
+    test("§7.4 on a DPoP run: the step-up's own tokens stay bound to the session's key") {
+      val settings = config(paymentProbability = 1.0, mobileMean = 6.0)
+      for
+        _ <- truncate
+        stub <- ScenarioSut.mobile(List("credential", "otp"), paymentPath)
+        (sut, routes) = stub
+        pool <- DpopKeyPool.derive("scenario-engine-spec", 4)
+        harnessed <- harness(settings, List(accounts, balance, payment), routes, sut, Some(pool))
+        _ <- harnessed.runner.run(user(14L, Platform.Mobile), RandomSource.seeded(606L)).mapError(failed)
+        hops <- sut.paths
+        schemes <- sut.schemes
+      yield assertTrue(
+        // The step-up happened: the refused action and its one replay.
+        hops.count(_ == s"POST $paymentPath") == 2,
+        hops.count(_ == "GET /authorize") == 2,
+        // Including the replay, which is the call made with what the step-up returned.
+        schemes.nonEmpty,
+        schemes.forall(_ == "DPoP"),
       )
     },
     test("a 403 is an outcome, not a failure: the session carries on to its remaining actions") {

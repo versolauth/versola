@@ -1,9 +1,10 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
+import versola.loadgen.metrics.LoadgenMetrics
 import zio.http.*
 import zio.http.Header.Authorization
-import zio.{Duration, IO, ZIO, ZLayer}
+import zio.{Duration, IO, Ref, UIO, ZIO, ZLayer}
 
 /** The business-action half of §8.6: a call through the edge's resource proxy, with either the
   * mobile bearer token or the web `EDGE_SESSION` cookie.
@@ -13,18 +14,81 @@ import zio.{Duration, IO, ZIO, ZLayer}
   * §8.1-8.3 and §8.5 need to exercise a session once it exists, and track G composes it rather
   * than re-deriving the 401/403 handling below.
   */
-final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends ActionClient:
+final class EdgeActionClient(exchange: HttpExchange, resources: URL, nonce: Ref[Option[String]]) extends ActionClient:
   import EdgeActionClient.*
 
   override def call(credential: EdgeCredential, action: ActionCall): IO[ProtocolError, ActionOutcome] =
     val url = resources.copy(path = Path.decode(action.path))
+    send(credential, action, url).flatMap(outcome(_, action, credential))
+
+  private def request(action: ActionCall, url: URL): Request =
     val request = Request(
       method = action.method,
       url = url,
       body = action.body.fold(Body.empty)(Body.fromString(_)),
     )
-    val withBody = action.body.fold(request)(_ => request.addHeader(jsonContentType))
-    authenticate(withBody, credential, action.method, url).flatMap(exchange.send).flatMap(outcome(_, action, credential))
+    action.body.fold(request)(_ => request.addHeader(jsonContentType))
+
+  /** One action, with RFC 9449 §9's nonce handshake around it on the sender-constrained path.
+    *
+    * Not an edge case the way it is at `/token`, where a client's `require_dpop_nonce` is off
+    * unless a tenant turns it on: a registered edge requires a nonce by default
+    * (`V1024__edges_require_dpop_nonce.sql`). Without the handshake every action is answered
+    * `use_dpop_nonce`, which carries no `acr_values` and so reads as an expired token -- the
+    * session refreshes, retries, is refused again, and not one business call reaches the
+    * resource while the campaign records a plausible-looking action rate.
+    *
+    * The nonce is edge's, minted from a salt of its own with no reference to who is asking, so
+    * one is held per driver and not per session: the first action of a driver's life pays the
+    * extra round trip and every later one carries the cached value. Edge's nonce and auth's are
+    * separate secrets, hence a cache here rather than one shared with [[HttpAuthClient]].
+    *
+    * Exactly one retry, for that client's reason: a second challenge to a proof carrying the
+    * nonce edge has just issued is the SUT contradicting itself, and a driver that kept retrying
+    * would spin for the rest of the campaign.
+    */
+  private def send(credential: EdgeCredential, action: ActionCall, url: URL): IO[ProtocolError, Received] =
+    credential match
+      case dpop: EdgeCredential.Dpop =>
+        for
+          held <- nonce.get
+          first <- attempt(dpop, action, url, held)
+          received <- nonceChallenge(first) match
+            case None => adoptNonce(first).as(first)
+            case Some(issued) =>
+              for
+                _ <- nonce.set(Some(issued))
+                _ <- LoadgenMetrics.dpopNonceRetried
+                second <- attempt(dpop, action, url, Some(issued))
+                _ <- adoptNonce(second)
+              yield second
+        yield received
+      case unbound => exchange.send(authenticate(request(action, url), unbound))
+
+  private def attempt(
+      credential: EdgeCredential.Dpop,
+      action: ActionCall,
+      url: URL,
+      nonce: Option[String],
+  ): IO[ProtocolError, Received] =
+    sign(request(action, url), credential, action.method, url, nonce).flatMap(exchange.send)
+
+  /** §8: edge may hand back a fresh nonce on any response, a successful one included, and expects
+    * the next proof to carry it. Adopting it here is what holds the steady state at one round
+    * trip per action across a rotation.
+    */
+  private def adoptNonce(received: Received): UIO[Unit] =
+    received.response.rawHeader(HttpAuthClient.dpopNonceHeader) match
+      case Some(issued) => nonce.set(Some(issued))
+      case None => ZIO.unit
+
+  /** §9's challenge, and the nonce it carries to retry with. `None` for every other `401`,
+    * including the step-up demand and an expired token, which share its status.
+    */
+  private def nonceChallenge(received: Received): Option[String] =
+    if received.status != Status.Unauthorized then None
+    else if !dpopChallenge(received).contains(useDpopNonce) then None
+    else received.response.rawHeader(HttpAuthClient.dpopNonceHeader)
 
   /** Edge picks the path off the `Authorization` scheme, so `DPoP` is not a bearer call carrying
     * an extra header -- the scheme is what makes it read the proof at all (`DpopVerifier.Scheme`).
@@ -37,23 +101,25 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
     * `ath` is mandatory here and absent at `/token`: §7 requires a resource proof to name the
     * token it accompanies, and edge refuses one without it (`DpopVerifier.Error.AthMissing`).
     */
-  private def authenticate(
+  private def authenticate(request: Request, credential: EdgeCredential): Request =
+    credential match
+      case EdgeCredential.Bearer(token) => request.addHeader(Authorization.Bearer(token.value))
+      case EdgeCredential.Cookie(session) => request.addHeader(HttpExchange.cookieHeader(edgeSessionCookie, session.value))
+      case EdgeCredential.Dpop(_, _) => request
+
+  private def sign(
       request: Request,
-      credential: EdgeCredential,
+      credential: EdgeCredential.Dpop,
       method: Method,
       url: URL,
+      nonce: Option[String],
   ): IO[ProtocolError, Request] =
-    credential match
-      case EdgeCredential.Bearer(token) => ZIO.succeed(request.addHeader(Authorization.Bearer(token.value)))
-      case EdgeCredential.Cookie(session) =>
-        ZIO.succeed(request.addHeader(HttpExchange.cookieHeader(edgeSessionCookie, session.value)))
-      case EdgeCredential.Dpop(token, key) =>
-        key
-          .proof(method, url.copy(queryParams = QueryParams.empty, fragment = None).encode, Some(token))
-          .map: proof =>
-            request
-              .addHeader(Header.Custom(Authorization.name, s"$dpopScheme ${token.value}"))
-              .addHeader(Header.Custom(HttpAuthClient.dpopHeader, proof))
+    credential.key
+      .proof(method, url.copy(queryParams = QueryParams.empty, fragment = None).encode, Some(credential.token), nonce)
+      .map: proof =>
+        request
+          .addHeader(Header.Custom(Authorization.name, s"$dpopScheme ${credential.token.value}"))
+          .addHeader(Header.Custom(HttpAuthClient.dpopHeader, proof))
 
   /** The three outcomes that are outcomes and not failures (§4): a step-up demand, a `403` a
     * `retail-basic` user is expected to collect, and an expired access token. Each is a branch
@@ -67,9 +133,19 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
   private def outcome(received: Received, action: ActionCall, credential: EdgeCredential): IO[ProtocolError, ActionOutcome] =
     if received.status == Status.Forbidden then ZIO.fail(ProtocolError.Forbidden(action.path))
     else if received.status == Status.Unauthorized then
-      stepUpAcrValues(received) match
-        case Some(acrValues) => ZIO.fail(ProtocolError.StepUpRequired(acrValues, action.path))
-        case None => ZIO.fail(ProtocolError.Unauthorized(action.path))
+      // RFC 9449 §7.1's two refusals share the status an expired token gets, and both are the
+      // emulator's fault rather than the SUT's, so they are read off before either branch below.
+      // A driver that took them for expiry would refresh a perfectly live token, present the same
+      // bad proof again, and spend the campaign in a loop it reported as ordinary traffic.
+      dpopChallenge(received) match
+        case Some(`invalidDpopProof`) =>
+          ZIO.fail(ProtocolError.Misconfigured(s"edge rejected the driver's DPoP proof at ${action.path}"))
+        case Some(`useDpopNonce`) =>
+          ZIO.fail(ProtocolError.Misconfigured(s"edge demanded a DPoP nonce at ${action.path} that it had just issued"))
+        case _ =>
+          stepUpAcrValues(received) match
+            case Some(acrValues) => ZIO.fail(ProtocolError.StepUpRequired(acrValues, action.path))
+            case None => ZIO.fail(ProtocolError.Unauthorized(action.path))
     else if received.status.isSuccess then
       // Edge rotates EDGE_SESSION whenever it refreshes behind the cookie; a caller that does
       // not adopt the new value loses the session mid-run and reads it as an SUT failure (§8.4).
@@ -93,6 +169,21 @@ object EdgeActionClient:
 
   private val insufficientAuthentication = "insufficient_user_authentication"
   private val acrValuesParameter = java.util.regex.Pattern.compile("""acr_values="([^"]*)"""")
+
+  private val invalidDpopProof = HttpAuthClient.invalidDpopProof
+  private val useDpopNonce = HttpAuthClient.useDpopNonce
+
+  /** Edge refuses a proof with `401` and `WWW-Authenticate: DPoP error="..."` (`EdgeService.proxy`)
+    * -- the same status and header a step-up demand uses under the `Bearer` scheme. The scheme is
+    * the discriminator, so the pattern is anchored on it: a `Bearer` challenge that happened to
+    * carry an `error` parameter must not be read as a refused proof.
+    */
+  private val dpopErrorParameter = java.util.regex.Pattern.compile("""^DPoP\s+error="([^"]*)"""")
+
+  private def dpopChallenge(received: Received): Option[String] =
+    received.response.rawHeader("WWW-Authenticate").flatMap: challenge =>
+      val matcher = dpopErrorParameter.matcher(challenge)
+      if matcher.find() then Option(matcher.group(1)) else None
 
   /** Edge answers a step-up demand with `401` and
     * `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="..."`
@@ -121,9 +212,11 @@ object EdgeActionClient:
     * against `mockapi`, whose contract is "always 200 after a delay".
     */
   def at(client: Client, baseUrl: String, requestTimeout: Duration): IO[ProtocolError, ActionClient] =
-    ZIO
-      .fromEither(URL.decode(baseUrl).left.map(error => ProtocolError.Misconfigured(baseUrl + ": " + error.getMessage)))
-      .map(url => EdgeActionClient(HttpExchange(client, requestTimeout), url))
+    for
+      url <- ZIO
+        .fromEither(URL.decode(baseUrl).left.map(error => ProtocolError.Misconfigured(baseUrl + ": " + error.getMessage)))
+      nonce <- Ref.make(Option.empty[String])
+    yield EdgeActionClient(HttpExchange(client, requestTimeout), url, nonce)
 
   val live: ZLayer[Client & TargetsConfig, ProtocolError, ActionClient] =
     ZLayer.fromZIO:

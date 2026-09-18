@@ -34,6 +34,143 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
       .status(Status.Unauthorized)
       .addHeader("WWW-Authenticate", """Bearer error="insufficient_user_authentication", acr_values="""" + acrValues + """"""")
 
+  /** Edge's §9 challenge and its §7.1 refusal, shaped the way `EdgeService.proxy` writes them:
+    * the same `401` and the same header a step-up demand uses, under a different scheme.
+    */
+  private def dpopChallenge(error: String, nonce: Option[String] = None): Response =
+    val response = Response.status(Status.Unauthorized).addHeader("WWW-Authenticate", s"""DPoP error="$error"""")
+    nonce.fold(response)(value => response.addHeader(Header.Custom("DPoP-Nonce", value)))
+
+  /** A stub that answers a *sequence* of calls, which is what the handshake is: a challenge, then
+    * the retry carrying what the challenge issued. `clientFor` answers every request the same way.
+    */
+  private def clientForQueue(replies: List[Response], seen: Ref[Vector[Request]]): ZIO[TestClient & Client, ProtocolError, ActionClient] =
+    for
+      queued <- Ref.make(replies)
+      _ <- TestClient.addRoutes(
+        Routes.singleton(
+          Handler.fromFunctionZIO[(Path, Request)]: (_, request) =>
+            seen.update(_ :+ request) *> queued.modify:
+              case head :: tail => (head, tail)
+              case Nil => (Response.json("{}"), Nil),
+        ),
+      )
+      client <- ZIO.service[Client]
+      actions <- EdgeActionClient.make(client, targets, StubSut.requestTimeout)
+    yield actions
+
+  /** Checked with edge's own verifier, so a proof that kept the header's shape while losing the
+    * nonce cannot pass.
+    */
+  private def proofOf(request: Request, method: Method = Method.GET, path: String = "/resources/core/accounts") =
+    zio.Clock.instant.flatMap: now =>
+      versola.util.Dpop
+        .verify(
+          request.rawHeader("DPoP").getOrElse(""),
+          versola.util.Dpop.Algorithm.Default,
+          method,
+          StubSut.edgeUrl + path,
+          now,
+          zio.Duration.fromSeconds(30),
+        )
+        .mapError(error => RuntimeException(error.toString))
+
+  private def dpopKey = DpopKeyPool.derive("edge-action-spec", 1).map(_.keyFor(0L))
+
+  private val issuedNonce = "nonce-from-edge"
+
+  /** A registered edge requires a nonce by default (`V1024__edges_require_dpop_nonce.sql`), so
+    * this is the ordinary path for a DPoP campaign rather than a corner of it. Every failure
+    * below is silent in the same way: edge's refusal is a `401` with no `acr_values`, which the
+    * driver would otherwise read as an expired token and answer with a refresh, so the campaign
+    * measures a refresh storm and reports it as business actions.
+    */
+  private val nonceSuite = suite("§9's nonce handshake against edge")(
+    test("retries once with the nonce edge's challenge carried") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(List(dpopChallenge("use_dpop_nonce", Some(issuedNonce))), seen)
+        key <- dpopKey
+        outcome <- actions.call(EdgeCredential.Dpop(AccessToken("at-1"), key), accounts).either
+        requests <- seen.get
+        first <- proofOf(requests.head)
+        second <- proofOf(requests.last)
+      yield assertTrue(
+        requests.size == 2,
+        first.nonce.isEmpty,
+        second.nonce.contains(issuedNonce),
+        outcome.isRight,
+      )
+    },
+    // What keeps the handshake off the hot path. The nonce is edge's own, not the session's, so
+    // one challenge per driver is enough; if this regressed, every action in the campaign would
+    // cost two round trips and the action p99 would silently double.
+    test("holds the nonce for later actions rather than being challenged again") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(List(dpopChallenge("use_dpop_nonce", Some(issuedNonce))), seen)
+        key <- dpopKey
+        credential = EdgeCredential.Dpop(AccessToken("at-1"), key)
+        _ <- actions.call(credential, accounts)
+        _ <- actions.call(credential, accounts)
+        requests <- seen.get
+        third <- proofOf(requests.last)
+      yield assertTrue(requests.size == 3, third.nonce.contains(issuedNonce))
+    },
+    test("adopts a nonce handed back on a successful response") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(List(Response.json("{}").addHeader(Header.Custom("DPoP-Nonce", "rotated"))), seen)
+        key <- dpopKey
+        credential = EdgeCredential.Dpop(AccessToken("at-1"), key)
+        _ <- actions.call(credential, accounts)
+        _ <- actions.call(credential, accounts)
+        requests <- seen.get
+        second <- proofOf(requests.last)
+      yield assertTrue(requests.size == 2, second.nonce.contains("rotated"))
+    },
+    // An edge challenging the nonce it just issued is contradicting itself. One retry and no
+    // more: a driver that kept going would spin for the rest of the campaign.
+    test("gives up after one retry rather than spinning") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(
+          List(dpopChallenge("use_dpop_nonce", Some(issuedNonce)), dpopChallenge("use_dpop_nonce", Some(issuedNonce))),
+          seen,
+        )
+        key <- dpopKey
+        failure <- actions.call(EdgeCredential.Dpop(AccessToken("at-1"), key), accounts).either
+        requests <- seen.get
+      yield assertTrue(requests.size == 2, failure.left.exists(_.isInstanceOf[ProtocolError.Misconfigured]))
+    },
+    // The `htu` an internal-vs-public `edge-url` mismatch produces lands here. It is the
+    // instrument measuring nothing, so it must stop the driver rather than be counted as the SUT
+    // expiring a token that is in fact perfectly live.
+    test("a refused proof is Misconfigured and not an expired token") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(List(dpopChallenge("invalid_dpop_proof")), seen)
+        key <- dpopKey
+        failure <- actions.call(EdgeCredential.Dpop(AccessToken("at-1"), key), accounts).either
+        requests <- seen.get
+      yield assertTrue(
+        requests.size == 1,
+        failure.left.exists(_.isInstanceOf[ProtocolError.Misconfigured]),
+        failure != Left(ProtocolError.Unauthorized(accounts.path)),
+      )
+    },
+    // The other direction: the `Bearer` scheme's challenge carries an `error` parameter too, and
+    // reading that one as a refused proof would turn every step-up into a dead driver.
+    test("a Bearer step-up challenge is still a step-up") {
+      for
+        seen <- Ref.make(Vector.empty[Request])
+        actions <- clientForQueue(List(stepUp(Acr.PasskeyLevel)), seen)
+        key <- dpopKey
+        failure <- actions.call(EdgeCredential.Dpop(AccessToken("at-1"), key), accounts).either
+      yield assertTrue(failure == Left(ProtocolError.StepUpRequired(List(Acr.PasskeyLevel), accounts.path)))
+    },
+  )
+
   private val dpopSuite = suite("a DPoP action")(
     // Edge dispatches on the `Authorization` scheme (`DpopVerifier.Scheme`), so this is not a
     // bearer call with an extra header -- sending `Bearer` would have edge skip the proof and
@@ -99,6 +236,7 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
 
   def spec = suite("EdgeActionClient")(
     dpopSuite,
+    nonceSuite,
     test("a bearer action is proxied with the token and no cookie to rotate") {
       for
         seen <- Ref.make(Option.empty[Request])

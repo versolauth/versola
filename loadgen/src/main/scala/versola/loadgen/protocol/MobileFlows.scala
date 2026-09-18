@@ -10,13 +10,18 @@ import java.util.UUID
   * `key` belongs here rather than on the flow methods because it is the login's property and not
   * the hop's: it is spent at `/token`, and the tokens it binds are used for the whole session
   * afterwards. `None` drives the bearer path.
+  *
+  * Deliberately without a default. A step-up is a second login for a session that already exists,
+  * and one built without the key the session's tokens are bound to leaves it holding an unbound
+  * token for the rest of its life -- silently, because the campaign still reports the mode it was
+  * driven in. Every call site states the mode.
   */
 case class LoginRequest(
     clientId: Option[String],
     scope: String,
     acrValues: Option[List[String]],
     sessionCookie: Option[SsoSession],
-    key: Option[DpopKey] = None,
+    key: Option[DpopKey],
 )
 
 /** The mobile flows of versola-loadgen-dev-spec.md §8.1-8.3, §8.5 and §8.6, driven over

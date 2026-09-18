@@ -430,10 +430,10 @@ object HttpAuthClient:
   private[protocol] val dpopHeader = "DPoP"
   private[protocol] val dpopNonceHeader = "DPoP-Nonce"
 
-  // RFC 9449 §5 and §9's two `error` codes, both of which arrive as a 400 alongside the grant
-  // rejections that share that status.
-  private val invalidDpopProof = "invalid_dpop_proof"
-  private val useDpopNonce = "use_dpop_nonce"
+  // RFC 9449 §5 and §9's two `error` codes. At `/token` they arrive as a 400 alongside the grant
+  // rejections that share that status; at edge's resource proxy, in a `WWW-Authenticate` on a 401.
+  private[protocol] val invalidDpopProof = "invalid_dpop_proof"
+  private[protocol] val useDpopNonce = "use_dpop_nonce"
 
   // The confirmation posts back the two parameters auth bound its token to, under the names
   // `LogoutController`'s form decoder reads.

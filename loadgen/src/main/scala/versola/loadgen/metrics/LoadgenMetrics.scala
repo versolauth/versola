@@ -135,14 +135,18 @@ object LoadgenMetrics:
   def latencyClamped: UIO[Unit] =
     latencyClampedTotal.increment
 
-  /** RFC 9449 §9: a token call that had to be made twice because the SUT demanded a nonce the
-    * driver did not yet hold.
+  /** RFC 9449 §9: a call that had to be made twice because the SUT demanded a nonce the driver
+    * did not yet hold. Both halves of the protocol are counted here -- auth's token endpoint and
+    * edge's resource proxy -- because the finding is the same one either way.
     *
-    * A counter and not a step of its own. The retry's cost lands inside `token-code`/
-    * `token-refresh`, which is where it belongs -- it is latency a real client would also pay --
-    * but the nonce is cached once obtained, so in steady state this stays flat and the quantiles
-    * are undistorted. A rising value is the finding: it means the SUT is rotating nonces faster
-    * than the fleet reuses them, and every token call is paying two round trips.
+    * A counter and not a step of its own. The retry's cost lands inside `token-code`,
+    * `token-refresh` or `action`, which is where it belongs -- it is latency a real client would
+    * also pay -- but the nonce is cached once obtained, so in steady state this stays flat and
+    * the quantiles are undistorted. A rising value is the finding: it means the SUT is rotating
+    * nonces faster than the fleet reuses them, and every call is paying two round trips.
+    *
+    * Two per driver are expected at the start of a DPoP campaign and no more: auth's nonce and
+    * edge's are separate secrets, so each is challenged once.
     */
   def dpopNonceRetried: UIO[Unit] =
     dpopNonceRetriedTotal.increment
