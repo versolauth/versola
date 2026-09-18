@@ -398,6 +398,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         requireDpopNonce = false,
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        signingKeyId = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -422,6 +423,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         requireDpopNonce = false,
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        signingKeyId = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -447,6 +449,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         requireDpopNonce = false,
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        signingKeyId = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -540,6 +543,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         requireDpopNonce = false,
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        signingKeyId = None,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
