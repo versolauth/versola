@@ -1,5 +1,6 @@
 package versola.loadgen.config
 
+import versola.util.Dpop
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
@@ -266,7 +267,18 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           absent.dpop.isEmpty,
           configured.dpop.map(_.keyPoolSize) == Some(100),
           configured.dpop.map(_.keySeed) == Some("campaign-1"),
+          configured.dpop.exists(_.algorithm.isEmpty),
         )
+      },
+      // A deployment can restrict its served `dpop_signing_alg_values_supported` to exclude
+      // ES256, so the algorithm has to be configurable rather than assumed -- see
+      // `DpopConfig.algorithm`'s doc for what an unnamed deployment policy costs a driver that
+      // guessed wrong.
+      test("reads a named dpop algorithm, and rejects one it does not recognize") {
+        for
+          named <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = PS256 }")
+          unknown <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = HS256 }").exit
+        yield assertTrue(named.dpop.flatMap(_.algorithm) == Some(Dpop.Algorithm.PS256), unknown.isFailure)
       },
       // V0006's identity index is `(campaign, pooler, phase)`, so a duplicated name has
       // sut-stats' consequence: the second reading is dropped and one pooler's numbers appear

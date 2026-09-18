@@ -1,15 +1,15 @@
 package versola.loadgen.protocol
 
-import com.nimbusds.jose.JWSHeader
-import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.jwk.{Curve, ECKey}
+import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
+import com.nimbusds.jose.jwk.{Curve, ECKey, RSAKey}
+import com.nimbusds.jose.{JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.util.Dpop
 import zio.http.Method
 import zio.{Clock, IO, ZIO}
 
-import java.security.interfaces.{ECPrivateKey, ECPublicKey}
-import java.security.{KeyPairGenerator, MessageDigest, SecureRandom}
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
+import java.security.{KeyPairGenerator, MessageDigest, PrivateKey, PublicKey, SecureRandom}
 import java.util.{Date, UUID}
 
 /** One RFC 9449 client key and the proofs it signs.
@@ -20,12 +20,15 @@ import java.util.{Date, UUID}
   * ceiling of 40% (design doc §6.3). Only `jti`, `iat`, `htm`/`htu` and the two optional bindings
   * vary, so only they are built per call.
   *
-  * `ES256`, because RFC 9449 §5 mandates it and it is in [[Dpop.Algorithm.Default]] -- the set
-  * auth and edge fall back to when the metadata document names none. `PS256` is the other member
-  * and is not offered here: the campaign measures one signing cost, and a driver that could pick
-  * either would make that cost a property of configuration.
+  * `ES256` or `PS256`, per [[DpopConfig.algorithm]] -- [[Dpop.Algorithm.Default]]'s two members,
+  * the set auth and edge fall back to when the metadata document names none. A deployment whose
+  * served `dpop_signing_alg_values_supported` excludes `ES256` -- a FAPI 2.0 profile requiring
+  * `PS256`, say -- has every proof this key makes refused as `invalid_dpop_proof` unless the
+  * config names the algorithm that document actually advertises. `RS256` is not offered: FAPI
+  * disallows it outright, so a deployment that wants it has to add it to its own metadata, and a
+  * driver defaulting to it would exercise an algorithm no compliant deployment serves.
   */
-final class DpopKey private (signer: ECDSASigner, header: JWSHeader, val jkt: String):
+final class DpopKey private (signer: JWSSigner, header: JWSHeader, val jkt: String):
 
   /** A proof for one request.
     *
@@ -61,10 +64,22 @@ final class DpopKey private (signer: ECDSASigner, header: JWSHeader, val jkt: St
         .mapError(cause => ProtocolError.Misconfigured(s"could not sign a DPoP proof: ${cause.getMessage}"))
 
 object DpopKey:
-  private[protocol] def of(privateKey: ECPrivateKey, publicKey: ECPublicKey): DpopKey =
-    val jwk = ECKey.Builder(Curve.P_256, publicKey).build().nn
-    val header = JWSHeader.Builder(Dpop.Algorithm.ES256.jwsAlgorithm).`type`(Dpop.JwtType).jwk(jwk).build().nn
-    DpopKey(ECDSASigner(privateKey), header, jwk.computeThumbprint().nn.toString)
+  /** Builds the key from whichever pair [[DpopKeyPool.derive]] generated for `algorithm` -- an EC
+    * pair for `ES256`, an RSA pair for `PS256`. The match is exhaustive over what `derive` ever
+    * produces; a mismatch here would be that method's bug, not a config it has to validate.
+    */
+  private[protocol] def of(algorithm: Dpop.Algorithm, privateKey: PrivateKey, publicKey: PublicKey): DpopKey =
+    (publicKey, privateKey) match
+      case (pub: ECPublicKey, priv: ECPrivateKey) =>
+        val jwk = ECKey.Builder(Curve.P_256, pub).build().nn
+        val header = JWSHeader.Builder(algorithm.jwsAlgorithm).`type`(Dpop.JwtType).jwk(jwk).build().nn
+        DpopKey(ECDSASigner(priv), header, jwk.computeThumbprint().nn.toString)
+      case (pub: RSAPublicKey, priv: RSAPrivateKey) =>
+        val jwk = RSAKey.Builder(pub).build().nn
+        val header = JWSHeader.Builder(algorithm.jwsAlgorithm).`type`(Dpop.JwtType).jwk(jwk).build().nn
+        DpopKey(RSASSASigner(priv), header, jwk.computeThumbprint().nn.toString)
+      case _ =>
+        throw IllegalArgumentException(s"a $algorithm key pair must be EC or RSA, not ${publicKey.getClass}")
 
 /** The fixed set of client keys a DPoP campaign is driven with, and the rule assigning one to a
   * virtual user.
@@ -76,16 +91,22 @@ object DpopKey:
   * carries regardless of how many times that key has been seen. `dpop_jkt` is stored unindexed.
   * Nothing else in either service is keyed by `jkt`.
   *
-  * **Why a pool and not a key per user.** Not primarily CPU. Measured on this build, a P-256
-  * keygen costs about the same as signing one proof, and a session signs one per request -- so a
-  * key per session is roughly a tenth more crypto, not a different order of magnitude. The
-  * reason is persistence: a per-session key would have to be *stored*, because the token it
-  * binds outlives the process that made it (see below), which is a new column on `vu_sessions`
-  * and a write on the login path. A hundred keys derived from a seed need neither and are
-  * reproduced anywhere in the fleet for the cost of the derivation.
+  * **Why a pool and not a key per user.** Not primarily CPU, on `ES256`. Measured on this build,
+  * a P-256 keygen costs about the same as signing one proof, and a session signs one per
+  * request -- so a key per session is roughly a tenth more crypto, not a different order of
+  * magnitude. `PS256`'s RSA-2048 keygen is a different story -- roughly three orders of
+  * magnitude slower than P-256's, measured here at ~70ms per key against P-256's ~0.1ms -- so on
+  * that algorithm the pool is the difference between a boot-time cost paid once for the whole
+  * fleet and one paid per login for the life of the campaign.
+  *
+  * Either way the reason to prefer the pool is persistence, not CPU. A per-session key would
+  * have to be *stored*, because the token it binds outlives the process that made it (see
+  * below), which is a new column on `vu_sessions` and a write on the login path. A hundred keys
+  * derived from a seed need neither and are reproduced anywhere in the fleet for the cost of the
+  * derivation.
   *
   * Note what the pool does not save: a proof is still signed per request, since `jti`, `htu` and
-  * `iat` all vary. Only keygen is amortized, and keygen is the cheap half.
+  * `iat` all vary. Only keygen is amortized.
   *
   * **Why the keys are derived and not generated.** A user's key must outlive the driver process
   * that first used it. An access token is bound to the key at `/token` (`cnf.jkt`) and every
@@ -114,26 +135,35 @@ final class DpopKeyPool private (keys: IndexedSeq[DpopKey]):
 
 object DpopKeyPool:
 
-  /** Derives `size` P-256 keys from `seed`.
+  private val RsaKeySize = 2048
+
+  /** Derives `size` keys from `seed`, `ES256` (P-256) unless `algorithm` names `PS256` (RSA-2048).
     *
     * The derivation runs `KeyPairGenerator` over a `SecureRandom` whose stream is HKDF-style
-    * expansion of the seed, rather than deriving the scalar and the public point directly, which
-    * would need a curve arithmetic library this module does not otherwise use. That makes the
-    * result a property of the JDK's EC provider as well as of the seed, so `DpopKeysSpec` pins
-    * the first key's thumbprint against a recorded value: a provider that changed how it consumes
-    * the stream would silently re-key the fleet, which is the one failure this derivation exists
-    * to prevent, and it fails the build instead.
+    * expansion of the seed, rather than deriving the key material directly, which would need a
+    * curve-arithmetic or big-integer library this module does not otherwise use. That makes the
+    * result a property of the JDK's provider as well as of the seed, so `DpopKeysSpec` pins the
+    * first key's thumbprint against a recorded value: a provider that changed how it consumes the
+    * stream would silently re-key the fleet, which is the one failure this derivation exists to
+    * prevent, and it fails the build instead.
     */
-  def derive(seed: String, size: Int): IO[ProtocolError, DpopKeyPool] =
+  def derive(seed: String, size: Int, algorithm: Dpop.Algorithm = Dpop.Algorithm.ES256): IO[ProtocolError, DpopKeyPool] =
     if size < 1 then ZIO.fail(ProtocolError.Misconfigured(s"a DPoP key pool needs at least one key, not $size"))
+    else if algorithm == Dpop.Algorithm.RS256 then
+      ZIO.fail(ProtocolError.Misconfigured("RS256 is not a supported DPoP driver algorithm; use ES256 or PS256"))
     else
       ZIO
         .attempt:
-          val generator = KeyPairGenerator.getInstance("EC").nn
+          val generator = algorithm match
+            case Dpop.Algorithm.ES256 => KeyPairGenerator.getInstance("EC").nn
+            case _ => KeyPairGenerator.getInstance("RSA").nn
           val keys = IndexedSeq.tabulate(size): index =>
-            generator.initialize(Curve.P_256.toECParameterSpec, DerivedRandom(seed, index))
+            val random = DerivedRandom(seed, index)
+            algorithm match
+              case Dpop.Algorithm.ES256 => generator.initialize(Curve.P_256.toECParameterSpec, random)
+              case _ => generator.initialize(RsaKeySize, random)
             val pair = generator.generateKeyPair().nn
-            DpopKey.of(pair.getPrivate.asInstanceOf[ECPrivateKey], pair.getPublic.asInstanceOf[ECPublicKey])
+            DpopKey.of(algorithm, pair.getPrivate.nn, pair.getPublic.nn)
           DpopKeyPool(keys)
         .mapError(cause => ProtocolError.Misconfigured(s"could not derive the DPoP key pool: ${cause.getMessage}"))
 

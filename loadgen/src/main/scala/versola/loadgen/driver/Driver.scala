@@ -8,6 +8,7 @@ import versola.loadgen.protocol.*
 import versola.loadgen.scenario.*
 import versola.loadgen.scheduler.*
 import versola.loadgen.store.*
+import versola.util.Dpop
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
@@ -60,10 +61,11 @@ object Driver:
       // keygen burst on every re-shard.
       dpop <- ZIO.foreach(config.dpop): settings =>
         DpopKeyPool
-          .derive(settings.keySeed, settings.keyPoolSize)
+          .derive(settings.keySeed, settings.keyPoolSize, settings.algorithm.getOrElse(Dpop.Algorithm.ES256))
           .mapError(error => InvalidDriverConfig(error.toString))
       _ <- ZIO.foreachDiscard(dpop): pool =>
-        ZIO.logInfo(s"Driving with RFC 9449 DPoP: ${pool.size} client keys shared across the fleet")
+        val algorithm = config.dpop.flatMap(_.algorithm).getOrElse(Dpop.Algorithm.ES256)
+        ZIO.logInfo(s"Driving with RFC 9449 DPoP ($algorithm): ${pool.size} client keys shared across the fleet")
       xa <- storeTransactor
       users = PostgresVirtualUserRepository(xa)
       sessions = PostgresDeviceSessionRepository(xa)

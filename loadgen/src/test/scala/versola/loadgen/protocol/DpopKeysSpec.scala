@@ -63,6 +63,50 @@ object DpopKeysSpec extends ZIOSpecDefault:
         DpopKeyPool.derive("versola-loadgen", 1).map(pool => assertTrue(pool.keyFor(0L).jkt == GoldenThumbprint))
       },
     ),
+    // A deployment can restrict `dpop_signing_alg_values_supported` to exclude ES256 (a FAPI 2.0
+    // profile requiring PS256, say) -- the whole reason [[versola.loadgen.config.DpopConfig]]
+    // takes an algorithm rather than hard-coding one.
+    suite("a PS256 pool")(
+      // RSA key generation draws a variable number of bytes per candidate prime, so this is the
+      // property [[DpopKeyPool.derive]]'s determinism claim actually depends on for this
+      // algorithm: the same seed must still resolve a user to the same key across restarts.
+      test("derives the same keys from the same seed") {
+        for
+          first <- DpopKeyPool.derive(seed, 4, Dpop.Algorithm.PS256)
+          second <- DpopKeyPool.derive(seed, 4, Dpop.Algorithm.PS256)
+        yield assertTrue((0 until 4).forall(index => first.keyFor(index.toLong).jkt == second.keyFor(index.toLong).jkt))
+      },
+      test("produces a proof the SUT's own verifier accepts under a PS256-only policy") {
+        for
+          pool <- DpopKeyPool.derive(seed, 1, Dpop.Algorithm.PS256)
+          key = pool.keyFor(0L)
+          serialized <- key.proof(Method.POST, Token)
+          now <- zio.Clock.instant
+          proof <- Dpop
+            .verify(serialized, Set(Dpop.Algorithm.PS256), Method.POST, Token, now, Leeway)
+            .mapError(error => RuntimeException(error.toString))
+        yield assertTrue(proof.jkt == key.jkt)
+      },
+      // The failure this config exists to prevent: a PS256 proof against a policy that only
+      // names ES256 is refused for the algorithm, not for anything about the proof itself.
+      test("is refused by a policy naming only ES256") {
+        for
+          pool <- DpopKeyPool.derive(seed, 1, Dpop.Algorithm.PS256)
+          serialized <- pool.keyFor(0L).proof(Method.POST, Token)
+          now <- zio.Clock.instant
+          result <- Dpop.verify(serialized, Set(Dpop.Algorithm.ES256), Method.POST, Token, now, Leeway).either
+        yield assertTrue(result == Left(Dpop.Error.UnsupportedAlgorithm))
+      },
+      // RS256 parses as a name but is not a drivable choice: FAPI disallows it outright, so no
+      // compliant deployment's metadata names it, and a driver defaulting to it would exercise an
+      // algorithm nothing in production serves.
+      test("refuses RS256, which no compliant deployment advertises") {
+        DpopKeyPool
+          .derive(seed, 1, Dpop.Algorithm.RS256)
+          .either
+          .map(result => assertTrue(result.left.exists(_.isInstanceOf[ProtocolError.Misconfigured])))
+      },
+    ),
     suite("a proof")(
       // Verified with the server's own code rather than by reading the claims back: the proof has
       // to satisfy `Dpop.verify`, and a spec that asserted on the fields it happened to set would

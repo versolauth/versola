@@ -1,8 +1,8 @@
 package versola.loadgen.config
 
-import versola.util.Secret
 import versola.util.postgres.PostgresConfig
 import versola.util.postgres.given
+import versola.util.{Dpop, Secret}
 import zio.Config
 import zio.Duration
 import zio.config.magnolia.DeriveConfig
@@ -61,8 +61,29 @@ case class LoadgenConfig(
   *   bound to; `DpopKeyPool` explains why that failure is worse than it sounds. Not a secret:
   *   these keys authenticate emulated users against a test deployment, and reproducibility is
   *   the property being bought.
+  * @param algorithm
+  *   which RFC 9449 signing algorithm the pool's keys use, `ES256` when absent. Must name one
+  *   the deployment's served `dpop_signing_alg_values_supported` actually includes -- a
+  *   deployment that restricted that set to exclude `ES256` (a FAPI 2.0 profile requiring
+  *   `PS256`, say) has every proof this driver makes refused as `invalid_dpop_proof` under the
+  *   default, and [[versola.loadgen.protocol.DpopKeyPool]] explains why that reads as the SUT
+  *   failing outright rather than as a config mismatch. `PS256`'s RSA-2048 keygen is roughly
+  *   three orders of magnitude slower than `ES256`'s P-256 -- tens of milliseconds a key,
+  *   noticeable at boot for a large pool but paid once for the fleet either way.
   */
-case class DpopConfig(keyPoolSize: Int, keySeed: String)
+case class DpopConfig(keyPoolSize: Int, keySeed: String, algorithm: Option[Dpop.Algorithm])
+
+object DpopConfig:
+  // Same idiom as LoadgenRole: a plain string in HOCON (`ES256`/`PS256`), not
+  // zio-config-magnolia's sealed-trait coproduct shape. `RS256` parses -- `Dpop.Algorithm` names
+  // it -- but `DpopKeyPool.derive` refuses it, since no compliant deployment serves it; failing
+  // that at derive time rather than here keeps this decoder a mirror of the enum, not a second
+  // place enumerating which members are actually drivable.
+  given DeriveConfig[Dpop.Algorithm] = DeriveConfig[String]
+    .mapOrFail: str =>
+      Dpop.Algorithm.fromName(str).toRight(Config.Error.InvalidData(message = s"unknown DPoP algorithm: $str"))
+
+  given DeriveConfig[DpopConfig] = DeriveConfig.derived
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all five --
   * see versola-loadgen-dev-spec.md §12 (coordinator) and §7 (driver). `Seed`/`Provision` are the
