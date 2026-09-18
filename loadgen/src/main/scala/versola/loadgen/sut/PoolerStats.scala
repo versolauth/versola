@@ -80,8 +80,9 @@ case class PoolerDatabaseStats(
   * a boundary capture of a healthy pooler reads zero and a campaign's worst queue never appears
   * here at all. It is carried because a non-zero reading at the "after" boundary is real evidence
   * of a pooler still saturated when the run stopped; the run's actual wait is
-  * [[PoolerDatabaseStats.waitTimeMicros]]'s difference, and 08-report-data-gaps.md's exporter
-  * item is what would give the peak.
+  * [[PoolerDatabaseStats.waitTimeMicros]]'s difference, and the peak is
+  * [[PoolerQueuePeak.peakClientsWaiting]], which samples this field on a timer for exactly this
+  * reason.
   */
 case class PoolerPoolStats(
     database: String,

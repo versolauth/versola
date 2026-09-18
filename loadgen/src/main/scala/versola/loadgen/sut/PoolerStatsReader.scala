@@ -85,6 +85,14 @@ object PoolerStatsReader:
         clientLoginCount = long(row, "total_client_login_count"),
       )
 
+  /** `SHOW POOLS` on its own, for [[PoolerQueueRecorder]]: the one command of the four whose
+    * answer is a gauge, and therefore the only one worth asking more than twice in a run. The
+    * other three are cumulative or constant, so sampling them would cost the pooler three extra
+    * queries every interval to learn nothing the boundaries do not already carry.
+    */
+  def readPools(connection: Connection): Task[List[PoolerPoolStats]] =
+    ZIO.attemptBlocking(pools(connection))
+
   /** `maxwait` and `maxwait_us` are seconds and the microsecond remainder of one wait, not two
     * waits, so they are combined here -- a report that showed them apart would invite reading
     * `maxwait_us` as the whole figure whenever the wait is under a second, which is most of them.

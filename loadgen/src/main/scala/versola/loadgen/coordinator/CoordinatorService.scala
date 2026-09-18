@@ -16,7 +16,7 @@ import versola.loadgen.metrics.{
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
 import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
-import versola.loadgen.sut.{PoolerStatsCapture, PoolerStatsDelta, SutStatsCapture, SutStatsDelta}
+import versola.loadgen.sut.{PoolerQueuePeak, PoolerQueueRecorder, PoolerStatsCapture, PoolerStatsDelta, SutStatsCapture, SutStatsDelta}
 import zio.*
 
 import java.time.Instant
@@ -161,10 +161,20 @@ final class CoordinatorService private (
         counts <- population.get
         databases <- sutDeltas(name)
         poolers <- poolerDeltas(name)
+        queue <- poolerPeaks(name)
         report <- ZIO
           .fromEither(
-            CampaignReport
-              .assemble(name, reports, fleet.taxonomy, fleet.health, runOf(state, counts, fleet), thresholds, databases, poolers),
+            CampaignReport.assemble(
+              name,
+              reports,
+              fleet.taxonomy,
+              fleet.health,
+              runOf(state, counts, fleet),
+              thresholds,
+              databases,
+              poolers,
+              queue,
+            ),
           )
           .mapError(IllegalStateException(_))
       yield report
@@ -210,6 +220,13 @@ final class CoordinatorService private (
     */
   private def poolerDeltas(name: String): Task[Option[List[PoolerStatsDelta]]] =
     ZIO.foreach(poolerStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
+
+  /** §4's sampled half, which unlike [[poolerDeltas]] is already worth reporting mid-run: the
+    * peaks accumulate from the opening boundary and every reading taken so far is one the report
+    * can state. Empty until a campaign has been started, which is when the accumulation is armed.
+    */
+  private def poolerPeaks(name: String): UIO[Option[List[PoolerQueuePeak]]] =
+    ZIO.foreach(poolerStats)(_.peaks(name)).map(_.filter(_.nonEmpty))
 
   /** Phase two of the rebalance, once the drain window has elapsed: rewrite `vu_users.shard`,
     * then promote the published map.
@@ -269,14 +286,34 @@ final class CoordinatorService private (
       // campaign.
       ZIO.logErrorCause("Registration controller tick failed; keeping the last published factor", cause)
 
-  /** The coordinator's two timers. Forked into the caller's scope, so they are interrupted by the
+  /** The coordinator's timers. Forked into the caller's scope, so they are interrupted by the
     * same shutdown that takes the server down.
+    *
+    * The pooler sampler is forked unconditionally rather than only for a configured pooler: it
+    * reads `poolerStats` through [[sampleQueues]], which is `None` for a coordinator without a
+    * `pooler-stats` block, and a timer whose tick is a no-op costs less than a second wiring
+    * path that has to be kept in step with the first one.
     */
   def run: ZIO[Scope, Nothing, Unit] =
     for
       _ <- settle.repeat(Schedule.spaced(CoordinatorService.settleInterval)).forkScoped
       _ <- controllerTick.repeat(Schedule.spaced(RegistrationController.interval)).forkScoped
+      _ <- sampleQueues.repeat(Schedule.spaced(PoolerQueueRecorder.sampleInterval)).forkScoped
     yield ()
+
+  /** One tick of §4's queue sampler, and the decision that only a running campaign is sampled.
+    *
+    * Matched on the state rather than left to the accumulation's armed flag, which would let a
+    * paused campaign go on sampling an idle pooler. A pause is time the operator took out of the
+    * run, and folding its empty readings into the distribution would pull every quantile towards
+    * zero by an amount that says nothing about the SUT -- the same argument
+    * [[versola.loadgen.sut.PoolerQueueRecorder]] makes for dropping readings taken before the
+    * campaign opened. A stopped campaign is excluded by the same match, so the peaks a report
+    * shows after a stop are the run's and stay put however long the coordinator lives on.
+    */
+  private def sampleQueues: UIO[Unit] =
+    control.get.flatMap: state =>
+      ZIO.foreachDiscard(poolerStats)(_.sample).when(state.state == CampaignState.Running).unit
 
   /** Serialised by [[transitionLock]] end to end, capture included, and not just across the read
     * of `control` and its write: `GET /plan` reads `control` with no lock of its own (§12's

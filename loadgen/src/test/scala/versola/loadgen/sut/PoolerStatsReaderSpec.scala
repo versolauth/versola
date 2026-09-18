@@ -89,6 +89,23 @@ object PoolerStatsReaderSpec extends ZIOSpecDefault:
             own.queryTimeMicros >= 0L,
           )
     },
+    // What the queue sampler runs every few seconds for the length of a campaign, and the reason
+    // it is a separate entry point: it has to come back with the same `SHOW POOLS` rows as the
+    // boundary capture while asking the console for nothing else. A `readPools` that drifted from
+    // `read`'s parsing would cost §4 its peak without costing it its bracket, so the two are
+    // compared here rather than asserted against separately.
+    test("the queue sampler's own read agrees with the full reading's") {
+      ZIO.scoped:
+        for
+          connection <- console()
+          reading <- PoolerStatsReader.read(connection)
+          pools <- PoolerStatsReader.readPools(connection)
+        yield assertTrue(
+          pools.exists(pool => pool.database == "pgbouncer" && pool.user == "pgbouncer"),
+          pools.forall(_.poolMode.nonEmpty),
+          pools.map(pool => (pool.database, pool.user)) == reading.stats.gauges.pools.map(pool => (pool.database, pool.user)),
+        )
+    },
     test("SHOW CONFIG supplies the limits the pool occupancy is read against") {
       ZIO.scoped:
         for
