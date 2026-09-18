@@ -9,6 +9,18 @@ case class PasskeySettings(
     userVerification: String,
 ) derives JsonCodec
 
+/** Mirrors central's `MtlsCertificateEncoding` -- see there for what each case means. */
+enum MtlsCertificateEncoding derives JsonCodec:
+  case urlEncodedPem
+  case base64Der
+
+/** Where a client certificate is to be read from for one tenant, once the two settings that
+  * are only meaningful together are known to both be present. */
+case class MtlsCertificateSource(
+    header: String,
+    encoding: MtlsCertificateEncoding,
+)
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
@@ -26,4 +38,6 @@ case class ChallengeSettingsRecord(
     /** RFC 9449 §8: whether a proof from one of this tenant's clients must carry a
       * server-issued nonce -- see [[versola.oauth.client.OAuthConfigurationService.requireDpopNonce]]. */
     requireDpopNonce: Boolean,
+    mtlsCertificateHeader: Option[String],
+    mtlsCertificateEncoding: Option[MtlsCertificateEncoding],
 ) derives JsonCodec

@@ -12,6 +12,14 @@ CREATE TABLE challenge_settings (
     ip_header                    TEXT NOT NULL,
     acr_vocabulary               JSONB,
     post_logout_redirect_uris    TEXT[] NOT NULL DEFAULT '{}',
+    -- Header the tenant's reverse proxy sets with the client certificate it terminated mTLS
+    -- for. NULL means the proxy does not terminate mTLS for this tenant.
+    mtls_certificate_header      TEXT,
+    -- How the certificate in mtls_certificate_header is encoded. Set together with
+    -- mtls_certificate_header, which the challenge-settings endpoint enforces: half a source
+    -- is not a weaker source but none, since auth can neither read a header it has no
+    -- encoding for nor find one an encoding does not name.
+    mtls_certificate_encoding    TEXT,
     PRIMARY KEY (tenant_id)
 );
 

@@ -37,6 +37,8 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     acrVocabulary = None,
     postLogoutRedirectUris = List("https://example.com/logout"),
     requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =
@@ -73,6 +75,16 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           _ <- env.repository.upsert(settingsFor(tenantA))
           all <- env.repository.getAll
         yield assertTrue(all.map(_.tenantId) == Vector(tenantA, tenantB))
+      },
+      test("upsert round-trips a configured mTLS certificate header and encoding") {
+        val record = settingsFor(tenantA).copy(
+          mtlsCertificateHeader = Some("ssl-client-cert"),
+          mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+        )
+        for
+          _ <- env.repository.upsert(record)
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(found == Some(record))
       },
     )
 

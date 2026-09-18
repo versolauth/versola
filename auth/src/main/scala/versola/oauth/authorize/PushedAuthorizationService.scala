@@ -1,9 +1,9 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationRecord, PushedAuthorizationResponse}
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret}
+import versola.oauth.client.model.ClientCredentials
 import versola.oauth.model.{RequestUri, RequestUriReference}
+import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
 import versola.util.{CoreConfig, Secret, SecureRandom, SecurityService}
 import zio.http.Request
 import zio.{Chunk, IO, ZIO, ZLayer}
@@ -16,12 +16,13 @@ trait PushedAuthorizationService:
   def push(
       params: Map[String, Chunk[String]],
       credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
       request: Request,
   ): IO[Throwable | PushedAuthorizationError, PushedAuthorizationResponse]
 
 object PushedAuthorizationService:
   def live: ZLayer[
-    CoreConfig & AuthorizeRequestParser & PushedAuthorizationRepository & OAuthConfigurationService & SecureRandom &
+    CoreConfig & AuthorizeRequestParser & PushedAuthorizationRepository & ClientAuthentication & SecureRandom &
       SecurityService,
     Nothing,
     PushedAuthorizationService,
@@ -39,7 +40,7 @@ object PushedAuthorizationService:
       config: CoreConfig,
       parser: AuthorizeRequestParser,
       repository: PushedAuthorizationRepository,
-      oauthClientService: OAuthConfigurationService,
+      clientAuthentication: ClientAuthentication,
       secureRandom: SecureRandom,
       securityService: SecurityService,
   ) extends PushedAuthorizationService:
@@ -47,13 +48,14 @@ object PushedAuthorizationService:
     override def push(
         params: Map[String, Chunk[String]],
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
         request: Request,
     ): IO[Throwable | PushedAuthorizationError, PushedAuthorizationResponse] =
       for
-        client <- credentials match
-          case ClientIdWithSecret(clientId, clientSecret) =>
-            oauthClientService.verifySecret(clientId, clientSecret)
-              .someOrFail(PushedAuthorizationError.InvalidClient)
+        // RFC 8705 §2.1: a client that registered an mTLS subject holds no secret and
+        // authenticates with its certificate instead.
+        client <- clientAuthentication.authenticate(credentials = credentials, certificate = certificate)
+          .orElseFail(PushedAuthorizationError.InvalidClient)
 
         _ <- ZIO.fail(PushedAuthorizationError.RequestUriNotAllowed).when(params.contains("request_uri"))
         // A client_id that contradicts the authenticated one is already rejected while the

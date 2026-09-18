@@ -105,6 +105,129 @@ object Fixtures:
   def mutualTlsAuth(subjectType: String, subjectValue: String): Json.Obj =
     Json.Obj("subjectType" -> Json.Str(subjectType), "subjectValue" -> Json.Str(subjectValue))
 
+  /** Certificates for the mutual-TLS tests, standing in for what a reverse proxy would
+    * forward after terminating mTLS.
+    *
+    * They are fixed rather than generated per run: `auth` never validates a chain or an
+    * expiry -- the proxy did that, and there are no trust anchors on this side to re-check
+    * against -- so a certificate here only has to parse and to carry known subject values.
+    * Fixing them also fixes the `x5t#S256` a test can assert a token was bound to, which a
+    * freshly generated key would make unpredictable.
+    *
+    * Both are self-signed with a 100-year validity, and both happen to contain `+` in their
+    * base64, which the URL-encoded PEM decoding depends on handling as data rather than as
+    * `application/x-www-form-urlencoded`'s space.
+    */
+  object ClientCertificates:
+
+    /** The certificate the registered client presents. `CN=e2e-mtls-client,O=Versola,C=KZ`
+      * with a `dNSName` of `e2e-mtls-client.versola.test`.
+      */
+    val client: Certificate = Certificate(
+      """-----BEGIN CERTIFICATE-----
+        |MIIDfjCCAmagAwIBAgIUP/+AL0P7z8mllGIzBwL/5GIik8owDQYJKoZIhvcNAQEL
+        |BQAwOTELMAkGA1UEBhMCS1oxEDAOBgNVBAoMB1ZlcnNvbGExGDAWBgNVBAMMD2Uy
+        |ZS1tdGxzLWNsaWVudDAgFw0yNjA5MTYwOTIwMzRaGA8yMTI2MDgyMzA5MjAzNFow
+        |OTELMAkGA1UEBhMCS1oxEDAOBgNVBAoMB1ZlcnNvbGExGDAWBgNVBAMMD2UyZS1t
+        |dGxzLWNsaWVudDCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBAM5b+iV2
+        |2mnAtDj93hWtGNYD0SEcnGRiCF2pSfOAZbEYQBMvSWU7tK9L2aseuI95RZIfKr5d
+        |q+DstS/izjsh/mofJLkmdX+78jB3nxglgCdVVyQ+2AN/4jfQClVsEnpQnBQuN/na
+        |mkdBilVC9t8hQgb+iUdzVQb1sxCIg3H5vNHpqYFWGXvAxyaHc4Qd2umJhPfgPLir
+        |WcliNHk94cD+NFRLTWrr32D1AFrunrsLf/zpyG5wx7zBHHcoMqgacvuN8bk/1a8f
+        |cWm+OgbtiWu3AbZzkL9f6/cPmDyGBRUOv68ME6wcigDFTxwjDXiOU8zq74w7XotJ
+        |xGuo/v+tl9Fr01kCAwEAAaN8MHowHQYDVR0OBBYEFMyTlTqe/NhkEDEQ67Kc9aio
+        |rTnfMB8GA1UdIwQYMBaAFMyTlTqe/NhkEDEQ67Kc9aiorTnfMA8GA1UdEwEB/wQF
+        |MAMBAf8wJwYDVR0RBCAwHoIcZTJlLW10bHMtY2xpZW50LnZlcnNvbGEudGVzdDAN
+        |BgkqhkiG9w0BAQsFAAOCAQEAG7anVImoPo5fiNocjrZ1TrZlj9KSoocqn85IFBfj
+        |1t1uDM/pOYEz/N2laXC+F2pb8PQbk/+gzH5+22d4++qxQ2yVXSplwA/w6lNMymXG
+        |9qveAiaU4GiTGe9zioy0lgs0hszuGVjxRqWi83r2y3gNK1OmDmAMZ0ri5BKbSdV8
+        |RBDE4pgYALlQSRMELdFi/BuY27ShANT+3H+E1tLw4NUGfItmXdGKybsvSEwq/psb
+        |IfADKNvApRRTph9dqPD9DOxC+RYt0dMzfNGQSQw+4zV5FESqWA36O/GNzTZxDIKR
+        |PMT+roWP5dU4K3tIQ0D2uL/jNJv2wAnreoUjul1H5xU7ew==
+        |-----END CERTIFICATE-----""".stripMargin,
+    )
+
+    /** A second certificate, valid in every way but issued to someone else -- what a client
+      * trying to pass itself off as another would present.
+      */
+    val impostor: Certificate = Certificate(
+      """-----BEGIN CERTIFICATE-----
+        |MIIDezCCAmOgAwIBAgIUS79XGRTS7PQlDP7ZpNjz9Zi3KqcwDQYJKoZIhvcNAQEL
+        |BQAwOzELMAkGA1UEBhMCS1oxEDAOBgNVBAoMB1ZlcnNvbGExGjAYBgNVBAMMEWUy
+        |ZS1tdGxzLWltcG9zdG9yMCAXDTI2MDkxNjA5MjA0NFoYDzIxMjYwODIzMDkyMDQ0
+        |WjA7MQswCQYDVQQGEwJLWjEQMA4GA1UECgwHVmVyc29sYTEaMBgGA1UEAwwRZTJl
+        |LW10bHMtaW1wb3N0b3IwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCg
+        |WxNzGXWLH8m9Mo3ygrJaiTeV57ibtviHfd2UH9RzpnaW+n8pbf784CGQhmyrMEMo
+        |u5ssF9zTBXGwCqLTcJAdWH4k7fPbqswl7XQYJIsCIZburlkIMKy3aj+qcMVYpVP6
+        |JUndBYDdevZYIV3ZjNul8OY0W9gHCU5od1y+jzLJ5EBqO6aEpklI8wKQ8mUudacW
+        |Iz1f7hpRnfzAmVekbsj8vsHXaSzyPdcSTIO5uaHFsGm/fZ/iNLmyoUf3sXoVfu3f
+        |2MZ5r1YJisFBODwU/6iU5E/EVLQnNtdg2x8mCiK3DtmcRivBN/9STXl+mb1/W9Ll
+        |yus8zDwMEG/R83E43rjbAgMBAAGjdTBzMB0GA1UdDgQWBBRC3y/A5yJKUro4X7B8
+        |gKOw0+d1PzAfBgNVHSMEGDAWgBRC3y/A5yJKUro4X7B8gKOw0+d1PzAPBgNVHRMB
+        |Af8EBTADAQH/MCAGA1UdEQQZMBeCFWltcG9zdG9yLnZlcnNvbGEudGVzdDANBgkq
+        |hkiG9w0BAQsFAAOCAQEAYAnHvT6rrsthcYD+P3JVIRbQ7twNzzStyknsAPiAyJov
+        |XMv7H78Xom1bPa/jUTXjD4dC7OtbODErmhZTQHgjsi1rJdD3Rc6IqPjfXXCOMf+I
+        |HogQlYhjP3YWQnq0cLQFyI1T47tMUiiW93iRZju/rQfehoGftb0o334ec7ap+4kf
+        |YtSn4j9xC19HGr4ldcQKE1pC1pHeRqBbZJrM4bFe4DZHIcF73lYPMt4BnokQp7Og
+        |zfkw+N4vUBz64HUi6CqJjpXB1iGKhAcXOzlhSrqZEX/MqVj2/OGcmdKG9X2dMMhc
+        |inJnC7iScFCSbjk8GIXs26Tam8QtpblkOrciu8TMxg==
+        |-----END CERTIFICATE-----""".stripMargin,
+    )
+
+  /** One of [[Fixtures.ClientCertificates]], with the subject values a client registers
+    * against it and the header encodings a proxy would deliver it in.
+    */
+  final case class Certificate(pem: String):
+    private val der: Array[Byte] =
+      java.util.Base64.getMimeDecoder.decode(
+        pem.linesIterator.filterNot(_.startsWith("-----")).mkString,
+      )
+
+    private val x509: java.security.cert.X509Certificate =
+      java.security.cert.CertificateFactory.getInstance("X.509")
+        .generateCertificate(java.io.ByteArrayInputStream(der))
+        .asInstanceOf[java.security.cert.X509Certificate]
+
+    /** RFC 4514 subject, rendered the way `auth` renders the one it compares against, rather
+      * than in the order OpenSSL prints -- registering the printed form would fail to match
+      * for reasons that have nothing to do with the code under test.
+      */
+    val subjectDn: String =
+      x509.getSubjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253)
+
+    /** The `dNSName` subject alternative name, which `san_dns` registers against. */
+    val dnsName: String =
+      Option(x509.getSubjectAlternativeNames).toList
+        .flatMap(scala.jdk.CollectionConverters.CollectionHasAsScala(_).asScala)
+        .collectFirst:
+          case entry if entry.get(0) == 2 => entry.get(1).toString
+        .getOrElse(throw RuntimeException(s"Fixture certificate carries no dNSName: $subjectDn"))
+
+    /** RFC 8705 §3.1 `x5t#S256` -- what a token bound to this certificate must carry. */
+    val thumbprint: String =
+      java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(
+        java.security.MessageDigest.getInstance("SHA-256").digest(der),
+      )
+
+    /** Traefik's `passTLSClientCert`: the DER, base64-encoded, on one line. */
+    val base64Der: String =
+      java.util.Base64.getEncoder.encodeToString(der)
+
+    /** nginx's `$ssl_client_escaped_cert`: the whole PEM with everything outside the
+      * unreserved set percent-encoded, which is what `ngx_escape_uri` produces.
+      */
+    val urlEncodedPem: String =
+      pem.flatMap: char =>
+        if char.isLetterOrDigit || "-._~".contains(char) then char.toString
+        else f"%%${char.toInt}%02X"
+
+    /** The same PEM, but with `+` left as itself -- a proxy that escapes less than nginx
+      * does. Reading this as form encoding would turn each one into a space and corrupt the
+      * base64, so it is the shape that proves the decoding is not `URLDecoder`.
+      */
+    val urlEncodedPemWithLiteralPlus: String =
+      urlEncodedPem.replace("%2B", "+")
+
   /** The add/remove patch shape `PUT /configuration/clients` requires for its list members. */
   def patch(add: Set[String] = Set.empty, remove: Set[String] = Set.empty): Json.Obj =
     Json.Obj("add" -> strings(add), "remove" -> strings(remove))

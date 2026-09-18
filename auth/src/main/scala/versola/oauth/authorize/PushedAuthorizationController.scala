@@ -2,6 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.client.model.ClientIdWithSecret
+import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
 import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.CoreConfig
 import zio.*
@@ -14,7 +15,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 9126: https://datatracker.ietf.org/doc/html/rfc9126
  */
 object PushedAuthorizationController extends Controller:
-  type Env = Tracing & PushedAuthorizationService & CoreConfig
+  type Env = Tracing & PushedAuthorizationService & ClientAuthentication & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     parEndpoint,
@@ -32,7 +33,15 @@ object PushedAuthorizationController extends Controller:
         _ <- credentials match
           case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
 
-        response <- service.push(AuthorizeRequestParser.paramsFromForm(form), credentials, request)
+        certificate <- ZIO.serviceWithZIO[ClientAuthentication](
+          _.certificate(
+            request = request,
+            credentials = credentials,
+            relevance = CertificateRelevance.Authentication,
+          ).mapError(PushedAuthorizationError.InvalidClientCertificate(_)),
+        )
+
+        response <- service.push(AuthorizeRequestParser.paramsFromForm(form), credentials, certificate, request)
       yield Response.json(response.toJson)
         .status(Status.Created)
         .addHeader(Header.CacheControl.NoStore))
@@ -90,7 +99,7 @@ object PushedAuthorizationController extends Controller:
     // RFC 6749 §5.2: a 401 response to a client-authenticated endpoint must include the
     // WWW-Authenticate challenge for the scheme the client is expected to use.
     error match
-      case PushedAuthorizationError.InvalidClient =>
+      case PushedAuthorizationError.InvalidClient | PushedAuthorizationError.InvalidClientCertificate(_) =>
         response.addHeader(Header.WWWAuthenticate.Basic(realm = None))
       case _ =>
         response

@@ -28,3 +28,9 @@ object Cnf:
   def dpop(jkt: String): Cnf = Cnf(jkt = Some(jkt), x5tS256 = None)
 
   def certificate(x5tS256: String): Cnf = Cnf(jkt = None, x5tS256 = Some(x5tS256))
+
+  /** The confirmation for a grant, or `None` when neither mechanism constrained it. Both may
+    * apply at once: a client authenticating with a certificate can still send a DPoP proof,
+    * and a token that drops either binding would be the weaker of the two the client proved. */
+  def from(jkt: Option[String], x5tS256: Option[String]): Option[Cnf] =
+    Option.when(jkt.isDefined || x5tS256.isDefined)(Cnf(jkt = jkt, x5tS256 = x5tS256))

@@ -4,7 +4,8 @@ import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.Controller
+import versola.util.Patch.applyTo
+import versola.util.http.{BadRequest, Controller}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
@@ -87,6 +88,13 @@ object OtpChallengeController extends Controller:
         service  <- ZIO.service[ChallengeSettingsService]
         body     <- request.bodyAs[UpsertChallengeSettingsRequest]
         existing <- service.getSettings(body.tenantId)
+        mtlsCertificateHeader   = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
+        mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
+        // One setting stored in two columns: a header no encoding says how to read, and an
+        // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
+        // off while central reports it configured.
+        _ <- ZIO.fail(BadRequest("mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together"))
+          .when(mtlsCertificateHeader.isDefined != mtlsCertificateEncoding.isDefined)
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
@@ -103,6 +111,8 @@ object OtpChallengeController extends Controller:
             body.acrVocabulary.orElse(existing.flatMap(_.acrVocabulary)),
             body.postLogoutRedirectUris.orElse(existing.map(_.postLogoutRedirectUris)).getOrElse(Nil),
             body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
+            mtlsCertificateHeader,
+            mtlsCertificateEncoding,
           ),
         )
       yield Response.status(Status.NoContent)

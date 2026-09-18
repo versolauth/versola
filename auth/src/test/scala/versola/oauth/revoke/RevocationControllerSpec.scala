@@ -5,7 +5,9 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.mtls.ClientAuthentication
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.util.{Base64, Secret, UnitSpecBase}
@@ -87,12 +89,20 @@ object RevocationControllerSpec extends UnitSpecBase:
       request: Request,
       expectedStatus: Status,
       setup: Stub[RevocationService] => UIO[Unit] = _ => ZIO.unit,
+      configureClient: Stub[OAuthConfigurationService] => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      verifyService: Stub[RevocationService] => UIO[TestResult] =
+        (_: Stub[RevocationService]) => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
         client            <- ZIO.service[Client]
         revocationService  = stub[RevocationService]
+        clientService      = stub[OAuthConfigurationService]
+        // The controller looks the client up only to decide whether reading a client
+        // certificate could matter to it; an unknown client never needs one.
+        _                  = clientService.find.returnsWith(ZIO.none)
+        clientAuthentication = ClientAuthentication.Impl(clientService)
         jwksService        = TestEnvConfig.jwksService
         config             = TestEnvConfig.coreConfig
         tracing           <- NoopTracing.layer.build
@@ -102,6 +112,7 @@ object RevocationControllerSpec extends UnitSpecBase:
             RevocationController.routes
               .provideEnvironment(
                 ZEnvironment(revocationService) ++
+                  ZEnvironment(clientAuthentication) ++
                   ZEnvironment(jwksService) ++
                   ZEnvironment(config) ++
                   tracing
@@ -109,10 +120,12 @@ object RevocationControllerSpec extends UnitSpecBase:
           )
         )
         _ <- setup(revocationService)
+        _ <- configureClient(clientService)
 
-        response     <- client.batched(request)
-        verifyResult <- verify(response)
-      yield assertTrue(response.status == expectedStatus) && verifyResult
+        response      <- client.batched(request)
+        verifyResult  <- verify(response)
+        serviceResult <- verifyService(revocationService)
+      yield assertTrue(response.status == expectedStatus) && verifyResult && serviceResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("RevocationController")(
@@ -263,6 +276,61 @@ object RevocationControllerSpec extends UnitSpecBase:
         verify = response =>
           for body <- response.body.asString
           yield assertTrue(body.contains("invalid_client")),
+      ),
+      controllerTestCase(
+        description = "reads the certificate from the header the tenant configured and passes it on",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(refreshToken1),
+            "client_id" -> clientId1,
+          )),
+        ).addHeader(Header.Custom("ssl-client-cert", TestEnvConfig.escapedClientCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = revocationService => revocationService.revokeRefreshToken.succeedsWith(()),
+        configureClient = client =>
+          client.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId1))) *>
+            client.getMtlsCertificateSource.succeedsWith(Some(TestEnvConfig.nginxCertificateSource)),
+        verifyService = revocationService =>
+          ZIO.succeed(assertTrue(
+            revocationService.revokeRefreshToken.calls.head._3
+              .map(_.thumbprint).contains(TestEnvConfig.clientCertificateThumbprint),
+          )),
+      ),
+      controllerTestCase(
+        description = "ignores the header for a client that does not authenticate by certificate",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> Base64.urlEncode(refreshToken1))),
+        ).addHeader(authHeader(clientId1, clientSecret1))
+          .addHeader(Header.Custom("ssl-client-cert", TestEnvConfig.escapedClientCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = revocationService => revocationService.revokeRefreshToken.succeedsWith(()),
+        verifyService = revocationService =>
+          ZIO.succeed(assertTrue(revocationService.revokeRefreshToken.calls.head._3.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "rejects a header it cannot read as a certificate with invalid_client",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(refreshToken1),
+            "client_id" -> clientId1,
+          )),
+        ).addHeader(Header.Custom("ssl-client-cert", "not-a-certificate")),
+        expectedStatus = Status.Unauthorized,
+        configureClient = client =>
+          client.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId1))) *>
+            client.getMtlsCertificateSource.succeedsWith(Some(TestEnvConfig.nginxCertificateSource)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+            // The reason names the deployment's proxy, so it stays in the log.
+            !body.contains("X.509"),
+          ),
+        verifyService = revocationService =>
+          ZIO.succeed(assertTrue(revocationService.revokeRefreshToken.calls.isEmpty)),
       ),
     ),
   )

@@ -3,7 +3,9 @@ package versola.oauth.authorize
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
+import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
+import versola.oauth.mtls.ClientAuthentication
 import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, UnitSpecBase}
@@ -56,6 +58,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       expectedStatus: Status,
       setup: Stub[PushedAuthorizationService] => UIO[Unit] = _ => ZIO.unit,
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
+      configureClient: Stub[OAuthConfigurationService] => UIO[Unit] = _ => ZIO.unit,
       verifyService: Stub[PushedAuthorizationService] => UIO[TestResult] =
         (_: Stub[PushedAuthorizationService]) => ZIO.succeed(assertTrue(true)),
   ) =
@@ -63,14 +66,20 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
       for
         client <- ZIO.service[Client]
         service = stub[PushedAuthorizationService]
+        clientService = stub[OAuthConfigurationService]
+        // The controller looks the client up only to decide whether reading a client
+        // certificate could matter to it; an unknown client never needs one.
+        _ = clientService.find.returnsWith(ZIO.none)
+        clientAuthentication = ClientAuthentication.Impl(clientService)
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             PushedAuthorizationController.routes
-              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(config) ++ tracing)
+              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ tracing)
           )
         )
         _ <- setup(service)
+        _ <- configureClient(clientService)
         response <- client.batched(request)
         verifyResult <- verify(response)
         verifyServiceResult <- verifyService(service)
@@ -174,6 +183,47 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         expectedStatus = Status.MethodNotAllowed,
         verify = response =>
           ZIO.succeed(assertTrue(response.header(Header.Allow).contains(Header.Allow(NonEmptyChunk(Method.POST))))),
+      ),
+      controllerTestCase(
+        description = "reads the certificate from the header the tenant configured and passes it on",
+        request = parRequest(validForm(), withAuth = false)
+          .addHeader(Header.Custom("ssl-client-cert", TestEnvConfig.escapedClientCertificatePem)),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        configureClient = client =>
+          client.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId))) *>
+            client.getMtlsCertificateSource.succeedsWith(Some(TestEnvConfig.nginxCertificateSource)),
+        verifyService = service =>
+          ZIO.succeed(assertTrue(
+            service.push.calls.head._3.map(_.thumbprint).contains(TestEnvConfig.clientCertificateThumbprint),
+          )),
+      ),
+      controllerTestCase(
+        description = "ignores the header for a client that does not authenticate by certificate",
+        request = parRequest(validForm())
+          .addHeader(Header.Custom("ssl-client-cert", TestEnvConfig.escapedClientCertificatePem)),
+        expectedStatus = Status.Created,
+        setup = _.push.succeedsWith(pushedResponse),
+        verifyService = service =>
+          ZIO.succeed(assertTrue(service.push.calls.head._3.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "rejects a header it cannot read as a certificate with invalid_client",
+        request = parRequest(validForm(), withAuth = false)
+          .addHeader(Header.Custom("ssl-client-cert", "not-a-certificate")),
+        expectedStatus = Status.Unauthorized,
+        configureClient = client =>
+          client.find.succeedsWith(Some(TestEnvConfig.mtlsClient(clientId))) *>
+            client.getMtlsCertificateSource.succeedsWith(Some(TestEnvConfig.nginxCertificateSource)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+            // The reason names the deployment's proxy, so it stays in the log.
+            !body.contains("X.509"),
+          ),
+        verifyService = service =>
+          ZIO.succeed(assertTrue(service.push.calls.isEmpty)),
       ),
     ),
   )

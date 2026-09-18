@@ -1,8 +1,8 @@
 package versola.oauth.revoke
 
-import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientIdWithSecret, OAuthClientRecord}
+import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
+import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
@@ -12,11 +12,13 @@ trait RevocationService:
   def revokeRefreshToken(
       token: RefreshToken,
       credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | RevocationError, Unit]
 
   def revokeAccessToken(
       token: AccessTokenPayload,
       credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | RevocationError, Unit]
 
   /** Validates the client credentials alone, with no token involved. RFC 7009 §2.1 requires the
@@ -24,17 +26,20 @@ trait RevocationService:
     * be one it could ever have issued -- so a value no client could hold must still fail with
     * `InvalidClient` if the credentials presenting it are themselves wrong.
     */
-  def authenticateClient(credentials: ClientCredentials): IO[RevocationError, OAuthClientRecord]
+  def authenticateClient(
+      credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
+  ): IO[RevocationError, OAuthClientRecord]
 
 object RevocationService:
   def live: ZLayer[
-    OAuthConfigurationService & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
+    ClientAuthentication & SessionRepository & AccessTokenRevocationService & SecurityService & CoreConfig,
     Nothing,
     RevocationService,
   ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   private class Impl(
-                      oauthClientService: OAuthConfigurationService,
+                      clientAuthentication: ClientAuthentication,
                       sessionRepository: SessionRepository,
                       accessTokenRevocationService: AccessTokenRevocationService,
                       securityService: SecurityService,
@@ -44,9 +49,10 @@ object RevocationService:
     override def revokeRefreshToken(
         token: RefreshToken,
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | RevocationError, Unit] =
       for
-        client <- authenticateClient(credentials)
+        client <- authenticateClient(credentials, certificate)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
         tokenRecord <- sessionRepository.findToken(tokenMac)
 
@@ -74,9 +80,10 @@ object RevocationService:
     override def revokeAccessToken(
         token: AccessTokenPayload,
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | RevocationError, Unit] =
       for
-        client <- authenticateClient(credentials)
+        client <- authenticateClient(credentials, certificate)
         _ <- ZIO.fail(RevocationError.InvalidClient)
           .when(!token.clientId.contains(client.id))
 
@@ -89,10 +96,11 @@ object RevocationService:
         )
       yield ()
 
+    /** RFC 8705 §2.1: a client that registered an mTLS subject holds no secret and
+      * authenticates with its certificate instead. */
     override def authenticateClient(
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[RevocationError, OAuthClientRecord] =
-      credentials match
-        case ClientIdWithSecret(clientId, clientSecret) =>
-          oauthClientService.verifySecret(clientId, clientSecret)
-            .someOrFail(RevocationError.InvalidClient)
+      clientAuthentication.authenticate(credentials = credentials, certificate = certificate)
+        .orElseFail(RevocationError.InvalidClient)

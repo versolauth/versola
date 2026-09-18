@@ -1,6 +1,7 @@
 package versola.oauth.introspect
 
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
+import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
@@ -15,7 +16,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
  * RFC 7662: https://datatracker.ietf.org/doc/html/rfc7662
  */
 object IntrospectionController extends Controller:
-  type Env = Tracing & IntrospectionService & JwksService & CoreConfig
+  type Env = Tracing & IntrospectionService & ClientAuthentication & JwksService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     introspectEndpoint,
@@ -29,15 +30,22 @@ object IntrospectionController extends Controller:
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         form <- request.body.asURLEncodedForm.orElseFail(IntrospectionError.InvalidRequest)
         credentials <- request.extractCredentials(form).orElseFail(IntrospectionError.InvalidClient)
+        certificate <- ZIO.serviceWithZIO[ClientAuthentication](
+          _.certificate(
+            request = request,
+            credentials = credentials,
+            relevance = CertificateRelevance.Authentication,
+          ).mapError(IntrospectionError.InvalidClientCertificate(_)),
+        )
         tokenEither <- tokenDecoder.decode(form).orElseFail(IntrospectionError.InvalidRequest)
         response <- tokenEither match
           case Right(token) =>
             JWT.deserialize[AccessTokenPayload](token, publicKeys, JWT.Type.AccessToken)
-              .flatMap(introspectionService.introspectAccessToken(_, credentials))
+              .flatMap(introspectionService.introspectAccessToken(_, credentials, certificate))
               .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
 
           case Left(refreshToken) =>
-            introspectionService.introspectRefreshToken(refreshToken, credentials)
+            introspectionService.introspectRefreshToken(refreshToken, credentials, certificate)
 
         _ <- Observability.setError("inactive").unless(response.active)
       yield Response.json(response.toJson)

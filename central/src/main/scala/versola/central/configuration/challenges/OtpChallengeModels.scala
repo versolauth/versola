@@ -1,6 +1,7 @@
 package versola.central.configuration.challenges
 
 import versola.central.configuration.tenants.TenantId
+import versola.util.Patch
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
 
@@ -46,4 +47,9 @@ case class UpsertChallengeSettingsRequest(
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: Option[List[String]],
     requireDpopNonce: Option[Boolean] = None,
+    /** Null clears the header, which is how a tenant's mutual TLS is turned off; absent
+      * keeps the stored value. Sent together with `mtlsCertificateEncoding` -- a header with
+      * no encoding cannot be parsed, and an encoding with no header names nothing. */
+    mtlsCertificateHeader: Option[Patch[String]],
+    mtlsCertificateEncoding: Option[Patch[MtlsCertificateEncoding]],
 ) derives Schema, JsonCodec

@@ -7,10 +7,13 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.jwks.JwksService
+import versola.oauth.client.model.{ClientId, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, JWT, Secret}
 import zio.json.ast.Json
+import zio.prelude.NonEmptySet
 import zio.{Task, UIO, ZIO}
 
 import java.security.KeyPairGenerator
@@ -22,6 +25,97 @@ import zio.durationInt
 import zio.http.{Method, URL}
 
 object TestEnvConfig:
+
+  /** A real certificate, so that a spec exercising the decoding and parsing between a proxy's
+    * header and a `ClientCertificate` runs it against something a proxy could actually send.
+    * Self-signed, 100-year validity: the chain was validated by the proxy, so nothing looks at
+    * the issuer or the dates. Its base64 contains a `+`, which is what catches a percent-decoder
+    * that also maps `+` to a space. Carries one subject alternative name of each type RFC 8705
+    * §2.1.2 registers a client by. */
+  val clientCertificatePem =
+    """-----BEGIN CERTIFICATE-----
+MIICMjCCAdegAwIBAgIUfkM9PmBrcREaTH0sxNapdUqpkKcwCgYIKoZIzj0EAwIw
+PjEYMBYGA1UEAwwPcGF5bWVudHMtY2xpZW50MRUwEwYDVQQKDAxWZXJzb2xhIFRl
+c3QxCzAJBgNVBAYTAktaMCAXDTI2MDkxNTExNTg1MFoYDzIxMjYwODIyMTE1ODUw
+WjA+MRgwFgYDVQQDDA9wYXltZW50cy1jbGllbnQxFTATBgNVBAoMDFZlcnNvbGEg
+VGVzdDELMAkGA1UEBhMCS1owWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATbI/Rt
+6I2vwJq1JB4YMjY8jp1vCC0iJZ1j6jjR3ITtcVM5VjRcnWSWpzOSsXjP/ShQvBas
+xgbklwIadwl8Gqs0o4GwMIGtMB0GA1UdDgQWBBTm6vs1P/3Mt16Ehjfitznu96o8
+9DAfBgNVHSMEGDAWgBTm6vs1P/3Mt16Ehjfitznu96o89DAPBgNVHRMBAf8EBTAD
+AQH/MFoGA1UdEQRTMFGCEmNsaWVudC5leGFtcGxlLmNvbYYdaHR0cHM6Ly9jbGll
+bnQuZXhhbXBsZS5jb20vaWSHBMsAcQeBFm9wc0BjbGllbnQuZXhhbXBsZS5jb20w
+CgYIKoZIzj0EAwIDSQAwRgIhAMb1OgD8yTpD6MVOMOQtcnm9ButVBD20KYPOCGQo
+L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
+-----END CERTIFICATE-----
+"""
+
+  /** As nginx forwards it: the PEM with its newlines percent-escaped. Everything else,
+    * including the `+`, is left as it stands. */
+  val escapedClientCertificatePem = clientCertificatePem.replace("\n", "%0A")
+
+  /** As Traefik forwards it: the DER bytes, base64, delimiters and newlines gone. */
+  val base64DerClientCertificate =
+    clientCertificatePem
+      .linesIterator
+      .filterNot(_.startsWith("-----"))
+      .mkString
+
+  val clientCertificateThumbprint = "XpZ7n_MhXGgX-fRZVMB1ySDA5eM-tiF4Hdogb3a9ZMo"
+
+  val nginxCertificateSource =
+    MtlsCertificateSource("ssl-client-cert", MtlsCertificateEncoding.urlEncodedPem)
+
+  val traefikCertificateSource =
+    MtlsCertificateSource("X-Forwarded-Tls-Client-Cert", MtlsCertificateEncoding.base64Der)
+
+  val clientCertificateSubjectDn = "C=KZ,O=Versola Test,CN=payments-client"
+
+  /** The `san_dns` name the certificate carries, which is what a client registers to
+    * authenticate with it. */
+  val clientCertificateDnsName = "client.example.com"
+
+  /** The same certificate as a parsed value, for a spec that needs a `ClientCertificate`
+    * rather than the header a proxy forwards it in. Parsed rather than hand-built so that it
+    * cannot drift from the certificate it stands for. */
+  val clientCertificate: ClientCertificate =
+    ClientCertificate.parse(clientCertificatePem, MtlsCertificateEncoding.urlEncodedPem)
+      .getOrElse(throw IllegalStateException("the test client certificate does not parse"))
+
+  /** A client registered to authenticate with [[clientCertificate]]. RFC 8705 §2.1 makes the
+    * certificate the credential, so it holds no secret. */
+  def mtlsClient(id: ClientId): OAuthClientRecord = OAuthClientRecord(
+    id = id,
+    tenantId = TenantId("default"),
+    clientName = Map("en" -> "Mutual TLS Client"),
+    redirectUris = NonEmptySet("https://example.com/callback"),
+    scope = Set(ScopeToken("read")),
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
+    certificateBoundAccessTokens = false,
+  )
+
+  /** Some other client's certificate, for checking that a registered subject is matched rather
+    * than merely that a certificate arrived. */
+  val otherClientCertificate: ClientCertificate = clientCertificate.copy(
+    thumbprint = "b0HRnkRZIOoyEKTJQTrIdUMKrPwSZSe9Ei-MbvVLt1E",
+    subjectDn = "C=KZ,O=Versola Test,CN=other-client",
+    subjectAlternativeNames = Map(MutualTlsSubjectType.san_dns -> Set("other.example.com")),
+  )
 
   // Generate test RSA key pair for JWT
   private val keyPairGenerator = KeyPairGenerator.getInstance("RSA")

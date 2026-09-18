@@ -9,6 +9,7 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  MtlsCertificateEncoding,
   SystemSettingsRecord,
   PasskeySettings,
   SubmissionLimits,
@@ -1418,6 +1419,8 @@ export async function upsertChallengeSettings(
   acrVocabulary?: Record<string, string[]> | null,
   postLogoutRedirectUris?: string[],
   requireDpopNonce?: boolean,
+  mtlsCertificateHeader?: string | null,
+  mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1436,6 +1439,8 @@ export async function upsertChallengeSettings(
       acrVocabulary: acrVocabulary ?? null,
       postLogoutRedirectUris: postLogoutRedirectUris ?? null,
       requireDpopNonce: requireDpopNonce ?? null,
+      mtlsCertificateHeader: mtlsCertificateHeader ?? null,
+      mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
     },
   });
 }

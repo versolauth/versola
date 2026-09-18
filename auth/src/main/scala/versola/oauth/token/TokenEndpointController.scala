@@ -4,8 +4,9 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.dpop.DpopService
+import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication, ClientCertificate}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
@@ -24,7 +25,7 @@ import java.time.Instant
 import java.util.Date
 
 object TokenEndpointController extends Controller:
-  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & UserInfoService & JwksService & DpopService & CoreConfig
+  type Env = Tracing & OAuthTokenService & OAuthConfigurationService & ClientAuthentication & UserInfoService & JwksService & DpopService & CoreConfig
 
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
@@ -53,18 +54,29 @@ object TokenEndpointController extends Controller:
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
         dpopJkt <- verifyDpopProof(request, config, credentials.clientId)
+        certificate <- ZIO.serviceWithZIO[ClientAuthentication](
+          _.certificate(
+            request = request,
+            credentials = credentials,
+            // Wider than the other endpoints': a certificate matters here even to a client
+            // that authenticates by secret, because RFC 8705 §3 may bind the tokens it is
+            // about to be issued to it.
+            relevance = CertificateRelevance.TokenIssuance,
+          ).mapError(TokenEndpointError.InvalidClientCertificate(_)),
+        )
         issuedTokens <- tokenRequest match
           case codeExchangeRequest: CodeExchangeRequest =>
-            oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt)
+            oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt, certificate)
           case refreshTokenRequest: RefreshTokenRequest =>
             oauthTokenService.refreshAccessToken(
                 refreshTokenRequest,
                 credentials,
                 dpopJkt,
+                certificate,
                 request.headers.get(IdempotencyKeyHeader),
             )
           case clientCredentialsRequest: ClientCredentialsRequest =>
-            oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt)
+            oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt, certificate)
         response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {

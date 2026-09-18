@@ -8,9 +8,10 @@ import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.dpop.DpopService
+import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
 import versola.util.Dpop
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, Cnf, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.session.model.RefreshTokenFamilyId
@@ -23,6 +24,7 @@ import versola.util.{Base64, CoreConfig, JWT, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -92,10 +94,48 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
 
   val dpopCodeExchangeRequest = codeExchangeRequest.addHeader(Header.Custom("DPoP", "a.b.c"))
 
+  import TestEnvConfig.{
+    escapedClientCertificatePem as escapedCertificatePem,
+    base64DerClientCertificate as base64DerCertificate,
+    clientCertificateThumbprint as certificateThumbprint,
+    nginxCertificateSource,
+    traefikCertificateSource,
+  }
+
+  /** A client whose tokens are certificate-bound, which is what makes the controller look for
+    * a certificate at all. */
+  val mtlsClient = OAuthClientRecord(
+    id = clientId1,
+    tenantId = TenantId("default"),
+    clientName = Map("en" -> "Payments Client"),
+    redirectUris = NonEmptySet(redirectUri),
+    scope = scope1,
+    secret = Some(clientSecret1),
+    previousSecret = None,
+    accessTokenTtl = 10.minutes,
+    refreshTokenTtl = 30.days,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = true,
+  )
+
+
   case class Services(
       oauthTokenService: Stub[OAuthTokenService],
       userInfoService: Stub[UserInfoService],
       dpopService: Stub[DpopService],
+      clientService: Stub[OAuthConfigurationService],
   )
 
   /** Stands the endpoint up over stubbed services and hands back the client and the stubs, so
@@ -108,21 +148,25 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       client <- ZIO.service[Client]
       tokenService = stub[OAuthTokenService]
       clientService = stub[OAuthConfigurationService]
+      // The controller looks the client up only to decide whether reading a client
+      // certificate could matter to it; an unknown client never needs one.
+      _ = clientService.find.returnsWith(ZIO.none)
+      clientAuthentication = ClientAuthentication.Impl(clientService)
       userInfoService = stub[UserInfoService]
       jwksService = TestEnvConfig.jwksService
-            dpopService     = stub[DpopService]
+      dpopService = stub[DpopService]
       tracing <- NoopTracing.layer.build
 
       // RFC 9449 §8 is the requesting client's tenant setting, consulted only where a proof
       // is actually present -- a request with no `DPoP` header never reaches it.
       _ <- clientService.requireDpopNonce.succeedsWith(requireDpopNonce)
 
-      services = Services(tokenService, userInfoService, dpopService)
+      services = Services(tokenService, userInfoService, dpopService, clientService)
 
       _ <- TestClient.addRoutes(
         Observability.handleErrors(
           TokenEndpointController.routes
-            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
+            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
         )
       )
       result <- use(client, services)
@@ -365,14 +409,14 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             for
               _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens)
               response <- client.batched(refreshRequest(Some("key-1")))
-              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._4)
+              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._5)
             yield assertTrue(response.status == Status.Ok, keys == List(Some("key-1")))
           },
           headerTest("no header means no key") { (client, services) =>
             for
               _ <- services.oauthTokenService.refreshAccessToken.succeedsWith(issuedTokens)
               _ <- client.batched(refreshRequest(None))
-              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._4)
+              keys = services.oauthTokenService.refreshAccessToken.calls.map(_._5)
             yield assertTrue(keys == List(None))
           },
           headerTest("the header is ignored for grants other than refresh_token") { (client, services) =>
@@ -915,6 +959,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           client <- ZIO.service[Client]
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
+          _ = clientService.find.returnsWith(ZIO.none)
+          clientAuthentication = ClientAuthentication.Impl(clientService)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -922,7 +968,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             Observability.handleErrors(
               TokenEndpointController.routes
                 .provideEnvironment(
-                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
                     ZEnvironment(driftedJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
                 )
             )
@@ -966,6 +1012,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           client <- ZIO.service[Client]
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
+          _ = clientService.find.returnsWith(ZIO.none)
+          clientAuthentication = ClientAuthentication.Impl(clientService)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -973,7 +1021,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             Observability.handleErrors(
               TokenEndpointController.routes
                 .provideEnvironment(
-                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(userInfoService) ++
+                  ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++
                     ZEnvironment(noSigningKeyJwksService) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(stub[DpopService]) ++ tracing,
                 )
             )
@@ -1167,5 +1215,160 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         requireDpopNonce = true,
       ),
     ),
+    suite("POST /token - mutual TLS")(
+      tokenEndpointTestCase(
+        description = "reads a percent-escaped PEM from the header nginx was configured to set",
+        request = codeExchangeRequest.addHeader(Header.Custom("ssl-client-cert", escapedCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(nginxCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed:
+            val certificate = services.oauthTokenService.exchangeAuthorizationCode.calls.head._4
+            assertTrue(
+              certificate.map(_.thumbprint).contains(certificateThumbprint),
+              certificate.map(_.subjectDn).contains("C=KZ,O=Versola Test,CN=payments-client"),
+            ),
+      ),
+      tokenEndpointTestCase(
+        description = "reads base64 DER from the header Traefik was configured to set",
+        request = codeExchangeRequest.addHeader(Header.Custom("X-Forwarded-Tls-Client-Cert", base64DerCertificate)),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(traefikCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4
+              .map(_.thumbprint).contains(certificateThumbprint),
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "takes the leaf from a chain Traefik forwarded as one comma-separated header",
+        request = codeExchangeRequest.addHeader(
+          // `passTLSClientCert` joins the chain it validated with commas, leaf first. The
+          // base64 of a padded certificate does not survive being concatenated with the next
+          // one, so this is rejected outright rather than read as the leaf.
+          Header.Custom("X-Forwarded-Tls-Client-Cert", s"$base64DerCertificate,$base64DerCertificate"),
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(traefikCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4
+              .map(_.thumbprint).contains(certificateThumbprint),
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "takes the leaf from a chain nginx forwarded as one comma-separated header",
+        request = codeExchangeRequest.addHeader(
+          Header.Custom("ssl-client-cert", s"$escapedCertificatePem,$escapedCertificatePem"),
+        ),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(nginxCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4
+              .map(_.thumbprint).contains(certificateThumbprint),
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "carries every subject alternative name RFC 8705 registers a client by",
+        request = codeExchangeRequest.addHeader(Header.Custom("ssl-client-cert", escapedCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(nginxCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed:
+            val sans = services.oauthTokenService.exchangeAuthorizationCode.calls.head._4
+              .map(_.subjectAlternativeNames).getOrElse(Map.empty)
+            assertTrue(
+              sans.get(MutualTlsSubjectType.san_dns).contains(Set("client.example.com")),
+              sans.get(MutualTlsSubjectType.san_uri).contains(Set("https://client.example.com/id")),
+              sans.get(MutualTlsSubjectType.san_ip).contains(Set("203.0.113.7")),
+              sans.get(MutualTlsSubjectType.san_email).contains(Set("ops@client.example.com")),
+            ),
+      ),
+      tokenEndpointTestCase(
+        description = "ignores the header for a client whose tokens are not certificate-bound",
+        request = codeExchangeRequest.addHeader(Header.Custom("ssl-client-cert", escapedCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient.copy(certificateBoundAccessTokens = false))) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4.isEmpty,
+            // Not even asked for: the tenant's configuration cannot matter to this client.
+            services.clientService.getMtlsCertificateSource.calls.isEmpty,
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "passes no certificate when the tenant's proxy terminates no mutual TLS",
+        request = codeExchangeRequest.addHeader(Header.Custom("ssl-client-cert", escapedCertificatePem)),
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(None) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4.isEmpty,
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "passes no certificate when the configured header is absent from the request",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(nginxCertificateSource)) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.head._4.isEmpty,
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "rejects a header it cannot read as a certificate with invalid_client",
+        request = codeExchangeRequest.addHeader(Header.Custom("ssl-client-cert", "not-a-certificate")),
+        expectedStatus = Status.Unauthorized,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(nginxCertificateSource)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(
+            body.contains("invalid_client"),
+            // The reason names the deployment's proxy, so it stays in the log.
+            !body.contains("X.509"),
+          ),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.oauthTokenService.exchangeAuthorizationCode.calls.isEmpty,
+          )),
+      ),
+      tokenEndpointTestCase(
+        description = "rejects a certificate encoded differently from what the tenant configured",
+        request = codeExchangeRequest.addHeader(Header.Custom("X-Forwarded-Tls-Client-Cert", escapedCertificatePem)),
+        expectedStatus = Status.Unauthorized,
+        setup = services =>
+          services.clientService.find.succeedsWith(Some(mtlsClient)) *>
+            services.clientService.getMtlsCertificateSource.succeedsWith(Some(traefikCertificateSource)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("invalid_client")),
+      ),
+    ),
   )
-

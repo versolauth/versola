@@ -1,8 +1,9 @@
 package versola.oauth.introspect
 
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientIdWithSecret, OAuthClientRecord, ResourceRecord, ResourceUri}
+import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, OAuthClientRecord, ResourceRecord, ResourceUri}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
+import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
@@ -14,22 +15,25 @@ trait IntrospectionService:
   def introspectAccessToken(
       token: AccessTokenPayload,
       credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | IntrospectionError, IntrospectionResponse]
 
   def introspectRefreshToken(
       token: RefreshToken,
       credentials: ClientCredentials,
+      certificate: Option[ClientCertificate],
   ): IO[Throwable | IntrospectionError, IntrospectionResponse]
 
 object IntrospectionService:
   def live: ZLayer[
-    OAuthConfigurationService & SessionRepository & SecurityService & CoreConfig,
+    OAuthConfigurationService & ClientAuthentication & SessionRepository & SecurityService & CoreConfig,
     Nothing,
     IntrospectionService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       oauthClientService: OAuthConfigurationService,
+      clientAuthentication: ClientAuthentication,
       sessionRepository: SessionRepository,
       securityService: SecurityService,
       config: CoreConfig,
@@ -38,9 +42,10 @@ object IntrospectionService:
     override def introspectAccessToken(
         token: AccessTokenPayload,
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
-        requester <- authenticateClient(credentials)
+        requester <- authenticateClient(credentials, certificate)
         audience <- resolveAudience(token, requester)
         _ <- ZIO.fail(IntrospectionError.Unauthenticated).when(audience.isEmpty)
       yield buildJwtIntrospectionResponse(token, audience)
@@ -101,9 +106,10 @@ object IntrospectionService:
     override def introspectRefreshToken(
         token: RefreshToken,
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[Throwable | IntrospectionError, IntrospectionResponse] =
       for
-        client <- authenticateClient(credentials)
+        client <- authenticateClient(credentials, certificate)
         tokenMac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
         tokenRecord <- sessionRepository.findToken(tokenMac)
 
@@ -111,20 +117,16 @@ object IntrospectionService:
           .when(tokenRecord.exists(_.clientId != client.id))
       yield buildIntrospectionResponse(tokenRecord)
 
-    // RFC 7662 requires the introspection endpoint to authenticate the caller. A public
-    // (native) client has no secret, so `OAuthConfigurationService.verifySecret` treats a
-    // bare `client_id` as "authenticated" for it -- that's fine for the token endpoint's
-    // PKCE-based exchange, but here it would let anyone who merely knows a native client's
-    // public id introspect tokens for that client's audience. Require an actual secret.
+    /** RFC 7662 requires the introspection endpoint to authenticate the caller, and a bare
+      * `client_id` would let anyone who merely knows a public client's id introspect tokens
+      * for that client's audience -- hence `secretRequired`. RFC 8705 §2.1: a client that
+      * registered an mTLS subject holds no secret and authenticates with its certificate. */
     private def authenticateClient(
         credentials: ClientCredentials,
+        certificate: Option[ClientCertificate],
     ): IO[IntrospectionError, OAuthClientRecord] =
-      credentials match
-        case ClientIdWithSecret(_, None) =>
-          ZIO.fail(IntrospectionError.InvalidClient)
-        case ClientIdWithSecret(clientId, clientSecret) =>
-          oauthClientService.verifySecret(clientId, clientSecret)
-            .someOrFail(IntrospectionError.InvalidClient)
+      clientAuthentication.authenticate(credentials = credentials, certificate = certificate, secretRequired = true)
+        .orElseFail(IntrospectionError.InvalidClient)
 
     private def buildIntrospectionResponse(record: Option[RefreshTokenRecord]): IntrospectionResponse =
       record match

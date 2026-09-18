@@ -17,6 +17,7 @@ import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
+import versola.oauth.mtls.ClientAuthentication
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -51,6 +52,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserRepository &
       UserService &
       OAuthConfigurationService &
+      ClientAuthentication &
       ConversationRepository &
       ConsentRepository &
       ConsentService &
@@ -145,6 +147,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       // Reads its accepted algorithms off the metadata document, so it has to follow the
       // service that serves it.
       DpopService.live >+>
+      ClientAuthentication.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>
       MetadataSyncClient.live >+>

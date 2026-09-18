@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings } from '../types';
+import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, MtlsCertificateEncoding } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -78,6 +78,12 @@ export class VersolaChallengesList extends LitElement {
 
   @state() private ipHeader = 'X-Real-IP';
   @state() private editIpHeader = 'X-Real-IP';
+
+  @state() private mtlsCertificateHeader: string | null = null;
+  @state() private mtlsCertificateEncoding: MtlsCertificateEncoding | null = null;
+  @state() private editMtlsEnabled = false;
+  @state() private editMtlsCertificateHeader = '';
+  @state() private editMtlsCertificateEncoding: MtlsCertificateEncoding = 'urlEncodedPem';
 
   @state() private submissionLimits: SubmissionLimits = {
     otpRequest: [],
@@ -549,6 +555,8 @@ export class VersolaChallengesList extends LitElement {
         this.ipHeader = challengeSettings.ipHeader || 'X-Real-IP';
         this.postLogoutRedirectUris = challengeSettings.postLogoutRedirectUris ?? [];
         this.requireDpopNonce = challengeSettings.requireDpopNonce ?? false;
+        this.mtlsCertificateHeader = challengeSettings.mtlsCertificateHeader ?? null;
+        this.mtlsCertificateEncoding = challengeSettings.mtlsCertificateEncoding ?? null;
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -563,6 +571,8 @@ export class VersolaChallengesList extends LitElement {
         this.ipHeader = 'X-Real-IP';
         this.postLogoutRedirectUris = [];
         this.requireDpopNonce = false;
+        this.mtlsCertificateHeader = null;
+        this.mtlsCertificateEncoding = null;
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -963,6 +973,9 @@ export class VersolaChallengesList extends LitElement {
     this.editSessionIdleTtlSeconds = this.sessionIdleTtlSeconds;
     this.editUserAgentTtlSeconds = this.userAgentTtlSeconds;
     this.editIpHeader = this.ipHeader;
+    this.editMtlsEnabled = this.mtlsCertificateHeader != null;
+    this.editMtlsCertificateHeader = this.mtlsCertificateHeader ?? '';
+    this.editMtlsCertificateEncoding = this.mtlsCertificateEncoding ?? 'urlEncodedPem';
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
@@ -1060,6 +1073,13 @@ export class VersolaChallengesList extends LitElement {
       }
     }
 
+    const mtlsCertificateHeader = this.editMtlsEnabled ? this.editMtlsCertificateHeader.trim() : null;
+    if (this.editMtlsEnabled && !mtlsCertificateHeader) {
+      this.settingsError = 'mTLS certificate header is required when mutual TLS is enabled.';
+      return;
+    }
+    const mtlsCertificateEncoding = this.editMtlsEnabled ? this.editMtlsCertificateEncoding : null;
+
     this.isSavingSettings = true;
     this.settingsError = '';
     const acrVocabulary = Object.fromEntries(
@@ -1083,6 +1103,8 @@ export class VersolaChallengesList extends LitElement {
         acrVocabulary,
         postLogoutRedirectUris,
         this.editRequireDpopNonce,
+        mtlsCertificateHeader,
+        mtlsCertificateEncoding,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -1097,6 +1119,8 @@ export class VersolaChallengesList extends LitElement {
       this.acrVocabulary = acrVocabulary;
       this.postLogoutRedirectUris = postLogoutRedirectUris;
       this.requireDpopNonce = this.editRequireDpopNonce;
+      this.mtlsCertificateHeader = mtlsCertificateHeader;
+      this.mtlsCertificateEncoding = mtlsCertificateEncoding;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -1404,6 +1428,22 @@ export class VersolaChallengesList extends LitElement {
 
           <label style="margin-top: var(--spacing-lg);">Client IP Header</label>
           <div class="template-text">${this.ipHeader}</div>
+
+          <label style="margin-top: var(--spacing-lg);">mTLS Certificate Header</label>
+          ${this.mtlsCertificateHeader
+            ? html`
+              <div class="info-table">
+                <div class="prop-row">
+                  <span class="prop-label">Header</span>
+                  <span class="prop-value">${this.mtlsCertificateHeader}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">Encoding</span>
+                  <span class="prop-value">${this.mtlsCertificateEncoding}</span>
+                </div>
+              </div>
+            `
+            : html`<div class="hint">Not configured. This tenant's reverse proxy does not terminate mutual TLS.</div>`}
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1625,6 +1665,7 @@ export class VersolaChallengesList extends LitElement {
         <button class="btn btn-secondary" @click=${() => this.addPasskeyOrigin()}>+ Add Origin</button>
 
         ${this.renderIpHeaderEdit()}
+        ${this.renderMtlsCertificateEdit()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">DPoP</h3>
 
@@ -1735,6 +1776,55 @@ export class VersolaChallengesList extends LitElement {
           .value=${this.editIpHeader}
           @input=${(e: Event) => { this.editIpHeader = (e.target as HTMLInputElement).value; }}
           placeholder="X-Client-IP" />
+      ` : nothing}
+    `;
+  }
+
+  private renderMtlsCertificateEdit() {
+    // Each preset pairs the header a real proxy actually sends with the encoding it sends it
+    // in -- the two are never independent for a known proxy, only for a custom header.
+    const presets: Array<{ value: string; header: string; encoding: MtlsCertificateEncoding; label: string }> = [
+      { value: 'nginx', header: 'ssl-client-cert', encoding: 'urlEncodedPem', label: 'ssl-client-cert (nginx / ingress-nginx)' },
+      { value: 'traefik', header: 'X-Forwarded-Tls-Client-Cert', encoding: 'base64Der', label: 'X-Forwarded-Tls-Client-Cert (Traefik)' },
+    ];
+    const matchedPreset = presets.find(p => p.header === this.editMtlsCertificateHeader && p.encoding === this.editMtlsCertificateEncoding);
+    const isCustom = !matchedPreset;
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Mutual TLS</h3>
+      <label>
+        <input type="checkbox" .checked=${this.editMtlsEnabled}
+          @change=${(e: Event) => { this.editMtlsEnabled = (e.target as HTMLInputElement).checked; }} />
+        This tenant's reverse proxy terminates mutual TLS
+      </label>
+      <div class="hint">Enables clients registered with an mTLS subject to authenticate by certificate. Requires the proxy in front of this tenant to request and forward the client certificate.</div>
+      ${this.editMtlsEnabled ? html`
+        <label style="margin-top: var(--spacing-lg);">Certificate Header</label>
+        <div class="hint">Which header the proxy sets, and how the certificate in it is encoded. There's no standard across proxies, so both must match your reverse proxy's configuration exactly.</div>
+        <select class="form-control compact-input" .value=${isCustom ? 'custom' : matchedPreset.value}
+          @change=${(e: Event) => {
+            const value = (e.target as HTMLSelectElement).value;
+            const preset = presets.find(p => p.value === value);
+            if (preset) {
+              this.editMtlsCertificateHeader = preset.header;
+              this.editMtlsCertificateEncoding = preset.encoding;
+            } else {
+              this.editMtlsCertificateHeader = '';
+            }
+          }}>
+          ${presets.map(p => html`<option value=${p.value} ?selected=${matchedPreset === p}>${p.label}</option>`)}
+          <option value="custom" ?selected=${isCustom}>Custom…</option>
+        </select>
+        ${isCustom ? html`
+          <input type="text" class="form-control compact-input" style="margin-top: var(--spacing-sm);"
+            .value=${this.editMtlsCertificateHeader}
+            @input=${(e: Event) => { this.editMtlsCertificateHeader = (e.target as HTMLInputElement).value; }}
+            placeholder="X-Client-Cert" />
+          <select class="form-control compact-input" style="margin-top: var(--spacing-sm);" .value=${this.editMtlsCertificateEncoding}
+            @change=${(e: Event) => { this.editMtlsCertificateEncoding = (e.target as HTMLSelectElement).value as MtlsCertificateEncoding; }}>
+            <option value="urlEncodedPem" ?selected=${this.editMtlsCertificateEncoding === 'urlEncodedPem'}>URL-encoded PEM</option>
+            <option value="base64Der" ?selected=${this.editMtlsCertificateEncoding === 'base64Der'}>Base64-encoded DER</option>
+          </select>
+        ` : nothing}
       ` : nothing}
     `;
   }

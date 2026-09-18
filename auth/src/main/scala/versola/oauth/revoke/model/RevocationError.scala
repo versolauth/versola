@@ -10,8 +10,14 @@ import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
 enum RevocationError:
   case InvalidClient, InvalidRequest, UnsupportedTokenType
 
+  /** RFC 8705 §6.5: the certificate the tenant's proxy forwarded could not be read. Answered
+    * as `invalid_client` because that is what it costs the request, but `reason` — which
+    * describes the deployment's proxy, not the caller — is logged rather than returned. */
+  case InvalidClientCertificate(reason: String)
+
   def status: Status = this match
     case InvalidClient => Status.Unauthorized
+    case InvalidClientCertificate(_) => Status.Unauthorized
     case InvalidRequest => Status.BadRequest
     case UnsupportedTokenType => Status.BadRequest
 
@@ -26,7 +32,7 @@ object RevocationErrorResponse:
   
   def fromError(error: RevocationError): RevocationErrorResponse =
     error match
-      case RevocationError.InvalidClient =>
+      case RevocationError.InvalidClient | RevocationError.InvalidClientCertificate(_) =>
         RevocationErrorResponse(
           error = "invalid_client",
           errorDescription = Some("Client authentication failed"),

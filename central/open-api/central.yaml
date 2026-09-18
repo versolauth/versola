@@ -3210,6 +3210,13 @@ components:
             request without one is answered with `use_dpop_nonce` and a fresh nonce to retry
             over. Costs each client an extra round trip and breaks any client that does not
             implement the retry, so it is off for every tenant until switched on.
+        mtlsCertificateHeader:
+          type: [string, 'null']
+          description: >-
+            Header this tenant's reverse proxy sets with the client certificate it terminated
+            mTLS for. Null means the proxy does not terminate mTLS for this tenant.
+        mtlsCertificateEncoding:
+          $ref: '#/components/schemas/MtlsCertificateEncoding'
       required:
         - tenantId
         - allowedPrefixes
@@ -3223,6 +3230,10 @@ components:
         - ipHeader
         - postLogoutRedirectUris
         - requireDpopNonce
+    MtlsCertificateEncoding:
+      type: [string, 'null']
+      description: How the certificate in mtlsCertificateHeader is encoded. Null iff mtlsCertificateHeader is null.
+      enum: [urlEncodedPem, base64Der, null]
     GetChallengeSettingsResponse:
       type: object
       properties:
@@ -3273,6 +3284,14 @@ components:
         requireDpopNonce:
           type: [boolean, 'null']
           description: Keeps the stored value when omitted; defaults to false for a new tenant.
+        mtlsCertificateHeader:
+          type: [string, 'null']
+          description: >-
+            Keeps the stored value when omitted; null clears it, which is how a tenant's
+            mutual TLS is turned off. Sent together with mtlsCertificateEncoding -- a header
+            with no encoding cannot be parsed, and an encoding with no header names nothing.
+        mtlsCertificateEncoding:
+          $ref: '#/components/schemas/MtlsCertificateEncoding'
       required:
         - tenantId
         - allowedPrefixes

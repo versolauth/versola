@@ -87,6 +87,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     acrVocabulary = None,
     postLogoutRedirectUris = List.empty,
     requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -285,6 +287,41 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv(challengeSettingsVec = Vector.empty)
         result <- env.requireDpopNonce(clientId1)
       yield assertTrue(!result)
+    },
+    test("getMtlsCertificateSource returns the header and encoding the tenant configured") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
+          mtlsCertificateHeader = Some("ssl-client-cert"),
+          mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+        )))
+        result <- env.getMtlsCertificateSource(clientId1)
+      yield assertTrue(
+        result.contains(MtlsCertificateSource("ssl-client-cert", MtlsCertificateEncoding.urlEncodedPem)),
+      )
+    },
+    test("getMtlsCertificateSource returns None when the tenant terminates no mutual TLS") {
+      for
+        env <- makeEnv()
+        result <- env.getMtlsCertificateSource(clientId1)
+      yield assertTrue(result.isEmpty)
+    },
+    test("getMtlsCertificateSource returns None for a header stored without an encoding") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
+          mtlsCertificateHeader = Some("ssl-client-cert"),
+          mtlsCertificateEncoding = None,
+        )))
+        result <- env.getMtlsCertificateSource(clientId1)
+      yield assertTrue(result.isEmpty)
+    },
+    test("getMtlsCertificateSource returns None for unknown client") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
+          mtlsCertificateHeader = Some("ssl-client-cert"),
+          mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+        )))
+        result <- env.getMtlsCertificateSource(ClientId("missing"))
+      yield assertTrue(result.isEmpty)
     },
     test("getPasskeySettings returns settings for known client") {
       for

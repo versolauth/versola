@@ -98,6 +98,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     acrVocabulary = None,
     postLogoutRedirectUris = Nil,
     requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
   )
 
   override def spec = suite("AuthorizationPresetService")(

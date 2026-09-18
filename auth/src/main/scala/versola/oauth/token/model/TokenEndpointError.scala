@@ -53,6 +53,7 @@ object TokenEndpointError:
     /** RFC 9449 §10.1: the code was committed to a key at `/authorize` and the proof on this
       * request is for a different one, or for none at all. */
     val CodeKeyMismatch              = InvalidGrant("authorization code was committed to a different DPoP key")
+    val RefreshTokenCertificateMismatch = InvalidGrant("refresh token is bound to a different client certificate")
 
   case object UnsupportedGrantType extends TokenEndpointError:
     val status = Status.BadRequest
@@ -77,6 +78,16 @@ object TokenEndpointError:
     val error = ErrorCode.InvalidAuthorizationDetails
     val errorDescription = Some(s"The requested authorization details are invalid or exceed the grant: $reason")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-6")
+
+  /** RFC 8705 §6.5: the certificate the tenant's proxy forwarded could not be read. Answered
+    * as `invalid_client` because that is what it costs the request, but `reason` — which
+    * describes the deployment's proxy, not the caller — is logged rather than returned. */
+  case class InvalidClientCertificate(reason: String) extends TokenEndpointError:
+    val status = Status.Unauthorized
+    val error = ErrorCode.InvalidClient
+    val errorDescription = InvalidClient.errorDescription
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc8705#section-6.5")
+    override def logDescription = Some(reason)
 
   case class InvalidDpopProof(reason: String) extends TokenEndpointError:
     val status = Status.BadRequest
