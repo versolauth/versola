@@ -204,6 +204,15 @@ enum EdgeCredential:
   case Cookie(session: EdgeSession)
   case Bearer(token: AccessToken)
 
+  /** The mobile path again, with the token sender-constrained (RFC 9449). Carries the key rather
+    * than a proof: `htm`/`htu` differ per call and `jti` must not repeat, so a proof is minted
+    * at the call site and one held here would be refused as a replay on its second use.
+    *
+    * The key is the session's own for the session's whole life -- the token was bound to it at
+    * `/token`, and edge checks every resource call against that binding.
+    */
+  case Dpop(token: AccessToken, key: DpopKey)
+
 /** `rotatedSession` carries the `EDGE_SESSION` edge issued on this response, when it issued one
   * (a refresh happened, or it simply re-set the cookie) -- the caller must adopt it for its next
   * call or the session dies mid-run and reads as a phantom SUT failure (§8.4). Always `None` on

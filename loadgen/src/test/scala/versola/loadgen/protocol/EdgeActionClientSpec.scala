@@ -21,12 +21,84 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
       actions <- EdgeActionClient.make(client, targets, StubSut.requestTimeout)
     yield actions
 
+  private def dpopCall(action: ActionCall, response: Response, seen: Ref[Option[Request]]) =
+    for
+      actions <- clientFor(response, seen)
+      key <- DpopKeyPool.derive("edge-action-spec", 1).map(_.keyFor(0L))
+      outcome <- actions.call(EdgeCredential.Dpop(AccessToken("at-1"), key), action).either
+      request <- seen.get
+    yield (key, outcome, request)
+
   private def stepUp(acrValues: String): Response =
     Response
       .status(Status.Unauthorized)
       .addHeader("WWW-Authenticate", """Bearer error="insufficient_user_authentication", acr_values="""" + acrValues + """"""")
 
+  private val dpopSuite = suite("a DPoP action")(
+    // Edge dispatches on the `Authorization` scheme (`DpopVerifier.Scheme`), so this is not a
+    // bearer call with an extra header -- sending `Bearer` would have edge skip the proof and
+    // refuse the sender-constrained token it was given.
+    test("replaces the Bearer scheme rather than accompanying it") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        result <- dpopCall(accounts, Response.json("{}"), seen)
+        (_, _, request) = result
+      yield assertTrue(
+        request.flatMap(_.rawHeader("authorization")) == Some("DPoP at-1"),
+        request.flatMap(_.rawHeader("DPoP")).isDefined,
+      )
+    },
+    // Checked with edge's own verifier rather than by reading claims back, and with the `htu`
+    // edge reconstructs from its configured `edgeUrl` plus the request path.
+    test("carries a proof bound to this request and this token") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        result <- dpopCall(accounts, Response.json("{}"), seen)
+        (key, _, request) = result
+        now <- zio.Clock.instant
+        proof <- versola.util.Dpop
+          .verify(
+            request.flatMap(_.rawHeader("DPoP")).getOrElse(""),
+            versola.util.Dpop.Algorithm.Default,
+            Method.GET,
+            StubSut.edgeUrl + "/resources/core/accounts",
+            now,
+            zio.Duration.fromSeconds(30),
+          )
+          .mapError(error => RuntimeException(error.toString))
+      yield assertTrue(
+        proof.jkt == key.jkt,
+        // §7 makes `ath` mandatory on a resource call; edge refuses a proof without it.
+        proof.ath.contains(versola.util.Dpop.ath("at-1")),
+      )
+    },
+    // The proof is minted per call, so a DPoP session has no cookie and nothing to adopt -- the
+    // same as the bearer path, and asserted because the `rotatedSession` match had to grow a case.
+    test("rotates no session") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        result <- dpopCall(accounts, Response.json("{}").addCookie(Cookie.Response("EDGE_SESSION", "rotated")), seen)
+        (_, outcome, _) = result
+      yield assertTrue(outcome.exists(_.rotatedSession.isEmpty))
+    },
+    // `htm` and `htu` are covered by the signature, so a proof reused across two calls is refused
+    // by a correct server. This is the driver-side half of that: every call signs its own.
+    test("signs each call separately") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        actions <- clientFor(Response.json("{}"), seen)
+        key <- DpopKeyPool.derive("edge-action-spec", 1).map(_.keyFor(0L))
+        credential = EdgeCredential.Dpop(AccessToken("at-1"), key)
+        _ <- actions.call(credential, accounts)
+        first <- seen.get.map(_.flatMap(_.rawHeader("DPoP")))
+        _ <- actions.call(credential, ActionCall(Method.POST, "/resources/pay/transfers", Some("{}")))
+        second <- seen.get.map(_.flatMap(_.rawHeader("DPoP")))
+      yield assertTrue(first.isDefined, second.isDefined, first != second)
+    },
+  )
+
   def spec = suite("EdgeActionClient")(
+    dpopSuite,
     test("a bearer action is proxied with the token and no cookie to rotate") {
       for
         seen <- Ref.make(Option.empty[Request])

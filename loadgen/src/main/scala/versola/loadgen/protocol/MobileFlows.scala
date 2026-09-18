@@ -4,14 +4,19 @@ import zio.{IO, ZIO}
 
 import java.util.UUID
 
-/** Everything one `/authorize` varies by. `acrValues` and `sessionCookie` are what turn a login
-  * into a step-up on an existing SSO session (§7.4) rather than a fresh one.
+/** Everything one login varies by. `acrValues` and `sessionCookie` are what turn it into a
+  * step-up on an existing SSO session (§7.4) rather than a fresh one.
+  *
+  * `key` belongs here rather than on the flow methods because it is the login's property and not
+  * the hop's: it is spent at `/token`, and the tokens it binds are used for the whole session
+  * afterwards. `None` drives the bearer path.
   */
 case class LoginRequest(
     clientId: Option[String],
     scope: String,
     acrValues: Option[List[String]],
     sessionCookie: Option[SsoSession],
+    key: Option[DpopKey] = None,
 )
 
 /** The mobile flows of versola-loadgen-dev-spec.md §8.1-8.3, §8.5 and §8.6, driven over
@@ -75,9 +80,9 @@ final class MobileFlows(
     * enforce (design doc §6.3): at most one in-flight operation per virtual user, and the new
     * refresh token persisted before it is used.
     */
-  def refresh(token: RefreshToken, client: ClientCreds): IO[ProtocolError, Tokens] =
+  def refresh(token: RefreshToken, client: ClientCreds, key: Option[DpopKey]): IO[ProtocolError, Tokens] =
     FlowTiming.flow(observer, FlowName.Refresh):
-      FlowTiming.step(observer, FlowName.Refresh, StepName.TokenRefresh)(auth.exchangeRefresh(token, client))
+      FlowTiming.step(observer, FlowName.Refresh, StepName.TokenRefresh)(auth.exchangeRefresh(token, client, key))
 
   /** §8.6 */
   def businessAction(credential: EdgeCredential, action: ActionCall): IO[ProtocolError, ActionOutcome] =
@@ -103,9 +108,10 @@ final class MobileFlows(
             for
               completed <- conversation.walk(flow, credentials, started.conversation).flatMap(ChallengeConversation.orFail)
               tokens <- FlowTiming.step(observer, flow, StepName.TokenCode):
-                auth.exchangeCode(completed.code, started.codeVerifier, registration.creds)
+                auth.exchangeCode(completed.code, started.codeVerifier, registration.creds, request.key)
             yield (tokens, completed.ssoSession)
           case AuthorizeOutcome.Authorized(code, codeVerifier) =>
-            FlowTiming.step(observer, flow, StepName.TokenCode)(auth.exchangeCode(code, codeVerifier, registration.creds))
-              .map(tokens => (tokens, request.sessionCookie))
+            FlowTiming.step(observer, flow, StepName.TokenCode):
+              auth.exchangeCode(code, codeVerifier, registration.creds, request.key)
+            .map(tokens => (tokens, request.sessionCookie))
       yield result

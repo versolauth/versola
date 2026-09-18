@@ -134,7 +134,7 @@ object MobileFlowsSpec extends ZIOSpecDefault:
         (sut, routes) = stub
         recorder <- observer
         flows <- flowsFor(routes, recorder)
-        tokens <- flows.refresh(RefreshToken("rt-0"), StubSut.publicClient.creds)
+        tokens <- flows.refresh(RefreshToken("rt-0"), StubSut.publicClient.creds, None)
         form <- sut.formOf("/token")
         steps <- recorder.stepNames
         flowNames <- recorder.flowNames

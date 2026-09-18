@@ -44,6 +44,7 @@ object LoadgenMetrics:
   private val busyUsersGauge = Metric.gauge("loadgen_busy_users")
   private val inflightRequestsGauge = Metric.gauge("loadgen_inflight_requests")
   private val refreshRejectedTotal = Metric.counter("loadgen_refresh_rejected_total")
+  private val dpopNonceRetriedTotal = Metric.counter("loadgen_dpop_nonce_retried_total")
   private val storeFlushDroppedTotal = Metric.counter("loadgen_store_flush_dropped_total")
   private val populationGauge = Metric.gauge("loadgen_population")
 
@@ -133,6 +134,18 @@ object LoadgenMetrics:
 
   def latencyClamped: UIO[Unit] =
     latencyClampedTotal.increment
+
+  /** RFC 9449 §9: a token call that had to be made twice because the SUT demanded a nonce the
+    * driver did not yet hold.
+    *
+    * A counter and not a step of its own. The retry's cost lands inside `token-code`/
+    * `token-refresh`, which is where it belongs -- it is latency a real client would also pay --
+    * but the nonce is cached once obtained, so in steady state this stays flat and the quantiles
+    * are undistorted. A rising value is the finding: it means the SUT is rotating nonces faster
+    * than the fleet reuses them, and every token call is paying two round trips.
+    */
+  def dpopNonceRetried: UIO[Unit] =
+    dpopNonceRetriedTotal.increment
 
   private def unlabelled(what: String, outcome: StepOutcome): UIO[Unit] =
     ZIO.logWarning(s"${outcome.label} has no label on this metric and was not recorded for $what; " +

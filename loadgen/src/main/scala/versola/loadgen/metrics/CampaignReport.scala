@@ -123,12 +123,17 @@ case class ObservedAccessTokenTtl(clientId: String, expiresInSeconds: List[Long]
 
 /** How the driver presented its access tokens.
   *
-  * One case, because bearer is the only mode the driver implements. DPoP is a driver-side
-  * capability rather than a SUT setting -- auth accepts a proof on any request and falls back to
-  * bearer without one -- so this becomes a choice, not a discovery, when that lands.
+  * A choice and not a discovery: auth accepts a proof on any request and falls back to bearer
+  * without one, so which mode a campaign ran in is decided by whether the driver was configured
+  * to prove possession (`dpop` in [[versola.loadgen.config.LoadgenConfig]]), not by anything the
+  * SUT was set to.
+  *
+  * That is exactly why the check below is worth making. The two facts -- what the driver sent and
+  * what the SUT answered with -- are produced independently, so their agreement is evidence.
   */
 enum TokenMode derives JsonCodec:
   case Bearer
+  case Dpop
 
 /** The run's own parameters, as `05-report-spec.md` §0 asks for them: what was driven, at what
   * scale, against what the SUT actually answered.
@@ -340,8 +345,11 @@ object CampaignReport:
     // agree, and that agreement is the claim -- so what is checked is that they did not diverge.
     // A campaign whose tokens came back sender-constrained while the driver presented them as
     // bearer measured a flow nobody asked for.
+    // The values RFC 6749 §7.1 and RFC 9449 §5 give `token_type`, compared case-insensitively
+    // below because neither RFC makes the casing significant and auth spells them "Bearer"/"DPoP".
     val expectedTokenType = run.tokenMode match
       case TokenMode.Bearer => "bearer"
+      case TokenMode.Dpop => "dpop"
     val unexpectedTypes = run.observedTokenTypes.filterNot(_.equalsIgnoreCase(expectedTokenType))
     val tokenModeCheck =
       if run.observedTokenTypes.isEmpty then Right("token mode")

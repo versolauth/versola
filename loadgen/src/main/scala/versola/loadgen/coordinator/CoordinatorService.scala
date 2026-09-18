@@ -51,6 +51,7 @@ enum CoordinatorRefusal(val reason: String):
   */
 final class CoordinatorService private (
     campaign: CampaignConfig,
+    tokenMode: TokenMode,
     pollInterval: Duration,
     rates: ScenarioRates,
     diurnal: DiurnalEnvelope,
@@ -200,7 +201,7 @@ final class CoordinatorService private (
       population = counts.map((state, count) => state.toString.toLowerCase -> count),
       shardCount = state.shards.shardCount,
       shardEpoch = state.shards.epoch,
-      tokenMode = TokenMode.Bearer,
+      tokenMode = tokenMode,
       observedTokenTypes = fleet.observed.tokenTypes.toList.sorted,
       accessTokenTtls = fleet.observed.accessTokenTtlsByClient.toList.sorted.map: (clientId, ttls) =>
         ObservedAccessTokenTtl(clientId, ttls.toList.sorted),
@@ -496,6 +497,12 @@ object CoordinatorService:
       transitionLock <- Semaphore.make(1L)
     yield CoordinatorService(
       campaign = config.campaign,
+      // Read off this process's own configuration, which is the only thing that can be read: the
+      // driver does the proving, and nothing it reports says whether it proved. A coordinator
+      // given a different `dpop` block from its fleet's would report the wrong mode -- and the
+      // token-mode check exists to catch precisely that, since the SUT's answer comes from the
+      // fleet and would diverge from it.
+      tokenMode = if config.dpop.isDefined then TokenMode.Dpop else TokenMode.Bearer,
       pollInterval = config.coordinator.pollInterval,
       rates = rates,
       diurnal = diurnal,

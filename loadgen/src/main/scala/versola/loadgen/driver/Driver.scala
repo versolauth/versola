@@ -55,6 +55,15 @@ object Driver:
       shard <- ZIO.fromOption(config.shard).orElseFail(MissingDriverConfig("shard"))
       clients <- ZIO.fromOption(config.clients).orElseFail(MissingDriverConfig("clients"))
       actions <- ZIO.fromEither(BusinessActions.from(config.actions)).mapError(InvalidDriverConfig(_))
+      // Derived once at boot and shared by every session fiber: the pool is a pure function of
+      // the seed, so building it per generation would produce the same keys at the cost of a
+      // keygen burst on every re-shard.
+      dpop <- ZIO.foreach(config.dpop): settings =>
+        DpopKeyPool
+          .derive(settings.keySeed, settings.keyPoolSize)
+          .mapError(error => InvalidDriverConfig(error.toString))
+      _ <- ZIO.foreachDiscard(dpop): pool =>
+        ZIO.logInfo(s"Driving with RFC 9449 DPoP: ${pool.size} client keys shared across the fleet")
       xa <- storeTransactor
       users = PostgresVirtualUserRepository(xa)
       sessions = PostgresDeviceSessionRepository(xa)
@@ -103,7 +112,7 @@ object Driver:
         s"Driver $driverId ready for campaign '${config.campaign.name}' on shard ${shard.index}; " +
           s"polling ${config.coordinator.url} every ${config.coordinator.pollInterval.render}",
       )
-      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef)
+      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef, dpop)
       _ <- supervise(config, planClient, planRef, reporter, engine)
     yield ()
 
@@ -124,6 +133,7 @@ object Driver:
       lag: ScheduleLag,
       tally: ArrivalTally,
       plan: Ref[LoadPlan],
+      dpop: Option[DpopKeyPool],
   )
 
   private final case class ProtocolFlows(mobile: MobileFlows, web: WebFlows)
@@ -240,6 +250,7 @@ object Driver:
           thinkTime = ThinkTimeTable.build(engine.config.session.thinkTime, random.split()),
           clients = scenarioClientsOf(engine.clients),
           config = engine.config.session,
+          dpop = engine.dpop,
         )
         val loop = DriverLoop(
           arrivals = ArrivalProcess.startingAt(anchor, random.split()),

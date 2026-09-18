@@ -40,7 +40,29 @@ case class LoadgenConfig(
     calibration: Option[CalibrationConfig],
     sutStats: Option[SutStatsConfig],
     poolerStats: Option[PoolerStatsConfig],
+    dpop: Option[DpopConfig],
 )
+
+/** Drives the campaign with RFC 9449 sender-constrained tokens instead of bearer ones.
+  *
+  * The block's *presence* is the switch, as it is for [[SutStatsConfig]] and
+  * [[PoolerStatsConfig]]: there is no `enabled` flag to disagree with the settings under it. Read
+  * by the driver, which does the proving, and by the coordinator, which only needs to know which
+  * mode the report should say the run was driven in -- so both roles must be given the same
+  * block or the report describes a run that did not happen.
+  *
+  * @param keyPoolSize
+  *   how many client keys the whole fleet shares. A key per virtual user is the faithful shape
+  *   and buys nothing the SUT can distinguish -- see [[versola.loadgen.protocol.DpopKeyPool]],
+  *   which argues the case and is where the number is spent.
+  * @param keySeed
+  *   what the pool is derived from. Must be identical across the fleet and stable across a
+  *   restart, or a resumed session's refresh is refused against the `cnf.jkt` its token was
+  *   bound to; `DpopKeyPool` explains why that failure is worse than it sounds. Not a secret:
+  *   these keys authenticate emulated users against a test deployment, and reproducibility is
+  *   the property being bought.
+  */
+case class DpopConfig(keyPoolSize: Int, keySeed: String)
 
 /** Which half of the `loadgen` binary this process runs. Same binary and image serve all five --
   * see versola-loadgen-dev-spec.md §12 (coordinator) and §7 (driver). `Seed`/`Provision` are the

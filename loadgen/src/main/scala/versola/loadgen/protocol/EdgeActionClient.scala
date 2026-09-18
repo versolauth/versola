@@ -17,18 +17,43 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
   import EdgeActionClient.*
 
   override def call(credential: EdgeCredential, action: ActionCall): IO[ProtocolError, ActionOutcome] =
+    val url = resources.copy(path = Path.decode(action.path))
     val request = Request(
       method = action.method,
-      url = resources.copy(path = Path.decode(action.path)),
+      url = url,
       body = action.body.fold(Body.empty)(Body.fromString(_)),
     )
     val withBody = action.body.fold(request)(_ => request.addHeader(jsonContentType))
-    exchange.send(authenticate(withBody, credential)).flatMap(outcome(_, action, credential))
+    authenticate(withBody, credential, action.method, url).flatMap(exchange.send).flatMap(outcome(_, action, credential))
 
-  private def authenticate(request: Request, credential: EdgeCredential): Request =
+  /** Edge picks the path off the `Authorization` scheme, so `DPoP` is not a bearer call carrying
+    * an extra header -- the scheme is what makes it read the proof at all (`DpopVerifier.Scheme`).
+    *
+    * `htu` comes from the URL this request is actually addressed to, minus its query, which is
+    * what edge reconstructs from its own configured `edgeUrl` and the request path -- the same
+    * caveat `HttpAuthClient.tokenHtu` carries, and the same reason a mismatch surfaces as the
+    * emulator's fault.
+    *
+    * `ath` is mandatory here and absent at `/token`: §7 requires a resource proof to name the
+    * token it accompanies, and edge refuses one without it (`DpopVerifier.Error.AthMissing`).
+    */
+  private def authenticate(
+      request: Request,
+      credential: EdgeCredential,
+      method: Method,
+      url: URL,
+  ): IO[ProtocolError, Request] =
     credential match
-      case EdgeCredential.Bearer(token) => request.addHeader(Authorization.Bearer(token.value))
-      case EdgeCredential.Cookie(session) => request.addHeader(HttpExchange.cookieHeader(edgeSessionCookie, session.value))
+      case EdgeCredential.Bearer(token) => ZIO.succeed(request.addHeader(Authorization.Bearer(token.value)))
+      case EdgeCredential.Cookie(session) =>
+        ZIO.succeed(request.addHeader(HttpExchange.cookieHeader(edgeSessionCookie, session.value)))
+      case EdgeCredential.Dpop(token, key) =>
+        key
+          .proof(method, url.copy(queryParams = QueryParams.empty, fragment = None).encode, Some(token))
+          .map: proof =>
+            request
+              .addHeader(Header.Custom(Authorization.name, s"$dpopScheme ${token.value}"))
+              .addHeader(Header.Custom(HttpAuthClient.dpopHeader, proof))
 
   /** The three outcomes that are outcomes and not failures (§4): a step-up demand, a `403` a
     * `retail-basic` user is expected to collect, and an expired access token. Each is a branch
@@ -52,12 +77,17 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL) extends Act
       // carry one, and applying this on that path would not be a decision.
       val rotated = credential match
         case EdgeCredential.Cookie(_) => HttpExchange.setCookie(received.response, edgeSessionCookie).map(EdgeCookie.of)
-        case EdgeCredential.Bearer(_) => None
+        case EdgeCredential.Bearer(_) | EdgeCredential.Dpop(_, _) => None
       ZIO.succeed(ActionOutcome(received.status, received.body, rotated))
     else ZIO.fail(HttpExchange.unexpected(expectedSuccess, received.status, action.path))
 
 object EdgeActionClient:
   private[protocol] val edgeSessionCookie = "EDGE_SESSION"
+
+  /** RFC 9449 §7.1's authorization scheme, which replaces `Bearer` on a sender-constrained call
+    * rather than accompanying it.
+    */
+  private val dpopScheme = "DPoP"
   private val jsonContentType = Header.ContentType(MediaType.application.json)
   private val expectedSuccess: Set[Status] = Set(Status.Ok)
 

@@ -115,7 +115,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       sessions <- ZIO.serviceWith[TransactorZIO](PostgresDeviceSessionRepository(_))
       business <- ZIO.fromEither(BusinessActions.from(actions)).mapError(AssertionError(_))
       thinkTime = ThinkTimeTable.build(settings.thinkTime, RandomSource.seeded(1L))
-      runner = SessionRunner(mobile, web, sessions, buffer, business, SessionIds.make(shard), thinkTime, clients, settings)
+      runner = SessionRunner(mobile, web, sessions, buffer, business, SessionIds.make(shard), thinkTime, clients, settings, None)
     yield Harness(runner, sessions, sut, recorder, buffer)
 
   /** A protocol error is not a `Throwable`, and these tests want a failure to end the test

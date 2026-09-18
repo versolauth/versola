@@ -255,6 +255,19 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           named <- decodeSutStats(sutStatsWith("auth", "central")).exit
         yield assertTrue(empty.isFailure, duplicated.isFailure, unnamed.isFailure, named.isSuccess)
       },
+      // The block's presence is the switch between a bearer run and a DPoP one, so its absence
+      // has to be the default rather than a decode failure -- every campaign so far has no such
+      // block, and the report's `tokenMode` is read straight off this.
+      test("defaults the dpop block to absent and reads the pool's size and seed when it is there") {
+        for
+          absent <- decodeSutStats("")
+          configured <- decodeSutStats("dpop { key-pool-size = 100, key-seed = \"campaign-1\" }")
+        yield assertTrue(
+          absent.dpop.isEmpty,
+          configured.dpop.map(_.keyPoolSize) == Some(100),
+          configured.dpop.map(_.keySeed) == Some("campaign-1"),
+        )
+      },
       // V0006's identity index is `(campaign, pooler, phase)`, so a duplicated name has
       // sut-stats' consequence: the second reading is dropped and one pooler's numbers appear
       // under the other's name.
