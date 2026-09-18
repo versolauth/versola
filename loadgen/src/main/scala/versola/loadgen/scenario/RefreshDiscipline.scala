@@ -70,6 +70,12 @@ object RefreshDiscipline:
   /** @param refreshTokenTtl
     *   `session.refresh-token-ttl`, since the token response describes only the access token's
     *   lifetime. See [[versola.loadgen.config.SessionConfig.refreshTokenTtl]].
+    * @param key
+    *   the key this session's refresh token was bound to at login, on a DPoP run. It must be
+    *   the same one across a driver restart, which is what
+    *   [[versola.loadgen.protocol.DpopKeyPool]] guarantees and why it derives its keys rather
+    *   than generating them -- a mismatch here is refused as `invalid_grant`, which is the
+    *   rejection this whole discipline exists to keep at zero.
     */
   def refresh(
       session: DeviceSession,
@@ -77,13 +83,14 @@ object RefreshDiscipline:
       flows: MobileFlows,
       sessions: DeviceSessionRepository,
       refreshTokenTtl: Duration,
+      key: Option[DpopKey],
   ): IO[ProtocolError, RefreshOutcome] =
     session.refreshToken match
       case None => ZIO.succeed(RefreshOutcome.Retired(RetirementReason.NoCredential))
       case Some(token) =>
         bump(sessions, session.id).flatMap:
           case None => ZIO.succeed(RefreshOutcome.Retired(RetirementReason.SessionGone))
-          case Some(generation) => exchange(session, token, generation, client, flows, sessions, refreshTokenTtl)
+          case Some(generation) => exchange(session, token, generation, client, flows, sessions, refreshTokenTtl, key)
 
   private def bump(sessions: DeviceSessionRepository, id: Long): IO[ProtocolError, Option[Int]] =
     sessions.bumpGeneration(id).mapError(storeFailure("generation bump"))
@@ -96,8 +103,9 @@ object RefreshDiscipline:
       flows: MobileFlows,
       sessions: DeviceSessionRepository,
       refreshTokenTtl: Duration,
+      key: Option[DpopKey],
   ): IO[ProtocolError, RefreshOutcome] =
-    flows.refresh(token, client).either.flatMap:
+    flows.refresh(token, client, key).either.flatMap:
       // Step 5. The rejection has already been counted by the observer (§11's dedicated counter),
       // so what is left is to stop the session: the token in the row is spent either way, and
       // presenting it again is the reuse the discipline exists to make impossible.

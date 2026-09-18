@@ -118,10 +118,10 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("otp"))
         (recorder, routes) = stub
         auth <- clientFor(routes)
-        _ <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("verifier"), StubSut.publicClient.creds)
+        _ <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("verifier"), StubSut.publicClient.creds, None)
         publicForm <- recorder.formOf("/token")
         publicAuthorization <- recorder.headerOf("/token", "authorization")
-        tokens <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("verifier"), StubSut.confidentialClient.creds)
+        tokens <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("verifier"), StubSut.confidentialClient.creds, None)
         confidentialForm <- recorder.formOf("/token")
         confidentialAuthorization <- recorder.headerOf("/token", "authorization")
       yield assertTrue(
@@ -144,7 +144,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
             handler((_: Request) => ZIO.succeed(Response.json("""{"error":"invalid_grant","error_description":"..."}""").status(Status.BadRequest))),
           ),
         )
-        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
+        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds, None).either
       yield assertTrue(failure == Left(ProtocolError.RefreshRejected(RefreshRejection.Unknown("invalid_grant"))))
     },
     test("a 401 on refresh is the emulator's own client credentials, not a refresh rejection") {
@@ -160,7 +160,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
             ),
           ),
         )
-        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
+        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds, None).either
       yield assertTrue(
         failure == Left(ProtocolError.Misconfigured("token endpoint rejected client credentials on refresh")),
       )
@@ -170,7 +170,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("otp"))
         (_, routes) = stub
         auth <- clientFor(routes.transform(_ => handler((_: Request) => ZIO.succeed(Response.status(Status.InternalServerError)))))
-        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds).either
+        failure <- auth.exchangeRefresh(RefreshToken("rt-1"), StubSut.publicClient.creds, None).either
       yield assertTrue(
         failure == Left(ProtocolError.UnexpectedStatus(Set(Status.Ok), Status.InternalServerError, "/token")),
       )
@@ -180,7 +180,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("otp"))
         (_, routes) = stub
         auth <- clientFor(routes.transform(_ => handler((_: Request) => ZIO.succeed(Response.json("""{"nope":true}""")))))
-        failure <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("v"), StubSut.publicClient.creds).either
+        failure <- auth.exchangeCode(AuthCode(StubSut.code), CodeVerifier("v"), StubSut.publicClient.creds, None).either
         malformed = failure.left.toOption.exists:
           case ProtocolError.MalformedResponse("/token", _) => true
           case _ => false

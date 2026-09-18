@@ -28,8 +28,15 @@ object ScenarioSut:
       spentRefresh: Ref[Set[String]],
       refused: Ref[Int],
       live: Ref[String],
+      resourceSchemes: Ref[Vector[String]],
   ):
     def paths: UIO[Vector[String]] = seen.get
+
+    /** The `Authorization` scheme of every resource call, in order. Edge dispatches on it, so on
+      * a sender-constrained run a `Bearer` here is a session whose token is not being proved --
+      * which the hop sequence alone cannot show.
+      */
+    def schemes: UIO[Vector[String]] = resourceSchemes.get
 
     /** The `EDGE_SESSION` the SUT last issued, which is the only value it still honours. */
     def liveCookie: UIO[String] = live.get
@@ -57,7 +64,8 @@ object ScenarioSut:
       liveCookie <- Ref.make("edge-session-0")
       counter <- Ref.make(0)
       refused <- Ref.make(0)
-      state = State(seen, spent, refused, liveCookie)
+      schemes <- Ref.make(Vector.empty[String])
+      state = State(seen, spent, refused, liveCookie, schemes)
       built = routes(
         state,
         steps,
@@ -189,14 +197,22 @@ object ScenarioSut:
               .as(Response.json("""{"ok":true}""").addCookie(Cookie.Response("EDGE_SESSION", rotated, maxAge = Some(edgeCookieTtl))))
 
     def onResource(request: Request, path: String): UIO[Response] =
-      val bearer = request.rawHeader("Authorization").filter(_.startsWith("Bearer ")).map(_.drop("Bearer ".length))
+      // Either scheme, as edge does: a sender-constrained call presents the token under `DPoP`,
+      // and a stub that only knew `Bearer` would answer it with the same 401 an expired token
+      // gets -- turning every step-up on a DPoP run into a refresh, in the fixture rather than
+      // in the code under test.
+      val presented = request
+        .rawHeader("Authorization")
+        .collect:
+          case value if value.startsWith("Bearer ") => value.drop("Bearer ".length)
+          case value if value.startsWith("DPoP ") => value.drop("DPoP ".length)
       val cookie = request.cookie("EDGE_SESSION").map(_.content)
       for
         byToken <- acrOfToken.get
         byCookie <- cookieAcr.get
-        acr = bearer.flatMap(byToken.get).orElse(cookie.flatMap(_ => byCookie))
+        acr = presented.flatMap(byToken.get).orElse(cookie.flatMap(_ => byCookie))
         response <-
-          if bearer.isEmpty && cookie.isEmpty then ZIO.succeed(Response.status(Status.Unauthorized))
+          if presented.isEmpty && cookie.isEmpty then ZIO.succeed(Response.status(Status.Unauthorized))
           else if forbiddenPaths.contains(path) then ZIO.succeed(Response.status(Status.Forbidden))
           else if path == stepUpPath && !acr.contains(stepUpAcr) then
             ZIO.succeed(
@@ -258,7 +274,14 @@ object ScenarioSut:
 
     handled.transform:
       _.contramapZIO: request =>
-        state.seen.update(_ :+ (request.method.name + " " + request.url.path.toString)).as(request)
+        val path = request.url.path.toString
+        val recordScheme =
+          if !path.startsWith("/resources") then ZIO.unit
+          else
+            state.resourceSchemes.update(
+              _ :+ request.rawHeader("authorization").fold("none")(_.takeWhile(_ != ' ')),
+            )
+        state.seen.update(_ :+ (request.method.name + " " + path)) *> recordScheme.as(request)
 
   private def parseForm(body: String): Map[String, String] =
     body

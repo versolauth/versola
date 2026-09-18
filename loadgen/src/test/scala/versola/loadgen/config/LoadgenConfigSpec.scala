@@ -1,5 +1,6 @@
 package versola.loadgen.config
 
+import versola.util.Dpop
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
@@ -254,6 +255,30 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           unnamed <- decodeSutStats(sutStatsWith("", "central")).exit
           named <- decodeSutStats(sutStatsWith("auth", "central")).exit
         yield assertTrue(empty.isFailure, duplicated.isFailure, unnamed.isFailure, named.isSuccess)
+      },
+      // The block's presence is the switch between a bearer run and a DPoP one, so its absence
+      // has to be the default rather than a decode failure -- every campaign so far has no such
+      // block, and the report's `tokenMode` is read straight off this.
+      test("defaults the dpop block to absent and reads the pool's size and seed when it is there") {
+        for
+          absent <- decodeSutStats("")
+          configured <- decodeSutStats("dpop { key-pool-size = 100, key-seed = \"campaign-1\" }")
+        yield assertTrue(
+          absent.dpop.isEmpty,
+          configured.dpop.map(_.keyPoolSize) == Some(100),
+          configured.dpop.map(_.keySeed) == Some("campaign-1"),
+          configured.dpop.exists(_.algorithm.isEmpty),
+        )
+      },
+      // A deployment can restrict its served `dpop_signing_alg_values_supported` to exclude
+      // ES256, so the algorithm has to be configurable rather than assumed -- see
+      // `DpopConfig.algorithm`'s doc for what an unnamed deployment policy costs a driver that
+      // guessed wrong.
+      test("reads a named dpop algorithm, and rejects one it does not recognize") {
+        for
+          named <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = PS256 }")
+          unknown <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = HS256 }").exit
+        yield assertTrue(named.dpop.flatMap(_.algorithm) == Some(Dpop.Algorithm.PS256), unknown.isFailure)
       },
       // V0006's identity index is `(campaign, pooler, phase)`, so a duplicated name has
       // sut-stats' consequence: the second reading is dropped and one pooler's numbers appear

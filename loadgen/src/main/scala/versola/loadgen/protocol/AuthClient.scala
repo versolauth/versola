@@ -64,9 +64,26 @@ trait AuthClient:
       csrf: Csrf,
   ): IO[ProtocolError, SubmitOutcome]
 
-  def exchangeCode(code: AuthCode, verifier: CodeVerifier, client: ClientCreds): IO[ProtocolError, Tokens]
+  /** `key` sender-constrains the tokens this call issues (RFC 9449): the proof it signs makes
+    * auth stamp `cnf.jkt` on the access token and bind the refresh token to the same key. `None`
+    * drives the bearer path, which is what every campaign before the `dpop` config block did.
+    *
+    * The caller owns the choice of key and must make the same one for the life of the session --
+    * [[exchangeRefresh]] below is checked against the binding this call established.
+    */
+  def exchangeCode(
+      code: AuthCode,
+      verifier: CodeVerifier,
+      client: ClientCreds,
+      key: Option[DpopKey],
+  ): IO[ProtocolError, Tokens]
 
-  def exchangeRefresh(token: RefreshToken, client: ClientCreds): IO[ProtocolError, Tokens]
+  /** `key` must be the one [[exchangeCode]] bound this session's tokens to. A different key, or
+    * none at all against a bound token, is refused by auth as `invalid_grant` -- indistinguishable
+    * at the wire from reuse detection, which is why [[versola.loadgen.protocol.DpopKeyPool]] goes
+    * to the trouble of being reproducible rather than generating keys per process.
+    */
+  def exchangeRefresh(token: RefreshToken, client: ClientCreds, key: Option[DpopKey]): IO[ProtocolError, Tokens]
 
   def logout(idToken: IdToken): IO[ProtocolError, Unit]
 

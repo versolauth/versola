@@ -47,8 +47,21 @@ final class SessionRunner(
     thinkTime: ThinkTimeTable,
     clients: ScenarioClients,
     config: SessionConfig,
+    dpop: Option[DpopKeyPool],
 ):
   import SessionRunner.*
+
+  /** The key this user's mobile tokens are bound to on a DPoP run, and `None` on a bearer one.
+    *
+    * Resolved from the user rather than carried on the session, because it is needed before the
+    * session exists -- `/token` is called and its tokens bound before the row is inserted -- and
+    * because it has to come out the same after a restart, when the row is read back and its
+    * refresh token is still bound to whatever key issued it.
+    *
+    * The web path takes none: §8.4's session is a cookie, edge holds the tokens behind it, and
+    * a driver that never sees them has nothing to prove possession of.
+    */
+  private def keyFor(user: VirtualUser): Option[DpopKey] = dpop.map(_.keyFor(user.id))
 
   /** One arrival, end to end. The `random` is this fiber's own split of the campaign seed:
     * [[RandomSource]] is single-owner by design, so sharing one across session fibers would both
@@ -102,10 +115,10 @@ final class SessionRunner(
         ZIO.succeed(existing.edgeCookie.map(cookie => RunningSession.web(existing, cookie)))
       case SessionKind.MobileToken =>
         for
-          outcome <- RefreshDiscipline.refresh(existing, mobileCreds(user), mobile, sessions, config.refreshTokenTtl)
+          outcome <- RefreshDiscipline.refresh(existing, mobileCreds(user), mobile, sessions, config.refreshTokenTtl, keyFor(user))
           now <- Clock.instant
           running <- outcome match
-            case RefreshOutcome.Rotated(tokens, _) => ZIO.some(RunningSession.mobile(existing, tokens, now))
+            case RefreshOutcome.Rotated(tokens, _) => ZIO.some(RunningSession.mobile(existing, tokens, now, keyFor(user)))
             case RefreshOutcome.Retired(reason) => retire(existing.id, reason).as(None)
         yield running
 
@@ -116,7 +129,8 @@ final class SessionRunner(
 
   private def mobileLogin(user: VirtualUser, acrValues: Option[List[String]]): IO[ProtocolError, RunningSession] =
     val clientId = clients.mobileClientFor(user.credential)
-    val request = LoginRequest(Some(clientId), clients.scope, acrValues, None)
+    val key = keyFor(user)
+    val request = LoginRequest(Some(clientId), clients.scope, acrValues, None, key)
     for
       credentials <- loginCredentials(user)
       result <- user.credential match
@@ -134,7 +148,7 @@ final class SessionRunner(
       id <- ids.next
       row = mobileRow(id, user, clientId, tokens, ssoSession, acrValues, now)
       _ <- sessions.insert(row).mapError(storeFailure("new mobile session"))
-    yield RunningSession.mobile(row, tokens, now)
+    yield RunningSession.mobile(row, tokens, now, key)
 
   private def webLogin(user: VirtualUser, acrValues: Option[List[String]]): IO[ProtocolError, RunningSession] =
     for
@@ -245,11 +259,12 @@ final class SessionRunner(
     for
       row <- sessions.find(session.id).mapError(storeFailure("session reload"))
       outcome <- ZIO.foreach(row)(current =>
-        RefreshDiscipline.refresh(current, mobileCreds(user), mobile, sessions, config.refreshTokenTtl),
+        RefreshDiscipline.refresh(current, mobileCreds(user), mobile, sessions, config.refreshTokenTtl, keyFor(user)),
       )
       now <- Clock.instant
       renewed <- (row, outcome) match
-        case (Some(current), Some(RefreshOutcome.Rotated(tokens, _))) => ZIO.some(RunningSession.mobile(current, tokens, now))
+        case (Some(current), Some(RefreshOutcome.Rotated(tokens, _))) =>
+          ZIO.some(RunningSession.mobile(current, tokens, now, keyFor(user)))
         case (Some(current), Some(RefreshOutcome.Retired(reason))) => retire(current.id, reason).as(None)
         case _ => ZIO.none
     yield renewed
@@ -281,8 +296,10 @@ final class SessionRunner(
       case EdgeCredential.Cookie(cookie) =>
         web.businessAction(cookie, call).flatMap: (outcome, next) =>
           adoptRotation(session, outcome, next)
-      case bearer: EdgeCredential.Bearer =>
-        mobile.businessAction(bearer, call).as(session)
+      // Both token credentials take the mobile path and neither rotates anything: the proof a
+      // DPoP call carries is minted per request by the client, so there is nothing to adopt.
+      case token @ (_: EdgeCredential.Bearer | _: EdgeCredential.Dpop) =>
+        mobile.businessAction(token, call).as(session)
 
   /** §8.4's adoption rule, discharged on the critical path: edge rotates `EDGE_SESSION` behind a
     * refresh, and a row still holding the superseded value resumes a session the SUT has moved
@@ -345,9 +362,12 @@ final class SessionRunner(
       acrValues: List[String],
   ): IO[ProtocolError, Option[RunningSession]] =
     val clientId = clients.mobileClientFor(user.credential)
+    // The same key the session's first token was bound to, not a fresh choice: a step-up replaces
+    // the token pair, so one taken without it would leave the rest of the session unbound.
+    val key = keyFor(user)
     for
       credentials <- loginCredentials(user)
-      result <- mobile.stepUp(LoginRequest(Some(clientId), clients.scope, Some(acrValues), session.ssoSession), credentials)
+      result <- mobile.stepUp(LoginRequest(Some(clientId), clients.scope, Some(acrValues), session.ssoSession, key), credentials)
       (tokens, ssoSession) = result
       now <- Clock.instant
       accessExpiresAt = now.plusSeconds(tokens.expiresInSeconds)
@@ -364,7 +384,7 @@ final class SessionRunner(
         .mapError(storeFailure("step-up"))
     yield Some(
       session.copy(
-        credential = EdgeCredential.Bearer(tokens.accessToken),
+        credential = EdgeCredential.mobile(tokens.accessToken, key),
         refreshToken = tokens.refreshToken.orElse(session.refreshToken),
         idToken = tokens.idToken.orElse(session.idToken),
         ssoSession = ssoSession.orElse(session.ssoSession),
@@ -554,11 +574,13 @@ object SessionRunner:
       copy(credential = EdgeCredential.Cookie(session), accessExpiresAt = expiresAt)
 
   private[scenario] object RunningSession:
-    def mobile(row: DeviceSession, tokens: Tokens, now: Instant): RunningSession =
+    def mobile(row: DeviceSession, tokens: Tokens, now: Instant, key: Option[DpopKey]): RunningSession =
       RunningSession(
         id = row.id,
         kind = SessionKind.MobileToken,
-        credential = EdgeCredential.Bearer(tokens.accessToken),
+        // The key that signed the proof at `/token` is the key edge checks every action against,
+        // so the credential carries it rather than the call site looking it up again.
+        credential = EdgeCredential.mobile(tokens.accessToken, key),
         refreshToken = tokens.refreshToken.orElse(row.refreshToken),
         ssoSession = row.ssoSession,
         idToken = tokens.idToken,

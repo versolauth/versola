@@ -1,11 +1,11 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.TargetsConfig
-import versola.loadgen.metrics.TokenObserver
+import versola.loadgen.metrics.{LoadgenMetrics, TokenObserver}
 import zio.http.*
 import zio.http.Header.Authorization
 import zio.json.*
-import zio.{Duration, IO, ZIO, ZLayer}
+import zio.{Duration, IO, Ref, UIO, ZIO, ZLayer}
 
 /** The `/token` response, with only the fields a driver uses. A `derives JsonDecoder` case
   * class rather than the e2e client's `Json.Obj`: the AST costs one allocation per field per
@@ -88,8 +88,27 @@ private object AuthEndpoints:
   * them is not: no regex is compiled per page, no `ZLayer` is built per request, no body becomes
   * a `Json.Obj`, nothing throws, and no failure string is built on a path that succeeds.
   */
-final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, clients: ClientRegistry) extends AuthClient:
+final class HttpAuthClient(
+    exchange: HttpExchange,
+    endpoints: AuthEndpoints,
+    clients: ClientRegistry,
+    nonce: Ref[Option[String]],
+) extends AuthClient:
   import HttpAuthClient.*
+
+  /** RFC 9449 §4.3 step 9 compares the proof's `htu` against the endpoint's own URI, and auth
+    * derives that from its configured issuer rather than from the inbound request, so that a
+    * forwarded host header cannot make a proof minted for another origin validate there
+    * (`TokenEndpointController.tokenEndpointUri`).
+    *
+    * So this is the endpoint the driver dialled, which is correct only while `targets.auth-url`
+    * is the issuer auth publishes. Pointing a driver at an internal service address whose issuer
+    * is the public one refuses every proof -- which is why that refusal is
+    * [[ProtocolError.Misconfigured]] below and not an SUT error: it is a whole campaign
+    * measuring nothing, and it should read that way on the first request rather than as a 100%
+    * error budget.
+    */
+  private val tokenHtu = endpoints.token.copy(queryParams = QueryParams.empty, fragment = None).encode
 
   override def authorize(
       scope: String,
@@ -177,7 +196,12 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
   ): IO[ProtocolError, SubmitOutcome] =
     submit(endpoints.challengePasskey, passkeyEndpoint, conversation, List("response" -> assertionJson, "csrf" -> csrf.value))
 
-  override def exchangeCode(code: AuthCode, verifier: CodeVerifier, client: ClientCreds): IO[ProtocolError, Tokens] =
+  override def exchangeCode(
+      code: AuthCode,
+      verifier: CodeVerifier,
+      client: ClientCreds,
+      key: Option[DpopKey],
+  ): IO[ProtocolError, Tokens] =
     for
       registration <- ZIO.fromEither(clients.resolve(Some(client.clientId)))
       fields = List(
@@ -186,17 +210,22 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
         "redirect_uri" -> registration.redirectUri,
         "code_verifier" -> verifier.value,
       )
-      received <- exchange.send(tokenRequest(fields, client))
+      received <- sendToken(fields, client, key)
       tokens <-
         if received.status == Status.Ok then decodeTokens(received.body, client.clientId)
-        else ZIO.fail(HttpExchange.unexpected(expectedOk, received.status, tokenEndpoint))
+        else ZIO.fail(proofRejection(received).getOrElse(HttpExchange.unexpected(expectedOk, received.status, tokenEndpoint)))
     yield tokens
 
-  override def exchangeRefresh(token: RefreshToken, client: ClientCreds): IO[ProtocolError, Tokens] =
-    exchange
-      .send(tokenRequest(List("grant_type" -> "refresh_token", "refresh_token" -> token.value), client))
+  override def exchangeRefresh(token: RefreshToken, client: ClientCreds, key: Option[DpopKey]): IO[ProtocolError, Tokens] =
+    sendToken(List("grant_type" -> "refresh_token", "refresh_token" -> token.value), client, key)
       .flatMap: received =>
         if received.status == Status.Ok then decodeTokens(received.body, client.clientId)
+        // Checked before the 400 below, not after. RFC 9449 gives `invalid_dpop_proof` and a
+        // surviving `use_dpop_nonce` the same status as a rejected grant, so both would land in
+        // `loadgen_refresh_rejected_total` -- the one counter §7.4 requires to stay at ~0, and
+        // whose non-zero value is read as either a scheduling bug or a real SUT defect. A driver
+        // whose own proofs are wrong would condemn the SUT on this line.
+        else if proofRejection(received).isDefined then ZIO.fail(proofRejection(received).get)
         // A 400 is the token endpoint rejecting the refresh grant itself (RFC 6749 §5.2) --
         // the only thing `loadgen_refresh_rejected_total` (§11) is supposed to measure.
         else if received.status == Status.BadRequest then ZIO.fail(ProtocolError.RefreshRejected(refreshRejection(received)))
@@ -281,11 +310,87 @@ final class HttpAuthClient(exchange: HttpExchange, endpoints: AuthEndpoints, cli
     * clients of design doc §2.2 hold no secret) names itself in the body and proves itself with
     * PKCE instead.
     */
-  private def tokenRequest(fields: List[(String, String)], client: ClientCreds): Request =
+  private def tokenRequest(fields: List[(String, String)], client: ClientCreds, proof: Option[String]): Request =
     val request = Request
       .post(endpoints.token, HttpExchange.formBody(client.clientSecret.fold(fields :+ ("client_id" -> client.clientId))(_ => fields)))
       .addHeader(HttpExchange.formContentType)
-    client.clientSecret.fold(request)(secret => request.addHeader(Authorization.Basic(client.clientId, secret)))
+    val authenticated = client.clientSecret.fold(request)(secret => request.addHeader(Authorization.Basic(client.clientId, secret)))
+    proof.fold(authenticated)(value => authenticated.addHeader(Header.Custom(dpopHeader, value)))
+
+  /** One token call, with RFC 9449 §9's nonce handshake around it when a key is in play.
+    *
+    * The nonce is held per driver process rather than per session, because it is the server's
+    * and not the session's: auth mints it from a secret of its own, with no reference to who is
+    * asking. Sharing it is what keeps the handshake off the hot path -- the first call of a
+    * driver's life pays the extra round trip and every later one carries the cached value, so a
+    * deployment with `require-dpop-nonce` on costs one retry per driver rather than one per
+    * token call.
+    *
+    * Exactly one retry. A second challenge to a proof carrying the nonce auth has just issued is
+    * the SUT contradicting itself, and a driver that kept retrying would spin for the rest of
+    * the campaign instead of failing one step.
+    */
+  private def sendToken(
+      fields: List[(String, String)],
+      client: ClientCreds,
+      key: Option[DpopKey],
+  ): IO[ProtocolError, Received] =
+    key match
+      case None => exchange.send(tokenRequest(fields, client, None))
+      case Some(signing) =>
+        for
+          held <- nonce.get
+          proof <- signing.proof(Method.POST, tokenHtu, None, held)
+          first <- exchange.send(tokenRequest(fields, client, Some(proof)))
+          received <- nonceChallenge(first) match
+            case None => adoptNonce(first).as(first)
+            case Some(issued) =>
+              for
+                _ <- nonce.set(Some(issued))
+                _ <- LoadgenMetrics.dpopNonceRetried
+                retried <- signing.proof(Method.POST, tokenHtu, None, Some(issued))
+                second <- exchange.send(tokenRequest(fields, client, Some(retried)))
+                _ <- adoptNonce(second)
+              yield second
+        yield received
+
+  /** §8: the server may hand back a fresh nonce on any response, a successful one included, and
+    * expects the next proof to carry it. Adopting it here is what holds the steady state at one
+    * round trip per token call across a rotation.
+    */
+  private def adoptNonce(received: Received): UIO[Unit] =
+    received.response.rawHeader(dpopNonceHeader) match
+      case Some(issued) => nonce.set(Some(issued))
+      case None => ZIO.unit
+
+  /** The `use_dpop_nonce` challenge of §9, and the nonce it carries to retry with. `None` for
+    * every other response, including a `400` that is an ordinary grant rejection.
+    */
+  private def nonceChallenge(received: Received): Option[String] =
+    if received.status != Status.BadRequest then None
+    else
+      received.body.fromJson[TokenErrorBody].toOption
+        .filter(_.error == useDpopNonce)
+        .flatMap(_ => received.response.rawHeader(dpopNonceHeader))
+
+  /** A refusal of the driver's own proof rather than of the grant it accompanied.
+    *
+    * [[ProtocolError.Misconfigured]] for the reason that constructor gives: every occurrence is a
+    * campaign measuring something other than what it claims. A wrong `htu`, a clock outside
+    * auth's `iat` leeway, or a key the token was not bound to are all emulator faults, and all
+    * three would otherwise be indistinguishable from the SUT rejecting a legitimate request.
+    *
+    * A `use_dpop_nonce` reaching here has already survived one retry, so it is no longer a
+    * handshake -- it is auth demanding a nonce it just issued.
+    */
+  private def proofRejection(received: Received): Option[ProtocolError] =
+    if received.status != Status.BadRequest then None
+    else
+      received.body.fromJson[TokenErrorBody].toOption.map(_.error).collect:
+        case `invalidDpopProof` =>
+          ProtocolError.Misconfigured(s"auth rejected the driver's DPoP proof at $tokenEndpoint")
+        case `useDpopNonce` =>
+          ProtocolError.Misconfigured(s"auth demanded a DPoP nonce at $tokenEndpoint that it had just issued")
 
   private def decodeTokens(body: String, clientId: String): IO[ProtocolError, Tokens] =
     ZIO
@@ -318,6 +423,18 @@ object HttpAuthClient:
   private val tokenEndpoint = "/token"
   private val logoutEndpoint = "/logout"
 
+  /** RFC 9449 §4.1 and §8: the header a proof travels in, and the one a nonce comes back in.
+    * Spelled here rather than taken from `versola.util.Dpop`, which names neither -- it verifies
+    * a proof it has already been handed.
+    */
+  private[protocol] val dpopHeader = "DPoP"
+  private[protocol] val dpopNonceHeader = "DPoP-Nonce"
+
+  // RFC 9449 §5 and §9's two `error` codes. At `/token` they arrive as a 400 alongside the grant
+  // rejections that share that status; at edge's resource proxy, in a `WWW-Authenticate` on a 401.
+  private[protocol] val invalidDpopProof = "invalid_dpop_proof"
+  private[protocol] val useDpopNonce = "use_dpop_nonce"
+
   // The confirmation posts back the two parameters auth bound its token to, under the names
   // `LogoutController`'s form decoder reads.
   private val csrfField = "csrf_token"
@@ -344,9 +461,10 @@ object HttpAuthClient:
       case Left(_) => RefreshRejection.Unknown(received.status.code.toString)
 
   def make(client: Client, targets: TargetsConfig, clients: ClientRegistry, requestTimeout: Duration): IO[ProtocolError, AuthClient] =
-    ZIO
-      .fromEither(AuthEndpoints.from(targets.authUrl))
-      .map(endpoints => HttpAuthClient(HttpExchange(client, requestTimeout), endpoints, clients))
+    for
+      endpoints <- ZIO.fromEither(AuthEndpoints.from(targets.authUrl))
+      nonce <- Ref.make(Option.empty[String])
+    yield HttpAuthClient(HttpExchange(client, requestTimeout), endpoints, clients, nonce)
 
   /** One client per driver pod, built once and shared by every fiber (§4). */
   val live: ZLayer[Client & TargetsConfig & ClientRegistry, ProtocolError, AuthClient] =

@@ -353,6 +353,24 @@ object CampaignReportSpec extends ZIOSpecDefault:
         val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None, None, None)
         assertTrue(report.map(_.checks.filter(_.name == "token mode").map(_.passed)) == Right(List(true)))
       },
+      test("passes a DPoP run whose tokens all came back sender-constrained") {
+        val sender = campaignRun.copy(tokenMode = TokenMode.Dpop, observedTokenTypes = List("DPoP"))
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, sender, thresholds, None, None, None)
+        assertTrue(report.map(_.checks.filter(_.name == "token mode").map(_.passed)) == Right(List(true)))
+      },
+      // The failure a DPoP campaign is actually exposed to: the driver is configured to prove
+      // possession, and the tokens come back plain. Auth falls back to bearer for a request whose
+      // proof it did not get, so this is what a driver that silently stopped signing looks like --
+      // a campaign that believes it measured DPoP and did not.
+      test("fails a DPoP run whose tokens came back as bearer") {
+        val fellBack = campaignRun.copy(tokenMode = TokenMode.Dpop, observedTokenTypes = List("Bearer"))
+        val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, fellBack, thresholds, None, None, None)
+        assertTrue(
+          report.map(_.passed) == Right(false),
+          report.map(_.checks.filter(_.name == "token mode").map(_.detail)) ==
+            Right(List("Bearer against a run driven as dpop")),
+        )
+      },
       // The divergence the header exists to surface: the driver presented bearer tokens and the
       // SUT issued sender-constrained ones, so the campaign measured a flow nobody asked for.
       test("fails the campaign when the SUT answered in a mode the run did not drive") {
