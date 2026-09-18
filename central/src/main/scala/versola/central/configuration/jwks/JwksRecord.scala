@@ -9,10 +9,10 @@ import zio.json.ast.Json
  * `kid` is the key id (primary key); `jwk` is the raw JWK JSON object as served
  * in the central JWKS.
  *
- * `privateKey` is the PKCS#8 private half, AES-GCM encrypted at rest with the shared
- * `clientSecretsSecret`, and is `None` for a verify-only key -- one seeded from
- * `bootstrap.jwks`, whose private half central was never given. Only a key that has one
- * can be a tenant's signing key.
+ * `privateKey` is the PKCS#8 private half -- AES-GCM encrypted with the shared
+ * `clientSecretsSecret` at rest, plaintext once [[JwksService]] has read it into its cache --
+ * and is `None` for a verify-only key -- one seeded from `bootstrap.jwks`, whose private half
+ * central was never given. Only a key that has one can be a tenant's signing key.
  */
 case class JwksRecord(
     kid: String,

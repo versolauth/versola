@@ -143,8 +143,8 @@ object JwksController extends Controller:
 
   case class GeneratedKey(kid: String, alg: String) derives JsonCodec
 
-  /** Encrypted under the shared `clientSecretsSecret`, base64url encoded, the same way client
-    * secrets already reach auth over this channel.
+  /** Encrypted under the shared transport secret `secretKey`, base64url encoded, the same way
+    * client secrets already reach auth over this channel.
     */
   case class SigningKeysResponse(privateKeys: Map[String, String]) derives JsonCodec
 

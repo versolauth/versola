@@ -9,9 +9,11 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
-import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
-import javax.crypto.spec.SecretKeySpec
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.{KeyFactory, KeyPairGenerator}
+import javax.crypto.Cipher
+import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
 
 object JwksServiceSpec extends ZIOSpecDefault:
 
@@ -32,7 +34,18 @@ object JwksServiceSpec extends ZIOSpecDefault:
   private val testJwks: Json.Obj =
     Json.Obj("keys" -> Json.Arr(testKey))
 
-  private val encryptedPrivateKey = Secret.fromString("encrypted-pkcs8")
+  private val transportKey = TestCentralConfig.config.secretKey
+
+  private val atRestKey = SecretKeySpec(TestCentralConfig.config.clientSecretsSecret, "AES")
+
+  /** Real AES-GCM ciphertext rather than a placeholder: the cache decrypts what the
+    * repository hands it, so a record it cannot decrypt never reaches the service.
+    */
+  private val encryptedPrivateKey =
+    val iv = new Array[Byte](12)
+    val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+    cipher.init(Cipher.ENCRYPT_MODE, atRestKey, GCMParameterSpec(128, iv))
+    Secret(iv ++ cipher.doFinal("pkcs8".getBytes))
 
   /** Records the writes, so a test can assert on what the service stored rather than only on
     * what it returned. `update` and `delete` are exercised through the cache-backed reads.
@@ -52,7 +65,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
     val repository = RecordingRepo(records)
     val references = new SigningKeyReferences:
       def tenantsSigningWith(kid: String): UIO[Vector[String]] = ZIO.succeed(signingTenants)
-    val layer = ZLayer.make[JwksService & JwksRepository](
+    val layer = ZLayer.make[JwksService & JwksRepository & SecurityService](
       ZLayer.succeed[JwksRepository](repository),
       ZLayer.succeed[SigningKeyReferences](references),
       SecureRandom.live,
@@ -99,14 +112,25 @@ object JwksServiceSpec extends ZIOSpecDefault:
       yield assertTrue(raw == testJwks)).provide(serviceFrom(Vector(record)))
     },
     suite("getSigningKeys")(
-      test("carries the encrypted private half of every signable key") {
-        val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], Some(encryptedPrivateKey))
+      // Under the transport secret, not the at-rest one. Shipping the stored ciphertext is
+      // what auth cannot decrypt: the two secrets are separate values, so every configuration
+      // sync fails on an AEAD tag mismatch as soon as one signable key exists.
+      test("carries the private half of every signable key, encrypted for transport") {
+        val (_, layer) = env(Vector.empty)
         (for
-          service <- ZIO.service[JwksService]
-          keys    <- service.getSigningKeys
-        yield assertTrue(keys == Map("key-1" -> Base64.urlEncode(encryptedPrivateKey)))).provide(
-          serviceFrom(Vector(record)),
-        )
+          service  <- ZIO.service[JwksService]
+          security <- ZIO.service[SecurityService]
+          kid      <- service.generateKey(JWT.Algorithm.PS256)
+          keys     <- service.getSigningKeys
+          transported = Base64.urlDecode(keys(kid))
+          pkcs8    <- security.decryptAes256(transported, transportKey)
+          parsed   <- ZIO.attempt(KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pkcs8)))
+          atRest   <- security.decryptAes256(transported, atRestKey).exit
+        yield assertTrue(
+          keys.keySet == Set(kid),
+          parsed.getAlgorithm == "RSA",
+          atRest.isFailure,
+        )).provide(layer)
       },
       // Absent rather than present-and-empty: a tenant cannot select what is not here, and
       // auth treats a kid it has no private half for as one it cannot sign with.

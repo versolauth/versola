@@ -1,11 +1,12 @@
 package versola.central.configuration.jwks
 
 import versola.central.CentralConfig
-import versola.util.{Base64, JWT, ReloadingCache, SecurityService}
+import versola.util.{Base64, CacheSource, JWT, ReloadingCache, Secret, SecurityService}
 import zio.json.JsonCodec
 import zio.json.ast.Json
-import zio.{Scope, Task, UIO, ZIO, ZLayer}
+import zio.{Scope, Task, UIO, URLayer, ZIO, ZLayer}
 
+import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
 /** Central is the source of truth for the JWKS, stored in the database and
@@ -23,11 +24,11 @@ trait JwksService:
   def getPublicKeys: UIO[JWT.PublicKeys]
   def getRaw: UIO[Json.Obj]
 
-  /** The keys central can sign with, as `kid -> base64url(AES-GCM(PKCS#8))`, encrypted under
-    * the shared `clientSecretsSecret`. Verify-only keys are absent rather than present-and-empty:
+  /** The keys central can sign with, as `kid -> base64url(AES-GCM(PKCS#8))`, encrypted for
+    * transport under `secretKey`. Verify-only keys are absent rather than present-and-empty:
     * a caller cannot select what is not here.
     */
-  def getSigningKeys: UIO[Map[String, String]]
+  def getSigningKeys: Task[Map[String, String]]
 
   /** Every stored key with the algorithm it is published under, for the admin console's key
     * list. Carries no private key material -- only whether one exists.
@@ -65,12 +66,35 @@ object JwksService:
     Throwable,
     JwksService,
   ] =
-    (ZLayer.fromZIO:
-      ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[JwksRecord]](config.configurationCacheRefreshInterval),
-      )
-    )
-      >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
+    decryptingCacheSource >>>
+      (ZLayer.fromZIO:
+        ZIO.serviceWithZIO[CentralConfig](config =>
+          ReloadingCache.make[Vector[JwksRecord]](config.configurationCacheRefreshInterval),
+        )
+      ) >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
+
+  /** A [[CacheSource]] that reads the JWKS records from the repository and decrypts their
+    * private halves, so the in-memory cache holds plaintext PKCS#8 and no decryption is
+    * needed on cache reads.
+    */
+  private val decryptingCacheSource
+      : URLayer[JwksRepository & SecurityService & CentralConfig, CacheSource[Vector[JwksRecord]]] =
+    ZLayer.fromFunction: (repository: JwksRepository, securityService: SecurityService, config: CentralConfig) =>
+      new CacheSource[Vector[JwksRecord]]:
+        override def getAll: Task[Vector[JwksRecord]] =
+          repository.getAll.flatMap(ZIO.foreach(_)(decryptPrivateKey(_, securityService, keyEncryptionKey(config))))
+
+  private def keyEncryptionKey(config: CentralConfig): SecretKey =
+    SecretKeySpec(config.clientSecretsSecret, "AES")
+
+  /** Decrypts the at-rest encrypted private half of a JWKS record. */
+  private def decryptPrivateKey(
+      record: JwksRecord,
+      securityService: SecurityService,
+      key: SecretKey,
+  ): Task[JwksRecord] =
+    ZIO.foreach(record.privateKey)(stored => securityService.decryptAes256(stored, key).map(Secret(_)))
+      .map(privateKey => record.copy(privateKey = privateKey))
 
   private def toJwks(records: Vector[JwksRecord]): Json.Obj =
     Json.Obj("keys" -> Json.Arr(records.map(_.jwk)*))
@@ -88,12 +112,18 @@ object JwksService:
     override def getRaw: UIO[Json.Obj] =
       cache.get.map(toJwks)
 
-    override def getSigningKeys: UIO[Map[String, String]] =
-      cache.get.map { records =>
-        records.collect {
-          case record if record.canSign =>
-            record.kid -> Base64.urlEncode(record.privateKey.get)
+    /** Encrypted under the transport secret on the way out rather than shipped as the database
+      * ciphertext, the same way client and resource secrets already reach auth over this
+      * channel: the at-rest key stays inside central.
+      */
+    override def getSigningKeys: Task[Map[String, String]] =
+      cache.get.flatMap { records =>
+        val signable = records.collect {
+          case record if record.canSign => record.kid -> record.privateKey.get
         }.toMap
+        ZIO.foreach(signable) { (kid, pkcs8) =>
+          securityService.encryptAes256(pkcs8, config.secretKey).map(kid -> Base64.urlEncode(_))
+        }
       }
 
     override def listKeys: UIO[Vector[KeySummary]] =
@@ -111,7 +141,9 @@ object JwksService:
       })
 
     override def sync(): Task[Unit] =
-      repository.getAll.flatMap(cache.set)
+      repository.getAll
+        .flatMap(ZIO.foreach(_)(decryptPrivateKey(_, securityService, secretsKey)))
+        .flatMap(cache.set)
 
     override def createKey(kid: String, jwk: Json.Obj): Task[Unit] =
       repository.create(kid, jwk, privateKey = None)
@@ -136,14 +168,14 @@ object JwksService:
 
     override def generateKey(algorithm: JWT.Algorithm): Task[String] =
       for
-        generated <- JwksKeyGeneration.generate(securityService, algorithm, clientSecretsKey)
+        generated <- JwksKeyGeneration.generate(securityService, algorithm, secretsKey)
         _ <- repository.create(generated.kid, generated.jwk, Some(generated.privateKey))
         // Published immediately, so every verifier has learned the key before any tenant is
         // moved onto it -- the first of the two steps a safe rotation needs.
         _ <- sync()
       yield generated.kid
 
-    private def clientSecretsKey = SecretKeySpec(config.clientSecretsSecret, "AES")
+    private val secretsKey: SecretKey = JwksService.keyEncryptionKey(config)
 
 /** Who is currently signing with a given key. Lives behind its own interface so
   * [[JwksService]] can refuse to delete a key in use without depending on the whole of

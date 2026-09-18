@@ -15,8 +15,8 @@ import java.security.{KeyFactory, PrivateKey}
   * the single source of truth; auth caches both for signing and verification.
   *
   * Two endpoints rather than one payload because edge reads the first and has no use for a
-  * private key. The private halves arrive encrypted under the shared `clientSecretsSecret`,
-  * the same channel client secrets already travel on.
+  * private key. The private halves arrive encrypted under the shared transport secret
+  * `central.secretKey`, the same channel client secrets already travel on.
   */
 trait JwksSyncClient extends CacheSource[JwksSyncClient.Keys]
 
