@@ -31,7 +31,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
-import versola.util.{CacheSource, CoreConfig, Dpop, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -74,6 +74,10 @@ trait OAuthConfigurationService:
     * when the tenant's proxy does not terminate mutual TLS. */
   def getMtlsCertificateSource(id: ClientId): UIO[Option[MtlsCertificateSource]]
 
+  /** RFC 7523 §3: how far into the future this client's tenant lets a client assertion's
+    * `exp` sit, which is also how long its `jti` is remembered against replay. */
+  def getClientAssertionMaxLifetime(id: ClientId): UIO[Duration]
+
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
   def getPasskeySettings(id: ClientId): UIO[Option[PasskeySettings]]
@@ -111,6 +115,10 @@ trait OAuthConfigurationService:
     * document rather than from [[CoreConfig]] so that advertising the set and enforcing it are
     * the same act. */
   def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]]
+
+  /** RFC 8414 §2: the signing algorithms an incoming client assertion's `alg` is checked
+    * against, read off the same metadata document that advertises them. */
+  def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]]
 
   /** Resolves an RFC 9396 `authorization_details` type to its registered schema, scoped to
     * the requesting client's tenant. */
@@ -354,6 +362,17 @@ object OAuthConfigurationService:
                 .map(MtlsCertificateSource(_, _)),
           )
 
+    override def getClientAssertionMaxLifetime(id: ClientId): UIO[Duration] =
+      find(id).flatMap:
+        case None => ZIO.succeed(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime)(settings =>
+                Duration.fromSeconds(settings.clientAssertionMaxLifetimeSeconds),
+              ),
+          )
+
     override def getOtpSettings(id: ClientId): UIO[OtpSettings] =
       find(id).flatMap:
         case None => ZIO.succeed(OtpSettings.default)
@@ -443,6 +462,9 @@ object OAuthConfigurationService:
 
     override def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]] =
       metadataCache.get.map(_.dpopSigningAlgorithms)
+
+    override def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]] =
+      metadataCache.get.map(_.clientAssertionSigningAlgorithms)
 
     override def findAuthorizationDetailType(
         tenantId: TenantId,

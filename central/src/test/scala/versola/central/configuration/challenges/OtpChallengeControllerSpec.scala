@@ -36,6 +36,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireDpopNonce: Boolean = false,
       mtlsCertificateHeader: Option[String] = Some("ssl-client-cert"),
       mtlsCertificateEncoding: Option[MtlsCertificateEncoding] = Some(MtlsCertificateEncoding.urlEncodedPem),
+      clientAssertionMaxLifetimeSeconds: Int = 300,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -54,6 +55,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireDpopNonce = requireDpopNonce,
       mtlsCertificateHeader = mtlsCertificateHeader,
       mtlsCertificateEncoding = mtlsCertificateEncoding,
+      clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -294,6 +296,76 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             settings(mtlsCertificateHeader = None, mtlsCertificateEncoding = None),
           ),
         )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings stores a client assertion lifetime inside the accepted range",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            clientAssertionMaxLifetimeSeconds = Some(120),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.upsertSettings.calls == List(settings(clientAssertionMaxLifetimeSeconds = 120)),
+        )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a client assertion lifetime past the replay ring's reach",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            clientAssertionMaxLifetimeSeconds =
+              Some(ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds + 1),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      // A jti is only remembered for as long as the assertion carrying it can be used, and
+      // `auth` sizes that memory on this ceiling -- a tenant past it would have replays it
+      // can no longer detect.
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "PUT challenge-settings refuses a header whose encoding was cleared",

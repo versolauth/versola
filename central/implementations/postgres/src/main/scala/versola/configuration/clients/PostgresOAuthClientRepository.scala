@@ -7,7 +7,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{Patch, RedirectUri, Secret}
+import versola.util.{JsonWebKeySet, Patch, RedirectUri, Secret}
 import versola.util.postgres.BasicCodecs
 import zio.http.URL
 import zio.{Duration, IO, Task, ZIO, ZLayer}
@@ -29,11 +29,12 @@ class PostgresOAuthClientRepository(
   given DbCodec[RegistrationFlow] = jsonBCodec[RegistrationFlow]
   given DbCodec[ConsentFlow] = jsonBCodec[ConsentFlow]
   given DbCodec[MutualTlsAuth] = jsonBCodec[MutualTlsAuth]
+  given DbCodec[JsonWebKeySet] = jsonBCodec[JsonWebKeySet]
   given DbCodec[OAuthClientRecord] = DbCodec.derived
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens, jwks
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -41,7 +42,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens, jwks
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -53,9 +54,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens, jwks)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.registrationFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens})
+                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.registrationFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens}, ${client.jwks})
       """.update.run()
     .unit
     .mapError {
@@ -85,11 +86,12 @@ class PostgresOAuthClientRepository(
       dpopBoundAccessTokens: Option[Boolean] = None,
       mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
       certificateBoundAccessTokens: Option[Boolean] = None,
+      jwks: Option[Patch[JsonWebKeySet]] = None,
   ): Task[Unit] =
     xa.transactMeasured("update-client"):
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client = sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, mtls_auth, certificate_bound_access_tokens, jwks
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -114,6 +116,7 @@ class PostgresOAuthClientRepository(
       val newDpopBoundAccessTokens = dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens)
       val newMtlsAuth = mtlsAuth.applyTo(client.mtlsAuth)
       val newCertificateBound = certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens)
+      val newJwks = jwks.applyTo(client.jwks)
       sql"""
         UPDATE oauth_clients SET
           client_name = $newClientName,
@@ -135,7 +138,8 @@ class PostgresOAuthClientRepository(
           consent_flow = $newConsentFlow,
           dpop_bound_access_tokens = $newDpopBoundAccessTokens,
           mtls_auth = $newMtlsAuth,
-          certificate_bound_access_tokens = $newCertificateBound
+          certificate_bound_access_tokens = $newCertificateBound,
+          jwks = $newJwks
         WHERE id = $clientId
       """.update.run()
     .unit

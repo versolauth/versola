@@ -141,6 +141,11 @@ object OAuthClientService:
           Duration.fromSeconds(request.accessTokenTtl),
           request.dpopBoundAccessTokens,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
+          request.id,
+          request.mtlsAuth,
+          request.jwks,
+        ))(ZIO.fail(_))
         secret <- request.clientType match
           case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case ClientType.native => ZIO.none
@@ -170,6 +175,7 @@ object OAuthClientService:
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+          jwks = request.jwks,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -196,6 +202,10 @@ object OAuthClientService:
             clientId = request.clientId,
             accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds).getOrElse(client.accessTokenTtl),
             dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
+            clientId = request.clientId,
+            mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
+            jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_))
         _ <- clientRepository.updateClient(
           clientId = request.clientId,
@@ -219,6 +229,7 @@ object OAuthClientService:
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
           mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+          jwks = request.jwks,
         )
       yield ()
 

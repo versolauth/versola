@@ -60,6 +60,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()

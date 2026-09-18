@@ -106,4 +106,5 @@ object TenantService:
         // certificate in; until then this tenant terminates no mutual TLS.
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
       )

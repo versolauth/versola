@@ -1,7 +1,6 @@
 package versola.oauth.revoke
 
-import versola.oauth.client.model.ClientIdWithSecret
-import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
+import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
@@ -31,8 +30,7 @@ object RevocationController extends Controller:
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
         form <- request.body.asURLEncodedForm.orElseFail(RevocationError.InvalidRequest)
         credentials <- request.extractCredentials(form).orElseFail(RevocationError.InvalidClient)
-        _ <- credentials match
-          case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
+        _ <- Observability.setClientId(credentials.clientId)
 
         certificate <- ZIO.serviceWithZIO[ClientAuthentication](
           _.certificate(

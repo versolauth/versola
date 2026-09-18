@@ -8,7 +8,8 @@ import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.dpop.DpopService
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.util.Dpop
 import versola.oauth.jwks.JwksService
 import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
@@ -128,6 +129,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = true,
+    jwks = None,
   )
 
 
@@ -151,7 +153,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       // The controller looks the client up only to decide whether reading a client
       // certificate could matter to it; an unknown client never needs one.
       _ = clientService.find.returnsWith(ZIO.none)
-      clientAuthentication = ClientAuthentication.Impl(clientService)
+      clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
       userInfoService = stub[UserInfoService]
       jwksService = TestEnvConfig.jwksService
       dpopService = stub[DpopService]
@@ -960,7 +962,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService)
+          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
@@ -1013,7 +1015,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           tokenService = stub[OAuthTokenService]
           clientService = stub[OAuthConfigurationService]
           _ = clientService.find.returnsWith(ZIO.none)
-          clientAuthentication = ClientAuthentication.Impl(clientService)
+          clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
           userInfoService = stub[UserInfoService]
           tracing <- NoopTracing.layer.build
           _ <- tokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)

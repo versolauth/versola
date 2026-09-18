@@ -62,6 +62,7 @@ object ClientController extends Controller:
               dpopBoundAccessTokens = client.dpopBoundAccessTokens,
               mtlsAuth = client.mtlsAuth,
               certificateBoundAccessTokens = client.certificateBoundAccessTokens,
+              jwks = client.jwks,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -114,6 +115,7 @@ object ClientController extends Controller:
             dpopBoundAccessTokens = client.dpopBoundAccessTokens,
             mtlsAuth = client.mtlsAuth,
             certificateBoundAccessTokens = client.certificateBoundAccessTokens,
+            jwks = client.jwks,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

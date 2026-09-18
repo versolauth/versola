@@ -3,7 +3,8 @@ package versola.oauth.introspect
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, OAuthClientRecord, ResourceRecord, ResourceUri}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
@@ -124,9 +125,16 @@ object IntrospectionService:
     private def authenticateClient(
         credentials: ClientCredentials,
         certificate: Option[ClientCertificate],
-    ): IO[IntrospectionError, OAuthClientRecord] =
-      clientAuthentication.authenticate(credentials = credentials, certificate = certificate, secretRequired = true)
-        .orElseFail(IntrospectionError.InvalidClient)
+    ): IO[Throwable | IntrospectionError, OAuthClientRecord] =
+      clientAuthentication.authenticate(
+        credentials = credentials,
+        certificate = certificate,
+        endpoint = AuthenticatedEndpoint.Introspection,
+        secretRequired = true,
+      ).mapError {
+        case error: Throwable => error
+        case _ => IntrospectionError.InvalidClient
+      }
 
     private def buildIntrospectionResponse(record: Option[RefreshTokenRecord]): IntrospectionResponse =
       record match

@@ -7,7 +7,7 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
-import versola.oauth.mtls.ClientAuthentication
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.util.{Base64, Secret, UnitSpecBase}
@@ -55,6 +55,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =
@@ -102,7 +103,7 @@ object RevocationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _                  = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService)
+        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
         jwksService        = TestEnvConfig.jwksService
         config             = TestEnvConfig.coreConfig
         tracing           <- NoopTracing.layer.build

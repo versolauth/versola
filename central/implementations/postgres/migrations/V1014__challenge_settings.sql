@@ -20,6 +20,10 @@ CREATE TABLE challenge_settings (
     -- is not a weaker source but none, since auth can neither read a header it has no
     -- encoding for nor find one an encoding does not name.
     mtls_certificate_encoding    TEXT,
+    -- RFC 7523 §3: furthest into the future a client assertion's exp may sit, and so the
+    -- window a jti has to be remembered for. Defaults to five minutes, which is what a
+    -- client library mints by default and what the replay ring in auth is sized for.
+    client_assertion_max_lifetime_seconds INT NOT NULL DEFAULT 300,
     PRIMARY KEY (tenant_id)
 );
 

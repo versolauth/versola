@@ -52,4 +52,7 @@ case class UpsertChallengeSettingsRequest(
       * no encoding cannot be parsed, and an encoding with no header names nothing. */
     mtlsCertificateHeader: Option[Patch[String]],
     mtlsCertificateEncoding: Option[Patch[MtlsCertificateEncoding]],
+    /** RFC 7523 §3: furthest into the future a client assertion's `exp` may sit; absent
+      * keeps the stored value. */
+    clientAssertionMaxLifetimeSeconds: Option[Int] = None,
 ) derives Schema, JsonCodec

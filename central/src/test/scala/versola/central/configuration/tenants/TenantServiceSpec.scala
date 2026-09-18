@@ -59,6 +59,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requireDpopNonce = false,
             mtlsCertificateHeader = None,
             mtlsCertificateEncoding = None,
+            clientAssertionMaxLifetimeSeconds = 300,
           )),
       )
     },

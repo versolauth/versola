@@ -19,5 +19,10 @@ CREATE TABLE oauth_clients (
     mtls_auth JSONB,
     -- RFC 8705 §3.4. Only consulted for clients that authenticate some other way: a client
     -- with mtls_auth set binds regardless, see OAuthClientRecord.bindsAccessTokens.
-    certificate_bound_access_tokens BOOLEAN NOT NULL DEFAULT FALSE
+    certificate_bound_access_tokens BOOLEAN NOT NULL DEFAULT FALSE,
+    -- RFC 7523 §2.2 `private_key_jwt`: the JWK Set the client signs its assertions with.
+    -- NULL means the client does not use the method. Stored as the document registered
+    -- rather than as parsed key material, so JWK members central has no opinion on survive
+    -- the round trip. Mutually exclusive with mtls_auth, which registration enforces.
+    jwks JSONB
 );

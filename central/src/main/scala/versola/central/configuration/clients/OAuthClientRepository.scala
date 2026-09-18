@@ -4,7 +4,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{CacheSource, Patch}
+import versola.util.{CacheSource, JsonWebKeySet, Patch}
 import zio.*
 import zio.http.URL
 
@@ -38,6 +38,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
       dpopBoundAccessTokens: Option[Boolean] = None,
       mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
       certificateBoundAccessTokens: Option[Boolean] = None,
+      jwks: Option[Patch[JsonWebKeySet]] = None,
   ): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]
