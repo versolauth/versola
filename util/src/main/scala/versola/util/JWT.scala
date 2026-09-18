@@ -1,6 +1,6 @@
 package versola.util
 
-import com.nimbusds.jose.crypto.{ECDSAVerifier, MACSigner, MACVerifier, RSASSASigner, RSASSAVerifier}
+import com.nimbusds.jose.crypto.{ECDSASigner, ECDSAVerifier, MACSigner, MACVerifier, RSASSASigner, RSASSAVerifier}
 import com.nimbusds.jose.jwk.*
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
@@ -10,6 +10,7 @@ import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
 
 import java.nio.charset.StandardCharsets
 import java.security.PrivateKey
+import java.security.interfaces.{ECPrivateKey, RSAPrivateKey}
 import java.time.Instant
 import java.util.Date
 import javax.crypto.SecretKey
@@ -54,13 +55,22 @@ object JWT:
         val claimsSet = claimsBuilder.build()
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
+        // Matched on the key's own type rather than cast to the one the algorithm implies:
+        // a kid whose `alg` disagrees with the private key behind it is a configuration
+        // error, and it should read as one instead of a ClassCastException.
         val signer = signature match {
-          case Signature.Asymmetric(_, _, privateKey) if signature.algorithm == Algorithm.RS256 =>
-            new RSASSASigner(privateKey)
+          case Signature.Asymmetric(algorithm, _, privateKey) =>
+            (algorithm, privateKey) match
+              case (Algorithm.RS256 | Algorithm.PS256, key: RSAPrivateKey) =>
+                new RSASSASigner(key)
+              case (Algorithm.ES256, key: ECPrivateKey) =>
+                new ECDSASigner(key)
+              case _ =>
+                throw new IllegalArgumentException(
+                  s"${algorithm} cannot sign with a ${privateKey.getAlgorithm} private key",
+                )
           case Signature.Symmetric(key) =>
             new MACSigner(key)
-          case _ =>
-            throw new IllegalArgumentException("Unsupported signature type")
         }
         jwt.sign(signer)
         jwt.serialize()
@@ -73,7 +83,7 @@ object JWT:
     */
   def leftHalfHash(value: String, algorithm: Algorithm): String =
     val digestName = algorithm match
-      case Algorithm.RS256 | Algorithm.HS256 => "SHA-256"
+      case Algorithm.RS256 | Algorithm.PS256 | Algorithm.ES256 | Algorithm.HS256 => "SHA-256"
     val digest = java.security.MessageDigest.getInstance(digestName)
       .digest(value.getBytes(StandardCharsets.UTF_8))
     Base64.urlEncode(digest.take(digest.length / 2))
@@ -111,9 +121,18 @@ object JWT:
     case JWT extends Type(JOSEObjectType.JWT)
     case AccessToken extends Type(JOSEObjectType("at+jwt"))
 
+  /** `PS256` and `ES256` are the two FAPI 2.0 permits for signed objects; `RS256` predates
+    * them here and stays for deployments already issuing under it.
+    */
   enum Algorithm(val jwsAlgorithm: JWSAlgorithm):
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
+    case PS256 extends Algorithm(JWSAlgorithm.PS256)
+    case ES256 extends Algorithm(JWSAlgorithm.ES256)
     case HS256 extends Algorithm(JWSAlgorithm.HS256)
+
+  object Algorithm:
+    def fromName(name: String): Option[Algorithm] =
+      Algorithm.values.find(_.jwsAlgorithm.getName == name)
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))
@@ -128,8 +147,12 @@ object JWT:
 
   case class PublicKey(key: JWK):
     def id: String = key.getKeyID
-    def algorithm: Algorithm = key.getAlgorithm.getName match
-      case "RS256" => Algorithm.RS256
+
+    /** `None` for a key published without an `alg`, or with one this service cannot sign
+      * or verify with -- the JWKS is operator-supplied, so neither is a defect here.
+      */
+    def algorithm: Option[Algorithm] =
+      Option(key.getAlgorithm).flatMap(alg => Algorithm.fromName(alg.getName))
 
   case class Header(header: JWSHeader):
     def get(name: String): Option[String] =

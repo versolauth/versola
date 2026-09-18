@@ -5,8 +5,9 @@ import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
 import zio.{Clock, Semaphore, Task, UIO, URLayer, ZIO, ZLayer}
 
+import java.security.spec.ECGenParameterSpec
 import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
-import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.crypto.spec.GCMParameterSpec
@@ -24,6 +25,9 @@ trait SecurityService:
   def hashPassword(password: Secret, salt: Salt, pepper: Secret.Bytes16): Task[MAC]
 
   def generateRsaKeyPair: UIO[RsaKeyPair]
+
+  /** A P-256 keypair, the only curve [[JWT.Algorithm.ES256]] signs on. */
+  def generateEcKeyPair: UIO[EcKeyPair]
 
 object SecurityService:
   /** Used by services that never hash passwords (central, edge); auth passes its configured
@@ -147,4 +151,20 @@ object SecurityService:
           keyId = keyId,
           publicKey = publicKey,
           privateKey = privateKey,
+        )
+
+    override def generateEcKeyPair: UIO[EcKeyPair] =
+      for
+        now <- Clock.instant
+        keyPair <- ZIO.succeedBlocking:
+          val gen = KeyPairGenerator.getInstance("EC")
+          gen.initialize(ECGenParameterSpec("secp256r1"))
+          gen.generateKeyPair()
+      yield
+        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss")
+
+        EcKeyPair(
+          keyId = formatter.format(now.atZone(ZoneOffset.UTC)),
+          publicKey = keyPair.getPublic.asInstanceOf[ECPublicKey],
+          privateKey = keyPair.getPrivate.asInstanceOf[ECPrivateKey],
         )

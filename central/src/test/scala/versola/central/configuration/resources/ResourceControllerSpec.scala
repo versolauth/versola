@@ -110,6 +110,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
       override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
     )
 
   private def controllerTestCase(
