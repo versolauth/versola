@@ -41,6 +41,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -66,6 +67,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))
@@ -90,6 +92,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
     signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -324,6 +327,23 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getMtlsCertificateSource(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
+    test("getClientAssertionMaxLifetime returns the window the client's tenant configured") {
+      for
+        env <- makeEnv(challengeSettingsVec =
+          Vector(challengeSettings.copy(clientAssertionMaxLifetimeSeconds = 120)))
+        result <- env.getClientAssertionMaxLifetime(clientId1)
+      yield assertTrue(result == 120.seconds)
+    },
+    test("getClientAssertionMaxLifetime falls back to the default without a settings row") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector.empty)
+        tenantless <- env.getClientAssertionMaxLifetime(clientId1)
+        unknown <- env.getClientAssertionMaxLifetime(ClientId("missing"))
+      yield assertTrue(
+        tenantless == ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime,
+        unknown == ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime,
+      )
+    },
     test("getPasskeySettings returns settings for known client") {
       for
         env <- makeEnv()
@@ -466,6 +486,32 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv(metadata = Json.Obj(Dpop.Algorithm.MetadataField -> Json.Str("ES256")))
         enforced <- env.getDpopSigningAlgorithms
       yield assertTrue(enforced == Dpop.Algorithm.Default)
+    },
+    // RFC 8414 §2, and the same argument as the DPoP field above: an assertion is held to the
+    // set the document advertises, so a document that never named it still has to say what
+    // `private_key_jwt` will accept.
+    test("getMetadata advertises the default assertion algorithms when the document omits the field") {
+      for
+        env <- makeEnv(metadata = Json.Obj("issuer" -> Json.Str("https://idp.example")))
+        served <- env.getMetadata
+        enforced <- env.getClientAssertionSigningAlgorithms
+      yield assertTrue(
+        served.get(ClientAssertion.Algorithm.MetadataField)
+          .contains(Json.Arr(Json.Str("ES256"), Json.Str("PS256"))),
+        enforced == ClientAssertion.Algorithm.Default,
+      )
+    },
+    test("getClientAssertionSigningAlgorithms narrows to what the document names") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          ClientAssertion.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+        ))
+        served <- env.getMetadata
+        enforced <- env.getClientAssertionSigningAlgorithms
+      yield assertTrue(
+        enforced == Set(ClientAssertion.Algorithm.RS256),
+        served.get(ClientAssertion.Algorithm.MetadataField).contains(Json.Arr(Json.Str("RS256"))),
+      )
     },
     test("findByTenant returns only the clients of that tenant") {
       val otherTenant = privateClient.copy(id = ClientId("other"), tenantId = TenantId("other"))

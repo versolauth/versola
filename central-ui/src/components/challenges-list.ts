@@ -86,6 +86,9 @@ export class VersolaChallengesList extends LitElement {
   @state() private editMtlsCertificateHeader = '';
   @state() private editMtlsCertificateEncoding: MtlsCertificateEncoding = 'urlEncodedPem';
 
+  @state() private clientAssertionMaxLifetimeSeconds = 300;
+  @state() private editClientAssertionMaxLifetimeSeconds = 300;
+
   @state() private submissionLimits: SubmissionLimits = {
     otpRequest: [],
     otpSubmit: [],
@@ -567,6 +570,7 @@ export class VersolaChallengesList extends LitElement {
         this.mtlsCertificateHeader = challengeSettings.mtlsCertificateHeader ?? null;
         this.mtlsCertificateEncoding = challengeSettings.mtlsCertificateEncoding ?? null;
         this.signingKeyId = challengeSettings.signingKeyId ?? null;
+        this.clientAssertionMaxLifetimeSeconds = challengeSettings.clientAssertionMaxLifetimeSeconds ?? 300;
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -584,6 +588,7 @@ export class VersolaChallengesList extends LitElement {
         this.mtlsCertificateHeader = null;
         this.mtlsCertificateEncoding = null;
         this.signingKeyId = null;
+        this.clientAssertionMaxLifetimeSeconds = 300;
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -987,6 +992,7 @@ export class VersolaChallengesList extends LitElement {
     this.editMtlsEnabled = this.mtlsCertificateHeader != null;
     this.editMtlsCertificateHeader = this.mtlsCertificateHeader ?? '';
     this.editMtlsCertificateEncoding = this.mtlsCertificateEncoding ?? 'urlEncodedPem';
+    this.editClientAssertionMaxLifetimeSeconds = this.clientAssertionMaxLifetimeSeconds;
     this.editPasskeyRpId = this.passkeySettings?.rpId ?? '';
     this.editPasskeyRpName = this.passkeySettings?.rpName ?? '';
     this.editPasskeyOrigins = (this.passkeySettings?.origins ?? []).map(value => ({ value }));
@@ -1092,6 +1098,12 @@ export class VersolaChallengesList extends LitElement {
     }
     const mtlsCertificateEncoding = this.editMtlsEnabled ? this.editMtlsCertificateEncoding : null;
 
+    const clientAssertionMaxLifetimeSeconds = this.editClientAssertionMaxLifetimeSeconds;
+    if (clientAssertionMaxLifetimeSeconds < 30 || clientAssertionMaxLifetimeSeconds > 900) {
+      this.settingsError = 'Client assertion lifetime must be between 30 and 900 seconds.';
+      return;
+    }
+
     this.isSavingSettings = true;
     this.settingsError = '';
     const acrVocabulary = Object.fromEntries(
@@ -1118,6 +1130,7 @@ export class VersolaChallengesList extends LitElement {
         mtlsCertificateHeader,
         mtlsCertificateEncoding,
         this.editSigningKeyId,
+        clientAssertionMaxLifetimeSeconds,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -1135,6 +1148,7 @@ export class VersolaChallengesList extends LitElement {
       this.mtlsCertificateHeader = mtlsCertificateHeader;
       this.mtlsCertificateEncoding = mtlsCertificateEncoding;
       this.signingKeyId = this.editSigningKeyId;
+      this.clientAssertionMaxLifetimeSeconds = clientAssertionMaxLifetimeSeconds;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -1476,6 +1490,9 @@ export class VersolaChallengesList extends LitElement {
               </div>
             `
             : html`<div class="hint">No key selected. This tenant's tokens are signed with the private key configured on the auth service itself.</div>`}
+
+          <label style="margin-top: var(--spacing-lg);">Client Assertion Lifetime</label>
+          <div class="template-text">${this.formatDuration(this.clientAssertionMaxLifetimeSeconds)}</div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1699,6 +1716,7 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderIpHeaderEdit()}
         ${this.renderMtlsCertificateEdit()}
         ${this.renderSigningKeyEdit()}
+        ${this.renderClientAssertionEdit()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">DPoP</h3>
 
@@ -1888,6 +1906,22 @@ export class VersolaChallengesList extends LitElement {
       ${this.signingKeys.length === 0 ? html`
         <div class="hint">No signable keys are stored. Generate one under Well Known before selecting it here.</div>
       ` : nothing}
+    `;
+  }
+
+  private renderClientAssertionEdit() {
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Client Assertions</h3>
+      <label>Maximum Lifetime (seconds)</label>
+      <div class="hint">How far ahead a client signing its own assertions (<code>private_key_jwt</code>) may set their expiry. Each assertion's id is remembered against replay until it expires, so a longer lifetime costs storage; a shorter one rejects clients that mint long-lived assertions. Between 30 and 900.</div>
+      <div class="limit-row" style="margin-bottom: 0;">
+        <input type="number" class="form-control compact-input limit-input" min="30" max="900"
+          .value=${this.editClientAssertionMaxLifetimeSeconds}
+          @input=${(e: Event) => {
+            this.editClientAssertionMaxLifetimeSeconds = parseInt((e.target as HTMLInputElement).value) || 0;
+          }} />
+        <span class="limit-hint">${this.formatDuration(this.editClientAssertionMaxLifetimeSeconds)}</span>
+      </div>
     `;
   }
 

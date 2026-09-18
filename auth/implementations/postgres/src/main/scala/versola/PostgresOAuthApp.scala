@@ -17,7 +17,12 @@ import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
-import versola.oauth.mtls.ClientAuthentication
+import versola.oauth.clientauth.{
+  ClientAssertionRepository,
+  ClientAssertionService,
+  ClientAuthentication,
+  PostgresClientAssertionRepository,
+}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
@@ -47,6 +52,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     CoreConfig &
       DpopProofRepository &
       DpopNonceService &
+      ClientAssertionRepository &
+      ClientAssertionService &
       DpopService &
       EdgeAssertionService &
       UserRepository &
@@ -140,6 +147,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       securityService >+>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
       PostgresDpopProofRepository.live >+>
+      PostgresClientAssertionRepository.live >+>
       DpopNonceService.live >+>
       EdgeAssertionService.live >+>
       JsonSchemaValidator.live >+>
@@ -147,6 +155,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       // Reads its accepted algorithms off the metadata document, so it has to follow the
       // service that serves it.
       DpopService.live >+>
+      // Reads the algorithms an assertion may be signed with off the same document.
+      ClientAssertionService.live >+>
       ClientAuthentication.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>

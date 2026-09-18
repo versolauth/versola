@@ -59,4 +59,7 @@ case class UpsertChallengeSettingsRequest(
       * No default: a field with one decodes an explicit `null` as the default rather than as
       * `Some(Deleted)`, which would leave the selection impossible to clear. */
     signingKeyId: Option[Patch[String]],
+    /** RFC 7523 §3: furthest into the future a client assertion's `exp` may sit; absent
+      * keeps the stored value. */
+    clientAssertionMaxLifetimeSeconds: Option[Int] = None,
 ) derives Schema, JsonCodec

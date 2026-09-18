@@ -16,12 +16,16 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import versola.util.{Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import com.nimbusds.jose.jwk.{Curve, ECKey}
+import versola.util.{JsonWebKeySet, Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.URL
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.EqualOps
 import zio.test.*
 
+import java.security.interfaces.ECPublicKey
 import javax.crypto.spec.SecretKeySpec
 
 object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -35,6 +39,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val writeScope = ScopeToken("write")
   private val readPermission = Permission("users:read")
   private val writePermission = Permission("users:write")
+
+  private val keyPairGenerator = java.security.KeyPairGenerator.getInstance("EC")
+  keyPairGenerator.initialize(Curve.P_256.toECParameterSpec)
+  private val publicKeySet = JsonWebKeySet(
+    Json.Obj(
+      "keys" -> Json.Arr(
+        ECKey.Builder(Curve.P_256, keyPairGenerator.generateKeyPair().getPublic.asInstanceOf[ECPublicKey])
+          .keyID("ec-1").build()
+          .toJSONString.fromJson[Json.Obj].toOption.get,
+      ),
+    ),
+  )
 
   private val cachedClient = OAuthClientRecord(
     id = clientId,
@@ -61,6 +77,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -88,6 +105,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -205,6 +223,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         dpopBoundAccessTokens = false,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
+        jwks = None,
       )
 
       for
@@ -267,6 +286,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             None,
             None,
             Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
+            None,
             None,
             None,
             None,
@@ -354,6 +374,70 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         calls.head._20 == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
         calls(1)._20 == Some(Patch.Deleted),
+      )
+    },
+    test("registerClient stores a JWK Set the client will authenticate assertions with") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(jwks = Some(publicKeySet)))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.jwks == Some(publicKeySet),
+        // The secret every `web` client is issued is still issued; what registering keys
+        // changes is which credential auth accepts, not which ones exist.
+        created.secret.nonEmpty,
+      )
+    },
+    test("registerClient rejects a client registering both mtlsAuth and jwks") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+          jwks = Some(publicKeySet),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("not both")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects a key set that could never verify an assertion") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(
+          jwks = Some(JsonWebKeySet(Json.Obj("keys" -> Json.Arr()))),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("jwks")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient rejects keys added to a client that already authenticates by certificate") {
+      val env = new Env(Vector(cachedClient.copy(
+        mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+      )))
+
+      for
+        result <- env.service.updateClient(updateRequest.copy(
+          jwks = Some(Patch.Modified(publicKeySet)),
+        )).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("not both")
+          case _ => false,
+        updateCalls == 0,
       )
     },
     test("registerClient rejects a non-HTTPS logoUri instead of silently dropping it") {
@@ -486,7 +570,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _, _) = env.repository.updateClient.calls.head
+        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _, _, _) = env.repository.updateClient.calls.head
       yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {

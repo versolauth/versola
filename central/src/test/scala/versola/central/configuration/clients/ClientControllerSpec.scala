@@ -134,6 +134,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       dpopBoundAccessTokens = false,
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
+      jwks = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -160,6 +161,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       dpopBoundAccessTokens = false,
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
+      jwks = None,
     ),
   )
 
@@ -298,6 +300,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 dpopBoundAccessTokens = false,
                 mtlsAuth = None,
                 certificateBoundAccessTokens = false,
+                jwks = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -323,6 +326,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 dpopBoundAccessTokens = false,
                 mtlsAuth = None,
                 certificateBoundAccessTokens = false,
+                jwks = None,
               ),
             ),
           ),

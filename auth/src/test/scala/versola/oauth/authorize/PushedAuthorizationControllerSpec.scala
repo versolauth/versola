@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationResponse}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
-import versola.oauth.mtls.ClientAuthentication
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, UnitSpecBase}
@@ -70,7 +70,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
         _ = clientService.find.returnsWith(ZIO.none)
-        clientAuthentication = ClientAuthentication.Impl(clientService)
+        clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(

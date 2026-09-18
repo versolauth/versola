@@ -1,6 +1,6 @@
 package versola.oauth.client.model
 
-import versola.util.Secret
+import versola.util.{JsonWebKeySet, Secret}
 import zio.Duration
 import zio.http.URL
 import zio.json.{JsonCodec, JsonEncoder}
@@ -43,6 +43,12 @@ case class OAuthClientRecord(
       * [[bindsAccessTokens]] rather than this field to find out whether a token gets a
       * `cnf` claim. */
     certificateBoundAccessTokens: Boolean,
+    /** RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+      * assertions with, and the only keys an assertion from it is verified against. `None`
+      * when the client does not use the method.
+      *
+      * Mutually exclusive with [[mtlsAuth]], which registration enforces. */
+    jwks: Option[JsonWebKeySet],
 ) derives CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty
@@ -52,8 +58,8 @@ case class OAuthClientRecord(
     * already validated at the token endpoint, so handing back a token that anyone who
     * steals it can replay throws away the only property mutual TLS was bought for.
     * The registered flag therefore only decides the case the RFC separates §3 for — a
-    * client authenticating by secret or (once it exists) `private_key_jwt` that still
-    * presents a certificate purely to have its tokens bound.
+    * client authenticating by secret or `private_key_jwt` that still presents a certificate
+    * purely to have its tokens bound.
     */
   def bindsAccessTokens: Boolean = mtlsAuth.nonEmpty || certificateBoundAccessTokens
 

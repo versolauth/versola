@@ -61,4 +61,25 @@ case class ChallengeSettingsRecord(
       * JWKS, which is the only thing a deployment whose keys are all verify-only can do.
       */
     signingKeyId: Option[String],
+    /** RFC 7523 §3: how far into the future a `private_key_jwt` client assertion's `exp` may
+      * sit. A `jti` has to be remembered for as long as the assertion bearing it is still
+      * acceptable, so this is also the retention the replay guard is sized on -- raising it
+      * costs storage there, and lowering it refuses assertions from clients that mint
+      * long-lived ones.
+      */
+    clientAssertionMaxLifetimeSeconds: Int,
 ) derives Schema, JsonCodec
+
+object ChallengeSettingsRecord:
+  /** Five minutes: what client libraries mint by default, and short enough that the replay
+    * guard's retention is measured in minutes rather than hours. */
+  val DefaultClientAssertionMaxLifetimeSeconds = 300
+
+  /** The window the replay guard in `auth` is sized to cover. A tenant cannot ask for a
+    * longer one, because a `jti` it could no longer remember for the assertion's whole life
+    * is a replay it could no longer detect. */
+  val MaxClientAssertionMaxLifetimeSeconds = 900
+
+  /** Below this, ordinary clock skew between a client and this server starts refusing
+    * assertions that were honestly minted. */
+  val MinClientAssertionMaxLifetimeSeconds = 30

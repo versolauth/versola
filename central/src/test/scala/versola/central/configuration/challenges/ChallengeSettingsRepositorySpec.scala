@@ -40,6 +40,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
     signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =

@@ -459,6 +459,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * either — `auth` sits behind the proxy that terminated mTLS and only ever sees its
     * header, so sending that header is the whole of what a client certificate means here.
     */
+  /** The issuer identifier the staged `auth` runs with, which is also the base of every
+    * endpoint URL -- what RFC 7523 §3 requires an assertion's `aud` to name. */
+  val issuer: String = config.authUrl
+
   private def withCertificate(request: Request, certificate: Option[String]): Request =
     certificate.fold(request)(request.addHeader(OAuthClient.mtlsCertificateHeader, _))
 
@@ -734,6 +738,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * that registered an mTLS subject holds no secret, so it pairs this with
         * `useBasicAuth = false` and names itself in `client_id` alone. */
       certificate: Option[String] = None,
+      /** RFC 7523 §2.2: an assertion this client signed with a registered key, which is the
+        * whole credential -- paired with `useBasicAuth = false`, since presenting a secret
+        * beside it is two authentication methods in one request. */
+      assertion: Option[String] = None,
   ): Task[TokenResult] =
     // With `useBasicAuth = false` the client only names itself, in `client_id`, and sends
     // no secret at all - the one way a public client can present itself at /token.
@@ -742,6 +750,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         ++ scope.map("scope" -> _)
         ++ resources.map("resource" -> _.mkString(","))
         ++ authorizationDetails.map("authorization_details" -> _)
+        ++ assertion.fold(Map.empty)(value =>
+          Map("client_assertion_type" -> AssertionSigner.Type, "client_assertion" -> value),
+        )
         ++ (if useBasicAuth then Map.empty else Map("client_id" -> clientId)),
     )
     val req0 = Request.post(s"${config.authUrl}/token", body)
@@ -756,13 +767,27 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientSecret: Option[String] = None,
       /** RFC 8705 §2.1: what a caller that registered an mTLS subject authenticates with. */
       certificate: Option[String] = None,
+      /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
+        * a secret, which it then does not send. */
+      assertion: Option[String] = None,
   ): Task[IntrospectResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for introspection requests"))
-    val body = formBody(Map("token" -> token))
-    val req = Request.post(s"${config.authUrl}/introspect", body)
-      .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
+    val effectiveClientSecret = clientSecret
+      .orElse(Option.when(assertion.nonEmpty)(""))
+      .getOrElse(throw IllegalArgumentException("clientSecret must be provided for introspection requests"))
+    val body = formBody(
+      Map("token" -> token)
+        ++ assertion.fold(Map.empty)(value =>
+          Map(
+            "client_assertion_type" -> AssertionSigner.Type,
+            "client_assertion" -> value,
+            "client_id" -> effectiveClientId,
+          ),
+        ),
+    )
+    val req0 = Request.post(s"${config.authUrl}/introspect", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if assertion.isEmpty then req0.addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret)) else req0
     Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client)).flatMap(IntrospectResult.parse)
 
   /** POST /revoke — revokes a token per RFC 7009. The endpoint answers 200 whether or not
@@ -992,6 +1017,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * decode time on `CreateClientRequest`, unlike `mtlsAuth`, since it isn't itself an
         * `Option`. */
       certificateBoundAccessTokens: Boolean = false,
+      /** RFC 7523 §2.2: the public keys this client signs its assertions with, instead of
+        * authenticating by secret. Build it with `AssertionSigner.jwks`. */
+      jwks: Option[zio.json.ast.Json] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1014,6 +1042,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientType = clientType,
       mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = certificateBoundAccessTokens,
+      jwks = jwks,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1585,4 +1614,5 @@ object OAuthClient:
       clientType: String,
       mtlsAuth: Option[zio.json.ast.Json],
       certificateBoundAccessTokens: Boolean,
+      jwks: Option[zio.json.ast.Json],
   ) derives JsonEncoder

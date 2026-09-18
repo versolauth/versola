@@ -71,6 +71,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             mtlsCertificateHeader = None,
             mtlsCertificateEncoding = None,
             signingKeyId = None,
+            clientAssertionMaxLifetimeSeconds = 300,
           )),
       )
     },

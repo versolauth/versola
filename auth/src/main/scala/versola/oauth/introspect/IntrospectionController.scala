@@ -1,7 +1,7 @@
 package versola.oauth.introspect
 
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
-import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
+import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}

@@ -118,4 +118,5 @@ object TenantService:
         // Set by `createTenant` from the stored key set; this baseline cannot know which
         // keys exist.
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
       )
