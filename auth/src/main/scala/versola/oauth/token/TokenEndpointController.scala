@@ -49,7 +49,6 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
-        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
@@ -77,6 +76,9 @@ object TokenEndpointController extends Controller:
             )
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt, certificate)
+        // Resolved after the grant, not before: which key signs is the tenant's choice, and
+        // the tenant is only known once the grant has identified whose tokens these are.
+        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey(issuedTokens.tenantId))
         response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {

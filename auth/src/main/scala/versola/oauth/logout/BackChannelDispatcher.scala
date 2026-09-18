@@ -1,6 +1,6 @@
 package versola.oauth.logout
 
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.jwks.JwksService
 import versola.util.{CoreConfig, JWT}
 import zio.*
@@ -22,10 +22,12 @@ trait BackChannelDispatcher:
     * @param audience the clients this event is about. Usually one, but several clients can
     *                 register the same endpoint — every client behind one edge does — and
     *                 that endpoint is told about all of them at once rather than once per
-    *                 client (OIDC Back-Channel Logout §2.4 allows an `aud` array).
+    *                 client (OIDC Back-Channel Logout §2.4 allows an `aud` array). Every
+    *                 client in it belongs to `tenantId`, whose selected key signs the token.
     */
   def dispatch(
       audience: NonEmptyChunk[ClientId],
+      tenantId: TenantId,
       uri: URL,
       subject: String,
       customClaims: Json.Obj,
@@ -50,21 +52,23 @@ object BackChannelDispatcher:
 
     override def dispatch(
         audience: NonEmptyChunk[ClientId],
+        tenantId: TenantId,
         uri: URL,
         subject: String,
         customClaims: Json.Obj,
     ): Task[Unit] =
-      deliver(audience, uri, subject, customClaims)
+      deliver(audience, tenantId, uri, subject, customClaims)
         .timeoutFail(RuntimeException(s"back-channel delivery to '$uri' timed out"))(RequestTimeout)
 
     private def deliver(
         audience: NonEmptyChunk[ClientId],
+        tenantId: TenantId,
         uri: URL,
         subject: String,
         customClaims: Json.Obj,
     ): Task[Unit] =
       for
-        signingKey <- jwksService.signingKey
+        signingKey <- jwksService.signingKey(tenantId)
         token <- sign(audience, subject, customClaims, signingKey)
         request = Request.post(uri, Body.fromURLEncodedForm(Form.fromStrings("logout_token" -> token)))
         _ <- ZIO.scoped:

@@ -337,7 +337,8 @@ object ConversationRenderService:
             idToken <- idTokenData match
               case Some(data) =>
                 for
-                  signingKey <- jwksService.signingKey
+                  client <- configuration.get(record.clientId)
+                  signingKey <- jwksService.signingKey(client.tenantId)
                   cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
                   dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
                   token <- serializeIdToken(dataWithCHash, signingKey)

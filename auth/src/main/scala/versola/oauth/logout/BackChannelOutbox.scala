@@ -1,6 +1,6 @@
 package versola.oauth.logout
 
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, TenantId}
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
@@ -28,6 +28,8 @@ trait BackChannelOutbox:
 object BackChannelOutbox:
   case class Delivery(
       audience: NonEmptyChunk[ClientId],
+      /** Whose signing key the event is signed with -- the audience's tenant. */
+      tenantId: TenantId,
       uri: URL,
       subject: String,
       customClaims: Json.Obj,
@@ -111,6 +113,7 @@ object BackChannelOutbox:
       dispatcher
         .dispatch(
           audience = delivery.audience,
+          tenantId = delivery.tenantId,
           uri = delivery.uri,
           subject = delivery.subject,
           customClaims = delivery.customClaims,

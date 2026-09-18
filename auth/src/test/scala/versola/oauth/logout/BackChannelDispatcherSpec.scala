@@ -1,7 +1,7 @@
 package versola.oauth.logout
 
 import versola.auth.TestEnvConfig
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.JWT
 import zio.*
 import zio.http.*
@@ -11,6 +11,7 @@ import zio.test.*
 object BackChannelDispatcherSpec extends ZIOSpecDefault:
 
   private val audience = NonEmptyChunk(ClientId("client-a"), ClientId("client-b"))
+  private val tenantId = TenantId("tenant-a")
   private val uri = URL.decode("https://rp.example/back-channel-logout").toOption.get
   private val customClaims = Json.Obj("events" -> Json.Obj("logout" -> Json.Obj()))
 
@@ -27,7 +28,7 @@ object BackChannelDispatcherSpec extends ZIOSpecDefault:
           }.toRoutes,
         )
         client <- ZIO.service[Client]
-        _ <- dispatcher(client).dispatch(audience, uri, "user-42", customClaims)
+        _ <- dispatcher(client).dispatch(audience, tenantId, uri, "user-42", customClaims)
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
         body <- request.body.asString
         token = body.stripPrefix("logout_token=")
@@ -50,7 +51,7 @@ object BackChannelDispatcherSpec extends ZIOSpecDefault:
           }.toRoutes,
         )
         client <- ZIO.service[Client]
-        exit <- dispatcher(client).dispatch(audience, uri, "user-42", customClaims).exit
+        exit <- dispatcher(client).dispatch(audience, tenantId, uri, "user-42", customClaims).exit
       yield assertTrue(
         exit.isFailure,
         exit.causeOption.exists(_.squashTrace.getMessage.contains("400")),
@@ -61,7 +62,7 @@ object BackChannelDispatcherSpec extends ZIOSpecDefault:
       for
         _ <- TestClient.addRoutes(Handler.fromFunctionZIO[Request](_ => ZIO.never).toRoutes)
         client <- ZIO.service[Client]
-        fiber <- dispatcher(client).dispatch(audience, uri, "user-42", customClaims).exit.fork
+        fiber <- dispatcher(client).dispatch(audience, tenantId, uri, "user-42", customClaims).exit.fork
         _ <- TestClock.adjust(5.seconds)
         exit <- fiber.join
       yield assertTrue(

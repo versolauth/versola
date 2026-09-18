@@ -159,7 +159,9 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
 
   val jwksService: JwksService = new JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
-    override def signingKey: Task[JWT.Signature.Asymmetric] = ZIO.succeed(TestEnvConfig.signingKey)
+    override def signingKey(tenantId: TenantId): Task[JWT.Signature.Asymmetric] =
+      ZIO.succeed(TestEnvConfig.signingKey)
+    override def refresh: Task[Unit] = ZIO.unit
 
 
   val coreConfig = CoreConfig(

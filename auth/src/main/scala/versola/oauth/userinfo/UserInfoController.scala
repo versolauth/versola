@@ -100,7 +100,10 @@ object UserInfoController extends Controller:
             )
           else
             for
-              signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
+              // Signed with the key the client's tenant selected, like every other token
+              // this server issues.
+              client <- ZIO.serviceWithZIO[OAuthConfigurationService](_.get(token.clientId))
+              signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey(client.tenantId))
               signedJwt <- JWT.serialize(
                 claims = JWT.Claims(
                   issuer = config.jwt.issuer,

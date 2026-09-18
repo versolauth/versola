@@ -104,6 +104,12 @@ trait OAuthConfigurationService:
     * mean a cache that has not loaded yet starts challenging clients that cannot retry. */
   def requireDpopNonce(id: ClientId): UIO[Boolean]
 
+  /** The `kid` this tenant's tokens are signed with, as selected in central. `None` means
+    * nothing was selected, leaving auth to fall back to its configured `jwt.private-key` --
+    * see [[versola.oauth.jwks.JwksService]]. Keyed by tenant rather than by client: the JWKS
+    * is deployment-wide and the selection is the tenant's. */
+  def getSigningKeyId(tenantId: TenantId): UIO[Option[String]]
+
   def getMetadata: UIO[Json.Obj]
 
   /** RFC 9449 §5.1: the signing algorithms an incoming DPoP proof's `alg` may use, as named by
@@ -422,6 +428,9 @@ object OAuthConfigurationService:
               .getOrElse(Map.empty)
               .flatMap { case (k, vs) => NonEmptyList.fromIterableOption(vs).map(Acr(k) -> _) },
           )
+
+    override def getSigningKeyId(tenantId: TenantId): UIO[Option[String]] =
+      challengeSettingsCache.get.map(_.find(_.tenantId == tenantId).flatMap(_.signingKeyId))
 
     override def requireDpopNonce(id: ClientId): UIO[Boolean] =
       find(id).flatMap:

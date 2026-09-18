@@ -1,6 +1,6 @@
 package versola.oauth.logout
 
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.util.UnitSpecBase
 import zio.*
 import zio.http.URL
@@ -14,6 +14,7 @@ object BackChannelOutboxSpec extends UnitSpecBase:
 
   private def delivery(uri: URL) = BackChannelOutbox.Delivery(
     audience = NonEmptyChunk(ClientId("client-a")),
+    tenantId = TenantId("tenant-a"),
     uri = uri,
     subject = "user-1",
     customClaims = Json.Obj(),
@@ -40,7 +41,7 @@ object BackChannelOutboxSpec extends UnitSpecBase:
           outbox <- makeOutbox(dispatcher)
           _ <- ZIO.foreachDiscard(List(uriA, uriB, uriA))(uri => outbox.submit(delivery(uri)))
           _ <- outbox.awaitDrained
-        yield assertTrue(dispatcher.dispatch.calls.map(_._2) == List(uriA, uriB, uriA))
+        yield assertTrue(dispatcher.dispatch.calls.map(_._3) == List(uriA, uriB, uriA))
     },
     test("returns from submit while the RP is still being waited on, and drains only once it is done") {
       val dispatcher = stub[BackChannelDispatcher]
@@ -48,7 +49,7 @@ object BackChannelOutboxSpec extends UnitSpecBase:
         for
           released <- Promise.make[Nothing, Unit]
           order <- Ref.make(List.empty[String])
-          _ <- dispatcher.dispatch.returnsZIO: (_, _, _, _) =>
+          _ <- dispatcher.dispatch.returnsZIO: (_, _, _, _, _) =>
             released.await *> order.update(_ :+ "delivered")
           outbox <- makeOutbox(dispatcher)
           // The whole point of the outbox: this returns even though the RP has not answered,
@@ -79,7 +80,7 @@ object BackChannelOutboxSpec extends UnitSpecBase:
       val dispatcher = stub[BackChannelDispatcher]
       ZIO.scoped:
         for
-          _ <- dispatcher.dispatch.returnsZIO: (_, uri, _, _) =>
+          _ <- dispatcher.dispatch.returnsZIO: (_, _, uri, _, _) =>
             ZIO.fail(RuntimeException("connection refused")).when(uri == uriA).unit
           outbox <- makeOutbox(dispatcher)
           _ <- outbox.submit(delivery(uriA))
@@ -88,14 +89,14 @@ object BackChannelOutboxSpec extends UnitSpecBase:
         yield
           // A dead RP must not cost the one behind it its event, and must not leave the
           // drain waiting: the failure is logged and the delivery given up on.
-          assertTrue(dispatcher.dispatch.calls.map(_._2) == List(uriA, uriA, uriB))
+          assertTrue(dispatcher.dispatch.calls.map(_._3) == List(uriA, uriA, uriB))
     },
     test("drops the deliveries it has no room for rather than making the caller wait") {
       val dispatcher = stub[BackChannelDispatcher]
       ZIO.scoped:
         for
           released <- Promise.make[Nothing, Unit]
-          _ <- dispatcher.dispatch.returnsZIO((_, _, _, _) => released.await)
+          _ <- dispatcher.dispatch.returnsZIO((_, _, _, _, _) => released.await)
           // One worker and one queue slot hold two deliveries between them; the rest have
           // nowhere to go while the only RP is unanswering.
           outbox <- BackChannelOutbox.make(dispatcher, workers = 1, capacity = 1, retry = immediateRetry)
