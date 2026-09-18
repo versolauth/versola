@@ -6,7 +6,7 @@ import versola.central.configuration.system.{SystemSettingsRecord, SystemSetting
 import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
-import versola.central.configuration.jwks.JwksRepository
+import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
@@ -178,10 +178,12 @@ object BootstrapService:
       endpointId("GET", "/configuration/challenges/otp-templates"),
       endpointId("GET", "/configuration/authorization-detail-types"),
       endpointId("GET", "/configuration/jwks"),
+      endpointId("GET", "/configuration/jwks/keys"),
       endpointId("GET", "/configuration/system-settings"),
     )),
     (Permission("security:manage"), localized("Manage security policies and challenges", "Управление политиками безопасности"), Set(
       endpointId("PUT", "/configuration/challenges/challenge-settings"),
+      endpointId("POST", "/configuration/jwks/generate"),
       endpointId("PUT", "/configuration/challenges/otp-templates"),
       endpointId("DELETE", "/configuration/challenges/otp-templates"),
       endpointId("POST", "/configuration/authorization-detail-types"),
@@ -250,10 +252,12 @@ object BootstrapService:
     )),
     (Permission("jwks:read"), localized("View JWKS and Server Metadata", "Просмотр JWKS и серверных метаданных"), Set(
       endpointId("GET", "/configuration/jwks"),
+      endpointId("GET", "/configuration/jwks/keys"),
       endpointId("GET", "/configuration/server-metadata"),
     )),
     (Permission("jwks:manage"), localized("Manage JWKS and Server Metadata", "Управление JWKS и серверными метаданными"), Set(
       endpointId("POST", "/configuration/jwks"),
+      endpointId("POST", "/configuration/jwks/generate"),
       endpointId("PUT", "/configuration/jwks"),
       endpointId("DELETE", "/configuration/jwks"),
       endpointId("POST", "/configuration/server-metadata"),
@@ -493,6 +497,9 @@ object BootstrapService:
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
       mtlsCertificateEncoding = None,
+      // Filled in by the caller from the stored key set: the baseline itself cannot know
+      // which keys exist.
+      signingKeyId = None,
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -566,7 +573,9 @@ object BootstrapService:
     "PUT"    -> "/configuration/forms",
     "PUT"    -> "/configuration/forms/active",
     "GET"    -> "/configuration/jwks",
+    "GET"    -> "/configuration/jwks/keys",
     "POST"   -> "/configuration/jwks",
+    "POST"   -> "/configuration/jwks/generate",
     "PUT"    -> "/configuration/jwks",
     "DELETE" -> "/configuration/jwks",
     "GET"    -> "/configuration/server-metadata",
@@ -666,6 +675,7 @@ object BootstrapService:
           _ <- seedRegistrationRole(tenantId)
           _ <- seedOtpTemplates(tenantId)
           _ <- seedPasswordTemplate(tenantId)
+          _ <- seedJwks(config)
           _ <- seedChallengeSettings(tenantId, config.passkey)
           _ <- seedSystemSettings()
           _ <- seedTheme()
@@ -678,7 +688,6 @@ object BootstrapService:
           _ <- linkTenantEdge(tenantId, config)
           _ <- seedCentralResource(config)
           _ <- seedAuthResource(tenantId, config)
-          _ <- seedJwks(config)
           _ <- seedMetadata(config)
         yield ()
       }.unit
@@ -740,7 +749,14 @@ object BootstrapService:
     private def seedChallengeSettings(tenantId: TenantId, passkeyConfig: CentralConfig.PasskeyConfig): Task[Unit] =
       challengeSettingsRepo.findByTenant(tenantId).flatMap:
         case Some(_) => ZIO.unit
-        case None    => challengeSettingsRepo.upsert(defaultChallengeSettings(tenantId, passkeyConfig))
+        case None =>
+          for
+            keys <- jwksRepo.getAll
+            signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid)
+            _ <- challengeSettingsRepo.upsert(
+              defaultChallengeSettings(tenantId, passkeyConfig).copy(signingKeyId = signingKeyId),
+            )
+          yield ()
 
     private def seedSystemSettings(): Task[Unit] =
       systemSettingsRepo.getAll.unit.catchAll: _ =>
@@ -1010,8 +1026,13 @@ object BootstrapService:
               ).unit
       yield ()
 
+    /** Keys configured in `bootstrap.jwks` are public halves an operator supplied, so they are
+      * stored verify-only -- central was never given anything to sign with. Where no keys are
+      * configured at all and none have been stored yet, central generates its own set instead,
+      * which is the only way a fresh deployment gets a key it can rotate.
+      */
     private def seedJwks(config: CentralConfig.BootstrapConfig): Task[Unit] =
-      val keys: Vector[Json.Obj] = config.jwks match
+      val configured: Vector[Json.Obj] = config.jwks match
         case Some(set) =>
           set.fields
             .collectFirst { case ("keys", Json.Arr(elements)) => elements }
@@ -1019,14 +1040,30 @@ object BootstrapService:
             .collect { case obj: Json.Obj => obj }
             .toVector
         case None => Vector.empty
-      ZIO.foreachDiscard(keys): jwk =>
-        jwk.fields.collectFirst { case ("kid", Json.Str(kid)) => kid } match
-          case Some(kid) =>
-            jwksRepo.find(kid).flatMap:
-              case Some(_) => ZIO.unit
-              case None    => jwksRepo.create(kid, jwk)
-          case None =>
-            ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
+
+      val seedConfigured =
+        ZIO.foreachDiscard(configured): jwk =>
+          jwk.fields.collectFirst { case ("kid", Json.Str(kid)) => kid } match
+            case Some(kid) =>
+              jwksRepo.find(kid).flatMap:
+                case Some(_) => ZIO.unit
+                case None    => jwksRepo.create(kid, jwk, privateKey = None)
+            case None =>
+              ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
+
+      for
+        _ <- seedConfigured
+        stored <- jwksRepo.getAll
+        // Only for a deployment with no keys at all: generating alongside an operator's own
+        // key set would publish keys they did not ask for, and silently give central a
+        // signing key where they had deliberately kept the private halves elsewhere.
+        _ <- ZIO.when(stored.isEmpty && configured.isEmpty):
+          ZIO.logInfo("No JWKS configured or stored; generating a signing key per algorithm...") *>
+            ZIO.foreachDiscard(JwksRecord.algorithmPreference): algorithm =>
+              JwksKeyGeneration
+                .generate(securityService, algorithm, SecretKeySpec(this.config.clientSecretsSecret, "AES"))
+                .flatMap(key => jwksRepo.create(key.kid, key.jwk, Some(key.privateKey)))
+      yield ()
 
     private def seedMetadata(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.metadata): metadata =>

@@ -4,6 +4,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
+import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
@@ -29,18 +30,19 @@ trait TenantService:
   def sync(): Task[Unit]
 
 object TenantService:
-  def live: ZLayer[TenantRepository & ChallengeSettingsService & Scope & CentralConfig, Throwable, TenantService] =
+  def live: ZLayer[TenantRepository & ChallengeSettingsService & JwksRepository & Scope & CentralConfig, Throwable, TenantService] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
         ReloadingCache.make[Vector[TenantRecord]](config.configurationCacheRefreshInterval),
       )
     )
-      >>> ZLayer.fromFunction(Impl(_, _, _, _))
+      >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       cache: ReloadingCache[Vector[TenantRecord]],
       tenantRepository: TenantRepository,
       challengeSettingsService: ChallengeSettingsService,
+      jwksRepository: JwksRepository,
       config: CentralConfig,
   ) extends TenantService:
     export tenantRepository.deleteTenant
@@ -53,7 +55,14 @@ object TenantService:
     ): Task[Unit] =
       for
         _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
-        _ <- challengeSettingsService.upsertSettings(defaultChallengeSettings(request.id, SubmissionLimits.recommended))
+        // A new tenant starts on the same key the rest of the deployment prefers. Left unset
+        // it would instead fall back to auth's legacy configured key, quietly signing under
+        // an algorithm nobody chose for it.
+        keys <- jwksRepository.getAll
+        _ <- challengeSettingsService.upsertSettings(
+          defaultChallengeSettings(request.id, SubmissionLimits.recommended)
+            .copy(signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid)),
+        )
       yield ()
 
     override def updateTenant(
@@ -106,4 +115,7 @@ object TenantService:
         // certificate in; until then this tenant terminates no mutual TLS.
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        // Set by `createTenant` from the stored key set; this baseline cannot know which
+        // keys exist.
+        signingKeyId = None,
       )

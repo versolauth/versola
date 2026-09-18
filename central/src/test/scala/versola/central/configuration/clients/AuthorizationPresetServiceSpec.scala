@@ -100,6 +100,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireDpopNonce = false,
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
+    signingKeyId = None,
   )
 
   override def spec = suite("AuthorizationPresetService")(
