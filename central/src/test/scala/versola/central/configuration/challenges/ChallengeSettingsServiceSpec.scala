@@ -27,6 +27,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     requireDpopNonce = false,
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
 
   class Env(initial: Vector[ChallengeSettingsRecord] = Vector.empty):

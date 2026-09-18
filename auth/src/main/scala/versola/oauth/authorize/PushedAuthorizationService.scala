@@ -3,7 +3,8 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationRecord, PushedAuthorizationResponse}
 import versola.oauth.client.model.ClientCredentials
 import versola.oauth.model.{RequestUri, RequestUriReference}
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.util.{CoreConfig, Secret, SecureRandom, SecurityService}
 import zio.http.Request
 import zio.{Chunk, IO, ZIO, ZLayer}
@@ -52,10 +53,16 @@ object PushedAuthorizationService:
         request: Request,
     ): IO[Throwable | PushedAuthorizationError, PushedAuthorizationResponse] =
       for
-        // RFC 8705 §2.1: a client that registered an mTLS subject holds no secret and
-        // authenticates with its certificate instead.
-        client <- clientAuthentication.authenticate(credentials = credentials, certificate = certificate)
-          .orElseFail(PushedAuthorizationError.InvalidClient)
+        // RFC 8705 §2.1 / RFC 7523 §2.2: a client that registered a certificate subject or a
+        // key set authenticates with that, not with the secret it also holds.
+        client <- clientAuthentication.authenticate(
+          credentials = credentials,
+          certificate = certificate,
+          endpoint = AuthenticatedEndpoint.PushedAuthorizationRequest,
+        ).mapError {
+          case error: Throwable => error
+          case _ => PushedAuthorizationError.InvalidClient
+        }
 
         _ <- ZIO.fail(PushedAuthorizationError.RequestUriNotAllowed).when(params.contains("request_uri"))
         // A client_id that contradicts the authenticated one is already rejected while the

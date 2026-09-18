@@ -107,6 +107,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     dpopBoundAccessTokens = false,
     mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   /** Some other client's certificate, for checking that a registered subject is matched rather

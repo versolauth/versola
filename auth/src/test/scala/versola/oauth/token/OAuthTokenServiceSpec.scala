@@ -5,7 +5,8 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId}
@@ -86,6 +87,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   val publicClientId = ClientId("public-client-1")
@@ -113,6 +115,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   val adminClient = testClient.copy(id = OAuthTokenService.centralAdminClientId)
@@ -247,7 +250,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // authenticates through `verifySecret` alone, as the service itself does for a client
     // that registered no `mtlsAuth`.
     clientService.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(clientService)
+    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
     val tokenRepo = stub[SessionRepository]
     val accessTokenRevocationService = stub[AccessTokenRevocationService]
     val securityService = stub[SecurityService]

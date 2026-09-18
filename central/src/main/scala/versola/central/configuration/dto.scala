@@ -7,7 +7,7 @@ import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Patch, RedirectUri}
+import versola.util.{JsonWebKeySet, Patch, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -320,6 +320,9 @@ case class OAuthClientResponse(
     mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
     certificateBoundAccessTokens: Boolean,
+    /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
+      * assertions with; `None` when it does not use the method. */
+    jwks: Option[JsonWebKeySet],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -375,6 +378,9 @@ case class CreateClientRequest(
     mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
     certificateBoundAccessTokens: Boolean,
+    /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
+      * assertions with; `None` when it does not use the method. */
+    jwks: Option[JsonWebKeySet] = None,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -408,6 +414,7 @@ case class UpdateClientRequest(
     dpopBoundAccessTokens: Option[Boolean] = None,
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
+    jwks: Option[Patch[JsonWebKeySet]] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -586,6 +593,9 @@ case class SyncOAuthClientRecord(
     mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
     certificateBoundAccessTokens: Boolean,
+    /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
+      * assertions with; `None` when it does not use the method. */
+    jwks: Option[JsonWebKeySet],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

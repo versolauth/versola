@@ -398,6 +398,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // auth reads the set a proof is checked against straight off this document, so editing it
   // here is how a deployment narrows or widens what it accepts. An entry auth has no verifier
   // for is dropped rather than advertised; drop the field entirely to fall back to its default.
+  // "token_endpoint_auth_signing_alg_values_supported" (RFC 8414 §2) works the same way for the
+  // `alg` of an RFC 7523 client assertion.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
@@ -415,7 +417,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
        |  "subject_types_supported": ["public", "pairwise"],
        |  "id_token_signing_alg_values_supported": ["RS256"],
-       |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+       |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+       |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
        |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
        |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
        |  "frontchannel_logout_supported": true,

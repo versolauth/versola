@@ -154,6 +154,9 @@ export interface ChallengeSettingsRecord {
   requireDpopNonce: boolean;
   mtlsCertificateHeader?: string | null;
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null;
+  /** RFC 7523 section 3: how far into the future a `private_key_jwt` client assertion from
+   * one of this tenant's clients may set its `exp`. */
+  clientAssertionMaxLifetimeSeconds?: number;
 }
 
 // Global (non-tenant-scoped) password policy

@@ -493,6 +493,7 @@ object BootstrapService:
       requireDpopNonce = false,
       mtlsCertificateHeader = None,
       mtlsCertificateEncoding = None,
+      clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
     )
 
   /** Default theme seeded from the shared CSS resource. */

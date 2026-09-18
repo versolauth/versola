@@ -2,7 +2,8 @@ package versola.oauth.revoke
 
 import versola.oauth.client.model.{ClientCredentials, OAuthClientRecord}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
 import versola.util.{CoreConfig, Secret, SecurityService}
@@ -29,7 +30,7 @@ trait RevocationService:
   def authenticateClient(
       credentials: ClientCredentials,
       certificate: Option[ClientCertificate],
-  ): IO[RevocationError, OAuthClientRecord]
+  ): IO[Throwable | RevocationError, OAuthClientRecord]
 
 object RevocationService:
   def live: ZLayer[
@@ -101,6 +102,12 @@ object RevocationService:
     override def authenticateClient(
         credentials: ClientCredentials,
         certificate: Option[ClientCertificate],
-    ): IO[RevocationError, OAuthClientRecord] =
-      clientAuthentication.authenticate(credentials = credentials, certificate = certificate)
-        .orElseFail(RevocationError.InvalidClient)
+    ): IO[Throwable | RevocationError, OAuthClientRecord] =
+      clientAuthentication.authenticate(
+        credentials = credentials,
+        certificate = certificate,
+        endpoint = AuthenticatedEndpoint.Revocation,
+      ).mapError {
+        case error: Throwable => error
+        case _ => RevocationError.InvalidClient
+      }

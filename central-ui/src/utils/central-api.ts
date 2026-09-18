@@ -1421,6 +1421,7 @@ export async function upsertChallengeSettings(
   requireDpopNonce?: boolean,
   mtlsCertificateHeader?: string | null,
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
+  clientAssertionMaxLifetimeSeconds?: number | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1441,6 +1442,7 @@ export async function upsertChallengeSettings(
       requireDpopNonce: requireDpopNonce ?? null,
       mtlsCertificateHeader: mtlsCertificateHeader ?? null,
       mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
+      clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
     },
   });
 }

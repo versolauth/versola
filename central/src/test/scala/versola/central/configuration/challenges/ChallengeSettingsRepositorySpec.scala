@@ -39,6 +39,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
     requireDpopNonce = false,
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
 
   override def testCases(env: ChallengeSettingsRepositorySpec.Env) =

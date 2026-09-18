@@ -3217,6 +3217,13 @@ components:
             mTLS for. Null means the proxy does not terminate mTLS for this tenant.
         mtlsCertificateEncoding:
           $ref: '#/components/schemas/MtlsCertificateEncoding'
+        clientAssertionMaxLifetimeSeconds:
+          type: integer
+          description: >-
+            RFC 7523 §3: how far into the future a `private_key_jwt` client assertion from one
+            of this tenant's clients may set its `exp`. A `jti` is remembered against replay
+            for as long as the assertion bearing it is acceptable, so this also sizes that
+            retention. Between 30 and 900 seconds.
       required:
         - tenantId
         - allowedPrefixes
@@ -3230,6 +3237,7 @@ components:
         - ipHeader
         - postLogoutRedirectUris
         - requireDpopNonce
+        - clientAssertionMaxLifetimeSeconds
     MtlsCertificateEncoding:
       type: [string, 'null']
       description: How the certificate in mtlsCertificateHeader is encoded. Null iff mtlsCertificateHeader is null.
@@ -3292,6 +3300,13 @@ components:
             with no encoding cannot be parsed, and an encoding with no header names nothing.
         mtlsCertificateEncoding:
           $ref: '#/components/schemas/MtlsCertificateEncoding'
+        clientAssertionMaxLifetimeSeconds:
+          type: [integer, 'null']
+          description: >-
+            Keeps the stored value when omitted; defaults to 300 for a new tenant. Refused
+            outside 30..900 -- below that ordinary clock skew starts rejecting honestly minted
+            assertions, above it auth could no longer remember a `jti` for the whole life of
+            the assertion carrying it.
       required:
         - tenantId
         - allowedPrefixes

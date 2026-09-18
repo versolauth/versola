@@ -59,6 +59,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   val userInfoResponse = UserInfoResponse(
