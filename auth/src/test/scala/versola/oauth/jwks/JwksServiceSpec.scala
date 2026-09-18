@@ -70,7 +70,10 @@ object JwksServiceSpec extends ZIOSpecDefault:
         assertTrue(
           // Sanity: confirms .active would have picked the wrong key here.
           publicKeys.active.id == "stale-active-kid-from-central",
-          resolved.map(_.id).contains("own-kid"),
+          resolved.map(_.keyId).contains("own-kid"),
+          // The algorithm travels with the kid it was read from, so the header a caller
+          // signs under cannot disagree with the JWK behind that kid.
+          resolved.map(_.algorithm).contains(JWT.Algorithm.RS256),
         )
       },
       test("returns None when no JWKS entry matches the private key") {
@@ -82,6 +85,21 @@ object JwksServiceSpec extends ZIOSpecDefault:
         val publicKeys = publicKeysOf(rsaJwk(unrelatedKeyPair, "unrelated-kid"))
 
         assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeys).isEmpty)
+      },
+      // The modulus can match while the entry says nothing usable about how to sign with
+      // it. Signing under a guessed algorithm would contradict the published JWKS, so the
+      // entry is not a signing candidate at all.
+      test("returns None when the matching entry carries no alg") {
+        val gen = KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048)
+        val ownKeyPair = gen.generateKeyPair()
+
+        val noAlgJwk = new RSAKey.Builder(ownKeyPair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("own-kid")
+          .keyUse(KeyUse.SIGNATURE)
+          .build()
+
+        assertTrue(JwksService.resolveSigningKey(ownKeyPair.getPrivate, publicKeysOf(noAlgJwk)).isEmpty)
       },
     ),
   )

@@ -436,7 +436,7 @@ object ConversationRenderService:
           )
           htmlResponse(logoutConfirmPage(info, css, logo))
 
-    private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.PublicKey): Task[String] =
+    private def serializeIdToken(data: ConversationResult.IdTokenData, signingKey: JWT.Signature.Asymmetric): Task[String] =
       val claims = data.claims + ("sid" -> Json.Str(data.sessionId))
       JWT.serialize(
         typ = JWT.Type.JWT,
@@ -447,11 +447,7 @@ object ConversationRenderService:
           custom = Json.Obj(Chunk.fromIterable(claims)),
         ),
         ttl = 15.minutes,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
+        signature = signingKey,
       )
 
     private def formFor(

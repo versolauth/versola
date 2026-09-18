@@ -22,25 +22,39 @@ import scala.jdk.CollectionConverters.*
 trait JwksService:
   def getPublicKeys: UIO[JWT.PublicKeys]
 
-  /** Fails if no synced JWKS entry matches this instance's configured private key yet
+  /** The complete signature to sign with: kid, algorithm and private key resolved
+    * together, so a caller cannot pair one key's kid with another's algorithm.
+    *
+    * Fails if no synced JWKS entry matches this instance's configured private key yet
     * (e.g. it hasn't picked up central's most recent rotation).
     */
-  def signingKey: Task[JWT.PublicKey]
+  def signingKey: Task[JWT.Signature.Asymmetric]
 
 object JwksService:
-  case class Snapshot(publicKeys: JWT.PublicKeys, signingKey: Option[JWT.PublicKey])
+  case class Snapshot(publicKeys: JWT.PublicKeys, signingKey: Option[JWT.Signature.Asymmetric])
 
   /** The JWKS entry whose modulus matches `privateKey`'s, i.e. the one this instance
     * can actually sign with. During a rotation window central's JWKS holds both the
     * outgoing and incoming key; this always resolves to the one whose private half
     * this instance actually has, never to whichever one happens to be listed first.
+    *
+    * An entry without a usable `alg` is skipped rather than defaulted: the algorithm
+    * a key is published under is the operator's statement about it, and guessing one
+    * would mean signing under a header the JWKS contradicts.
     */
-  private[jwks] def resolveSigningKey(privateKey: PrivateKey, publicKeys: JWT.PublicKeys): Option[JWT.PublicKey] =
+  private[jwks] def resolveSigningKey(
+      privateKey: PrivateKey,
+      publicKeys: JWT.PublicKeys,
+  ): Option[JWT.Signature.Asymmetric] =
     privateKey match
       case rsaPrivateKey: JavaRsaKey =>
         publicKeys.keys.getKeys.asScala.collectFirst {
           case key: JwkRsaKey if key.toRSAPublicKey.getModulus == rsaPrivateKey.getModulus =>
             JWT.PublicKey(key)
+        }.flatMap { publicKey =>
+          publicKey.algorithm.map { algorithm =>
+            JWT.Signature.Asymmetric(algorithm, publicKey.id, privateKey)
+          }
         }
       case _ => None
 
@@ -67,7 +81,7 @@ object JwksService:
       cache: ReloadingCache[Snapshot],
   ) extends JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = cache.get.map(_.publicKeys)
-    override def signingKey: Task[JWT.PublicKey] =
+    override def signingKey: Task[JWT.Signature.Asymmetric] =
       cache.get.map(_.signingKey).someOrFail(
         RuntimeException("no JWKS entry matches this instance's configured private key -- signing key not yet published"),
       )

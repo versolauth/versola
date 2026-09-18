@@ -109,11 +109,7 @@ object UserInfoController extends Controller:
                   custom = userInfo.toJsonAST,
                 ),
                 ttl = 5.minutes,
-                signature = JWT.Signature.Asymmetric(
-                  algorithm = signingKey.algorithm,
-                  keyId = signingKey.id,
-                  privateKey = config.jwt.privateKey,
-                ),
+                signature = signingKey,
               )
             yield Response(
               status = Status.Ok,

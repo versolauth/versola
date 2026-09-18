@@ -154,9 +154,12 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
 
   val publicKeys: JWT.PublicKeys = JWT.PublicKeys.fromJson(jwksJson)
 
+  val signingKey: JWT.Signature.Asymmetric =
+    JWT.Signature.Asymmetric(JWT.Algorithm.RS256, publicKeys.active.id, privateKey)
+
   val jwksService: JwksService = new JwksService:
     override def getPublicKeys: UIO[JWT.PublicKeys] = ZIO.succeed(publicKeys)
-    override def signingKey: Task[JWT.PublicKey] = ZIO.succeed(publicKeys.active)
+    override def signingKey: Task[JWT.Signature.Asymmetric] = ZIO.succeed(TestEnvConfig.signingKey)
 
 
   val coreConfig = CoreConfig(

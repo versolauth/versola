@@ -83,7 +83,7 @@ object BackChannelDispatcher:
         audience: NonEmptyChunk[ClientId],
         subject: String,
         customClaims: Json.Obj,
-        signingKey: JWT.PublicKey,
+        signingKey: JWT.Signature.Asymmetric,
     ): Task[String] =
       JWT.serialize(
         claims = JWT.Claims(
@@ -93,9 +93,5 @@ object BackChannelDispatcher:
           custom = customClaims,
         ),
         ttl = TokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
+        signature = signingKey,
       )

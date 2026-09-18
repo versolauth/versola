@@ -138,7 +138,7 @@ object TokenEndpointController extends Controller:
   private def toTokenResponse(
       tokens: IssuedTokens,
       config: CoreConfig,
-      signingKey: JWT.PublicKey,
+      signingKey: JWT.Signature.Asymmetric,
   ): ZIO[UserInfoService, Throwable, TokenResponse] =
     import versola.oauth.userinfo.model.RequestedClaims.given
     for
@@ -171,11 +171,7 @@ object TokenEndpointController extends Controller:
           custom = Json.Obj(customClaims.toSeq*),
         ),
         ttl = tokens.accessTokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
+        signature = signingKey,
       )
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
@@ -201,7 +197,7 @@ object TokenEndpointController extends Controller:
   private def generateIdToken(
       tokens: IssuedTokens,
       config: CoreConfig,
-      signingKey: JWT.PublicKey,
+      signingKey: JWT.Signature.Asymmetric,
       accessToken: String,
   ): ZIO[UserInfoService, Throwable, Option[String]] =
     (tokens.user, tokens.userId) match
@@ -231,11 +227,7 @@ object TokenEndpointController extends Controller:
               )),
             ),
             ttl = tokens.accessTokenTtl,
-            signature = JWT.Signature.Asymmetric(
-              algorithm = signingKey.algorithm,
-              keyId = signingKey.id,
-              privateKey = config.jwt.privateKey,
-            ),
+            signature = signingKey,
           )
         yield Some(serializedIdToken)
 
