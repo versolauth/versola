@@ -1,7 +1,7 @@
 package versola.e2e.support
 
-import com.nimbusds.jose.crypto.RSASSAVerifier
-import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
+import com.nimbusds.jose.crypto.{ECDSAVerifier, RSASSAVerifier}
+import com.nimbusds.jose.jwk.{ECKey, JWKSet, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import zio.*
 import zio.http.*
@@ -1176,6 +1176,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** `urlEncodedPem` (nginx) or `base64Der` (Traefik) — never independent of the header
         * for a real proxy, which is why the two travel together. */
       mtlsCertificateEncoding: Option[String] = None,
+      /** The JWKS key this tenant's tokens are signed with. `None` clears the selection,
+        * which puts the tenant back on auth's own configured private key. */
+      signingKeyId: Option[String] = None,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1194,7 +1197,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
          |  "ipHeader": "X-Forwarded-For",
          |  "acrVocabulary": $vocabJson,
          |  "mtlsCertificateHeader": ${mtlsCertificateHeader.fold("null")(h => s"\"$h\"")},
-         |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")}
+         |  "mtlsCertificateEncoding": ${mtlsCertificateEncoding.fold("null")(e => s"\"$e\"")},
+         |  "signingKeyId": ${signingKeyId.fold("null")(k => s"\"$k\"")}
          |}""".stripMargin
     val req = Request.put(s"${config.centralUrl}/configuration/challenges/challenge-settings", Body.fromString(bodyStr))
       .addHeader(centralAuthorization)
@@ -1205,6 +1209,30 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"upsertChallengeSettings failed: status=${resp.status} body=$body"))
 
+  /** POST /configuration/jwks/generate — has central generate a keypair for `alg`, publish
+    * the public half and keep the private one. Answers the new `kid`.
+    */
+  def generateJwksKey(alg: String): Task[String] =
+    val req = Request.post(s"${config.centralUrl}/configuration/jwks/generate?alg=$alg", Body.empty)
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      resp.body.asString.flatMap: body =>
+        if resp.status.isSuccess then
+          ZIO.fromOption(body.fromJson[Json.Obj].toOption.flatMap(_.fields.collectFirst { case ("kid", Json.Str(k)) => k }))
+            .orElseFail(RuntimeException(s"generateJwksKey answered no 'kid': $body"))
+        else ZIO.fail(RuntimeException(s"generateJwksKey failed: status=${resp.status} body=$body"))
+
+  /** DELETE /configuration/jwks — removes a key by `kid`. Refused while a tenant still signs
+    * with it, so a test has to release the selection first.
+    */
+  def deleteJwksKey(kid: String): Task[Unit] =
+    val req = Request.delete(s"${config.centralUrl}/configuration/jwks?kid=$kid")
+      .addHeader(centralAuthorization)
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: body =>
+          ZIO.fail(RuntimeException(s"deleteJwksKey failed: status=${resp.status} body=$body"))
   /** GET /userinfo — fetches claims for a bearer token. */
   def userinfo(accessToken: String): Task[UserinfoResult] =
     Client.batched(
@@ -1470,6 +1498,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         )
       key match
         case rsa: RSAKey => jwt.verify(RSASSAVerifier(rsa.toRSAPublicKey))
+        // A tenant signing with ES256 publishes an EC key, and a relying party that could
+        // only verify RSA would reject its tokens rather than report them unverified.
+        case ec: ECKey => jwt.verify(ECDSAVerifier(ec.toECPublicKey))
         case other => throw RuntimeException(s"Unsupported key type '${other.getKeyType}' for kid='$keyId'")
 
   /** POST /token with an arbitrary form — used to probe which `grant_type` values the endpoint
