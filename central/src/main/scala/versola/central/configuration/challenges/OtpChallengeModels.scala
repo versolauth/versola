@@ -52,4 +52,11 @@ case class UpsertChallengeSettingsRequest(
       * no encoding cannot be parsed, and an encoding with no header names nothing. */
     mtlsCertificateHeader: Option[Patch[String]],
     mtlsCertificateEncoding: Option[Patch[MtlsCertificateEncoding]],
+    /** The `kid` of the JWKS key this tenant signs with. Null clears the selection, falling
+      * back to auth's configured private key; absent keeps the stored one. Rejected unless
+      * central holds a private key for that kid -- see `ChallengeSettingsService`.
+      *
+      * No default: a field with one decodes an explicit `null` as the default rather than as
+      * `Some(Deleted)`, which would leave the selection impossible to clear. */
+    signingKeyId: Option[Patch[String]],
 ) derives Schema, JsonCodec

@@ -41,6 +41,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
     override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
     override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+    override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
 
   private val centralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.succeed(token)

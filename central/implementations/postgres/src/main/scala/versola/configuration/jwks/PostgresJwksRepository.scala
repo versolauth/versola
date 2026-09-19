@@ -3,6 +3,7 @@ package versola.configuration.jwks
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
+import versola.util.Secret
 import versola.util.postgres.BasicCodecs
 import zio.json.ast.Json
 import zio.{Task, ZLayer}
@@ -15,23 +16,23 @@ class PostgresJwksRepository(xa: TransactorZIO) extends JwksRepository, BasicCod
   override def getAll: Task[Vector[JwksRecord]] =
     xa.connectMeasured("get-all-jwks"):
       sql"""
-        SELECT kid, jwk
+        SELECT kid, jwk, private_key
         FROM jwks
       """.query[JwksRecord].run()
 
   override def find(kid: String): Task[Option[JwksRecord]] =
     xa.connectMeasured("find-jwks"):
       sql"""
-        SELECT kid, jwk
+        SELECT kid, jwk, private_key
         FROM jwks
         WHERE kid = $kid
       """.query[JwksRecord].run().headOption
 
-  override def create(kid: String, jwk: Json.Obj): Task[Unit] =
+  override def create(kid: String, jwk: Json.Obj, privateKey: Option[Secret]): Task[Unit] =
     xa.connectMeasured("create-jwks"):
       sql"""
-        INSERT INTO jwks (kid, jwk)
-        VALUES ($kid, $jwk)
+        INSERT INTO jwks (kid, jwk, private_key)
+        VALUES ($kid, $jwk, $privateKey)
       """.update.run()
     .unit
 

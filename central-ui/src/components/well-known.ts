@@ -2,7 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { fetchJwks, deleteJwk, createJwk, updateJwk, fetchServerMetadata, upsertServerMetadata } from '../utils/central-api';
+import type { JwksKeySummary } from '../types';
+import { fetchJwks, fetchJwksKeys, deleteJwk, createJwk, generateJwk, updateJwk, fetchServerMetadata, upsertServerMetadata } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateJsonObject } from '../utils/helpers';
 import { tokenize } from '../utils/code-highlight';
@@ -16,6 +17,12 @@ import './code-editor';
 // here so keys can be identified/managed individually.
 const REQUIRED_JWK_FIELDS = ['kid', 'kty'];
 
+// The algorithms a key can be generated for, most preferred first. FAPI 2.0 permits PS256
+// and ES256 equally; PS256 leads because verification runs on the edge's proxy path for
+// every request while signing runs once per token. RS256 is last -- FAPI disallows it, and
+// it is offered only for deployments already issuing under it.
+const GENERATABLE_ALGORITHMS = ['PS256', 'ES256', 'RS256'];
+
 // RFC 8414 authorization server metadata: minimal set of fields needed for
 // OAuth/OIDC discovery to work end-to-end.
 const REQUIRED_METADATA_FIELDS = ['issuer', 'authorization_endpoint', 'token_endpoint', 'jwks_uri', 'response_types_supported'];
@@ -25,6 +32,9 @@ export class VersolaWellKnown extends LitElement {
   @property({ type: Boolean }) canManage = false;
 
   @state() private keys: Record<string, unknown>[] = [];
+  @state() private keySummaries: JwksKeySummary[] = [];
+  @state() private generateAlgorithm = GENERATABLE_ALGORITHMS[0];
+  @state() private isGenerating = false;
   @state() private metadata: Record<string, unknown> | null = null;
   @state() private isLoading = false;
   @state() private isLoadingMetadata = false;
@@ -137,6 +147,35 @@ export class VersolaWellKnown extends LitElement {
         min-width: 0;
       }
 
+      .key-badge {
+        font-size: 0.6875rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        padding: 0.125rem var(--spacing-sm);
+        border-radius: var(--radius-sm);
+        border: 1px solid var(--border-dark);
+        color: var(--text-secondary);
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+
+      .key-badge.signing {
+        color: var(--accent);
+        border-color: var(--accent);
+      }
+
+      .generate-row {
+        display: flex;
+        align-items: center;
+        gap: var(--spacing-md);
+        flex-wrap: wrap;
+      }
+
+      .generate-select {
+        width: auto;
+      }
+
       .key-json {
         background: var(--bg-dark);
         border: 1px solid var(--border-dark);
@@ -210,12 +249,26 @@ export class VersolaWellKnown extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const jwks = await fetchJwks();
+      const [jwks, summaries] = await Promise.all([fetchJwks(), fetchJwksKeys()]);
       this.keys = jwks.keys ?? [];
+      this.keySummaries = summaries;
     } catch (err) {
       this.errorMessage = err instanceof Error ? err.message : 'Failed to load JWKS';
     } finally {
       this.isLoading = false;
+    }
+  }
+
+  private async handleGenerateKey() {
+    this.isGenerating = true;
+    this.errorMessage = '';
+    try {
+      await generateJwk(this.generateAlgorithm);
+      await this.loadData();
+    } catch (err) {
+      this.errorMessage = err instanceof Error ? err.message : 'Failed to generate key';
+    } finally {
+      this.isGenerating = false;
     }
   }
 
@@ -395,6 +448,10 @@ export class VersolaWellKnown extends LitElement {
     const kty = typeof key['kty'] === 'string' ? key['kty'] : '';
     const alg = typeof key['alg'] === 'string' ? key['alg'] : '';
     const json = JSON.stringify(key, null, 2);
+    // A key with no private half here can only ever verify -- an operator-supplied JWK, or
+    // one seeded from `bootstrap.jwks`. No tenant can be moved onto it, so the list has to
+    // say so rather than leaving the picker to silently omit it.
+    const canSign = this.keySummaries.find(summary => summary.kid === kid)?.canSign ?? false;
 
     return html`
       <div class="card key-card">
@@ -402,6 +459,9 @@ export class VersolaWellKnown extends LitElement {
           <div class="key-header-info">
             <span class="key-id">${kid}</span>
             <span class="key-meta">${kty}${alg ? ` · ${alg}` : ''}</span>
+            <span class=${canSign ? 'key-badge signing' : 'key-badge'}>
+              ${canSign ? 'Can sign' : 'Verify only'}
+            </span>
           </div>
           <div class="key-actions">
             ${this.canManage ? html`
@@ -440,7 +500,33 @@ export class VersolaWellKnown extends LitElement {
 
       <div class="section-title">
         <span>JWKS</span>
+        ${this.canManage ? html`
+          <div class="generate-row">
+            <select
+              class="form-control generate-select"
+              aria-label="Algorithm to generate"
+              .value=${this.generateAlgorithm}
+              @change=${(e: Event) => { this.generateAlgorithm = (e.target as HTMLSelectElement).value; }}
+            >
+              ${GENERATABLE_ALGORITHMS.map(alg => html`
+                <option value=${alg} ?selected=${this.generateAlgorithm === alg}>${alg}</option>
+              `)}
+            </select>
+            <button
+              class="btn btn-secondary"
+              ?disabled=${this.isGenerating}
+              @click=${this.handleGenerateKey}
+            >${this.isGenerating ? 'Generating…' : 'Generate Key'}</button>
+          </div>
+        ` : ''}
       </div>
+      ${this.canManage ? html`
+        <div class="form-hint" style="margin-bottom: var(--spacing-md);">
+          A generated key is published for verification immediately but signs nothing until a
+          tenant selects it under Challenges &amp; Security — so every verifier learns the key
+          before anything issues tokens under it.
+        </div>
+      ` : ''}
 
       ${this.formMode !== null
         ? this.renderForm()

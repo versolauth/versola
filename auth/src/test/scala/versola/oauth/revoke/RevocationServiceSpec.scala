@@ -319,9 +319,10 @@ object RevocationServiceSpec extends UnitSpecBase:
           _ <- service.revoke(client, NonEmptyChunk(accessToken1), userId1.toString, now.plusSeconds(300))
           calls = dispatcher.dispatch.calls
         yield assertTrue(
-          calls.map((audience, uri, subject, _) => (audience.toList, uri, subject)) == List((List(client.id), backChannelUri, userId1.toString)),
+          calls.map((audience, tenantId, uri, subject, _) => (audience.toList, tenantId, uri, subject)) ==
+            List((List(client.id), client.tenantId, backChannelUri, userId1.toString)),
           // No `sid`: this must not end the SSO session the token belongs to.
-          calls.head._4 == Json.Obj(
+          calls.head._5 == Json.Obj(
             "revoked_jti" -> Json.Arr(Json.Str(accessToken1.encoded)),
             "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
             "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),
@@ -341,7 +342,7 @@ object RevocationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           // Same event as a jti-scoped revocation, under a different claim: what changes is
           // which tokens it reaches, not what the recipient does about it.
-          calls.head._4 == Json.Obj(
+          calls.head._5 == Json.Obj(
             "revoked_fam" -> Json.Arr(Json.Str(familyId1)),
             "revoked_exp" -> Json.Num(now.plusSeconds(300).getEpochSecond),
             "events" -> Json.Obj("versola:event:access-token-revocation" -> Json.Obj()),

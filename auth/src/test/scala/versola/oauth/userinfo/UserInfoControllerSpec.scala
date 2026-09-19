@@ -106,11 +106,13 @@ object UserInfoControllerSpec extends UnitSpecBase:
       setup: Stub[UserInfoService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[DpopService] => UIO[Unit] = _ => ZIO.unit,
       edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
-      // The lookups `checkDpop` makes against the token's client: the tenant an edge assertion
-      // has to be scoped to, and (RFC 9449 §8) whether that client's tenant demands a nonce.
-      // Defaults to the fixture client every test above assumes, with no nonce required.
+      // The lookups made against the token's client: the tenant an edge assertion has to be
+      // scoped to, (RFC 9449 §8) whether that client's tenant demands a nonce, and the tenant
+      // whose key signs a JWT-formatted response. Defaults to the fixture client every test
+      // above assumes, with no nonce required.
       oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = service =>
-        service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(false),
+        service.find.succeedsWith(Some(client1)) *> service.get.succeedsWith(client1) *>
+          service.requireDpopNonce.succeedsWith(false),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       config: CoreConfig = TestEnvConfig.coreConfig,

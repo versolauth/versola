@@ -40,4 +40,8 @@ case class ChallengeSettingsRecord(
     requireDpopNonce: Boolean,
     mtlsCertificateHeader: Option[String],
     mtlsCertificateEncoding: Option[MtlsCertificateEncoding],
+    /** The `kid` this tenant's tokens are signed with, selected in central. `None` falls back
+      * to matching the configured `jwt.private-key` against the synced JWKS, which is all a
+      * deployment whose keys are verify-only can do -- see [[versola.oauth.jwks.JwksService]]. */
+    signingKeyId: Option[String],
 ) derives JsonCodec

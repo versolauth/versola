@@ -443,7 +443,10 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
         )
-        signingKey <- jwksService.signingKey
+        // The signing key belongs to the client's tenant, and `c_hash` is computed with that
+        // key's algorithm -- so the key has to be resolved before the hash, not alongside it.
+        client <- configurationService.get(request.clientId)
+        signingKey <- jwksService.signingKey(client.tenantId)
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
         claims = userInfo.claims ++
           AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +
@@ -457,11 +460,7 @@ object AuthorizeEndpointService:
             custom = Json.Obj(Chunk.fromIterable(claims)),
           ),
           ttl = 15.minutes,
-          signature = JWT.Signature.Asymmetric(
-            algorithm = signingKey.algorithm,
-            keyId = signingKey.id,
-            privateKey = config.jwt.privateKey,
-          ),
+          signature = signingKey,
         )
       yield Some(token)
 

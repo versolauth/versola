@@ -49,7 +49,6 @@ object TokenEndpointController extends Controller:
       (for
         oauthTokenService <- ZIO.service[OAuthTokenService]
         config <- ZIO.service[CoreConfig]
-        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey)
         form <- request.body.asURLEncodedForm.orElseFail(TokenEndpointError.InvalidRequest)
         tokenRequest <- parseRequest(form)
         credentials <- request.extractCredentials(form).orElseFail(TokenEndpointError.InvalidClient)
@@ -77,6 +76,9 @@ object TokenEndpointController extends Controller:
             )
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt, certificate)
+        // Resolved after the grant, not before: which key signs is the tenant's choice, and
+        // the tenant is only known once the grant has identified whose tokens these are.
+        signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey(issuedTokens.tenantId))
         response <- toTokenResponse(issuedTokens, config, signingKey)
       yield Response.json(response.toJson))
         .catchAll {
@@ -138,7 +140,7 @@ object TokenEndpointController extends Controller:
   private def toTokenResponse(
       tokens: IssuedTokens,
       config: CoreConfig,
-      signingKey: JWT.PublicKey,
+      signingKey: JWT.Signature.Asymmetric,
   ): ZIO[UserInfoService, Throwable, TokenResponse] =
     import versola.oauth.userinfo.model.RequestedClaims.given
     for
@@ -171,11 +173,7 @@ object TokenEndpointController extends Controller:
           custom = Json.Obj(customClaims.toSeq*),
         ),
         ttl = tokens.accessTokenTtl,
-        signature = JWT.Signature.Asymmetric(
-          algorithm = signingKey.algorithm,
-          keyId = signingKey.id,
-          privateKey = config.jwt.privateKey,
-        ),
+        signature = signingKey,
       )
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(
@@ -201,7 +199,7 @@ object TokenEndpointController extends Controller:
   private def generateIdToken(
       tokens: IssuedTokens,
       config: CoreConfig,
-      signingKey: JWT.PublicKey,
+      signingKey: JWT.Signature.Asymmetric,
       accessToken: String,
   ): ZIO[UserInfoService, Throwable, Option[String]] =
     (tokens.user, tokens.userId) match
@@ -231,11 +229,7 @@ object TokenEndpointController extends Controller:
               )),
             ),
             ttl = tokens.accessTokenTtl,
-            signature = JWT.Signature.Asymmetric(
-              algorithm = signingKey.algorithm,
-              keyId = signingKey.id,
-              privateKey = config.jwt.privateKey,
-            ),
+            signature = signingKey,
           )
         yield Some(serializedIdToken)
 
