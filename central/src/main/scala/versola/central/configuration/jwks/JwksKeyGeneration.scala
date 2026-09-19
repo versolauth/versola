@@ -25,7 +25,7 @@ object JwksKeyGeneration:
       encryptionKey: SecretKey,
   ): Task[Generated] =
     for
-      generated <- algorithm match
+      (baseKeyId, publicJwk, pkcs8) <- algorithm match
         case JWT.Algorithm.RS256 | JWT.Algorithm.PS256 =>
           // Both are RSA-2048. A separate keypair per kid rather than one published twice:
           // using one key with two padding schemes trades key separation for nothing, since
@@ -39,7 +39,6 @@ object JwksKeyGeneration:
           )
         case JWT.Algorithm.HS256 =>
           ZIO.fail(JwksService.Error("HS256 is not a JWKS signing algorithm"))
-      (baseKeyId, publicJwk, pkcs8) = generated
       // Kids are timestamps to the second, so seeding three algorithms in one second would
       // otherwise collide on the primary key.
       kid = s"$baseKeyId-${algorithm.toString.toLowerCase}"
