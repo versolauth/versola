@@ -162,6 +162,15 @@ RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
 # smoke test, not a real deployment, and its output is discarded either way (see the comment
 # above).
 RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv && rm -rf .local
+# Same generation, but as a non-root UID (Alpine's built-in `nobody`) --
+# specifically to exercise the `docker run -u <host uid>:<gid>` path
+# pullAndRunTools uses at runtime (see entrypoint.sh's own comment on
+# TARGET, and this Dockerfile's `chmod 1777 .` above). Without that
+# chmod, this fails the exact same way the reported regression did
+# (FileNotFoundException on .local/env/vps/auth.conf) -- the two RUN
+# smoke tests above run as root and can't catch that, since RUN always
+# executes as the build-time user regardless of any later `-u`.
+RUN su -s /bin/sh nobody -c "printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv" && rm -rf .local
 # migrate-tool has no non-destructive smoke test available here the way genEnv does -- running it
 # for real needs a live Postgres and mounted .conf files (both only exist once versola-cli
 # actually invokes this image via the `migrate` compose service), and there's no dry-run mode to
