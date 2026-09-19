@@ -6,6 +6,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
+import zio.schema.Schema
 import zio.{Chunk, Clock, Duration, IO, Task, ZIO}
 
 import java.nio.charset.StandardCharsets
@@ -133,6 +134,11 @@ object JWT:
   object Algorithm:
     def fromName(name: String): Option[Algorithm] =
       Algorithm.values.find(_.jwsAlgorithm.getName == name)
+
+    given Schema[Algorithm] = Schema.primitive[String].transformOrFail(
+      name => fromName(name).toRight(s"Unsupported 'alg': $name"),
+      algorithm => Right(algorithm.jwsAlgorithm.getName),
+    )
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))

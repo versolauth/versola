@@ -65,18 +65,12 @@ object JwksController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[JwksService]
-        raw <- request.url.queryZIO[String]("alg")
-        response <- JWT.Algorithm.fromName(raw) match
-          case None =>
-            ZIO.succeed(
-              Response.text(s"Unsupported 'alg': $raw").status(Status.BadRequest),
-            )
-          case Some(algorithm) =>
-            service.generateKey(algorithm)
-              .map(kid => Response.json(GeneratedKey(kid, algorithm.toString).toJson).status(Status.Created))
-              .catchSome { case error: JwksService.Error =>
-                ZIO.succeed(Response.text(error.message).status(Status.BadRequest))
-              }
+        algorithm <- request.url.queryZIO[JWT.Algorithm]("alg")
+        response <- service.generateKey(algorithm)
+          .map(kid => Response.json(GeneratedKey(kid, algorithm.toString).toJson).status(Status.Created))
+          .catchSome { case error: JwksService.Error =>
+            ZIO.succeed(Response.text(error.message).status(Status.BadRequest))
+          }
       yield response
     }
 
