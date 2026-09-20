@@ -124,7 +124,28 @@ COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/entrypoint.sh .
-RUN chmod +x entrypoint.sh
+# 1777 (sticky bit), not just +x: gen-env.scala's writeFile does
+# `File(".local/env/$TARGET").mkdirs()` at runtime, relative to this
+# WORKDIR -- and this directory, like everything else COPYed above, is
+# root-owned at this image's default mode (755). versola-cli's
+# pullAndRunTools runs this container with `-u <host uid>:<gid>` (see
+# its own comment, and KNOWN-ISSUES.md) so the files that land on the
+# host ($OUT_DIR) come out owned by the calling user, not root -- but
+# that same non-root UID then has no write permission on this
+# directory, so mkdirs() above fails silently and the write that
+# follows throws FileNotFoundException (regression found 19.09.2026,
+# reproduced against a real vps `configure` run). Sticky bit lets any
+# UID create new entries here (.local/...) without letting it
+# rename/delete the root-owned entries already COPYed into this same
+# directory (entrypoint.sh, the templates, lib/, migrate-lib/, the
+# migrations/ trees) -- narrower than a plain 777. This directory is
+# never bind-mounted and never survives past the one --rm'd container
+# that wrote it, so it has no bearing on the root-owned/world-readable-
+# secrets problem -u itself exists to fix (see secrets.go's
+# restrictGeneratedSecretsPerms) -- everything that actually lands on
+# the host disk is still written directly by the calling UID, exactly
+# as before this line.
+RUN chmod +x entrypoint.sh && chmod 1777 .
 
 # Smoke-test the jlinked runtime against both staged apps during `docker build`, so a broken build
 # (e.g. jlink's --add-modules list missing something either app/its dependencies need, which
@@ -141,6 +162,15 @@ RUN printf 'docker-local\n' | java -cp 'lib/*' genEnv && rm -rf .local
 # smoke test, not a real deployment, and its output is discarded either way (see the comment
 # above).
 RUN printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv && rm -rf .local
+# Same generation, but as a non-root UID (Alpine's built-in `nobody`) --
+# specifically to exercise the `docker run -u <host uid>:<gid>` path
+# pullAndRunTools uses at runtime (see entrypoint.sh's own comment on
+# TARGET, and this Dockerfile's `chmod 1777 .` above). Without that
+# chmod, this fails the exact same way the reported regression did
+# (FileNotFoundException on .local/env/vps/auth.conf) -- the two RUN
+# smoke tests above run as root and can't catch that, since RUN always
+# executes as the build-time user regardless of any later `-u`.
+RUN su -s /bin/sh nobody -c "printf 'vps\n' | AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 java -cp 'lib/*' genEnv" && rm -rf .local
 # migrate-tool has no non-destructive smoke test available here the way genEnv does -- running it
 # for real needs a live Postgres and mounted .conf files (both only exist once versola-cli
 # actually invokes this image via the `migrate` compose service), and there's no dry-run mode to
