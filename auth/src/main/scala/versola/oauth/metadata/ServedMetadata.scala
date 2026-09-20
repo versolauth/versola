@@ -30,13 +30,28 @@ object ServedMetadata:
     * normalized to name exactly those sets -- so what clients discover here and what a proof
     * or an assertion is actually held to are one decision rather than two copies of one.
     */
+  /** RFC 8414 §2: the field naming which client authentication methods this server accepts.
+    * `private_key_jwt` is accepted unconditionally -- see `ClientAuthentication` -- so it is
+    * added here rather than left to whatever the stored document happens to say, the same
+    * way the algorithm fields below are derived rather than trusted verbatim. Unioned with
+    * whatever is already stored, not replaced: unlike the algorithm sets, this field also
+    * names methods (`client_secret_basic`, `tls_client_auth`, ...) that this derivation has
+    * no opinion on and must not drop.
+    */
+  private val AuthMethodsField = "token_endpoint_auth_methods_supported"
+
   def derive(stored: Json.Obj): ServedMetadata =
     val dpopAlgorithms = Dpop.Algorithm.fromMetadata(stored)
     val assertionAlgorithms = ClientAssertion.Algorithm.fromMetadata(stored)
+    val storedMethods = stored.get(AuthMethodsField).flatMap(_.as[Set[String]].toOption).getOrElse(Set.empty)
     val document = advertise(
-      advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
-      ClientAssertion.Algorithm.MetadataField,
-      assertionAlgorithms.map(_.toString),
+      advertise(
+        advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
+        ClientAssertion.Algorithm.MetadataField,
+        assertionAlgorithms.map(_.toString),
+      ),
+      AuthMethodsField,
+      storedMethods + ClientAssertion.MethodName,
     )
     ServedMetadata(document, dpopAlgorithms, assertionAlgorithms)
 

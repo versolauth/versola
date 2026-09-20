@@ -513,6 +513,21 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         served.get(ClientAssertion.Algorithm.MetadataField).contains(Json.Arr(Json.Str("RS256"))),
       )
     },
+    // private_key_jwt is accepted unconditionally -- see ClientAuthentication -- so a stored
+    // document that never named it, or a custom one that dropped it, must not leave this
+    // server advertising no way to use a method it actually accepts.
+    test("getMetadata advertises private_key_jwt even when the stored document omits it") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          "token_endpoint_auth_methods_supported" -> Json.Arr(Json.Str("client_secret_basic")),
+        ))
+        served <- env.getMetadata
+      yield assertTrue(
+        served.get("token_endpoint_auth_methods_supported").contains(
+          Json.Arr(Json.Str("client_secret_basic"), Json.Str("private_key_jwt")),
+        ),
+      )
+    },
     test("findByTenant returns only the clients of that tenant") {
       val otherTenant = privateClient.copy(id = ClientId("other"), tenantId = TenantId("other"))
       for

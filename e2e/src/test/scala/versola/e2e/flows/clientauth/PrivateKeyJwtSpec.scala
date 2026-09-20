@@ -201,6 +201,48 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(introspection.active)
     },
 
+    test("/par authenticates the pushing client by assertion") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        assertion <- signer.assertion(clientId, s"${auth.issuer}/par")
+        result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion)).success
+      yield assertTrue(result.requestUri.nonEmpty)
+        .label("RFC 9126 authenticates the pusher the same way /token does")
+    },
+
+    test("/par refuses an assertion addressed to the token endpoint instead of /par") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion))
+      yield result match
+        case _: PushedAuthorizationResult.Success =>
+          throw RuntimeException("Expected /par to reject an assertion addressed elsewhere")
+        case PushedAuthorizationResult.Failure(response, _, error) =>
+          assertTrue(response.status == Status.BadRequest, error.contains("invalid_client"))
+    },
+
+    test("/revoke authenticates the caller by assertion") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        tokenAssertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(tokenAssertion)).success
+        // A fresh assertion, addressed to the endpoint this one reaches: the first one's jti
+        // is spent, and `/revoke` is not `/token`.
+        revokeAssertion <- signer.assertion(clientId, s"${auth.issuer}/revoke")
+        response <- auth.revoke(token.accessToken, clientId, "", assertion = Some(revokeAssertion))
+        introspectAssertion <- signer.assertion(clientId, s"${auth.issuer}/introspect")
+        introspection <- auth.introspect(token.accessToken, Some(clientId), assertion = Some(introspectAssertion)).success
+      yield assertTrue(response.status.isSuccess, !introspection.active)
+        .label("RFC 7009 accepts the same credential /token and /introspect do")
+    },
+
     test("the metadata document advertises the method and the algorithms it will accept") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

@@ -40,6 +40,10 @@ object ClientAssertion:
     case PS256 extends Algorithm(JWSAlgorithm.PS256)
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
 
+  /** RFC 7591 §2 / RFC 8414 §2: the value `token_endpoint_auth_methods_supported` and a
+    * client's own `token_endpoint_auth_method` name this method by. */
+  val MethodName = "private_key_jwt"
+
   object Algorithm:
     /** RFC 8414 §2: the authorization server metadata field naming the set an incoming
       * assertion's `alg` is checked against, exactly as [[Dpop.Algorithm.MetadataField]] does

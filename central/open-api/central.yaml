@@ -1746,6 +1746,17 @@ components:
     Secret:
       type: string
       description: A base64url-encoded secret. Returned only at creation or rotation time.
+    JsonWebKeySet:
+      type: object
+      description: |
+        RFC 7517 §5 JWK Set document -- the exact document registered, not a narrowed model
+        of it, so members this schema does not name still round-trip.
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+      required: [keys]
     LocalizedText:
       type: object
       additionalProperties:
@@ -2104,6 +2115,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required:
         - id
         - clientName
@@ -2191,6 +2209,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required:
         - tenantId
         - id
@@ -2268,6 +2293,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required: [clientId, redirectUris, scope, permissions]
     CreateClientResponse:
       type: object

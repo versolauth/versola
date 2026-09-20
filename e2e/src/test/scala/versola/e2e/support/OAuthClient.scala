@@ -568,6 +568,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       responseType: String = "code",
       extraParams: Map[String, String] = Map.empty,
       useBasicAuth: Boolean = true,
+      /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
+        * a secret and Basic, neither of which are then sent. */
+      assertion: Option[String] = None,
   ): Task[PushedAuthorizationResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -583,10 +586,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
       "state"                 -> state,
       "code_challenge"        -> challenge,
       "code_challenge_method" -> "S256",
-    ) ++ (if useBasicAuth then Map.empty else Map("client_secret" -> clientSecret)) ++ extraParams
+    ) ++ (if useBasicAuth || assertion.nonEmpty then Map.empty else Map("client_secret" -> clientSecret)) ++
+      assertion.fold(Map.empty)(value =>
+        Map("client_assertion_type" -> AssertionSigner.Type, "client_assertion" -> value),
+      ) ++ extraParams
     val req0 = Request.post(s"${config.authUrl}/par", formBody(formParams))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-    val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
+    val req = if useBasicAuth && assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(PushedAuthorizationResult.parse(_, verifier, state))
 
   /** Issues an arbitrary HTTP method against /par — used to test method-not-allowed handling. */
@@ -800,11 +806,23 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tokenTypeHint: Option[String] = None,
       /** RFC 8705 §2.1: what a caller that registered an mTLS subject authenticates with. */
       certificate: Option[String] = None,
+      /** RFC 7523 §2.2: what a caller that registered a key set authenticates with instead of
+        * a secret, which it then does not send. */
+      assertion: Option[String] = None,
   ): Task[Response] =
-    val body = formBody(Map("token" -> token) ++ tokenTypeHint.map("token_type_hint" -> _))
-    val req = Request.post(s"${config.authUrl}/revoke", body)
-      .addHeader(Authorization.Basic(clientId, clientSecret))
+    val body = formBody(
+      Map("token" -> token) ++ tokenTypeHint.map("token_type_hint" -> _)
+        ++ assertion.fold(Map.empty)(value =>
+          Map(
+            "client_assertion_type" -> AssertionSigner.Type,
+            "client_assertion" -> value,
+            "client_id" -> clientId,
+          ),
+        ),
+    )
+    val req0 = Request.post(s"${config.authUrl}/revoke", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req = if assertion.isEmpty then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
     Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client))
 
   /** POST /revoke with an arbitrary form body, bypassing [[revoke]]'s required `token` field --
