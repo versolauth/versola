@@ -53,4 +53,12 @@ case class ChallengeSettingsRecord(
       * with `mtlsCertificateHeader` -- a header with no known encoding can't be parsed.
       */
     mtlsCertificateEncoding: Option[MtlsCertificateEncoding],
+    /** The `kid` of the published JWKS key this tenant's tokens are signed with. The
+      * algorithm follows from the key, so the two cannot disagree -- and during a rotation,
+      * when two keys share one `alg`, a kid is the only thing that names a key at all.
+      *
+      * `None` falls back to auth matching its configured `jwt.private-key` against the synced
+      * JWKS, which is the only thing a deployment whose keys are all verify-only can do.
+      */
+    signingKeyId: Option[String],
 ) derives Schema, JsonCodec

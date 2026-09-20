@@ -4,7 +4,9 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.TestCentralConfig
 import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
-import versola.util.ReloadingCache
+import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
+import versola.util.{ReloadingCache, Secret}
+import zio.json.ast.Json
 import zio.*
 import zio.test.*
 
@@ -16,13 +18,21 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantRecord2 = TenantRecord(tenant2, "Tenant B", None)
 
   private val createRequest = CreateTenantRequest(tenant1, "Tenant A", None)
+
+  private def signableKey(kid: String, alg: String) = JwksRecord(
+    kid = kid,
+    jwk = Json.Obj("kid" -> Json.Str(kid), "kty" -> Json.Str("RSA"), "alg" -> Json.Str(alg)),
+    privateKey = Some(Secret.fromString("encrypted-pkcs8")),
+  )
   private val updateRequest = UpdateTenantRequest(tenant1, "Updated Tenant A", None)
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[TenantRepository]
     val challengeSettingsService = stub[ChallengeSettingsService]
-    val service = TenantService.Impl(cache, repository, challengeSettingsService, TestCentralConfig.config)
+    val jwksRepository = stub[JwksRepository]
+    val service =
+      TenantService.Impl(cache, repository, challengeSettingsService, jwksRepository, TestCentralConfig.config)
 
   def spec = suite("TenantService")(
     test("getAllTenants returns cached tenants sorted by id") {
@@ -37,6 +47,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
       yield assertTrue(
@@ -59,6 +70,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
             requireDpopNonce = false,
             mtlsCertificateHeader = None,
             mtlsCertificateEncoding = None,
+            signingKeyId = None,
           )),
       )
     },
@@ -67,10 +79,45 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
       yield assertTrue(
         env.challengeSettingsService.upsertSettings.calls.map(_.submissionLimits) == List(SubmissionLimits.recommended),
+      )
+    },
+    // Left unset, a new tenant would fall back to auth's legacy configured key, signing
+    // under whatever algorithm that key is rather than the one the deployment prefers.
+    test("createTenant starts the tenant on the key the deployment prefers") {
+      val env = new Env()
+      val keys = Vector(
+        signableKey("rs-kid", "RS256"),
+        signableKey("ps-kid", "PS256"),
+        signableKey("es-kid", "ES256"),
+      )
+
+      for
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(keys)
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest)
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(Some("ps-kid")),
+      )
+    },
+    // The state of a deployment seeded from `bootstrap.jwks`: central holds no private half
+    // for anything, so there is nothing to select and auth's own key is all there is.
+    test("createTenant selects nothing when every stored key is verify-only") {
+      val env = new Env()
+      val verifyOnly = signableKey("ps-kid", "PS256").copy(privateKey = None)
+
+      for
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector(verifyOnly))
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest)
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(None),
       )
     },
     test("updateTenant delegates request fields to repository") {

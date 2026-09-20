@@ -31,6 +31,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         requireDpopNonce = false,
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
+        signingKeyId = None,
       )
       for
         seen <- Ref.make(Option.empty[Request])

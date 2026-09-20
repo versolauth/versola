@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, MtlsCertificateEncoding } from '../types';
+import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, MtlsCertificateEncoding, JwksKeySummary } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -10,6 +10,7 @@ import {
   fetchLocales,
   fetchChallengeSettings,
   upsertChallengeSettings,
+  fetchJwksKeys,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateRedirectUri } from '../utils/validators';
@@ -110,6 +111,10 @@ export class VersolaChallengesList extends LitElement {
 
   @state() private postLogoutRedirectUris: string[] = [];
   @state() private editPostLogoutRedirectUris: Array<{ value: string }> = [];
+
+  @state() private signingKeyId: string | null = null;
+  @state() private editSigningKeyId: string | null = null;
+  @state() private signingKeys: JwksKeySummary[] = [];
 
   @state() private requireDpopNonce = false;
   @state() private editRequireDpopNonce = false;
@@ -532,14 +537,18 @@ export class VersolaChallengesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [templates, locales, challengeSettings] = await Promise.all([
+      const [templates, locales, challengeSettings, jwksKeys] = await Promise.all([
         fetchOtpTemplates(this.tenantId),
         fetchLocales(),
         fetchChallengeSettings(this.tenantId),
+        // Only the keys central holds a private half for can be selected; the rest are
+        // published for verification and can sign nothing.
+        fetchJwksKeys().catch(() => [] as JwksKeySummary[]),
       ]);
       this.templates = templates;
       this.viewSelection = {};
       this.availableLocales = locales;
+      this.signingKeys = jwksKeys.filter(key => key.canSign);
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
         this.phonePrefixes = challengeSettings.allowedPrefixes;
@@ -557,6 +566,7 @@ export class VersolaChallengesList extends LitElement {
         this.requireDpopNonce = challengeSettings.requireDpopNonce ?? false;
         this.mtlsCertificateHeader = challengeSettings.mtlsCertificateHeader ?? null;
         this.mtlsCertificateEncoding = challengeSettings.mtlsCertificateEncoding ?? null;
+        this.signingKeyId = challengeSettings.signingKeyId ?? null;
       } else {
         this.phonePrefixes = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
@@ -573,6 +583,7 @@ export class VersolaChallengesList extends LitElement {
         this.requireDpopNonce = false;
         this.mtlsCertificateHeader = null;
         this.mtlsCertificateEncoding = null;
+        this.signingKeyId = null;
       }
     } catch (e) {
       this.errorMessage = e instanceof Error ? e.message : 'Failed to load data';
@@ -984,6 +995,7 @@ export class VersolaChallengesList extends LitElement {
       .map(([acr, factors]) => ({ acr, factors: [...factors] }));
     this.editPostLogoutRedirectUris = this.postLogoutRedirectUris.map(value => ({ value }));
     this.editRequireDpopNonce = this.requireDpopNonce;
+    this.editSigningKeyId = this.signingKeyId;
     this.settingsError = '';
   }
 
@@ -1105,6 +1117,7 @@ export class VersolaChallengesList extends LitElement {
         this.editRequireDpopNonce,
         mtlsCertificateHeader,
         mtlsCertificateEncoding,
+        this.editSigningKeyId,
       );
       this.phonePrefixes = prefixes;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
@@ -1121,6 +1134,7 @@ export class VersolaChallengesList extends LitElement {
       this.requireDpopNonce = this.editRequireDpopNonce;
       this.mtlsCertificateHeader = mtlsCertificateHeader;
       this.mtlsCertificateEncoding = mtlsCertificateEncoding;
+      this.signingKeyId = this.editSigningKeyId;
       this.hasChallengeSettings = true;
       this.editingSettings = false;
     } catch (e) {
@@ -1444,6 +1458,24 @@ export class VersolaChallengesList extends LitElement {
               </div>
             `
             : html`<div class="hint">Not configured. This tenant's reverse proxy does not terminate mutual TLS.</div>`}
+
+          <label style="margin-top: var(--spacing-lg);">Token Signing Key</label>
+          ${this.signingKeyId
+            ? html`
+              <div class="info-table">
+                <div class="prop-row">
+                  <span class="prop-label">Key ID</span>
+                  <span class="prop-value">${this.signingKeyId}</span>
+                </div>
+                <div class="prop-row">
+                  <span class="prop-label">Algorithm</span>
+                  <span class="prop-value">
+                    ${this.signingKeys.find(key => key.kid === this.signingKeyId)?.algorithm ?? 'Unknown'}
+                  </span>
+                </div>
+              </div>
+            `
+            : html`<div class="hint">No key selected. This tenant's tokens are signed with the private key configured on the auth service itself.</div>`}
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1666,6 +1698,7 @@ export class VersolaChallengesList extends LitElement {
 
         ${this.renderIpHeaderEdit()}
         ${this.renderMtlsCertificateEdit()}
+        ${this.renderSigningKeyEdit()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">DPoP</h3>
 
@@ -1825,6 +1858,35 @@ export class VersolaChallengesList extends LitElement {
             <option value="base64Der" ?selected=${this.editMtlsCertificateEncoding === 'base64Der'}>Base64-encoded DER</option>
           </select>
         ` : nothing}
+      ` : nothing}
+    `;
+  }
+
+  private renderSigningKeyEdit() {
+    // A kid this console cannot see in the signable list is still shown as the current
+    // selection: dropping it from the options would silently reset the tenant onto auth's
+    // own key the next time these settings were saved.
+    const isKnown = this.signingKeys.some(key => key.kid === this.editSigningKeyId);
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Token Signing Key</h3>
+      <div class="hint">Which JWKS key this tenant's access tokens, id tokens and logout tokens are signed with. Only keys central holds a private half for are listed — generate one under Well Known. Leaving this unset signs with the private key configured on the auth service itself, under whatever algorithm that key is.</div>
+      <select class="form-control compact-input" .value=${this.editSigningKeyId ?? ''}
+        @change=${(e: Event) => {
+          const value = (e.target as HTMLSelectElement).value;
+          this.editSigningKeyId = value === '' ? null : value;
+        }}>
+        <option value="" ?selected=${this.editSigningKeyId === null}>Auth service's configured key</option>
+        ${this.signingKeys.map(key => html`
+          <option value=${key.kid} ?selected=${this.editSigningKeyId === key.kid}>
+            ${key.kid}${key.algorithm ? ` · ${key.algorithm}` : ''}
+          </option>
+        `)}
+        ${this.editSigningKeyId !== null && !isKnown ? html`
+          <option value=${this.editSigningKeyId} selected>${this.editSigningKeyId} · unavailable</option>
+        ` : nothing}
+      </select>
+      ${this.signingKeys.length === 0 ? html`
+        <div class="hint">No signable keys are stored. Generate one under Well Known before selecting it here.</div>
       ` : nothing}
     `;
   }

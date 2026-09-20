@@ -113,7 +113,14 @@ object OtpChallengeController extends Controller:
             body.requireDpopNonce.orElse(existing.map(_.requireDpopNonce)).getOrElse(false),
             mtlsCertificateHeader,
             mtlsCertificateEncoding,
+            body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
           ),
         )
+          // A kid nothing can sign with is the operator naming a key that does not fit, not a
+          // fault of this server -- and the message says which of the three reasons it is.
+          .mapError {
+            case error: ChallengeSettingsService.ValidationError => BadRequest(error.message)
+            case other                                          => other
+          }
       yield Response.status(Status.NoContent)
     }

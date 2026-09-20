@@ -89,6 +89,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     requireDpopNonce = false,
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
+    signingKeyId = None,
   )
   val systemSettings = SystemSettingsRecord.default
 

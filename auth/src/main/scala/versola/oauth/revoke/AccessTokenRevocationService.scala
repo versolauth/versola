@@ -82,6 +82,7 @@ object AccessTokenRevocationService:
         .foreachDiscard(client.backChannelLogoutUri): uri =>
           dispatcher.dispatch(
             audience = NonEmptyChunk(client.id),
+            tenantId = client.tenantId,
             uri = uri,
             subject = subject,
             customClaims = Json.Obj(

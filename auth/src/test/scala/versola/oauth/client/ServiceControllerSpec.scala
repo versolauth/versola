@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
+import versola.oauth.jwks.JwksService
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.EnvName
@@ -23,7 +24,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       versola.util.JWT.Signature.Symmetric(TestEnvConfig.coreConfig.central.secretKey),
     ).map(token => Header.Authorization.Bearer(token))
 
-  private type Stubs = (Stub[OAuthConfigurationService], Stub[UserRepository])
+  private type Stubs = (Stub[OAuthConfigurationService], Stub[UserRepository], Stub[JwksService])
 
   private def controllerTestCase(
       description: String,
@@ -39,13 +40,15 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         configuration = stub[OAuthConfigurationService]
         userRepository = stub[UserRepository]
-        stubs = (configuration, userRepository)
+        jwksService = stub[JwksService]
+        stubs = (configuration, userRepository, jwksService)
         tracing <- NoopTracing.layer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ServiceController.routes.provideEnvironment(
               ZEnvironment[OAuthConfigurationService](configuration) ++
                 ZEnvironment[UserRepository](userRepository) ++
+                ZEnvironment[JwksService](jwksService) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment(TestEnvConfig.coreConfig) ++
                 tracing
@@ -66,15 +69,25 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         description = "syncs configuration and returns 200 OK",
         request = Request(method = Method.POST, url = URL.empty / "service" / "configuration" / "sync"),
         expectedStatus = Status.Ok,
-        setup = (configuration, _) => configuration.syncConfiguration.succeedsWith(()),
-        verify = (configuration, _) => ZIO.succeed(assertTrue(configuration.syncConfiguration.calls.length == 1)),
+        setup = (configuration, _, jwksService) =>
+          configuration.syncConfiguration.succeedsWith(()) *> jwksService.refresh.succeedsWith(()),
+        // The JWKS is reloaded by the same call: a tenant's selected key is only signable
+        // here once it has been synced, so a sync that skipped it would leave a freshly
+        // generated key unusable until the next scheduled refresh.
+        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
+          configuration.syncConfiguration.calls.length == 1,
+          jwksService.refresh.calls.length == 1,
+        )),
       ),
       controllerTestCase(
         description = "rejects a request without a valid internal auth token",
         request = Request(method = Method.POST, url = URL.empty / "service" / "configuration" / "sync"),
         expectedStatus = Status.Unauthorized,
         authenticate = false,
-        verify = (configuration, _) => ZIO.succeed(assertTrue(configuration.syncConfiguration.calls.isEmpty)),
+        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
+          configuration.syncConfiguration.calls.isEmpty,
+          jwksService.refresh.calls.isEmpty,
+        )),
       ),
       controllerTestCase(
         description = "returns 404 Not Found in prod, without even checking auth",
@@ -82,7 +95,10 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         expectedStatus = Status.NotFound,
         env = EnvName.Prod,
         authenticate = false,
-        verify = (configuration, _) => ZIO.succeed(assertTrue(configuration.syncConfiguration.calls.isEmpty)),
+        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
+          configuration.syncConfiguration.calls.isEmpty,
+          jwksService.refresh.calls.isEmpty,
+        )),
       ),
     ),
     suite("DELETE /service/users")(
@@ -90,8 +106,8 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         description = "deletes the user and returns 204 No Content",
         request = Request(method = Method.DELETE, url = (URL.empty / "service" / "users").addQueryParam("id", userId.toString)),
         expectedStatus = Status.NoContent,
-        setup = (_, userRepository) => userRepository.delete.succeedsWith(()),
-        verify = (_, userRepository) => ZIO.succeed(assertTrue(userRepository.delete.calls == List(userId))),
+        setup = (_, userRepository, _) => userRepository.delete.succeedsWith(()),
+        verify = (_, userRepository, _) => ZIO.succeed(assertTrue(userRepository.delete.calls == List(userId))),
       ),
       controllerTestCase(
         description = "returns 404 Not Found in prod",
@@ -99,7 +115,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         expectedStatus = Status.NotFound,
         env = EnvName.Prod,
         authenticate = false,
-        verify = (_, userRepository) => ZIO.succeed(assertTrue(userRepository.delete.calls.isEmpty)),
+        verify = (_, userRepository, _) => ZIO.succeed(assertTrue(userRepository.delete.calls.isEmpty)),
       ),
     ),
   )

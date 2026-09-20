@@ -36,6 +36,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireDpopNonce: Boolean = false,
       mtlsCertificateHeader: Option[String] = Some("ssl-client-cert"),
       mtlsCertificateEncoding: Option[MtlsCertificateEncoding] = Some(MtlsCertificateEncoding.urlEncodedPem),
+      signingKeyId: Option[String] = None,
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
@@ -54,6 +55,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireDpopNonce = requireDpopNonce,
       mtlsCertificateHeader = mtlsCertificateHeader,
       mtlsCertificateEncoding = mtlsCertificateEncoding,
+      signingKeyId = signingKeyId,
     )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -235,6 +237,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             requireDpopNonce = Some(true),
             mtlsCertificateHeader = Some(Patch.Modified("x-client-cert")),
             mtlsCertificateEncoding = Some(Patch.Modified(MtlsCertificateEncoding.base64Der)),
+            signingKeyId = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -280,6 +283,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             postLogoutRedirectUris = None,
             mtlsCertificateHeader = Some(Patch.Deleted),
             mtlsCertificateEncoding = Some(Patch.Deleted),
+            signingKeyId = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -294,6 +298,144 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             settings(mtlsCertificateHeader = None, mtlsCertificateEncoding = None),
           ),
         )),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings selects the tenant's signing key",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            signingKeyId = Some(Patch.Modified("ps-kid")),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *> service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.signingKeyId) == List(Some("ps-kid")))),
+    ),
+    // Clearing it is the deliberate move back to auth's own configured key, and like every
+    // other field here it is the one edit an "omitted means keep" rule cannot express.
+    controllerTestCase(
+      description = "PUT challenge-settings clears the signing key when the console sends it null",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            signingKeyId = Some(Patch.Deleted),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(signingKeyId = Some("ps-kid")))) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.signingKeyId) == List(None))),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings keeps the stored signing key when the field is omitted",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            signingKeyId = None,
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(signingKeyId = Some("ps-kid")))) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.signingKeyId) == List(Some("ps-kid")))),
+    ),
+    // The service is what knows which kids are signable; the controller's job is to report
+    // its refusal as the operator's mistake rather than as a fault of this server.
+    controllerTestCase(
+      description = "PUT challenge-settings returns 400 naming the key when nothing can sign with it",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "challenges" / "challenge-settings",
+        body = Body.fromString(
+          UpsertChallengeSettingsRequest(
+            tenantId = tenantId,
+            allowedPrefixes = List("+1"),
+            submissionLimits = SubmissionLimits.empty,
+            otpLength = 6,
+            otpResendAfter = 30,
+            passkeySettings = PasskeySettings("rp", "RP Name", List("https://rp.example"), "preferred"),
+            authConversationTtlSeconds = None,
+            sessionTtlSeconds = None,
+            sessionIdleTtlSeconds = None,
+            userAgentTtlSeconds = None,
+            ipHeader = "X-Forwarded-For",
+            acrVocabulary = None,
+            postLogoutRedirectUris = None,
+            mtlsCertificateHeader = None,
+            mtlsCertificateEncoding = None,
+            signingKeyId = Some(Patch.Modified("bootstrap-kid")),
+          ).toJson,
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings())) *>
+          service.upsertSettings.failsWith(
+            ChallengeSettingsService.ValidationError.VerifyOnlySigningKey("bootstrap-kid"),
+          ),
+      settingsVerify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body.contains("bootstrap-kid")),
     ),
     controllerTestCase(
       description = "PUT challenge-settings refuses a header whose encoding was cleared",
@@ -317,6 +459,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             postLogoutRedirectUris = None,
             mtlsCertificateHeader = Some(Patch.Modified("x-client-cert")),
             mtlsCertificateEncoding = Some(Patch.Deleted),
+            signingKeyId = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -351,6 +494,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             postLogoutRedirectUris = None,
             mtlsCertificateHeader = None,
             mtlsCertificateEncoding = None,
+            signingKeyId = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
@@ -385,6 +529,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             postLogoutRedirectUris = None,
             mtlsCertificateHeader = None,
             mtlsCertificateEncoding = None,
+            signingKeyId = None,
           ).toJson,
         ),
       ).addHeader(Header.ContentType(MediaType.application.json)),

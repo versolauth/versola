@@ -43,6 +43,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =
         ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
+      override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
 
   private val centralSyncTokenService = new CentralSyncTokenService:
     override def getToken: UIO[String] = ZIO.succeed(syncToken)

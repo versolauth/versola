@@ -154,6 +154,19 @@ export interface ChallengeSettingsRecord {
   requireDpopNonce: boolean;
   mtlsCertificateHeader?: string | null;
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null;
+  /** The `kid` of the JWKS key this tenant's tokens are signed with. Null means no key was
+   * selected, leaving auth to sign with its own configured private key. */
+  signingKeyId?: string | null;
+}
+
+// One row of the JWKS key list: what a key is published as, and whether central holds the
+// private half needed to sign with it. Never carries the key material itself.
+export interface JwksKeySummary {
+  kid: string;
+  algorithm?: string | null;
+  keyType?: string | null;
+  curve?: string | null;
+  canSign: boolean;
 }
 
 // Global (non-tenant-scoped) password policy

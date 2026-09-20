@@ -247,6 +247,60 @@ test('edits passkeys and sends them in the save payload', async ({ page }) => {
   });
 });
 
+test('lists only the keys central can sign with, and sends the selected kid', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const picker = page.locator('select').filter({ hasText: "Auth service's configured key" });
+
+  // The bootstrap key has no private half in central, so nothing could sign with it --
+  // offering it would let an operator pick a key that silently falls back at sign time.
+  await expect(picker.locator('option')).toHaveCount(2);
+  await expect(picker.locator('option').nth(1)).toHaveText(/ps-kid · PS256/);
+
+  await picker.selectOption('ps-kid');
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as {
+    signingKeyId: string | null;
+  };
+  expect(body.signingKeyId).toBe('ps-kid');
+});
+
+// Clearing the selection is the deliberate move back to auth's own key, so it has to reach
+// central as an explicit null rather than as an omitted field central would read as "keep".
+test('clears the signing key selection as an explicit null', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...baseState,
+      challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, signingKeyId: 'ps-kid' } },
+    },
+  });
+
+  await expect(page.locator('.prop-value').filter({ hasText: 'ps-kid' })).toBeVisible();
+  await expect(page.locator('.prop-value').filter({ hasText: 'PS256' })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.locator('select').filter({ hasText: "Auth service's configured key" }).selectOption('');
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as {
+    signingKeyId: string | null;
+  };
+  expect(body.signingKeyId).toBeNull();
+});
+
 test('validates that passkeys require a relying party id', async ({ page }) => {
   await loadAdminApp(page, { path: challengesPath, state: baseState });
 

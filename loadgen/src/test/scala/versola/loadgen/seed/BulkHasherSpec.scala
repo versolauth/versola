@@ -1,6 +1,6 @@
 package versola.loadgen.seed
 
-import versola.util.{Argon2Config, MAC, RsaKeyPair, Salt, SecureRandom, SecurityService, Secret}
+import versola.util.{Argon2Config, EcKeyPair, MAC, RsaKeyPair, Salt, SecureRandom, SecurityService, Secret}
 import zio.*
 import zio.prelude.EqualOps
 import zio.test.*
@@ -31,6 +31,7 @@ object BulkHasherSpec extends ZIOSpecDefault:
     override def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]] = delegate.decryptRsa(data, key)
     override def mac(secret: Secret, key: Array[Byte]): Task[MAC] = delegate.mac(secret, key)
     override def generateRsaKeyPair: UIO[RsaKeyPair] = delegate.generateRsaKeyPair
+    override def generateEcKeyPair: UIO[EcKeyPair] = delegate.generateEcKeyPair
 
   private def fixture(parallelism: Int) =
     for

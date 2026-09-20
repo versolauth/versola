@@ -911,7 +911,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
-          _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.publicKeys.active)
+          _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
       },

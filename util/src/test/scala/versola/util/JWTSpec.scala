@@ -38,12 +38,32 @@ object JWTSpec extends ZIOSpecDefault:
   private val ecKeyPairGenerator = KeyPairGenerator.getInstance("EC")
   ecKeyPairGenerator.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
   private val ecKeyPair = ecKeyPairGenerator.generateKeyPair()
+  private val ecPrivateKey = ecKeyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
   private val ecPublicKeys = JWT.PublicKeys(
     com.nimbusds.jose.jwk.JWKSet(
       new com.nimbusds.jose.jwk.ECKey.Builder(
         com.nimbusds.jose.jwk.Curve.P_256,
         ecKeyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
-      ).keyID("ec-key-1").build(),
+      ).keyID("ec-key-1")
+        .algorithm(com.nimbusds.jose.JWSAlgorithm.ES256)
+        .build(),
+    ),
+  )
+
+  // An RSA keypair unrelated to `keyPair`, for the case where the signature was produced by
+  // a key the JWKS does not hold at all.
+  private val otherPrivateKey =
+    keyPairGenerator.generateKeyPair().getPrivate.asInstanceOf[RSAPrivateKey]
+
+  // The same RSA keypair as `publicKeys`, published under a second kid as PS256 -- the way
+  // central publishes it, since both algorithms sign with an RSA-2048 key.
+  private val psPublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.RSAKey.Builder(publicKey)
+        .keyID("ps-key-1")
+        .algorithm(com.nimbusds.jose.JWSAlgorithm.PS256)
+        .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
+        .build(),
     ),
   )
 
@@ -96,6 +116,7 @@ object JWTSpec extends ZIOSpecDefault:
     claimConversionTests,
     parseClaimsTests,
     signatureAlgorithmTests,
+    algorithmRoundTripTests,
     headerTests,
     leftHalfHashTests,
     parseHeaderTests,
@@ -339,7 +360,7 @@ object JWTSpec extends ZIOSpecDefault:
   )
 
   private val signatureAlgorithmTests = suite("signature/algorithm mismatch")(
-    test("fails to serialize when an asymmetric signature declares a non-RS256 algorithm") {
+    test("fails to serialize when an asymmetric signature declares a MAC algorithm") {
       val claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj())
       for result <- JWT.serialize(
           claims = claims,
@@ -347,6 +368,92 @@ object JWTSpec extends ZIOSpecDefault:
           signature = JWT.Signature.Asymmetric(JWT.Algorithm.HS256, "test-key-1", privateKey),
         ).exit
       yield assertTrue(result.isFailure)
+    },
+    // The pairing a `kid` misconfiguration produces: an `alg` whose key type is not the one
+    // behind the kid. It must fail as a signing error, not a ClassCastException.
+    test("fails to serialize when ES256 is paired with an RSA private key") {
+      val claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj())
+      for result <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.ES256, "test-key-1", privateKey),
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
+    test("fails to serialize when PS256 is paired with an EC private key") {
+      val claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj())
+      for result <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, "ec-key-1", ecPrivateKey),
+        ).exit
+      yield assertTrue(result.isFailure)
+    },
+  )
+
+  /** FAPI 2.0 permits only `PS256` and `ES256` for signed objects, so each has to survive a
+    * full sign-then-verify pass -- `PS256` over the same RSA keypair `RS256` uses, `ES256`
+    * over P-256.
+    */
+  private val algorithmRoundTripTests = suite("FAPI signing algorithms")(
+    test("PS256 signs with the RSA keypair and verifies against its published JWK") {
+      for
+        token <- JWT.serialize(
+          claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj()),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, "ps-key-1", privateKey),
+        )
+        header <- JWT.parseHeader[Json.Obj](token)
+        result <- JWT.deserialize[Json.Obj](token, psPublicKeys, JWT.Type.JWT)
+      yield assertTrue(
+        header.get("alg") == Some(Json.Str("PS256")),
+        header.get("kid") == Some(Json.Str("ps-key-1")),
+        result.get("sub") == Some(Json.Str("user123")),
+      )
+    },
+    test("ES256 signs with the P-256 keypair and verifies against its published JWK") {
+      for
+        token <- JWT.serialize(
+          claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj()),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.ES256, "ec-key-1", ecPrivateKey),
+        )
+        header <- JWT.parseHeader[Json.Obj](token)
+        result <- JWT.deserialize[Json.Obj](token, ecPublicKeys, JWT.Type.JWT)
+      yield assertTrue(
+        header.get("alg") == Some(Json.Str("ES256")),
+        header.get("kid") == Some(Json.Str("ec-key-1")),
+        result.get("sub") == Some(Json.Str("user123")),
+      )
+    },
+    test("a PS256 token does not verify against an unrelated key") {
+      for
+        token <- JWT.serialize(
+          claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj()),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, "ps-key-1", otherPrivateKey),
+        )
+        result <- JWT.deserialize[Json.Obj](token, psPublicKeys, JWT.Type.JWT).either
+      yield assertTrue(result == Left(JWT.Error.InvalidSignature))
+    },
+    // Pins current behaviour, which is not the behaviour FAPI wants: `verifySignature`
+    // selects a verifier by the JWK's *key type*, so Nimbus's RSASSAVerifier accepts any
+    // RSA-family `alg` the token header names. A key published as RS256 therefore also
+    // verifies a PS256 token over the same keypair, and vice versa. Not forgeable -- both
+    // still need the private key -- but it means a JWK's own `alg` does not restrict what
+    // it verifies, so "this tenant is PS256-only" cannot be enforced at the verifier until
+    // this is tightened. Part of the FAPI enforcement follow-up, which is what makes the
+    // restriction meaningful; flipping it here alone would reject tokens from any
+    // deployment whose bootstrap JWKS omits `alg`.
+    test("a PS256 token still verifies against the RS256 JWK over the same keypair (alg not enforced)") {
+      for
+        token <- JWT.serialize(
+          claims = JWT.Claims("test-issuer", "user123", List("api"), Json.Obj()),
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, "test-key-1", privateKey),
+        )
+        result <- JWT.deserialize[Json.Obj](token, publicKeys, JWT.Type.JWT).either
+      yield assertTrue(result.isRight)
     },
   )
 
@@ -414,8 +521,12 @@ object JWTSpec extends ZIOSpecDefault:
         hash.nonEmpty,
         JWT.leftHalfHash("token-value", JWT.Algorithm.RS256) == hash,
         JWT.leftHalfHash("other-value", JWT.Algorithm.RS256) != hash,
-        // RS256 and HS256 both hash with SHA-256, so they agree for the same input.
+        // Every supported algorithm is a *-256, so all four hash with SHA-256 and agree
+        // for the same input. A future algorithm on another digest must not land here
+        // silently -- `leftHalfHash` matches exhaustively so it cannot.
         JWT.leftHalfHash("token-value", JWT.Algorithm.HS256) == hash,
+        JWT.leftHalfHash("token-value", JWT.Algorithm.PS256) == hash,
+        JWT.leftHalfHash("token-value", JWT.Algorithm.ES256) == hash,
       )
     },
   )
@@ -453,7 +564,34 @@ object JWTSpec extends ZIOSpecDefault:
       val active = publicKeys.active
       assertTrue(
         active.id == "test-key-1",
-        active.algorithm == JWT.Algorithm.RS256,
+        active.algorithm == Some(JWT.Algorithm.RS256),
+      )
+    },
+    test("algorithm reads PS256 and ES256 off their published JWKs") {
+      assertTrue(
+        psPublicKeys.active.algorithm == Some(JWT.Algorithm.PS256),
+        ecPublicKeys.active.algorithm == Some(JWT.Algorithm.ES256),
+      )
+    },
+    // The JWKS is operator-supplied: `alg` is optional in a JWK, and an unrecognised one is
+    // possible. Neither may throw -- before, both were a MatchError or an NPE.
+    test("algorithm is None for a key published without an alg, and for an unsupported one") {
+      val noAlg = JWT.PublicKeys(
+        com.nimbusds.jose.jwk.JWKSet(
+          new com.nimbusds.jose.jwk.RSAKey.Builder(publicKey).keyID("no-alg").build(),
+        ),
+      )
+      val unsupportedAlg = JWT.PublicKeys(
+        com.nimbusds.jose.jwk.JWKSet(
+          new com.nimbusds.jose.jwk.RSAKey.Builder(publicKey)
+            .keyID("rs512")
+            .algorithm(com.nimbusds.jose.JWSAlgorithm.RS512)
+            .build(),
+        ),
+      )
+      assertTrue(
+        noAlg.active.algorithm == None,
+        unsupportedAlg.active.algorithm == None,
       )
     },
     test("toString, fromJson and the given JsonDecoder all round-trip through the JWKSet JSON") {

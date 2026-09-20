@@ -1,5 +1,6 @@
 package versola.oauth.client
 
+import versola.oauth.jwks.JwksService
 import versola.user.authorizeInternal
 import versola.util.{CoreConfig, EnvName}
 import versola.util.http.Controller
@@ -8,7 +9,8 @@ import zio.http.*
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object ServiceController extends Controller:
-  type Env = Tracing & OAuthConfigurationService & EnvName & CoreConfig & versola.user.UserRepository
+  type Env = Tracing & OAuthConfigurationService & JwksService & EnvName & CoreConfig &
+    versola.user.UserRepository
 
   def routes: Routes[Env, Throwable] = Routes(syncEndpoint, deleteUserEndpoint)
 
@@ -20,6 +22,10 @@ object ServiceController extends Controller:
           for
             _ <- authorizeInternal(request)
             _ <- ZIO.serviceWithZIO[OAuthConfigurationService](_.syncConfiguration)
+            // The signing key a tenant points at is configuration like any other, but it
+            // lives in the JWKS cache rather than the configuration one -- a sync that
+            // reloaded only the selection would leave the key it names unsynced.
+            _ <- ZIO.serviceWithZIO[JwksService](_.refresh)
           yield Response.ok
     }
 

@@ -1,7 +1,7 @@
 package versola.oauth.logout
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord}
+import versola.oauth.client.model.{ClientId, OAuthClientRecord, TenantId}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionId, SessionInfo, SessionRecord}
 import versola.user.model.UserId
@@ -84,7 +84,7 @@ object LogoutService:
         occurredAt <- Clock.instant
         participants <- sessionClients(sessions.flatMap(_.clients.map(_.clientId)).distinct)
         _ <- ZIO.foreachDiscard(byEndpoint(participants)):
-          case (uri, audience) => sendUserLogout(uri, audience, userId, occurredAt)
+          case (uri, tenantId, audience) => sendUserLogout(uri, tenantId, audience, userId, occurredAt)
       yield ()
 
     /** Resolves the RPs that actually participated in this SSO session (tracked via
@@ -121,24 +121,36 @@ object LogoutService:
       * Clients sharing an endpoint are one delivery, not several: every client behind the
       * same edge registers that edge's URI, and the edge would receive the same event once
       * per client and act on it once. Which clients it covers travels in the token's `aud`.
+      *
+      * Grouped by tenant as well as endpoint, because one token is signed with one tenant's
+      * key: clients of two tenants behind one edge cannot share a token whose `kid` belongs
+      * to only one of them.
       */
-    private def byEndpoint(clients: List[OAuthClientRecord]): List[(URL, NonEmptyChunk[ClientId])] =
+    private def byEndpoint(clients: List[OAuthClientRecord]): List[(URL, TenantId, NonEmptyChunk[ClientId])] =
       clients
-        .flatMap(client => client.backChannelLogoutUri.map(_ -> client.id))
+        .flatMap(client => client.backChannelLogoutUri.map(uri => (uri, client.tenantId) -> client.id))
         .groupMap(_._1)(_._2)
         .toList
-        .flatMap((uri, ids) => NonEmptyChunk.fromIterableOption(ids).map(uri -> _))
+        .flatMap: (key, ids) =>
+          val (uri, tenantId) = key
+          NonEmptyChunk.fromIterableOption(ids).map((uri, tenantId, _))
 
     /** OIDC Back-Channel Logout (spec §2.4): the deliveries are handed to the outbox rather
       * than made here, so a slow or unreachable RP never delays or fails the user's own
       * logout response. */
     private def sendBackChannelLogouts(clients: List[OAuthClientRecord], session: SessionRecord): UIO[Unit] =
       ZIO.foreachDiscard(byEndpoint(clients)):
-        case (uri, audience) => sendBackChannelLogout(uri, audience, session)
+        case (uri, tenantId, audience) => sendBackChannelLogout(uri, tenantId, audience, session)
 
-    private def sendBackChannelLogout(uri: URL, audience: NonEmptyChunk[ClientId], session: SessionRecord): UIO[Unit] =
+    private def sendBackChannelLogout(
+        uri: URL,
+        tenantId: TenantId,
+        audience: NonEmptyChunk[ClientId],
+        session: SessionRecord,
+    ): UIO[Unit] =
       send(
         uri,
+        tenantId,
         audience,
         session.userId.toString,
         Json.Obj(
@@ -149,12 +161,14 @@ object LogoutService:
 
     private def sendUserLogout(
         uri: URL,
+        tenantId: TenantId,
         audience: NonEmptyChunk[ClientId],
         userId: UserId,
         occurredAt: Instant,
     ): UIO[Unit] =
       send(
         uri,
+        tenantId,
         audience,
         userId.toString,
         Json.Obj(
@@ -167,9 +181,16 @@ object LogoutService:
         ),
       )
 
-    private def send(uri: URL, audience: NonEmptyChunk[ClientId], subject: String, customClaims: Json.Obj): UIO[Unit] =
+    private def send(
+        uri: URL,
+        tenantId: TenantId,
+        audience: NonEmptyChunk[ClientId],
+        subject: String,
+        customClaims: Json.Obj,
+    ): UIO[Unit] =
       outbox.submit(BackChannelOutbox.Delivery(
         audience = audience,
+        tenantId = tenantId,
         uri = uri,
         subject = subject,
         customClaims = customClaims,

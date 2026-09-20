@@ -1575,6 +1575,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- silentAuthorizeStubs(env)
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+        // The tenant whose key signs the id_token, and whose algorithm `c_hash` is computed with.
+        _ <- env.configurationService.get.succeedsWith(clientWithOtpFlow)
         result <- env.service.authorize(hybridRequest)
       yield result match
         case AuthorizeResponse.Authorized(_, Some(idToken)) => assertTrue(idToken.nonEmpty)
