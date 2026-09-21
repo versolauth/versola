@@ -98,6 +98,16 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           resp.body.asString.map(body => assertTrue(body.contains(Error.BadRequest.description))),
       ),
       controllerTestCase(
+        description    = "returns invalid_request_object in the body when the request object fails verification",
+        request        = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.BadRequest,
+        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject),
+        verify         = resp =>
+          resp.body.asString.map(body =>
+            assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
+          ),
+      ),
+      controllerTestCase(
         description    = "redirects to /challenge and sets cookie on Initialize response",
         request        = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,
@@ -138,6 +148,16 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         setup          = _.parser.parse.failsWith(Error.BadRequest),
         verify         = resp =>
           resp.body.asString.map(body => assertTrue(body.contains(Error.BadRequest.description))),
+      ),
+      controllerTestCase(
+        description    = "returns invalid_request_object in the body when the request object fails verification",
+        request        = Request.post(URL.root / "authorize", Body.empty),
+        expectedStatus = Status.BadRequest,
+        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject),
+        verify         = resp =>
+          resp.body.asString.map(body =>
+            assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
+          ),
       ),
       controllerTestCase(
         description    = "redirects to /challenge and sets cookie on Initialize response",

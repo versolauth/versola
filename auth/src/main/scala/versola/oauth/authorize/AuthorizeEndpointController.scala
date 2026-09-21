@@ -1,6 +1,6 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.model.ConversationCookie
@@ -8,6 +8,7 @@ import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.{Controller, Observability}
 import zio.*
 import zio.http.*
+import zio.json.*
 import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
@@ -38,9 +39,14 @@ object AuthorizeEndpointController extends Controller:
                 .as(Response.badRequest(Error.BadRequest.description)))
 
           case Error.InvalidRequestObject =>
+            // RFC 9101 §6.2: an object that fails verification must be reported as
+            // `invalid_request_object`, not as an undifferentiated 400 -- that is the only
+            // thing that lets a client tell this apart from Error.BadRequest above.
             AuthMetrics.authorizeError(Error.InvalidRequestObject.error) *>
               (Observability.setError(Error.InvalidRequestObject.error, Some(Error.InvalidRequestObject.description))
-                .as(Response.badRequest(Error.InvalidRequestObject.description)))
+                .as(Response.json(
+                  AuthorizeErrorResponse(Error.InvalidRequestObject.error, Error.InvalidRequestObject.description).toJson,
+                ).status(Status.BadRequest)))
 
           case error: Error.RedirectError =>
             for
