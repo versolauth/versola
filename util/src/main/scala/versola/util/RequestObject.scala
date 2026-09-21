@@ -145,11 +145,17 @@ object RequestObject:
       // RFC 9101 leaves `exp` optional. It is required here: an object with no expiry is a
       // signed instruction that stays valid for as long as the client's key does, and it
       // travels through a user agent's history and referrers.
-      expiresAt <- requireInstant(claims, "exp")
+      // Floored: a sub-nanosecond remainder below what Instant can hold must be dropped
+      // towards the epoch here, not away from it, or exp would be reconstructed later than
+      // the client signed.
+      expiresAt <- requireInstant(claims, "exp", BigDecimal.RoundingMode.FLOOR)
       _ <- ZIO.fail(Error.Expired).unless(expiresAt.isAfter(now))
       _ <- ZIO.fail(Error.LifetimeTooLong).when(expiresAt.isAfter(now.plus(maxLifetime)))
 
-      notBefore <- optionalInstant(claims, "nbf")
+      // Ceilinged, the opposite of exp above: a remainder Instant cannot hold must round nbf
+      // away from the epoch, or a claim naming a moment less than a nanosecond from now would
+      // reconstruct as already past and be accepted immediately.
+      notBefore <- optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
       _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
     yield claims
 
@@ -200,22 +206,27 @@ object RequestObject:
           ZIO.fromEither(json.as[Set[String]]).orElseFail(Error.MalformedClaim("aud"))
       .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
 
-  private def requireInstant(claims: Json.Obj, name: String): IO[Error, Instant] =
-    ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name)).flatMap(instant(_, name))
+  private def requireInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Instant] =
+    ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name)).flatMap(instant(_, name, rounding))
 
-  private def optionalInstant(claims: Json.Obj, name: String): IO[Error, Option[Instant]] =
+  private def optionalInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Option[Instant]] =
     claims.get(name) match
       case None => ZIO.none
-      case Some(json) => instant(json, name).asSome
+      case Some(json) => instant(json, name, rounding).asSome
 
-  /** RFC 7519 §2: a `NumericDate` is seconds since the epoch, and may be fractional -- which
-    * is kept rather than truncated. Dropping the fraction moves `nbf` earlier and `exp` later,
-    * so an object would be accepted on either side of the window the client actually signed.
+  /** RFC 7519 §2: a `NumericDate` is seconds since the epoch, and may be fractional -- kept
+    * rather than truncated towards the epoch, which would move `nbf` earlier and `exp` later.
+    *
+    * `Instant` itself bottoms out at one nanosecond, finer than a `NumericDate` is required to
+    * go, so a remainder below that still has to land somewhere. Which way is not free: for
+    * `nbf` only rounding away from the epoch (`CEILING`) guarantees the reconstructed instant
+    * is never earlier than signed, and for `exp` only rounding towards it (`FLOOR`) guarantees
+    * it is never later -- the caller supplies the direction its own claim needs.
     */
-  private def instant(json: Json, name: String): IO[Error, Instant] =
+  private def instant(json: Json, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Instant] =
     ZIO.fromEither(json.as[BigDecimal]).orElseFail(Error.MalformedClaim(name))
       .flatMap: seconds =>
         val whole = seconds.setScale(0, BigDecimal.RoundingMode.FLOOR)
-        val nanos = ((seconds - whole) * 1_000_000_000).toLong
+        val nanos = ((seconds - whole) * 1_000_000_000).setScale(0, rounding).toLongExact
         ZIO.fromOption(Try(Instant.ofEpochSecond(whole.toLongExact, nanos)).toOption)
           .orElseFail(Error.MalformedClaim(name))

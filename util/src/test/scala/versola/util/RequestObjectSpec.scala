@@ -173,6 +173,15 @@ object RequestObjectSpec extends ZIOSpecDefault:
           expired == Left(RequestObject.Error.Expired),
         )
       },
+      // A remainder finer than a nanosecond still has to round somewhere. `nbf` must round
+      // away from the epoch: a claim naming a moment a tenth of a nanosecond from now must not
+      // be reconstructed as exactly now and accepted immediately.
+      test("rejects an nbf whose remainder is finer than a nanosecond, rounding towards not-yet-valid") {
+        val aTenthOfANanosecondFromNow = BigDecimal(now.getEpochSecond) + BigDecimal("0.0000000001")
+        for result <- verify(requestObject(claims("nbf" -> Json.Num(aTenthOfANanosecondFromNow)))).either
+        yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
+      },
+
       test("accepts the explicitly registered type, and refuses a type naming something else") {
         for
           typed <- verify(requestObject(typ = Some(RequestObject.Type))).either
