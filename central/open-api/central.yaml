@@ -1746,6 +1746,22 @@ components:
     Secret:
       type: string
       description: A base64url-encoded secret. Returned only at creation or rotation time.
+    JsonWebKeySet:
+      type: object
+      description: |
+        RFC 7517 §5 JWK Set document -- the exact document registered, not a narrowed model
+        of it, so members this schema does not name still round-trip.
+
+        Every key must be a public key usable with a supported client assertion signing
+        algorithm (ES256, PS256, RS256): an EC key on a curve other than P-256, or a key
+        whose own `alg` its type cannot perform, is refused at registration rather than
+        failing every authentication attempt later.
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+      required: [keys]
     LocalizedText:
       type: object
       additionalProperties:
@@ -2104,6 +2120,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required:
         - id
         - clientName
@@ -2191,6 +2214,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required:
         - tenantId
         - id
@@ -2268,6 +2298,13 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        jwks:
+          oneOf:
+            - $ref: '#/components/schemas/JsonWebKeySet'
+            - type: 'null'
+          description: |
+            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+            assertions with. `null` means the client does not use the method.
       required: [clientId, redirectUris, scope, permissions]
     CreateClientResponse:
       type: object
@@ -3217,6 +3254,13 @@ components:
             mTLS for. Null means the proxy does not terminate mTLS for this tenant.
         mtlsCertificateEncoding:
           $ref: '#/components/schemas/MtlsCertificateEncoding'
+        clientAssertionMaxLifetimeSeconds:
+          type: integer
+          description: >-
+            RFC 7523 §3: how far into the future a `private_key_jwt` client assertion from one
+            of this tenant's clients may set its `exp`. A `jti` is remembered against replay
+            for as long as the assertion bearing it is acceptable, so this also sizes that
+            retention. Between 30 and 900 seconds.
       required:
         - tenantId
         - allowedPrefixes
@@ -3230,6 +3274,7 @@ components:
         - ipHeader
         - postLogoutRedirectUris
         - requireDpopNonce
+        - clientAssertionMaxLifetimeSeconds
     MtlsCertificateEncoding:
       type: [string, 'null']
       description: How the certificate in mtlsCertificateHeader is encoded. Null iff mtlsCertificateHeader is null.
@@ -3292,6 +3337,13 @@ components:
             with no encoding cannot be parsed, and an encoding with no header names nothing.
         mtlsCertificateEncoding:
           $ref: '#/components/schemas/MtlsCertificateEncoding'
+        clientAssertionMaxLifetimeSeconds:
+          type: [integer, 'null']
+          description: >-
+            Keeps the stored value when omitted; defaults to 300 for a new tenant. Refused
+            outside 30..900 -- below that ordinary clock skew starts rejecting honestly minted
+            assertions, above it auth could no longer remember a `jti` for the whole life of
+            the assertion carrying it.
       required:
         - tenantId
         - allowedPrefixes

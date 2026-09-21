@@ -157,6 +157,9 @@ export interface ChallengeSettingsRecord {
   /** The `kid` of the JWKS key this tenant's tokens are signed with. Null means no key was
    * selected, leaving auth to sign with its own configured private key. */
   signingKeyId?: string | null;
+  /** RFC 7523 section 3: how far into the future a `private_key_jwt` client assertion from
+   * one of this tenant's clients may set its `exp`. */
+  clientAssertionMaxLifetimeSeconds?: number;
 }
 
 // One row of the JWKS key list: what a key is published as, and whether central holds the

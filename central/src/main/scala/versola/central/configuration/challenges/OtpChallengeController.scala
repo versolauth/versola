@@ -90,11 +90,21 @@ object OtpChallengeController extends Controller:
         existing <- service.getSettings(body.tenantId)
         mtlsCertificateHeader   = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
+        clientAssertionMaxLifetimeSeconds = body.clientAssertionMaxLifetimeSeconds
+          .orElse(existing.map(_.clientAssertionMaxLifetimeSeconds))
+          .getOrElse(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds)
         // One setting stored in two columns: a header no encoding says how to read, and an
         // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
         // off while central reports it configured.
         _ <- ZIO.fail(BadRequest("mtlsCertificateHeader and mtlsCertificateEncoding must be set or cleared together"))
           .when(mtlsCertificateHeader.isDefined != mtlsCertificateEncoding.isDefined)
+        _ <- ZIO.fail(BadRequest(
+          s"clientAssertionMaxLifetimeSeconds must be between ${ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds}" +
+            s" and ${ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds}",
+        )).when(
+          clientAssertionMaxLifetimeSeconds < ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds ||
+            clientAssertionMaxLifetimeSeconds > ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds,
+        )
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
@@ -114,6 +124,7 @@ object OtpChallengeController extends Controller:
             mtlsCertificateHeader,
             mtlsCertificateEncoding,
             body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
+            clientAssertionMaxLifetimeSeconds,
           ),
         )
           // A kid nothing can sign with is the operator naming a key that does not fit, not a

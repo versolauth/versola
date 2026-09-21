@@ -3,7 +3,8 @@ package versola.oauth.token
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
-import versola.oauth.mtls.{ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
@@ -129,9 +130,15 @@ object OAuthTokenService:
     private def authenticateClient(
         tokenCredentials: ClientCredentials,
         certificate: Option[ClientCertificate],
-    ): IO[TokenEndpointError, OAuthClientRecord] =
-      clientAuthentication.authenticate(credentials = tokenCredentials, certificate = certificate)
-        .orElseFail(TokenEndpointError.InvalidClient)
+    ): IO[Throwable | TokenEndpointError, OAuthClientRecord] =
+      clientAuthentication.authenticate(
+        credentials = tokenCredentials,
+        certificate = certificate,
+        endpoint = AuthenticatedEndpoint.Token,
+      ).mapError {
+        case error: Throwable => error
+        case _ => TokenEndpointError.InvalidClient
+      }
 
     /** RFC 8705 §3.1: the confirmation an issued token carries. The certificate contributes a
       * thumbprint only for a client whose tokens are bound — one that authenticated with a

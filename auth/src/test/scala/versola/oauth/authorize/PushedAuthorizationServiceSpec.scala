@@ -5,7 +5,7 @@ import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizati
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
-import versola.oauth.mtls.ClientAuthentication
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.util.{Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
@@ -43,6 +43,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(
@@ -88,7 +89,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     configuration.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(configuration)
+    val clientAuthentication = ClientAuthentication.Impl(configuration, stub[ClientAssertionService], TestEnvConfig.coreConfig)
 
     def service: UIO[PushedAuthorizationService] =
       SecureRandom.live.build.flatMap { env =>

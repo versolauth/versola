@@ -31,6 +31,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
     signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
 
   /** A key as central stores one it generated: published with an `alg`, private half kept. */

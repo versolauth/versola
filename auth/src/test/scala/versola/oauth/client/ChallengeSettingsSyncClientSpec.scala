@@ -32,6 +32,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = 300,
       )
       for
         seen <- Ref.make(Option.empty[Request])

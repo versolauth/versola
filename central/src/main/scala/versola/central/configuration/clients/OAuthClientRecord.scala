@@ -3,7 +3,7 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.util.{RedirectUri, Secret}
+import versola.util.{JsonWebKeySet, RedirectUri, Secret}
 import zio.http.URL
 import zio.prelude.Equal
 import zio.schema.*
@@ -48,6 +48,13 @@ case class OAuthClientRecord(
       * [[bindsAccessTokens]] rather than this field to find out whether a token gets a
       * `cnf` claim. */
     certificateBoundAccessTokens: Boolean,
+    /** RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
+      * assertions with, and the only keys an assertion from it is verified against. `None`
+      * when the client does not use the method.
+      *
+      * Mutually exclusive with [[mtlsAuth]] — a client authenticates one way, and registering
+      * a second credential only widens what a single compromise reaches. */
+    jwks: Option[JsonWebKeySet],
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

@@ -6,7 +6,8 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
 import versola.oauth.dpop.DpopService
-import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication, ClientCertificate}
+import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}

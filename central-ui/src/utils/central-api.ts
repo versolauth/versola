@@ -1440,6 +1440,7 @@ export async function upsertChallengeSettings(
   mtlsCertificateHeader?: string | null,
   mtlsCertificateEncoding?: MtlsCertificateEncoding | null,
   signingKeyId?: string | null,
+  clientAssertionMaxLifetimeSeconds?: number | null,
 ): Promise<void> {
   await requestVoid('/configuration/challenges/challenge-settings', {
     method: 'PUT',
@@ -1461,6 +1462,7 @@ export async function upsertChallengeSettings(
       mtlsCertificateHeader: mtlsCertificateHeader ?? null,
       mtlsCertificateEncoding: mtlsCertificateEncoding ?? null,
       signingKeyId: signingKeyId ?? null,
+      clientAssertionMaxLifetimeSeconds: clientAssertionMaxLifetimeSeconds ?? null,
     },
   });
 }

@@ -1,8 +1,7 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
-import versola.oauth.client.model.ClientIdWithSecret
-import versola.oauth.mtls.{CertificateRelevance, ClientAuthentication}
+import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
 import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.CoreConfig
 import zio.*
@@ -30,8 +29,7 @@ object PushedAuthorizationController extends Controller:
 
         form <- readForm(request, config.parOrDefault.maxRequestSize)
         credentials <- request.extractCredentials(form).orElseFail(PushedAuthorizationError.InvalidClient)
-        _ <- credentials match
-          case ClientIdWithSecret(clientId, _) => Observability.setClientId(clientId)
+        _ <- Observability.setClientId(credentials.clientId)
 
         certificate <- ZIO.serviceWithZIO[ClientAuthentication](
           _.certificate(

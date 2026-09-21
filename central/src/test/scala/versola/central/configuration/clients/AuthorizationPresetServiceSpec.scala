@@ -49,6 +49,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
@@ -101,6 +102,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsCertificateHeader = None,
     mtlsCertificateEncoding = None,
     signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
   )
 
   override def spec = suite("AuthorizationPresetService")(

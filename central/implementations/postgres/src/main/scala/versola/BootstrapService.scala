@@ -500,6 +500,7 @@ object BootstrapService:
       // Filled in by the caller from the stored key set: the baseline itself cannot know
       // which keys exist.
       signingKeyId = None,
+      clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
     )
 
   /** Default theme seeded from the shared CSS resource. */
@@ -841,6 +842,7 @@ object BootstrapService:
         backChannelLogoutUri = None,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
+        jwks = None,
       )
       clientService.registerClient(request).foldZIO(
         {
@@ -863,6 +865,7 @@ object BootstrapService:
                 backChannelLogoutUri = None,
                 mtlsAuth = None,
                 certificateBoundAccessTokens = None,
+                jwks = None,
               ),
             ).mapError(registrationConfigurationError)
           case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))

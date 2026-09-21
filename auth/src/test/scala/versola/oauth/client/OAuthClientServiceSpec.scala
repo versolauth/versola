@@ -43,6 +43,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -68,6 +69,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -93,6 +95,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(
@@ -399,6 +402,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = 300,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -424,6 +428,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = 300,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -450,6 +455,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = 300,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -544,6 +550,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateHeader = None,
         mtlsCertificateEncoding = None,
         signingKeyId = None,
+        clientAssertionMaxLifetimeSeconds = 300,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

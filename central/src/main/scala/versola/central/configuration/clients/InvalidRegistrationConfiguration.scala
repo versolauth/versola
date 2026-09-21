@@ -1,5 +1,6 @@
 package versola.central.configuration.clients
 
+import versola.util.JsonWebKeySet
 import zio.{Duration, duration2DurationOps}
 
 /** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
@@ -33,6 +34,31 @@ object InvalidRegistrationConfiguration:
       ))
     else
       None
+
+  /** A client authenticates one way. RFC 8705 §2.1 `tls_client_auth` and RFC 7523 §2.2
+    * `private_key_jwt` are each a credential that replaces the secret at the token endpoint,
+    * so registering both does not make a client harder to impersonate -- it gives an attacker
+    * two independent ways to do it, and leaves the operator reading one of them believing it
+    * is the one in force.
+    *
+    * The key set is validated here rather than at first use: a set that could never verify an
+    * assertion is a registration mistake, and reporting it at registration costs an error
+    * message, while reporting it at the token endpoint costs an `invalid_client` the operator
+    * has to reverse-engineer.
+    */
+  def validateClientAuthentication(
+      clientId: ClientId,
+      mtlsAuth: Option[MutualTlsAuth],
+      jwks: Option[JsonWebKeySet],
+  ): Option[InvalidRegistrationConfiguration] =
+    if mtlsAuth.nonEmpty && jwks.nonEmpty then
+      Some(InvalidRegistrationConfiguration(
+        clientId,
+        "a client authenticates either with mtlsAuth or with jwks, not both",
+      ))
+    else
+      jwks.flatMap(keySet => JsonWebKeySet.validate(keySet.document).left.toOption)
+        .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason"))
 
   /** Registration is only reachable from a credential card that asks for a phone or an
     * email, since account creation requires proving ownership of the entry credential.
