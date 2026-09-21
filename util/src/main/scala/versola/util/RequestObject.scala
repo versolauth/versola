@@ -206,10 +206,10 @@ object RequestObject:
           ZIO.fromEither(json.as[Set[String]]).orElseFail(Error.MalformedClaim("aud"))
       .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
 
-  private def requireInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Instant] =
+  private def requireInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode.Value): IO[Error, Instant] =
     ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name)).flatMap(instant(_, name, rounding))
 
-  private def optionalInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Option[Instant]] =
+  private def optionalInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode.Value): IO[Error, Option[Instant]] =
     claims.get(name) match
       case None => ZIO.none
       case Some(json) => instant(json, name, rounding).asSome
@@ -223,7 +223,7 @@ object RequestObject:
     * is never earlier than signed, and for `exp` only rounding towards it (`FLOOR`) guarantees
     * it is never later -- the caller supplies the direction its own claim needs.
     */
-  private def instant(json: Json, name: String, rounding: BigDecimal.RoundingMode): IO[Error, Instant] =
+  private def instant(json: Json, name: String, rounding: BigDecimal.RoundingMode.Value): IO[Error, Instant] =
     ZIO.fromEither(json.as[BigDecimal]).orElseFail(Error.MalformedClaim(name))
       .flatMap: seconds =>
         val whole = seconds.setScale(0, BigDecimal.RoundingMode.FLOOR)
