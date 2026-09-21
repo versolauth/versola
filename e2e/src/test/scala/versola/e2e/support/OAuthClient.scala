@@ -523,6 +523,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authorizationDetails: Option[String] = None,
       /** OIDC Core §3.3.2.11: required whenever `response_type` includes `id_token` (hybrid/implicit). */
       nonce: Option[String] = None,
+      /** RFC 9101 §4: a signed JWT carrying the request parameters by value, in place of
+        * sending them as separate query parameters. Mutually exclusive with `requestUri`. */
+      request: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -543,6 +546,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "id_token_hint"        -> idTokenHint,
           "authorization_details" -> authorizationDetails,
           "nonce"                -> nonce,
+          "request"              -> request,
         ),
       )(uri =>
         List(
@@ -678,19 +682,31 @@ final class OAuthClient(client: Client, config: E2EConfig):
       dpop: Option[DpopProver] = None,
       /** RFC 8705: the client certificate the tenant's proxy forwarded, if any. */
       certificate: Option[String] = None,
+      /** RFC 7523 §2.2: what a client that registered a key set authenticates with instead of
+        * a secret, which it then does not send. */
+      assertion: Option[String] = None,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
-    val effectiveClientSecret = clientSecret.getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
+    val effectiveClientSecret = clientSecret
+      .orElse(Option.when(assertion.nonEmpty)(""))
+      .getOrElse(throw IllegalArgumentException("clientSecret must be provided for token requests"))
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
     val body = formBody(Map(
       "grant_type" -> "authorization_code",
       "code" -> code,
       "redirect_uri" -> effectiveRedirectUri,
       "code_verifier" -> verifier,
+    ) ++ assertion.fold(Map.empty)(value =>
+      Map(
+        "client_assertion_type" -> AssertionSigner.Type,
+        "client_assertion" -> value,
+        "client_id" -> effectiveClientId,
+      ),
     ))
-    val req = Request.post(s"${config.authUrl}/token", body)
-      .addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret))
+    val req0 = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    val req =
+      if assertion.isEmpty then req0.addHeader(Authorization.Basic(effectiveClientId, effectiveClientSecret)) else req0
     for
       // The issuer is what auth compares `htu` against, not the inbound request's own URL.
       proofed <- dpop.fold(ZIO.succeed(req))(prover =>

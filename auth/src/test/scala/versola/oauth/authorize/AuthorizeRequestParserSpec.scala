@@ -65,6 +65,58 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
 
+  /** A client that registered a key set, so it can sign a JAR request object with it. */
+  private val signingKeyPair =
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
+    generator.generateKeyPair()
+
+  private val signingJwk = com.nimbusds.jose.jwk.ECKey
+    .Builder(
+      com.nimbusds.jose.jwk.Curve.P_256,
+      signingKeyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
+    )
+    .keyID("request-object-key")
+    .build()
+
+  private val clientWithJwks = clientRecord.copy(
+    jwks = JsonWebKeySet.validate(
+      com.nimbusds.jose.jwk.JWKSet(signingJwk).toString(true).fromJson[Json.Obj].toOption.get,
+    ).toOption,
+  )
+
+  /** A request object signed with the key [[clientWithJwks]] registered, unless told to use
+    * another one.
+    */
+  private def requestObject(
+      claims: (String, Json)*,
+  )(privateKey: java.security.interfaces.ECPrivateKey = signingKeyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]): String =
+    val payload = Json.Obj(Chunk.fromIterable(claims)*)
+    val jwt = com.nimbusds.jwt.SignedJWT(
+      com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.ES256).keyID(signingJwk.getKeyID).build(),
+      com.nimbusds.jwt.JWTClaimsSet.parse(payload.toString),
+    )
+    jwt.sign(com.nimbusds.jose.crypto.ECDSASigner(privateKey))
+    jwt.serialize()
+
+  /** The claims of a request object carrying the same request [[validParams]] describes. */
+  private def requestObjectClaims(overrides: (String, Json)*): Seq[(String, Json)] =
+    val defaults = Seq(
+      "iss" -> Json.Str(clientId),
+      "aud" -> Json.Str(TestEnvConfig.coreConfig.jwt.issuer),
+      // A minute ahead of the test clock, which starts at the epoch.
+      "exp" -> Json.Num(60),
+      "client_id" -> Json.Str(clientId),
+      "redirect_uri" -> Json.Str(redirectUri.encode),
+      "response_type" -> Json.Str("code"),
+      "scope" -> Json.Str("openid profile"),
+      "state" -> Json.Str("from-the-object"),
+      "code_challenge" -> Json.Str("a" * 43),
+      "code_challenge_method" -> Json.Str("S256"),
+    )
+    val overridden = overrides.map(_._1).toSet
+    defaults.filterNot((name, _) => overridden.contains(name)) ++ overrides
+
   private val paymentType = AuthorizationDetailTypeRecord(
     tenantId = tenantId,
     `type` = AuthorizationDetailType("payment_initiation"),
@@ -93,10 +145,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     configuration.getIpHeader.returnsWith(ZIO.succeed("X-Real-IP"))
     val pushedAuthorizationRepository = stub[PushedAuthorizationRepository]
     val securityService = stub[SecurityService]
+    // Real rather than stubbed: what a request object resolves to is the parser's input, so
+    // a stub would leave every assertion about it asserting on the stub's own answer.
+    val requestObjectService = RequestObjectService.Impl(TestEnvConfig.coreConfig, configuration)
     val parser = AuthorizeRequestParser.Impl(
       TestEnvConfig.coreConfig,
       configuration,
       pushedAuthorizationRepository,
+      requestObjectService,
       securityService,
       schemaValidator,
     )
@@ -708,7 +764,110 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
       },
     ),
-    suite("request_uri")(
+    suite("request object (JAR)")(
+      test("takes the request from a signed request object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.clientId == clientId,
+          result.redirectUri == redirectUri,
+          result.scope == Set(ScopeToken("openid"), ScopeToken("profile")),
+          result.state.contains(State("from-the-object")),
+        )
+      },
+      test("uses only what the object carries, never a query parameter repeating or adding to it") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+          // Both a contradiction of a signed parameter and an addition the object never made.
+          "scope" -> "openid email",
+          "nonce" -> "injected-nonce",
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.scope == Set(ScopeToken("openid"), ScopeToken("profile")),
+          result.nonce.isEmpty,
+        )
+      },
+      test("carries a numeric claim through as the parameter it stands for") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims("max_age" -> Json.Num(300))*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request)
+        yield assertTrue(result.maxAge.contains(300L))
+      },
+      test("rejects an object naming a different client than the request around it") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims("client_id" -> Json.Str("other-client"))*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidRequestObject))
+      },
+      test("rejects an object signed by a key the client never registered") {
+        val env = Env()
+        val generator = java.security.KeyPairGenerator.getInstance("EC")
+        generator.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
+        val foreignKey = generator.generateKeyPair().getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(foreignKey),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidRequestObject))
+      },
+      test("rejects a request object from a client that registered no key to sign one with") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidRequestObject))
+      },
+      test("a plain request is left alone by the request object step") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.clientId == clientId,
+          env.configuration.getRequestObjectSigningAlgorithms.calls.isEmpty,
+        )
+      },
+    ),
+        suite("request_uri")(
       test("replaces the request payload with the pushed one") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(Map(

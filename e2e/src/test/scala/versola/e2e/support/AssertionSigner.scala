@@ -60,6 +60,20 @@ final class AssertionSigner private (private val signingKey: ECPrivateKey, publi
     * be refused however well formed it is. */
   def foreignKey: Task[ECPrivateKey] = AssertionSigner.make.map(_.signingKey)
 
+  /** RFC 9101 §4: a signed request object, carrying whatever claims the caller supplies
+    * (typically the same parameters a plain authorization request would have sent, plus
+    * `iss`/`aud`/`exp`/`client_id`) rather than the fixed assertion shape [[assertion]] signs.
+    */
+  def requestObject(claims: (String, Json)*)(signWith: Option[ECPrivateKey] = None): Task[String] =
+    ZIO.attempt:
+      val payload = Json.Obj(Chunk.fromIterable(claims)*)
+      val jwt = SignedJWT(
+        JWSHeader.Builder(JWSAlgorithm.ES256).keyID(publicJwk.getKeyID).build(),
+        JWTClaimsSet.parse(payload.toString),
+      )
+      jwt.sign(ECDSASigner(signWith.getOrElse(signingKey)))
+      jwt.serialize()
+
 object AssertionSigner:
 
   /** RFC 7523 §2.2: the fixed `client_assertion_type` a token request carries. */

@@ -513,6 +513,46 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         served.get(ClientAssertion.Algorithm.MetadataField).contains(Json.Arr(Json.Str("RS256"))),
       )
     },
+    // RFC 9101 §4: a request object is held to the set the document advertises, on the same
+    // argument as the DPoP and assertion fields above.
+    test("getMetadata advertises the default request object algorithms when the document omits the field") {
+      for
+        env <- makeEnv(metadata = Json.Obj("issuer" -> Json.Str("https://idp.example")))
+        served <- env.getMetadata
+        enforced <- env.getRequestObjectSigningAlgorithms
+      yield assertTrue(
+        served.get(RequestObject.Algorithm.MetadataField)
+          .contains(Json.Arr(Json.Str("ES256"), Json.Str("PS256"))),
+        enforced == RequestObject.Algorithm.Default,
+      )
+    },
+    test("getRequestObjectSigningAlgorithms narrows to what the document names") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          RequestObject.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+        ))
+        served <- env.getMetadata
+        enforced <- env.getRequestObjectSigningAlgorithms
+      yield assertTrue(
+        enforced == Set(ClientAssertion.Algorithm.RS256),
+        served.get(RequestObject.Algorithm.MetadataField).contains(Json.Arr(Json.Str("RS256"))),
+      )
+    },
+    // The `request` parameter is accepted because AuthorizeRequestParser resolves one, and a
+    // `request_uri` here is always a pushed request rather than a document to fetch. Neither
+    // is a claim a stored document gets to contradict.
+    test("getMetadata states the request parameter support this build actually has") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          "request_parameter_supported" -> Json.Bool(false),
+          "request_uri_parameter_supported" -> Json.Bool(true),
+        ))
+        served <- env.getMetadata
+      yield assertTrue(
+        served.get("request_parameter_supported").contains(Json.Bool(true)),
+        served.get("request_uri_parameter_supported").contains(Json.Bool(false)),
+      )
+    },
     // private_key_jwt is accepted unconditionally -- see ClientAuthentication -- so a stored
     // document that never named it, or a custom one that dropped it, must not leave this
     // server advertising no way to use a method it actually accepts.

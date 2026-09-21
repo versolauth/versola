@@ -4,7 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
 import versola.oauth.account.AccountSettingsController
-import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService}
+import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService, RequestObjectService}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
@@ -157,6 +157,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       DpopService.live >+>
       // Reads the algorithms an assertion may be signed with off the same document.
       ClientAssertionService.live >+>
+      // And the algorithms a JAR request object may be signed with, likewise.
+      RequestObjectService.live >+>
       ClientAuthentication.live >+>
       CentralSyncTokenService.live >+>
       JwksSyncClient.live >+>

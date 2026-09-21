@@ -187,8 +187,12 @@ object ClientAssertion:
     * RFC 7517 §4.5 leaves `kid` optional, though, and a client with a single registered key
     * has nothing to disambiguate -- so where it is absent every key of a type the algorithm
     * can use is tried.
+    *
+    * Visible to the module because [[RequestObject]] verifies against the same registered key
+    * set under the same rules (RFC 9101 §6.2 states them in the same terms as RFC 7523 does);
+    * two copies of this could drift into accepting different things from one key set.
     */
-  private def verifySignature(jwt: SignedJWT, keys: JWT.PublicKeys, algorithm: Algorithm): IO[Error, Unit] =
+  private[util] def verifySignature(jwt: SignedJWT, keys: JWT.PublicKeys, algorithm: Algorithm): IO[Error, Unit] =
     for
       candidates <- ZIO.attempt(Option(jwt.getHeader.getKeyID) match
         case Some(kid) => Option(keys.keys.getKeyByKeyId(kid)).toList

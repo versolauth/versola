@@ -65,6 +65,12 @@ object PushedAuthorizationError:
     error match
       case Error.BadRequest =>
         Validation(ErrorCode.InvalidRequest, Some(Error.BadRequest.description), None)
+      case Error.InvalidRequestObject =>
+        Validation(
+          Error.InvalidRequestObject.error,
+          Some(Error.InvalidRequestObject.description),
+          Some("https://datatracker.ietf.org/doc/html/rfc9101#section-6.2"),
+        )
       case error: Error.RedirectError =>
         Validation(error.error, Some(error.errorDescription), error.errorUri)
 

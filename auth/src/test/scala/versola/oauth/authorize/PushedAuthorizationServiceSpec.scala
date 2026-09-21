@@ -6,9 +6,11 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{ClientAssertion, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
+import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.test.*
 
@@ -89,7 +91,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     // Authentication looks the client up first to see whether it registered an mTLS
     // subject; an unregistered one falls through to the secret it presented.
     configuration.find.returnsWith(ZIO.none)
-    val clientAuthentication = ClientAuthentication.Impl(configuration, stub[ClientAssertionService], TestEnvConfig.coreConfig)
+    val clientAssertionService = stub[ClientAssertionService]
+    val clientAuthentication = ClientAuthentication.Impl(configuration, clientAssertionService, TestEnvConfig.coreConfig)
 
     def service: UIO[PushedAuthorizationService] =
       SecureRandom.live.build.flatMap { env =>
@@ -100,6 +103,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
             parser,
             repository,
             clientAuthentication,
+            RequestObjectService.Impl(config, configuration),
             secureRandom,
             SecurityService.Impl(secureRandom, hashingSemaphore),
           )
@@ -113,6 +117,47 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- repository.create.succeedsWith(())
       yield ()
 
+    /** A client that registered a key set, which is therefore authenticated by an assertion
+      * signed with it rather than by the secret it no longer gets to use.
+      */
+    def jarClient: UIO[Unit] =
+      for
+        _ <- configuration.find.succeedsWith(Some(clientWithJwks))
+        _ <- clientAssertionService.verify.succeedsWith(())
+        _ <- configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+        _ <- configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+      yield ()
+
+  /** A client that registered a key set, so it can push a JAR request object signed with it. */
+  private val signingKeyPair =
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
+    generator.generateKeyPair()
+
+  private val signingJwk = com.nimbusds.jose.jwk.ECKey
+    .Builder(
+      com.nimbusds.jose.jwk.Curve.P_256,
+      signingKeyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
+    )
+    .keyID("request-object-key")
+    .build()
+
+  private val clientWithJwks = clientRecord.copy(
+    jwks = JsonWebKeySet.validate(
+      com.nimbusds.jose.jwk.JWKSet(signingJwk).toString(true).fromJson[Json.Obj].toOption.get,
+    ).toOption,
+  )
+
+  private def signedRequestObject(claims: (String, Json)*): String =
+    val jwt = com.nimbusds.jwt.SignedJWT(
+      com.nimbusds.jose.JWSHeader.Builder(com.nimbusds.jose.JWSAlgorithm.ES256).keyID(signingJwk.getKeyID).build(),
+      com.nimbusds.jwt.JWTClaimsSet.parse(Json.Obj(Chunk.fromIterable(claims)*).toString),
+    )
+    jwt.sign(com.nimbusds.jose.crypto.ECDSASigner(
+      signingKeyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey],
+    ))
+    jwt.serialize()
+
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   private val mtlsClientRecord = clientRecord.copy(
     secret = None,
@@ -120,6 +165,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
   )
 
   private val request = Request.get(URL.empty / "par")
+
+  private val assertionCredentials = ClientIdWithAssertion(clientId, "client-assertion")
 
   def spec = suite("PushedAuthorizationService")(
     test("returns a request_uri with the configured lifetime") {
@@ -145,6 +192,54 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         created.head._2.clientId == clientId,
         created.head._2.params.get("state") == Some(List("test-state")),
         created.head._3 == config.parOrDefault.requestUriTtl,
+      )
+    },
+    test("stores what a pushed request object stated, not the object itself") {
+      val env = Env()
+      val requestObject = signedRequestObject(
+        "iss" -> Json.Str(clientId),
+        "aud" -> Json.Str(config.jwt.issuer),
+        // A minute ahead of the test clock, which starts at the epoch.
+        "exp" -> Json.Num(60),
+        "client_id" -> Json.Str(clientId),
+        "redirect_uri" -> Json.Str(redirectUri.encode),
+        "response_type" -> Json.Str("code"),
+        "scope" -> Json.Str("openid"),
+        "state" -> Json.Str("from-the-object"),
+      )
+      for
+        _ <- env.happyPath
+        _ <- env.jarClient
+        service <- env.service
+        _ <- service.push(
+          Map("client_id" -> Chunk(clientId.toString), "request" -> Chunk(requestObject)),
+          assertionCredentials,
+          None,
+          request,
+        )
+        created = env.repository.create.calls.head._2
+      yield assertTrue(
+        created.params.get("state") == Some(List("from-the-object")),
+        // Redeeming the request_uri must not have to verify the object a second time, by
+        // which point its own `exp` may well have passed.
+        !created.params.contains("request"),
+      )
+    },
+    test("refuses a pushed request object this client did not sign") {
+      val env = Env()
+      for
+        _ <- env.happyPath
+        _ <- env.jarClient
+        service <- env.service
+        result <- service.push(
+          Map("client_id" -> Chunk(clientId.toString), "request" -> Chunk("not-a-request-object")),
+          assertionCredentials,
+          None,
+          request,
+        ).flip
+      yield assertTrue(
+        result == PushedAuthorizationError.from(Error.InvalidRequestObject),
+        env.repository.create.calls.isEmpty,
       )
     },
     test("never persists the client authentication parameters") {
