@@ -223,7 +223,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         case _: PushedAuthorizationResult.Success =>
           throw RuntimeException("Expected /par to reject an assertion addressed elsewhere")
         case PushedAuthorizationResult.Failure(response, _, error) =>
-          assertTrue(response.status == Status.BadRequest, error.contains("invalid_client"))
+          assertTrue(response.status == Status.Unauthorized, error.contains("invalid_client"))
     },
 
     test("/revoke authenticates the caller by assertion") {
