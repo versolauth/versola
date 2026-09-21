@@ -1,6 +1,7 @@
 package versola.oauth.model
 
 import org.apache.commons.codec.digest.Blake3
+import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
@@ -18,8 +19,22 @@ case class ConversationCookie(
     clientId: ClientId,
     redirectUri: String,
     state: Option[String],
-    useFragment: Option[Boolean],
-) derives JsonCodec
+    /** How the authorization response this conversation ends in is returned; `None` in a
+      * cookie issued before the field existed, and in one whose conversation the response
+      * mode is read off the conversation record for. */
+    responseMode: Option[ResponseMode],
+    /** Superseded by [[responseMode]]. Only cookies issued by an earlier release still carry
+      * it, and only until they expire; nothing writes it. */
+    useFragment: Option[Boolean] = None,
+) derives JsonCodec:
+
+  /** The mode the response is returned in, falling back to what a cookie from before
+    * [[responseMode]] existed said about the placement alone.
+    */
+  def effectiveResponseMode: ResponseMode =
+    responseMode.getOrElse(
+      if useFragment.getOrElse(false) then ResponseMode.Fragment else ResponseMode.Query,
+    )
 
 object ConversationCookie:
   val name = "SSO_CONVERSATION"

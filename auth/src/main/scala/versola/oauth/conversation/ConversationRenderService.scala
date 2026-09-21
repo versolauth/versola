@@ -1,7 +1,8 @@
 package versola.oauth.conversation
 
 import versola.auth.model.PasskeyName
-import versola.oauth.authorize.AuthorizeRedirect
+import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
+import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.consent.ConsentService
@@ -26,9 +27,9 @@ import java.time.Instant
 trait ConversationRenderService:
   def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
 
-  def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], useFragment: Boolean): Task[Response]
+  def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
 
-  def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], useFragment: Boolean): Task[Response]
+  def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
 
   def renderSubmit(
       result: ConversationResult.Render,
@@ -58,7 +59,7 @@ trait ConversationRenderService:
   ): Task[Response]
 
 object ConversationRenderService:
-  val live = ZLayer.fromFunction(Impl(_, _, _))
+  val live = ZLayer.fromFunction(Impl(_, _, _, _))
 
   @jsonDiscriminator("type")
   sealed trait StepView derives JsonCodec
@@ -179,6 +180,7 @@ object ConversationRenderService:
       config: CoreConfig,
       configuration: OAuthConfigurationService,
       jwksService: JwksService,
+      responseService: AuthorizationResponseService,
   ) extends ConversationRenderService:
     override def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response] =
       for
@@ -197,7 +199,7 @@ object ConversationRenderService:
             record.csrfToken,
             availableClaims = availableClaimNames(record),
             errorOverride = errorKey,
-            useFragment = record.responseType.contains(ResponseTypeEntry.IdToken),
+            responseMode = record.responseMode,
           )
         response <- maybeInfo match
           case None =>
@@ -215,33 +217,38 @@ object ConversationRenderService:
               )
       yield response
 
-    override def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], useFragment: Boolean): Task[Response] =
-      renderTerminal(
-        clientId,
-        "conversation-expired",
-        StepView.ConversationExpired(returnUri(redirectUri, state, "login_required", useFragment)),
-      )
+    override def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response] =
+      returnUri(clientId, redirectUri, state, "login_required", responseMode).flatMap: uri =>
+        renderTerminal(
+          clientId,
+          "conversation-expired",
+          StepView.ConversationExpired(uri),
+        )
 
-    override def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], useFragment: Boolean): Task[Response] =
-      renderTerminal(
-        clientId,
-        "service-unavailable",
-        StepView.ServiceUnavailable(returnUri(redirectUri, state, "temporarily_unavailable", useFragment)),
-      )
+    override def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response] =
+      returnUri(clientId, redirectUri, state, "temporarily_unavailable", responseMode).flatMap: uri =>
+        renderTerminal(
+          clientId,
+          "service-unavailable",
+          StepView.ServiceUnavailable(uri),
+        )
 
+    /** The link back to the client for an error the user is shown a page about first. It is
+      * an authorization error response like any other, so under JARM it is signed rather than
+      * spelled out in the URI.
+      */
     private def returnUri(
+        clientId: ClientId,
         redirectUri: String,
         state: Option[String],
         error: String,
-        useFragment: Boolean,
-    ): Option[String] =
-      URL.decode(redirectUri).toOption.map: url =>
-        val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
-        if useFragment then
-          val raw = params.map((k, v) => s"$k=${encodeQueryParam(v)}").mkString("&")
-          URL.decode(s"${url.encode}#$raw").getOrElse(url).encode
-        else
-          url.addQueryParams(params).encode
+        responseMode: ResponseMode,
+    ): Task[Option[String]] =
+      URL.decode(redirectUri).toOption match
+        case None => ZIO.none
+        case Some(url) =>
+          val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
+          responseService.redirect(clientId, url, responseMode, params).map(uri => Some(uri.encode))
 
 
     private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
@@ -340,11 +347,19 @@ object ConversationRenderService:
                   client <- configuration.get(record.clientId)
                   signingKey <- jwksService.signingKey(client.tenantId)
                   cHash = JWT.leftHalfHash(encodedCode, signingKey.algorithm)
-                  dataWithCHash = data.copy(claims = data.claims + ("c_hash" -> Json.Str(cHash)))
-                  token <- serializeIdToken(dataWithCHash, signingKey)
+                  // FAPI 1.0 Advanced §5.2.2-4: `s_hash` binds the id_token to the `state`
+                  // it was issued for, as `c_hash` binds it to the code.
+                  sHash = state.map(state => "s_hash" -> Json.Str(JWT.leftHalfHash(state, signingKey.algorithm)))
+                  dataWithHashes = data.copy(claims = data.claims ++ sHash + ("c_hash" -> Json.Str(cHash)))
+                  token <- serializeIdToken(dataWithHashes, signingKey)
                 yield Some(token)
               case None => ZIO.none
-            redirectUrl = AuthorizeRedirect.responseUrl(redirectUri, encodedCode, state, idToken, config.jwt.issuer)
+            redirectUrl <- responseService.redirect(
+              record.clientId,
+              redirectUri,
+              record.responseMode,
+              AuthorizeRedirect.successParams(encodedCode, state, idToken, config.jwt.issuer),
+            )
           yield Response.seeOther(redirectUrl)
             .addCookie(
               SessionCookie(
@@ -461,7 +476,7 @@ object ConversationRenderService:
         csrfToken: String,
         availableClaims: Set[String],
         errorOverride: Option[String] = None,
-        useFragment: Boolean = false,
+        responseMode: ResponseMode = ResponseMode.Query,
     ): Task[Option[FormRenderInfo]] =
       val formId = step match
         case _: ConversationStep.Credential => "credential"
@@ -472,7 +487,7 @@ object ConversationRenderService:
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, useFragment)
+        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, responseMode)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
         errorMessage = errorOverride.orElse(stepErrorKey(step))
@@ -556,8 +571,8 @@ object ConversationRenderService:
         redirectUri: URL,
         state: Option[State],
         availableClaims: Set[String],
-        useFragment: Boolean,
-    ): UIO[StepView] =
+        responseMode: ResponseMode,
+    ): Task[StepView] =
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
           for
@@ -606,6 +621,7 @@ object ConversationRenderService:
             client <- configuration.find(clientId)
             scopes <- configuration.getScopes
             locales <- configuration.getLocales
+            denyUri <- returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             byToken = scopes.map(record => record.scope -> record).toMap
             rows = s.requestedScope.toList.sortBy: token =>
               (if token.toString == "openid" then 0 else 1, token.toString)
@@ -633,13 +649,12 @@ object ConversationRenderService:
             tosUri = client.flatMap(_.tosUri),
             scopes = rows,
             allowPartial = s.allowPartial,
-            denyUri = returnUri(redirectUri.encode, state, "access_denied", useFragment).getOrElse(redirectUri.encode),
+            denyUri = denyUri.getOrElse(redirectUri.encode),
           )
 
         case ConversationStep.AccessDenied =>
-          ZIO.succeed(StepView.AccessDenied(redirectUri =
-            returnUri(redirectUri.encode, state, "access_denied", useFragment).getOrElse(redirectUri.encode)
-          ))
+          returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
+            .map(uri => StepView.AccessDenied(redirectUri = uri.getOrElse(redirectUri.encode)))
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
       val customClaims = record.userClaims.toList

@@ -3,7 +3,7 @@ package versola.oauth.conversation
 import versola.auth.TestEnvConfig
 import versola.auth.model.{CredentialDeviceType, CredentialId, OtpCode, PasskeyRecord, Password}
 import versola.oauth.authorize.AcrResolutionService
-import versola.oauth.authorize.model.{Prompt, ResponseTypeEntry}
+import versola.oauth.authorize.model.{Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.CheckPassword
@@ -64,6 +64,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     uiLocales = Some(List("en")),
     nonce = None,
     responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,

@@ -13,7 +13,8 @@ import zio.prelude.NonEmptySet
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object AuthorizeEndpointController extends Controller:
-  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & OAuthConfigurationService & CoreConfig
+  type Env = Tracing & AuthorizeRequestParser & AuthorizeEndpointService & AuthorizationResponseService &
+    OAuthConfigurationService & CoreConfig
 
   def routes: Routes[Env, Throwable] = Routes(
     getAuthorizeRoute,
@@ -51,9 +52,16 @@ object AuthorizeEndpointController extends Controller:
           case error: Error.RedirectError =>
             for
               config <- ZIO.service[CoreConfig]
+              responseService <- ZIO.service[AuthorizationResponseService]
               _ <- AuthMetrics.authorizeError(error.error.toString)
               _ <- Observability.setError(error.error, Some(error.errorDescription))
-            yield Response.seeOther(error.redirectUriWithErrorParams(config.jwt.issuer))
+              redirect <- responseService.redirect(
+                error.clientId,
+                error.uri,
+                error.responseMode,
+                error.errorParams(config.jwt.issuer),
+              )
+            yield Response.seeOther(redirect)
         }
     }
 
@@ -61,27 +69,33 @@ object AuthorizeEndpointController extends Controller:
     for
       authService <- ZIO.service[AuthorizeEndpointService]
       configService <- ZIO.service[OAuthConfigurationService]
+      responseService <- ZIO.service[AuthorizationResponseService]
       config <- ZIO.service[CoreConfig]
       authConversationTtl <- configService.getAuthConversationTtl(request.clientId)
-      response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).map:
+      response <- authService.authorize(request).tap(AuthMetrics.authorizeOutcome).flatMap:
         case AuthorizeResponse.Authorized(code, idToken) =>
-          Response.seeOther(
-            AuthorizeRedirect.responseUrl(request.redirectUri, Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
-          )
+          responseService.redirect(
+            request.clientId,
+            request.redirectUri,
+            request.responseMode,
+            AuthorizeRedirect.successParams(Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
+          ).map(Response.seeOther)
 
         case AuthorizeResponse.Initialize(authId) =>
-          Response.seeOther(URL.root / "challenge")
-            .addCookie(
-              ConversationCookie.responseCookie(
-                ConversationCookie(
-                  authId,
-                  request.clientId,
-                  redirectUri = request.redirectUri.encode,
-                  state = request.state,
-                  useFragment = Some(request.isHybrid),
+          ZIO.succeed(
+            Response.seeOther(URL.root / "challenge")
+              .addCookie(
+                ConversationCookie.responseCookie(
+                  ConversationCookie(
+                    authId,
+                    request.clientId,
+                    redirectUri = request.redirectUri.encode,
+                    state = request.state,
+                    responseMode = Some(request.responseMode),
+                  ),
+                  authConversationTtl,
+                  config.security.conversationCookieSecret,
                 ),
-                authConversationTtl,
-                config.security.conversationCookieSecret,
               ),
-            )
+          )
     yield response

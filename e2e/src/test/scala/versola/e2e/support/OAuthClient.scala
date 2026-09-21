@@ -52,6 +52,17 @@ case class AuthorizeResult(
           if actualError == expectedError then ZIO.unit
           else ZIO.fail(RuntimeException(s"Expected error='$expectedError', got error='$actualError'"))
 
+  /** JARM (`response_mode=query.jwt`/`jwt`): the whole response is one signed JWT carried as
+    * the `response` query parameter, rather than individual parameters. Returns that JWT.
+    */
+  def assertJarmQueryRedirect: Task[String] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 JARM redirect, got status=${response.status}"))
+    else
+      ZIO.fromEither(URL.decode(location)).flatMap: url =>
+        url.queryZIO[String]("response")
+          .orElseFail(RuntimeException(s"Expected 'response' JWT in redirect query, got: $location"))
+
   /** Assert a 303 fragment-error redirect (hybrid / implicit flow): error is in `#error=…`, not `?error=…`. */
   def assertFragmentErrorRedirect(expectedError: String): Task[Unit] =
     if response.status != Status.SeeOther then
@@ -79,6 +90,7 @@ extension (task: Task[AuthorizeResult])
   def assertCodeRedirect: Task[String] = task.flatMap(_.assertCodeRedirect)
   def assertErrorRedirect(expectedError: String): Task[Unit] = task.flatMap(_.assertErrorRedirect(expectedError))
   def assertFragmentErrorRedirect(expectedError: String): Task[Unit] = task.flatMap(_.assertFragmentErrorRedirect(expectedError))
+  def assertJarmQueryRedirect: Task[String] = task.flatMap(_.assertJarmQueryRedirect)
 
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
@@ -332,9 +344,22 @@ case class SubmitResult(response: Response):
           case (Some(code), Some(idToken)) => ZIO.succeed((code, idToken))
           case _ => ZIO.fail(RuntimeException(s"Expected 'code' and 'id_token' in fragment, got: $location"))
 
+  /** JARM (`response_mode=query.jwt`/`jwt`): the finished conversation's whole response is one
+    * signed JWT carried as the `response` query parameter. Returns that JWT.
+    */
+  def assertJarmQueryRedirect: Task[String] =
+    if response.status != Status.SeeOther then
+      ZIO.fail(RuntimeException(s"Expected 303 JARM redirect, got status=${response.status} location=$location"))
+    else
+      ZIO.fromEither(URL.decode(location)).flatMap: url =>
+        url.queryZIO[String]("response")
+          .orElseFail(RuntimeException(s"Expected 'response' JWT in redirect query, got: $location"))
+
 extension (task: Task[SubmitResult])
   def assertRedirect: Task[String] = task.flatMap(_.assertRedirect)
   def assertFragmentRedirect: Task[(String, String)] = task.flatMap(_.assertFragmentRedirect)
+  @targetName("assertJarmQueryRedirectSubmitResult")
+  def assertJarmQueryRedirect: Task[String] = task.flatMap(_.assertJarmQueryRedirect)
 
   /** Like [[assertRedirect]], but when the redirect goes to `/challenge` it
     * fetches the current challenge step and includes it in the failure message.
@@ -526,6 +551,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 9101 §4: a signed JWT carrying the request parameters by value, in place of
         * sending them as separate query parameters. Mutually exclusive with `requestUri`. */
       request: Option[String] = None,
+      /** JARM (Financial-grade API JWT Secured Authorization Response Mode): e.g. `"jwt"`,
+        * `"query.jwt"`, `"fragment.jwt"`.
+        */
+      responseMode: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -547,6 +576,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "authorization_details" -> authorizationDetails,
           "nonce"                -> nonce,
           "request"              -> request,
+          "response_mode"        -> responseMode,
         ),
       )(uri =>
         List(

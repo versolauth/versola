@@ -1,6 +1,8 @@
 package versola.oauth.conversation
 
 import versola.auth.TestEnvConfig
+import versola.oauth.authorize.AuthorizationResponseService
+import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.conversation.ConversationRenderService.StepView
@@ -87,6 +89,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     uiLocales = Some(List("en")),
     nonce = None,
     responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    responseMode = versola.oauth.authorize.model.ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,
@@ -129,7 +132,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
   class Env:
     val configuration = stub[OAuthConfigurationService]
     val jwksService = stub[JwksService]
-    val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService)
+    val responseService = AuthorizationResponseService.Impl(TestEnvConfig.coreConfig, configuration, jwksService)
+    val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService)
 
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
@@ -712,7 +716,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg"))
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), false)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("conversation-expired")) &&
@@ -721,7 +725,29 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
           assertTrue(!body.contains("\"logo\""))
       },
-      test("renders the expired page with a fragment-based OAuth error return URI when useFragment is set") {
+      test("renders the expired page with a signed return URI under a JARM response mode") {
+        val env = Env()
+        val expiredForm = formRecord.copy(
+          id = "conversation-expired",
+          localizations = Map("en" -> Map("page_title" -> "Conversation expired", "title" -> "Expired")),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.QueryJwt)
+          body <- response.body.asString
+        yield assertTrue(
+          response.status == Status.Ok,
+          body.contains("response="),
+          !body.contains("error=login_required"),
+        )
+      },
+      test("renders the expired page with a fragment-based OAuth error return URI in fragment mode") {
         val env = Env()
         val expiredForm = formRecord.copy(
           id = "conversation-expired",
@@ -733,7 +759,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), true)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Fragment)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("#error=login_required")) &&
@@ -747,7 +773,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), false)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
@@ -829,7 +855,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(unavailableForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), false)
+          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service-unavailable")) &&
@@ -916,6 +942,68 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
           response <- env.service.renderSubmit(result, conversationRecord)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
+      },
+      test("binds the id_token to the state with an s_hash") {
+        val env = Env()
+        val code = AuthorizationCode(Array.fill(16)(1.toByte))
+        val sessionId = SessionId(Array.fill(32)(2.toByte))
+        val userId = UserId(java.util.UUID.randomUUID())
+        val idTokenData = ConversationResult.IdTokenData(userId, Map.empty, clientId, PublicSessionId("public-session-1"))
+        val result = ConversationResult.Complete(
+          redirectUri,
+          Some(State("test-state")),
+          code,
+          sessionId,
+          Some(idTokenData),
+          testUserAgentId,
+          UserAgentData(None, userId, UserAgentDetails.parse(None)),
+        )
+        for
+          _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
+          _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
+          response <- env.service.renderSubmit(result, conversationRecord)
+          location = response.header(Header.Location).map(_.url).get
+          idToken = location.queryParams.queryParam("id_token").get
+          claims <- JWT.deserialize[Json.Obj](idToken, TestEnvConfig.publicKeys, JWT.Type.JWT)
+            .mapError(error => RuntimeException(s"not a verifiable id_token: $error"))
+        yield assertTrue(
+          claims.get("s_hash") == Some(Json.Str(JWT.leftHalfHash("test-state", TestEnvConfig.signingKey.algorithm))),
+          claims.get("c_hash") == Some(Json.Str(JWT.leftHalfHash(Base64Url.encode(code), TestEnvConfig.signingKey.algorithm))),
+        )
+      },
+      test("returns the whole response as a signed JWT when the conversation was started in a JARM mode") {
+        val env = Env()
+        val code = AuthorizationCode(Array.fill(16)(1.toByte))
+        val sessionId = SessionId(Array.fill(32)(2.toByte))
+        val userId = UserId(java.util.UUID.randomUUID())
+        val result = ConversationResult.Complete(
+          redirectUri,
+          Some(State("test-state")),
+          code,
+          sessionId,
+          None,
+          testUserAgentId,
+          UserAgentData(None, userId, UserAgentDetails.parse(None)),
+        )
+        for
+          _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
+          _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
+          _ <- env.configuration.get.succeedsWith(clientRecord)
+          _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
+          response <- env.service.renderSubmit(
+            result,
+            conversationRecord.copy(responseMode = ResponseMode.QueryJwt),
+          )
+          location = response.header(Header.Location).map(_.url).get
+          claims <- JWT.deserialize[Json.Obj](location.queryParams.queryParam("response").get, TestEnvConfig.publicKeys, JWT.Type.JWT)
+            .mapError(error => RuntimeException(s"not a verifiable response JWT: $error"))
+        yield assertTrue(
+          location.queryParams.queryParam("code").isEmpty,
+          claims.get("code") == Some(Json.Str(Base64Url.encode(code))),
+          claims.get("state") == Some(Json.Str("test-state")),
+        )
       },
     ),
     suite("renderLogout")(

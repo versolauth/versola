@@ -1,7 +1,7 @@
 package versola.oauth.conversation.model
 
 import versola.auth.model.OtpCode
-import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.model.{ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, RegistrationCredential, RegistrationFlow, RegistrationStep, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.{Login, UserId}
@@ -34,6 +34,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
     uiLocales = Some(List("en")),
     nonce = None,
     responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,

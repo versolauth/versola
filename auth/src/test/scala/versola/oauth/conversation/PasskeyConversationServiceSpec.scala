@@ -117,6 +117,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    responseMode = versola.oauth.authorize.model.ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,

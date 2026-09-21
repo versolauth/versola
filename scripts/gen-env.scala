@@ -414,6 +414,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "end_session_endpoint": "$authUrl/logout",
        |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
+       |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
+       |  "authorization_signing_alg_values_supported": ["RS256", "PS256", "ES256"],
        |  "code_challenge_methods_supported": ["S256"],
        |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
        |  "subject_types_supported": ["public", "pairwise"],

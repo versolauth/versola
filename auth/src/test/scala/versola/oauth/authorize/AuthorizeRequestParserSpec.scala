@@ -303,7 +303,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       for
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         result <- env.parser.parse(request).either
-      yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), edgeResource.toString, useFragment = false)))
+      yield assertTrue(result == Left(Error.InvalidTarget(clientId, redirectUri, Some(State("test-state")), edgeResource.toString, responseMode = ResponseMode.Query)))
     },
     test("rejects a malformed resource value") {
       val env = Env()
@@ -311,7 +311,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       for
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         result <- env.parser.parse(request).either
-      yield assertTrue(result == Left(Error.InvalidTarget(redirectUri, Some(State("test-state")), "not-a-valid-resource", useFragment = false)))
+      yield assertTrue(result == Left(Error.InvalidTarget(clientId, redirectUri, Some(State("test-state")), "not-a-valid-resource", responseMode = ResponseMode.Query)))
     },
     suite("parse POST")(
       test("successfully parses valid form-urlencoded request") {
@@ -385,10 +385,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.findAuthorizationDetailType.succeedsWith(None)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          clientId,
           redirectUri,
           Some(State("test-state")),
           "unknown_type - unknown authorization details type",
-          useFragment = false,
+          responseMode = ResponseMode.Query,
         )))
       },
       test("rejects an unknown member of a registered type") {
@@ -400,7 +401,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
           result <- env.parser.parse(request).either
         yield assertTrue(result.left.exists {
-          case Error.InvalidAuthorizationDetails(_, _, reason, _) => reason.startsWith("payment_initiation - ")
+          case Error.InvalidAuthorizationDetails(_, _, _, reason, _) => reason.startsWith("payment_initiation - ")
           case _ => false
         })
       },
@@ -411,10 +412,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          clientId,
           redirectUri,
           Some(State("test-state")),
           "Authorization detail is missing the required type member",
-          useFragment = false,
+          responseMode = ResponseMode.Query,
         )))
       },
       test("rejects a value that is not a JSON array") {
@@ -424,10 +426,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          clientId,
           redirectUri,
           Some(State("test-state")),
           "authorization_details must be a JSON array",
-          useFragment = false,
+          responseMode = ResponseMode.Query,
         )))
       },
       test("rejects a location that is not a registered resource") {
@@ -441,10 +444,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.findResource.succeedsWith(None)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          clientId,
           redirectUri,
           Some(State("test-state")),
           "payment_initiation - unknown location - https://unknown.example.com",
-          useFragment = false,
+          responseMode = ResponseMode.Query,
         )))
       },
       test("accepts a location that is a registered resource") {
@@ -484,10 +488,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.findAuthorizationDetailType.succeedsWith(Some(paymentType))
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidAuthorizationDetails(
+          clientId,
           redirectUri,
           Some(State("test-state")),
           s"payment_initiation - unknown location - $edgeResource",
-          useFragment = false,
+          responseMode = ResponseMode.Query,
         )))
       },
     ),
@@ -508,7 +513,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.StateInvalid(redirectUri, useFragment = false)))
+        yield assertTrue(result == Left(Error.StateInvalid(clientId, redirectUri, responseMode = ResponseMode.Query)))
       },
     ),
     suite("scope")(
@@ -526,7 +531,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone", useFragment = false)))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(clientId, redirectUri, Some(State("test-state")), "phone", responseMode = ResponseMode.Query)))
       },
       test("names every unregistered scope, not only the first") {
         val env = Env()
@@ -534,7 +539,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "address phone", useFragment = false)))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(clientId, redirectUri, Some(State("test-state")), "address phone", responseMode = ResponseMode.Query)))
       },
       test("rejects an unregistered scope pushed through /par too") {
         val env = Env()
@@ -542,7 +547,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(pushedParams.view.mapValues(Chunk.fromIterable).toMap, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.ScopeNotGranted(redirectUri, Some(State("test-state")), "phone", useFragment = false)))
+        yield assertTrue(result == Left(Error.ScopeNotGranted(clientId, redirectUri, Some(State("test-state")), "phone", responseMode = ResponseMode.Query)))
       },
     ),
     suite("code_challenge_method")(
@@ -560,7 +565,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodInvalid(redirectUri, Some(State("test-state")), "plain", useFragment = false)))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodInvalid(clientId, redirectUri, Some(State("test-state")), "plain", responseMode = ResponseMode.Query)))
       },
       test("rejects a missing code_challenge_method instead of defaulting to plain") {
         val env = Env()
@@ -568,58 +573,151 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
     ),
-    suite("hybrid flow useFragment propagation")(
-      test("useFragment=true on CodeChallengeMethodMissing when response_type=code id_token") {
+    suite("response_mode")(
+      test("defaults to query for the code flow") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseMode == ResponseMode.Query)
+      },
+      test("defaults to fragment for a response type returning an id_token") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseMode == ResponseMode.Fragment)
+      },
+      test("resolves the JARM shorthand to query.jwt for the code flow") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_mode" -> "jwt")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseMode == ResponseMode.QueryJwt)
+      },
+      test("resolves the JARM shorthand to fragment.jwt for a response type returning an id_token") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map(
+          "response_type" -> "code id_token",
+          "response_mode" -> "jwt",
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseMode == ResponseMode.FragmentJwt)
+      },
+      test("accepts an explicitly named mode") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_mode" -> "fragment.jwt")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.responseMode == ResponseMode.FragmentJwt)
+      },
+      test("rejects a mode this server does not implement") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_mode" -> "form_post")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.ResponseModeInvalid(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          "form_post",
+          responseMode = ResponseMode.Query,
+        )))
+      },
+      test("rejects a query mode for a response type OIDC requires the fragment for") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map(
+          "response_type" -> "code id_token",
+          "response_mode" -> "query.jwt",
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.ResponseModeInvalid(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          "query.jwt",
+          responseMode = ResponseMode.Fragment,
+        )))
+      },
+      test("an error raised before the response type is validated still uses the requested mode") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map(
+          "response_type" -> "token",
+          "response_mode" -> "jwt",
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          "token",
+          responseMode = ResponseMode.QueryJwt,
+        )))
+      },
+    ),
+    suite("hybrid flow response mode propagation")(
+      test("fragment mode on CodeChallengeMethodMissing when response_type=code id_token") {
         val env = Env()
         val hybridParams = validParams ++ Map("response_type" -> "code id_token") - "code_challenge_method"
         val request = Request.get(URL.root.addQueryParams(hybridParams))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = true)))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Fragment)))
       },
 
-      test("useFragment=true on CodeChallengeMissing when response_type=code id_token") {
+      test("fragment mode on CodeChallengeMissing when response_type=code id_token") {
         val env = Env()
         val hybridParams = validParams ++ Map("response_type" -> "code id_token") - "code_challenge" - "code_challenge_method"
         val request = Request.get(URL.root.addQueryParams(hybridParams))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMissing(redirectUri, Some(State("test-state")), useFragment = true)))
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Fragment)))
       },
 
-      test("useFragment=false on CodeChallengeMethodMissing when response_type=code") {
+      test("query mode on CodeChallengeMethodMissing when response_type=code") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge_method"))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.CodeChallengeMethodMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
 
-      test("useFragment=true on UnsupportedResponseType when response_type contains id_token") {
+      test("fragment mode on UnsupportedResponseType when response_type contains id_token") {
         val env = Env()
         val params = validParams.view.mapValues(Chunk(_)).toMap + ("response_type" -> Chunk("id_token"))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "id_token", useFragment = true)))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, Some(State("test-state")), "id_token", responseMode = ResponseMode.Fragment)))
       },
 
-      test("useFragment=false on UnsupportedResponseType when response_type does not contain id_token") {
+      test("query mode on UnsupportedResponseType when response_type does not contain id_token") {
         val env = Env()
         val params = validParams.view.mapValues(Chunk(_)).toMap + ("response_type" -> Chunk("token"))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "token", useFragment = false)))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, Some(State("test-state")), "token", responseMode = ResponseMode.Query)))
       },
 
-      test("useFragment=true on MultipleValuesProvided(state) when response_type=code id_token") {
+      test("fragment mode on MultipleValuesProvided(state) when response_type=code id_token") {
         val env = Env()
         val params = validParams.view.mapValues(Chunk(_)).toMap
           + ("response_type" -> Chunk("code id_token"))
@@ -627,17 +725,17 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, None, "state", useFragment = true)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, None, "state", responseMode = ResponseMode.Fragment)))
       },
 
-      test("useFragment=true on MultipleValuesProvided(response_type) when any value contains id_token") {
+      test("fragment mode on MultipleValuesProvided(response_type) when any value contains id_token") {
         val env = Env()
         val params = validParams.view.mapValues(Chunk(_)).toMap
           + ("response_type" -> Chunk("code id_token", "code"))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "response_type", useFragment = true)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "response_type", responseMode = ResponseMode.Fragment)))
       },
 
       test("oversized state is not echoed in response_type error") {
@@ -649,7 +747,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, None, "unsupported", useFragment = false)))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, None, "unsupported", responseMode = ResponseMode.Query)))
       },
 
       test("ResponseTypeMissing echoes valid state") {
@@ -658,7 +756,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.validate(params, Request.get(URL.root)).either
-        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.ResponseTypeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
     ),
     suite("ip")(
@@ -969,7 +1067,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
       test("rejects an invalid code_challenge") {
         val env = Env()
@@ -978,7 +1076,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.CodeChallengeInvalid(redirectUri, Some(State("test-state")), invalid, useFragment = false)))
+        yield assertTrue(result == Left(Error.CodeChallengeInvalid(clientId, redirectUri, Some(State("test-state")), invalid, responseMode = ResponseMode.Query)))
       },
     ),
     suite("response_type")(
@@ -996,7 +1094,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.UnsupportedResponseType(redirectUri, Some(State("test-state")), "token", useFragment = false)))
+        yield assertTrue(result == Left(Error.UnsupportedResponseType(clientId, redirectUri, Some(State("test-state")), "token", responseMode = ResponseMode.Query)))
       },
       test("rejects a missing response_type") {
         val env = Env()
@@ -1004,7 +1102,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.ResponseTypeMissing(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.ResponseTypeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
     ),
     suite("claims")(
@@ -1022,7 +1120,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.InvalidClaims(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.InvalidClaims(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
     ),
     suite("ui_locales")(
@@ -1069,7 +1167,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.DpopJktInvalid(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
       test("rejects a thumbprint of the wrong length for SHA-256") {
         val env = Env()
@@ -1077,7 +1175,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.DpopJktInvalid(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
       // 43 base64url characters carry 258 bits, two more than a SHA-256 digest's 256, so a
       // canonical thumbprint's last character always has its low 2 bits zero -- one of 16
@@ -1092,7 +1190,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.DpopJktInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.DpopJktInvalid(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
     ),
     suite("prompt")(
@@ -1110,7 +1208,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.PromptInvalid(redirectUri, Some(State("test-state")), useFragment = false)))
+        yield assertTrue(result == Left(Error.PromptInvalid(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
       test("ignores unrecognized prompt tokens") {
         val env = Env()
@@ -1233,7 +1331,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, None, "state", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, None, "state", responseMode = ResponseMode.Query)))
       },
       test("fails when response_type is provided more than once") {
         val env = Env()
@@ -1241,7 +1339,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "response_type", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "response_type", responseMode = ResponseMode.Query)))
       },
       test("fails when code_challenge is provided more than once") {
         val env = Env()
@@ -1249,7 +1347,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "code_challenge", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "code_challenge", responseMode = ResponseMode.Query)))
       },
       test("fails when code_challenge_method is provided more than once") {
         val env = Env()
@@ -1257,7 +1355,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "code_challenge_method", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "code_challenge_method", responseMode = ResponseMode.Query)))
       },
       test("fails when scope is provided more than once") {
         val env = Env()
@@ -1265,7 +1363,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "scope", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "scope", responseMode = ResponseMode.Query)))
       },
       test("fails when ui_locales is provided more than once") {
         val env = Env()
@@ -1275,7 +1373,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "ui_locales", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "ui_locales", responseMode = ResponseMode.Query)))
       },
       test("fails when claims is provided more than once") {
         val env = Env()
@@ -1285,7 +1383,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "claims", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "claims", responseMode = ResponseMode.Query)))
       },
       test("fails when nonce is provided more than once") {
         val env = Env()
@@ -1295,7 +1393,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "nonce", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "nonce", responseMode = ResponseMode.Query)))
       },
       test("fails when prompt is provided more than once") {
         val env = Env()
@@ -1305,7 +1403,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "prompt", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "prompt", responseMode = ResponseMode.Query)))
       },
       test("fails when max_age is provided more than once") {
         val env = Env()
@@ -1315,7 +1413,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "max_age", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "max_age", responseMode = ResponseMode.Query)))
       },
       test("fails when acr_values is provided more than once") {
         val env = Env()
@@ -1325,7 +1423,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "acr_values", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "acr_values", responseMode = ResponseMode.Query)))
       },
       test("fails when login_hint is provided more than once") {
         val env = Env()
@@ -1335,7 +1433,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "login_hint", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "login_hint", responseMode = ResponseMode.Query)))
       },
       test("fails when id_token_hint is provided more than once") {
         val env = Env()
@@ -1345,7 +1443,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "id_token_hint", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "id_token_hint", responseMode = ResponseMode.Query)))
       },
       test("fails when authorization_details is provided more than once") {
         val env = Env()
@@ -1355,7 +1453,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.MultipleValuesProvided(redirectUri, Some(State("test-state")), "authorization_details", useFragment = false)))
+        yield assertTrue(result == Left(Error.MultipleValuesProvided(clientId, redirectUri, Some(State("test-state")), "authorization_details", responseMode = ResponseMode.Query)))
       },
     ),
   )

@@ -4,7 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
 import versola.oauth.account.AccountSettingsController
-import versola.oauth.authorize.{AcrResolutionService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService, RequestObjectService}
+import versola.oauth.authorize.{AcrResolutionService, AuthorizationResponseService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService, RequestObjectService}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
 import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
@@ -84,6 +84,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AuthorizeRequestParser &
       PushedAuthorizationService &
       AuthorizeEndpointService &
+      AuthorizationResponseService &
       ConversationRouter &
       ConversationService &
       ConversationRenderService &
@@ -190,6 +191,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ConsentService.live >+>
       ConversationService.live >+>
       ConversationRouter.live >+>
+      AuthorizationResponseService.live >+>
       AuthorizeEndpointService.live >+>
       ConversationRenderService.live >+>
       LogoutService.live

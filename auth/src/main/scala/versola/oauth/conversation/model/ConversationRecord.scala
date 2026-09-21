@@ -1,6 +1,6 @@
 package versola.oauth.conversation.model
 
-import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.model.{ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
@@ -27,6 +27,10 @@ case class ConversationRecord(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     responseType: NonEmptySet[ResponseTypeEntry],
+    /** How the authorization response is returned once this conversation completes, including
+      * whether it is signed (JARM). Persisted because the response is built long after
+      * `/authorize` accepted the `response_mode` parameter. */
+    responseMode: ResponseMode,
     userEmail: Option[Email],
     userPhone: Option[Phone],
     userLogin: Option[Login],
