@@ -10,6 +10,19 @@ private[authorize] object Error:
   case object BadRequest extends Error:
     val description = "Either client_id or redirect_uri is somehow missing, invalid, provided multiple times or not registered"
 
+  /** RFC 9101 §6.2/§6.3: the `request` parameter is not an object this client signed, or does
+    * not carry the request it claims to.
+    *
+    * Answered directly rather than redirected, unlike the parameter errors below: the only
+    * `redirect_uri` a request object request carries is the one inside the object, and an
+    * object that failed verification is exactly the one whose contents cannot be trusted to
+    * name where a response may be sent. Why it failed is logged rather than returned, for the
+    * same reason a failed client authentication does not say which check it failed.
+    */
+  case object InvalidRequestObject extends Error:
+    val error: ErrorCode = ErrorCode.InvalidRequestObject
+    val description = "The request parameter does not contain a valid Request Object for this client"
+
   sealed trait RedirectError(
       val error: ErrorCode,
       val errorDescription: String,

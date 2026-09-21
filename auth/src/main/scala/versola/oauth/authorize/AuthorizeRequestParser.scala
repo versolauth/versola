@@ -29,7 +29,7 @@ trait AuthorizeRequestParser:
   ): IO[Error, AuthorizeRequest]
 
 object AuthorizeRequestParser:
-  def live = ZLayer.fromFunction(Impl(_, _, _, _, _))
+  def live = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   /** Keeps `state` (echoed into the ConversationCookie alongside the redirect URI) small
     * enough that it can't push that cookie past the ~4 KiB per-cookie limit browsers
@@ -56,6 +56,7 @@ object AuthorizeRequestParser:
       config: CoreConfig,
       oauthClientService: OAuthConfigurationService,
       pushedAuthorizationRepository: PushedAuthorizationRepository,
+      requestObjectService: RequestObjectService,
       securityService: SecurityService,
       schemaValidator: JsonSchemaValidator,
   ) extends AuthorizeRequestParser:
@@ -65,7 +66,10 @@ object AuthorizeRequestParser:
     ): IO[Error, AuthorizeRequest] =
       for
         rawParams <- extractRequestParams(request).orElseFail(Error.BadRequest)
-        params <- resolvePushedRequest(rawParams)
+        pushedParams <- resolvePushedRequest(rawParams)
+        // A pushed request was already resolved when it was pushed, so this only fires for a
+        // request object sent straight to `/authorize` (RFC 9101 §5.1).
+        params <- requestObjectService.resolve(pushedParams)
         authorizeRequest <- validate(params, request)
       yield authorizeRequest
 

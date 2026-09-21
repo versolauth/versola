@@ -136,6 +136,28 @@ components:
           description: |
             RFC 9207 — the iss parameter is included in every authorization response
             (both successful and error redirects).
+        request_object_signing_alg_values_supported:
+          type: array
+          items:
+            type: string
+          description: |
+            RFC 9101 §4: the algorithms a `request` object may be signed with. Checked
+            against, not merely advertised — an incoming object's `alg` must be named here,
+            and an entry no verifier exists for is dropped rather than advertised. Never
+            `none`: a request object is source authentication, so it is verified against the
+            keys the client registered for `private_key_jwt`.
+        request_parameter_supported:
+          type: boolean
+          description: |
+            RFC 9101 §5.1: whether an authorization request may be passed by value in a
+            signed `request` parameter. Always true.
+        request_uri_parameter_supported:
+          type: boolean
+          description: |
+            RFC 9101 §5.2: whether a request object may be passed by reference for this
+            server to fetch. Always false — a `request_uri` here always names a pushed
+            authorization request (RFC 9126), which carries the same object over an
+            authenticated back channel instead of one this server would have to fetch.
 
   responses:
     Metadata:
@@ -162,3 +184,6 @@ components:
             token_endpoint_auth_methods_supported: [client_secret_basic, client_secret_post, none]
             id_token_signing_alg_values_supported: [RS256]
             subject_types_supported: [public]
+            request_object_signing_alg_values_supported: [ES256, PS256]
+            request_parameter_supported: true
+            request_uri_parameter_supported: false

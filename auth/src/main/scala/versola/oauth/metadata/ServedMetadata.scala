@@ -1,6 +1,6 @@
 package versola.oauth.metadata
 
-import versola.util.{ClientAssertion, Dpop}
+import versola.util.{ClientAssertion, Dpop, RequestObject}
 import zio.json.ast.Json
 
 /** The authorization server metadata document as `auth` actually serves it, paired with what
@@ -18,11 +18,14 @@ import zio.json.ast.Json
   *   discover and the set a proof is held to cannot drift apart.
   * @param clientAssertionSigningAlgorithms RFC 7523 / RFC 8414 §2: the same arrangement for
   *   the `alg` of a `private_key_jwt` client assertion.
+  * @param requestObjectSigningAlgorithms RFC 9101 §4: and again for the `alg` of a JAR
+  *   request object.
   */
 case class ServedMetadata(
     document: Json.Obj,
     dpopSigningAlgorithms: Set[Dpop.Algorithm],
     clientAssertionSigningAlgorithms: Set[ClientAssertion.Algorithm],
+    requestObjectSigningAlgorithms: Set[ClientAssertion.Algorithm],
 )
 
 object ServedMetadata:
@@ -40,20 +43,45 @@ object ServedMetadata:
     */
   private val AuthMethodsField = "token_endpoint_auth_methods_supported"
 
+  /** RFC 9101 §4 / OpenID Connect Discovery: whether a `request` parameter is accepted at all.
+    * Derived rather than stored for the same reason the algorithm sets are -- it is true
+    * because `AuthorizeRequestParser` resolves one, not because a document said so. The
+    * by-reference `request_uri` of §5.2 is not implemented (a `request_uri` here is always a
+    * pushed request, RFC 9126), so its field is derived to `false` just as firmly.
+    */
+  private val RequestParameterField = "request_parameter_supported"
+  private val RequestUriParameterField = "request_uri_parameter_supported"
+
   def derive(stored: Json.Obj): ServedMetadata =
     val dpopAlgorithms = Dpop.Algorithm.fromMetadata(stored)
     val assertionAlgorithms = ClientAssertion.Algorithm.fromMetadata(stored)
+    val requestObjectAlgorithms = RequestObject.Algorithm.fromMetadata(stored)
     val storedMethods = stored.get(AuthMethodsField).flatMap(_.as[Set[String]].toOption).getOrElse(Set.empty)
-    val document = advertise(
-      advertise(
-        advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
-        ClientAssertion.Algorithm.MetadataField,
-        assertionAlgorithms.map(_.toString),
+    val document = state(
+      state(
+        advertise(
+          advertise(
+            advertise(
+              advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
+              ClientAssertion.Algorithm.MetadataField,
+              assertionAlgorithms.map(_.toString),
+            ),
+            RequestObject.Algorithm.MetadataField,
+            requestObjectAlgorithms.map(_.toString),
+          ),
+          AuthMethodsField,
+          storedMethods + ClientAssertion.MethodName,
+        ),
+        RequestParameterField,
+        true,
       ),
-      AuthMethodsField,
-      storedMethods + ClientAssertion.MethodName,
+      RequestUriParameterField,
+      false,
     )
-    ServedMetadata(document, dpopAlgorithms, assertionAlgorithms)
+    ServedMetadata(document, dpopAlgorithms, assertionAlgorithms, requestObjectAlgorithms)
+
+  private def state(document: Json.Obj, field: String, value: Boolean): Json.Obj =
+    Json.Obj((document.fields.filterNot(_._1 == field) :+ (field -> Json.Bool(value)))*)
 
   private def advertise(document: Json.Obj, field: String, values: Set[String]): Json.Obj =
     val advertised = Json.Arr(values.toList.sorted.map(Json.Str(_))*)

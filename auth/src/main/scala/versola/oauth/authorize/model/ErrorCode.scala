@@ -19,4 +19,5 @@ object ErrorCode:
   val UnmetAuthenticationRequirements: ErrorCode = "unmet_authentication_requirements"
   val InvalidTarget: ErrorCode = "invalid_target"
   val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
+  val InvalidRequestObject: ErrorCode = "invalid_request_object"
 

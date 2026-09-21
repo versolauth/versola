@@ -31,7 +31,7 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
-import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -125,6 +125,10 @@ trait OAuthConfigurationService:
   /** RFC 8414 §2: the signing algorithms an incoming client assertion's `alg` is checked
     * against, read off the same metadata document that advertises them. */
   def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]]
+
+  /** RFC 9101 §4: the same, for the `alg` of a JAR request object. The algorithms are those a
+    * client may sign with, so the set is drawn from the same enum as the assertion one. */
+  def getRequestObjectSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]]
 
   /** Resolves an RFC 9396 `authorization_details` type to its registered schema, scoped to
     * the requesting client's tenant. */
@@ -474,6 +478,9 @@ object OAuthConfigurationService:
 
     override def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]] =
       metadataCache.get.map(_.clientAssertionSigningAlgorithms)
+
+    override def getRequestObjectSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]] =
+      metadataCache.get.map(_.requestObjectSigningAlgorithms)
 
     override def findAuthorizationDetailType(
         tenantId: TenantId,

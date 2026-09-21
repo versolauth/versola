@@ -37,6 +37,11 @@ object AuthorizeEndpointController extends Controller:
               (Observability.setError("invalid_request", Some(Error.BadRequest.description))
                 .as(Response.badRequest(Error.BadRequest.description)))
 
+          case Error.InvalidRequestObject =>
+            AuthMetrics.authorizeError(Error.InvalidRequestObject.error) *>
+              (Observability.setError(Error.InvalidRequestObject.error, Some(Error.InvalidRequestObject.description))
+                .as(Response.badRequest(Error.InvalidRequestObject.description)))
+
           case error: Error.RedirectError =>
             for
               config <- ZIO.service[CoreConfig]

@@ -23,11 +23,11 @@ trait PushedAuthorizationService:
 
 object PushedAuthorizationService:
   def live: ZLayer[
-    CoreConfig & AuthorizeRequestParser & PushedAuthorizationRepository & ClientAuthentication & SecureRandom &
-      SecurityService,
+    CoreConfig & AuthorizeRequestParser & PushedAuthorizationRepository & ClientAuthentication & RequestObjectService &
+      SecureRandom & SecurityService,
     Nothing,
     PushedAuthorizationService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   /** RFC 9126 §7.1 defers to JAR §10.2(d), which requires at least 128 bits of entropy. */
   private val ReferenceLength = 32
@@ -42,6 +42,7 @@ object PushedAuthorizationService:
       parser: AuthorizeRequestParser,
       repository: PushedAuthorizationRepository,
       clientAuthentication: ClientAuthentication,
+      requestObjectService: RequestObjectService,
       secureRandom: SecureRandom,
       securityService: SecurityService,
   ) extends PushedAuthorizationService:
@@ -69,7 +70,12 @@ object PushedAuthorizationService:
         // credentials are extracted, so only its absence is left to check here.
         _ <- ZIO.fail(PushedAuthorizationError.ClientIdMissing).unless(params.contains("client_id"))
 
-        authorizationParams = params -- CredentialParams
+        // RFC 9126 §3: a pushed request may itself be a JAR request object. It is resolved
+        // here rather than at redemption so that the object is verified while the client that
+        // signed it is authenticated, and so that what is stored is the request it stated --
+        // by the time the user finishes logging in, the object's own `exp` may have passed.
+        authorizationParams <- requestObjectService.resolve(params -- CredentialParams)
+          .mapError(PushedAuthorizationError.from)
         _ <- parser.validate(authorizationParams, request).mapError(PushedAuthorizationError.from)
 
         reference <- secureRandom.nextBytes(ReferenceLength).map(RequestUriReference(_))

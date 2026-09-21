@@ -523,6 +523,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authorizationDetails: Option[String] = None,
       /** OIDC Core §3.3.2.11: required whenever `response_type` includes `id_token` (hybrid/implicit). */
       nonce: Option[String] = None,
+      /** RFC 9101 §4: a signed JWT carrying the request parameters by value, in place of
+        * sending them as separate query parameters. Mutually exclusive with `requestUri`. */
+      request: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -543,6 +546,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "id_token_hint"        -> idTokenHint,
           "authorization_details" -> authorizationDetails,
           "nonce"                -> nonce,
+          "request"              -> request,
         ),
       )(uri =>
         List(
