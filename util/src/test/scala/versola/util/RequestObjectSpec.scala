@@ -2,8 +2,7 @@ package versola.util
 
 import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
 import com.nimbusds.jose.jwk.{Curve, ECKey, JWKSet, RSAKey}
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
-import com.nimbusds.jwt.SignedJWT
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSObject, JWSSigner, Payload}
 import zio.*
 import zio.json.ast.Json
 import zio.test.*
@@ -68,9 +67,11 @@ object RequestObjectSpec extends ZIOSpecDefault:
     val headerBuilder = JWSHeader.Builder(alg)
     kid.foreach(headerBuilder.keyID)
     typ.foreach(value => headerBuilder.`type`(JOSEObjectType(value)))
-    val jwt = SignedJWT(headerBuilder.build(), com.nimbusds.jwt.JWTClaimsSet.parse(payload.toString))
-    jwt.sign(signer)
-    jwt.serialize()
+    // Signed as a raw JSON payload rather than through `JWTClaimsSet`, which rounds a date
+    // claim to whole seconds -- the claims a client sends are what this suite is about.
+    val jws = JWSObject(headerBuilder.build(), Payload(payload.toString))
+    jws.sign(signer)
+    jws.serialize()
 
   private val AllAlgorithms = ClientAssertion.Algorithm.values.toSet
 
@@ -159,6 +160,18 @@ object RequestObjectSpec extends ZIOSpecDefault:
       test("rejects an object that is not valid yet") {
         for result <- verify(requestObject(claims("nbf" -> Json.Num(now.plusSeconds(30).getEpochSecond)))).either
         yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
+      },
+      // RFC 7519 §2 allows a fractional NumericDate. Truncating one to whole seconds would
+      // start an object's validity up to a second before the client said it began, and end it
+      // up to a second after -- so both edges are checked against a fraction.
+      test("reads a fractional date as the instant it names rather than the second it sits in") {
+        for
+          notYetValid <- verify(requestObject(claims("nbf" -> Json.Num(BigDecimal(now.getEpochSecond) + 0.5)))).either
+          expired <- verify(requestObject(claims("exp" -> Json.Num(BigDecimal(now.getEpochSecond) - 0.5)))).either
+        yield assertTrue(
+          notYetValid == Left(RequestObject.Error.NotYetValid),
+          expired == Left(RequestObject.Error.Expired),
+        )
       },
       test("accepts the explicitly registered type, and refuses a type naming something else") {
         for

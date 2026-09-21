@@ -208,7 +208,14 @@ object RequestObject:
       case None => ZIO.none
       case Some(json) => instant(json, name).asSome
 
-  /** RFC 7519 §2: a `NumericDate` is seconds since the epoch, and may be fractional. */
+  /** RFC 7519 §2: a `NumericDate` is seconds since the epoch, and may be fractional -- which
+    * is kept rather than truncated. Dropping the fraction moves `nbf` earlier and `exp` later,
+    * so an object would be accepted on either side of the window the client actually signed.
+    */
   private def instant(json: Json, name: String): IO[Error, Instant] =
-    ZIO.fromEither(json.as[Double]).orElseFail(Error.MalformedClaim(name))
-      .flatMap(seconds => ZIO.fromOption(Try(Instant.ofEpochSecond(seconds.toLong)).toOption).orElseFail(Error.MalformedClaim(name)))
+    ZIO.fromEither(json.as[BigDecimal]).orElseFail(Error.MalformedClaim(name))
+      .flatMap: seconds =>
+        val whole = seconds.setScale(0, BigDecimal.RoundingMode.FLOOR)
+        val nanos = ((seconds - whole) * 1_000_000_000).toLong
+        ZIO.fromOption(Try(Instant.ofEpochSecond(whole.toLongExact, nanos)).toOption)
+          .orElseFail(Error.MalformedClaim(name))

@@ -2,6 +2,8 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.URL
+import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -19,6 +21,15 @@ import java.util.UUID
 object JarFlowSpec extends E2ESpec:
 
   private val redirectUri = "http://localhost:3000"
+
+  private def decodeJwtPayload(jwt: String): String =
+    String(
+      java.util.Base64.getUrlDecoder.decode(jwt.split('.')(1)),
+      java.nio.charset.StandardCharsets.UTF_8,
+    )
+
+  /** Only what this suite asserts on: a `nonce` the client never signed must not be there. */
+  private case class IdTokenClaims(sub: String, nonce: Option[String] = None) derives JsonDecoder
 
   private def uid: UIO[String] =
     ZIO.succeed(UUID.randomUUID().toString.replace("-", "").take(8))
@@ -88,35 +99,68 @@ object JarFlowSpec extends E2ESpec:
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         code <- auth.submitLoginPassword(cookie, client.login.get, client.password, challenge.csrf)
           .assertRedirect(auth, cookie)
+        // Registering a key set is what lets this client sign a request object, and it is also
+        // what stops it authenticating by secret -- so the code is redeemed with an assertion.
+        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
         token <- auth.token(
           code,
           verifier,
           clientId = Some(client.clientId),
-          clientSecret = Some(client.clientSecret),
           redirectUri = Some(client.redirectUri),
+          assertion = Some(tokenAssertion),
         ).success
         userinfo <- auth.userinfo(token.accessToken).success
       yield assertTrue(userinfo.sub == client.userId)
         .label("the code redeemed off the request object must resolve to the same user")
     },
 
+    // Reaching /challenge proves nothing here -- a server that merged the query parameters
+    // would redirect just the same. The two unsigned parameters are therefore ones whose
+    // effect is visible in what comes back: `state` is echoed in the final redirect, and a
+    // `nonce` that reached the request would appear as a claim of the id_token.
     test("a query parameter cannot repeat or add to what the object carried") {
-      val (_, codeChallenge) = PkceHelper.generate()
+      val (verifier, codeChallenge) = PkceHelper.generate()
+      val signedState = s"from-the-object-${UUID.randomUUID()}"
+      val injectedNonce = s"injected-nonce-${UUID.randomUUID()}"
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         client <- jarClient(auth, signer)
-        requestObject <- signer.requestObject(requestClaims(client, auth, codeChallenge)*)()
+        requestObject <- signer.requestObject(
+          requestClaims(client, auth, codeChallenge, "state" -> Json.Str(signedState))*,
+        )()
         authorize <- auth.authorizeRaw(
           clientId = client.clientId,
           redirectUri = client.redirectUri,
           request = Some(requestObject),
-          // Both a contradiction of a signed parameter and an addition the object never made.
-          scope = Some("openid email"),
-          prompt = Some("login"),
-        )
-      yield assertTrue(authorize.response.status.isRedirection)
-        .label(s"expected a redirect to /challenge, got ${authorize.response.status}")
+          // An addition the object never made. `authorizeRaw` also sends its own random
+          // `state`, which is the contradiction of a signed parameter.
+          nonce = Some(injectedNonce),
+        ).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        submitted <- auth.submitLoginPassword(cookie, client.login.get, client.password, challenge.csrf)
+        code <- submitted.assertRedirect
+        returnedState <- ZIO.fromEither(URL.decode(submitted.location))
+          .map(_.queryParam("state"))
+        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
+        token <- auth.token(
+          code,
+          verifier,
+          clientId = Some(client.clientId),
+          redirectUri = Some(client.redirectUri),
+          assertion = Some(tokenAssertion),
+        ).success
+        idToken <- ZIO.fromOption(token.idToken)
+          .orElseFail(RuntimeException("expected an id_token for the openid scope the object signed"))
+        claims <- ZIO.fromEither(decodeJwtPayload(idToken).fromJson[IdTokenClaims])
+          .mapError(RuntimeException(_))
+      yield assertTrue(returnedState.contains(signedState))
+        .label(s"the signed state must be what comes back, got $returnedState instead of $signedState") &&
+        assertTrue(returnedState != Some(authorize.state))
+          .label("the query string's own state must not have reached the request") &&
+        assertTrue(claims.nonce.isEmpty)
+          .label(s"an unsigned nonce must not reach the request, yet the id_token carries ${claims.nonce}")
     },
 
     test("an object naming a different client than the request around it is refused") {
@@ -203,12 +247,13 @@ object JarFlowSpec extends E2ESpec:
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         code <- auth.submitLoginPassword(cookie, client.login.get, client.password, challenge.csrf)
           .assertRedirect(auth, cookie)
+        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
         token <- auth.token(
           code,
           verifier,
           clientId = Some(client.clientId),
-          clientSecret = Some(client.clientSecret),
           redirectUri = Some(client.redirectUri),
+          assertion = Some(tokenAssertion),
         ).success
       yield assertTrue(token.accessToken.nonEmpty)
         .label("redeeming the request_uri must not need to re-verify the object's own exp")
