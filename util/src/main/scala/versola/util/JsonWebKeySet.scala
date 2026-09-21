@@ -64,6 +64,17 @@ object JsonWebKeySet:
         (),
         "must not contain keys marked for encryption",
       )
+      // A key of the right type can still be one no assertion could be verified against --
+      // an EC key on a curve no algorithm here names, or a key whose own `alg` pins it to an
+      // algorithm its type cannot perform. Registering it would report a credential the
+      // client can never authenticate with.
+      _ <- Either.cond(
+        keys.forall(ClientAssertion.canVerifyWith),
+        (),
+        "must contain only keys usable with " +
+          ClientAssertion.Algorithm.values.map(_.toString).mkString(", ") +
+          " (an EC key must be on P-256)",
+      )
       // RFC 7517 §4.5: `kid` is optional for a single key, since there is nothing to
       // disambiguate, but a set that repeats one cannot be indexed by it at all.
       kids = keys.flatMap(key => Option(key.getKeyID))

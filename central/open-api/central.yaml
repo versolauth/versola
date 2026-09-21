@@ -1751,6 +1751,11 @@ components:
       description: |
         RFC 7517 §5 JWK Set document -- the exact document registered, not a narrowed model
         of it, so members this schema does not name still round-trip.
+
+        Every key must be a public key usable with a supported client assertion signing
+        algorithm (ES256, PS256, RS256): an EC key on a curve other than P-256, or a key
+        whose own `alg` its type cannot perform, is refused at registration rather than
+        failing every authentication attempt later.
       properties:
         keys:
           type: array

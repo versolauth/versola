@@ -1,5 +1,6 @@
 package versola.util
 
+import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey, KeyUse, RSAKey}
 import zio.json.ast.Json
 import zio.test.*
@@ -22,6 +23,9 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
       .privateKey(pair.getPrivate.asInstanceOf[ECPrivateKey])
       .keyID(kid)
       .build()
+
+  private val p384KeyPairGenerator = KeyPairGenerator.getInstance("EC")
+  p384KeyPairGenerator.initialize(Curve.P_384.toECParameterSpec)
 
   private val rsaKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
   rsaKeyPairGenerator.initialize(2048)
@@ -70,6 +74,27 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
           JsonWebKeySet.validate(document(key.toJSONString)) ==
             Left("must not contain keys marked for encryption"),
         )
+      },
+      test("rejects an EC key on a curve no supported algorithm names") {
+        val pair = p384KeyPairGenerator.generateKeyPair()
+        val key = ECKey.Builder(Curve.P_384, pair.getPublic.asInstanceOf[ECPublicKey]).keyID("ec-1").build()
+        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isLeft)
+      },
+      test("rejects a key whose own alg its type cannot perform") {
+        val pair = rsaKeyPairGenerator.generateKeyPair()
+        val key = RSAKey.Builder(pair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("rsa-1")
+          .algorithm(JWSAlgorithm.ES256)
+          .build()
+        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isLeft)
+      },
+      test("accepts a key pinned to an algorithm its type can perform") {
+        val pair = rsaKeyPairGenerator.generateKeyPair()
+        val key = RSAKey.Builder(pair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("rsa-1")
+          .algorithm(JWSAlgorithm.PS256)
+          .build()
+        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isRight)
       },
       test("rejects a repeated key id, which cannot be indexed by kid") {
         val json = document(ecKey("same").toJSONString, rsaKey("same").toJSONString)

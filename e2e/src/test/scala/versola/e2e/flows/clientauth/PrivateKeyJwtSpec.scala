@@ -1,11 +1,14 @@
 package versola.e2e.flows.clientauth
 
+import com.nimbusds.jose.jwk.{Curve, ECKey}
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.http.Status
 import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
+import java.security.interfaces.ECPublicKey
 import java.util.UUID
 
 /** RFC 7523 §2.2 `private_key_jwt` client authentication, end to end.
@@ -45,6 +48,17 @@ object PrivateKeyJwtSpec extends E2ESpec:
       ).success
       _ <- auth.syncConfiguration()
     yield (id, result.secret)
+
+  /** A well-formed JWK Set holding a key no algorithm auth verifies with can use: `ES256`
+    * names P-256 (RFC 7518 §3.4), so nothing here could ever check a signature made with
+    * this one. */
+  private val unusableJwks: Json.Obj =
+    val generator = java.security.KeyPairGenerator.getInstance("EC").nn
+    generator.initialize(Curve.P_384.toECParameterSpec)
+    val key = ECKey.Builder(Curve.P_384, generator.generateKeyPair().nn.getPublic.asInstanceOf[ECPublicKey])
+      .keyID(UUID.randomUUID().toString)
+      .build()
+    Json.Obj("keys" -> Json.Arr(key.toJSONString.fromJson[Json.Obj].toOption.get))
 
   /** RFC 6749 §5.2 error body, of which only the code is asserted on. */
   private case class OAuthError(error: String) derives JsonDecoder
@@ -241,6 +255,24 @@ object PrivateKeyJwtSpec extends E2ESpec:
         introspection <- auth.introspect(token.accessToken, Some(clientId), assertion = Some(introspectAssertion)).success
       yield assertTrue(response.status.isSuccess, !introspection.active)
         .label("RFC 7009 accepts the same credential /token and /introspect do")
+    },
+
+    test("registration refuses a key set no supported algorithm could verify against") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"jwt-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Private Key JWT Test Client",
+          Set(redirectUri),
+          jwks = Some(unusableJwks),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse a key set that can never authenticate")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("a credential the client could never use must fail at registration, not at /token")
     },
 
     test("the metadata document advertises the method and the algorithms it will accept") {

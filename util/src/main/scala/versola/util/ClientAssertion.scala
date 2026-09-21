@@ -2,7 +2,7 @@ package versola.util
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.crypto.{ECDSAVerifier, RSASSAVerifier}
-import com.nimbusds.jose.jwk.{ECKey, JWK, KeyUse, RSAKey}
+import com.nimbusds.jose.jwk.{Curve, ECKey, JWK, KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import zio.json.ast.Json
 import zio.{Duration, IO, ZIO}
@@ -203,15 +203,27 @@ object ClientAssertion:
       _ <- ZIO.fail(Error.InvalidSignature).unless(verified)
     yield ()
 
+  /** True where [[verify]] could ever check a signature against this key, for any algorithm
+    * this object implements. Registration validates against it (see
+    * [[JsonWebKeySet.validate]]) so a key that could only ever fail authentication is refused
+    * at the point the operator can still fix it, rather than registering and then never
+    * working.
+    */
+  def canVerifyWith(key: JWK): Boolean = Algorithm.values.exists(usableWith(key, _))
+
   /** RFC 7517 §4.4: a key that registered an `alg` may only be used with it, which is how a
     * client pins a key to one algorithm. A key that named none is usable with any algorithm
     * its type supports. §4.2: a key registered for encryption never verifies a signature --
     * registration already refuses one, so this only keeps the rule where it is enforced.
+    *
+    * `ES256` names its curve as well as its hash (RFC 7518 §3.4), so an EC key on any other
+    * curve is not merely a worse choice than P-256 -- there is no algorithm here it can be
+    * used with at all.
     */
   private def usableWith(key: JWK, algorithm: Algorithm): Boolean =
     val typeMatches = key match
       case _: RSAKey => algorithm == Algorithm.RS256 || algorithm == Algorithm.PS256
-      case _: ECKey => algorithm == Algorithm.ES256
+      case key: ECKey => algorithm == Algorithm.ES256 && key.getCurve == Curve.P_256
       case _ => false
     typeMatches &&
       Option(key.getAlgorithm).forall(_ == algorithm.jwsAlgorithm) &&
