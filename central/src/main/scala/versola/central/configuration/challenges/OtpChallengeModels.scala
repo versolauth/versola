@@ -61,5 +61,5 @@ case class UpsertChallengeSettingsRequest(
     signingKeyId: Option[Patch[String]],
     /** RFC 7523 §3: furthest into the future a client assertion's `exp` may sit; absent
       * keeps the stored value. */
-    clientAssertionMaxLifetimeSeconds: Option[Int] = None,
+    clientAssertionMaxLifetimeSeconds: Option[Int],
 ) derives Schema, JsonCodec

@@ -78,6 +78,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     backChannelLogoutUri = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
+    jwks = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -106,6 +107,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     backChannelLogoutUri = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
+    jwks = None,
   )
 
   private val clients = Vector(

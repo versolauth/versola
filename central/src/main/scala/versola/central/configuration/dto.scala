@@ -380,7 +380,7 @@ case class CreateClientRequest(
     certificateBoundAccessTokens: Boolean,
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
-    jwks: Option[JsonWebKeySet] = None,
+    jwks: Option[JsonWebKeySet],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -414,7 +414,7 @@ case class UpdateClientRequest(
     dpopBoundAccessTokens: Option[Boolean] = None,
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
-    jwks: Option[Patch[JsonWebKeySet]] = None,
+    jwks: Option[Patch[JsonWebKeySet]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
