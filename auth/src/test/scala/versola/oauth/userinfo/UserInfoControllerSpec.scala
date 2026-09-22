@@ -8,8 +8,10 @@ import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
@@ -37,6 +39,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
     * presented with a binding rather than making one, so this is the whole of what a proof is
     * held to here -- no client registration narrows it. */
   val deploymentDpopAlgorithms = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256)
+
+  /** The certificate a token bound by RFC 8705 §3 was issued over, and the thumbprint its
+    * `cnf.x5t#S256` therefore carries. */
+  val clientCertificate: ClientCertificate = TestEnvConfig.clientCertificate
 
   /** The record `checkDpop` looks up to learn which tenant an edge assertion for this token's
     * client has to be scoped to -- see `EdgeAssertionService.verify`. */
@@ -85,6 +91,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
       scope: Set[ScopeToken],
       config: CoreConfig,
       cnfJkt: Option[String] = None,
+      cnfX5tS256: Option[String] = None,
   ): String =
     val now = Instant.now()
     val builder = new JWTClaimsSet.Builder()
@@ -96,7 +103,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
       .issuer(config.jwt.issuer)
       .issueTime(Date.from(now))
       .expirationTime(Date.from(now.plusSeconds(3600)))
-    cnfJkt.foreach(jkt => builder.claim("cnf", java.util.Map.of("jkt", jkt)))
+    val confirmation = new java.util.LinkedHashMap[String, String]()
+    cnfJkt.foreach(jkt => confirmation.put("jkt", jkt))
+    cnfX5tS256.foreach(thumbprint => confirmation.put("x5t#S256", thumbprint))
+    if !confirmation.isEmpty then builder.claim("cnf", confirmation)
     val claims = builder.build()
 
     val header = new com.nimbusds.jose.JWSHeader.Builder(JWSAlgorithm.RS256)
@@ -125,6 +135,10 @@ object UserInfoControllerSpec extends UnitSpecBase:
         service.find.succeedsWith(Some(client1)) *> service.get.succeedsWith(client1) *>
           service.requireDpopNonce.succeedsWith(false) *>
           service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
+      // RFC 8705 §3: what the tenant's proxy forwarded for the token's client. `None` is a
+      // tenant that forwards nothing, which is what every test of an unbound token is.
+      clientAuthenticationSetup: Stub[ClientAuthentication] => UIO[Unit] =
+        _.certificateForClient.succeedsWith(None),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       config: CoreConfig = TestEnvConfig.coreConfig,
@@ -136,6 +150,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
         dpopService = stub[DpopService]
         edgeAssertionService = stub[EdgeAssertionService]
         oAuthConfigurationService = stub[OAuthConfigurationService]
+        clientAuthentication = stub[ClientAuthentication]
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
@@ -145,7 +160,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
               .provideEnvironment(
                 ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
                   ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++
-                  ZEnvironment(oAuthConfigurationService) ++ tracing,
+                  ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
+                  tracing,
               ),
           ),
         )
@@ -153,6 +169,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
         _ <- dpopSetup(dpopService)
         _ <- edgeAssertionSetup(edgeAssertionService)
         _ <- oAuthConfigurationSetup(oAuthConfigurationService)
+        _ <- clientAuthenticationSetup(clientAuthentication)
 
         response <- client.batched(request)
         verifyResult <- verify(response)
@@ -554,6 +571,150 @@ object UserInfoControllerSpec extends UnitSpecBase:
             wwwAuth.contains("invalid_dpop_proof"),
           ),
       ),
+      // ── RFC 8705 §3: the certificate binding ─────────────────────────────
+      locally {
+        def certificateBoundToken(jkt: Option[String] = None) = createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          cnfJkt = jkt,
+          cnfX5tS256 = Some(boundThumbprint1),
+        )
+        def boundRequest(token: String) = Request.get(url = URL.empty / "userinfo")
+          .addHeader(Header.Authorization.Bearer(token))
+
+        suite("certificate-bound tokens")(
+          userInfoTestCase(
+            description = "serve a certificate-bound token presented over the certificate it is bound to",
+            request = boundRequest(certificateBoundToken()),
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(clientCertificate)),
+            verify = response =>
+              for
+                body <- response.body.asString
+                userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
+              yield assertTrue(userInfo.claims.contains("sub")),
+          ),
+          userInfoTestCase(
+            description = "refuse a certificate-bound token presented with no certificate at all",
+            request = boundRequest(certificateBoundToken()),
+            expectedStatus = Status.Unauthorized,
+            clientAuthenticationSetup = _.certificateForClient.succeedsWith(None),
+            verify = response =>
+              for
+                wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+                  .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+              yield assertTrue(wwwAuth.contains("invalid_token"))
+                .label("a bound token accepted without its certificate is the downgrade §3 refuses"),
+          ),
+          userInfoTestCase(
+            description = "refuse a certificate-bound token presented over a different certificate",
+            request = boundRequest(certificateBoundToken()),
+            expectedStatus = Status.Unauthorized,
+            clientAuthenticationSetup =
+              _.certificateForClient.succeedsWith(Some(TestEnvConfig.otherClientCertificate)),
+            verify = response =>
+              for
+                wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+                  .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+              yield assertTrue(wwwAuth.contains("invalid_token")),
+          ),
+          userInfoTestCase(
+            description = "refuse a certificate-bound token when the forwarded header could not be read",
+            request = boundRequest(certificateBoundToken()),
+            expectedStatus = Status.Unauthorized,
+            clientAuthenticationSetup = _.certificateForClient.failsWith("not valid base64"),
+            verify = response =>
+              for
+                wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+                  .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+              yield assertTrue(wwwAuth.contains("invalid_token"))
+                .label("reading a mangled header as 'no certificate' would accept the presentation §3 refuses"),
+          ),
+          userInfoTestCase(
+            description = "leave an unbound token alone, certificate forwarded or not",
+            request = Request.get(url = URL.empty / "userinfo").addHeader(
+              Header.Authorization.Bearer(
+                createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
+              ),
+            ),
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(clientCertificate)),
+            verify = response =>
+              for
+                body <- response.body.asString
+                userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
+              yield assertTrue(userInfo.claims.contains("sub"))
+                .label("a tenant whose proxy forwards a certificate must not constrain tokens nobody bound"),
+          ),
+          // Both bindings are independent (see `Cnf.from`), so a token carrying both has to
+          // satisfy both -- neither check may stand in for the other.
+          locally {
+            val doublyBound = certificateBoundToken(jkt = Some(boundJkt1))
+            suite("bound by both jkt and x5t#S256")(
+              userInfoTestCase(
+                description = "serve it when the proof and the certificate both check out",
+                request = Request.get(url = URL.empty / "userinfo")
+                  .addHeader(Header.Custom("Authorization", s"DPoP $doublyBound"))
+                  .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder")),
+                expectedStatus = Status.Ok,
+                setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+                dpopSetup = _.verify.succeedsWith(
+                  Dpop.Proof(
+                    jkt = boundJkt1,
+                    jti = "proof-jti-1",
+                    iat = Instant.now(),
+                    nonce = None,
+                    ath = Some(Dpop.ath(doublyBound)),
+                  ),
+                ),
+                clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(clientCertificate)),
+                verify = response =>
+                  for
+                    body <- response.body.asString
+                    userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
+                  yield assertTrue(userInfo.claims.contains("sub")),
+              ),
+              userInfoTestCase(
+                description = "refuse it when the proof checks out but the certificate is absent",
+                request = Request.get(url = URL.empty / "userinfo")
+                  .addHeader(Header.Custom("Authorization", s"DPoP $doublyBound"))
+                  .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder")),
+                expectedStatus = Status.Unauthorized,
+                dpopSetup = _.verify.succeedsWith(
+                  Dpop.Proof(
+                    jkt = boundJkt1,
+                    jti = "proof-jti-1",
+                    iat = Instant.now(),
+                    nonce = None,
+                    ath = Some(Dpop.ath(doublyBound)),
+                  ),
+                ),
+                clientAuthenticationSetup = _.certificateForClient.succeedsWith(None),
+                verify = response =>
+                  for
+                    wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+                      .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+                  yield assertTrue(wwwAuth.contains("invalid_token")),
+              ),
+              userInfoTestCase(
+                description = "refuse it under Bearer even over the right certificate, the proof still being owed",
+                request = boundRequest(doublyBound),
+                expectedStatus = Status.Unauthorized,
+                clientAuthenticationSetup = _.certificateForClient.succeedsWith(Some(clientCertificate)),
+                verify = response =>
+                  for
+                    wwwAuth <- ZIO.fromOption(response.rawHeader("WWW-Authenticate"))
+                      .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+                  yield assertTrue(wwwAuth.contains("invalid_dpop_proof")),
+              ),
+            )
+          },
+        )
+      },
     ),
     suite("POST /userinfo")(
       userInfoTestCase(

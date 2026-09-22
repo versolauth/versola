@@ -166,7 +166,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   private val mtlsClientRecord = clientRecord.copy(
     secret = None,
-    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 
   private val request = Request.get(URL.empty / "par")

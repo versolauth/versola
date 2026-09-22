@@ -1,7 +1,8 @@
 package versola.oauth.mtls
 
+import com.nimbusds.jose.jwk.AsymmetricJWK
 import versola.oauth.client.model.{MtlsCertificateEncoding, MutualTlsAuth, MutualTlsSubjectType}
-import versola.util.Base64
+import versola.util.{Base64, JsonWebKeySet}
 
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
@@ -13,8 +14,9 @@ import scala.util.Try
 import scala.util.matching.Regex
 
 /** The client certificate the tenant's reverse proxy validated and forwarded, reduced to the
-  * two things RFC 8705 asks of it: the thumbprint §3.1 binds a token to, and the subject
-  * values §2.1.2 recognises a client by.
+  * three things RFC 8705 asks of it: the thumbprint §3.1 binds a token to, the subject values
+  * §2.1.2 recognises a client by, and the public key §2.2 matches against a registered key
+  * set.
   *
   * The certificate itself is not carried further. Its chain was validated by the proxy — `auth`
   * never sees the trust anchors and so has nothing to re-check — and keeping the parsed object
@@ -28,17 +30,41 @@ case class ClientCertificate(
     /** Subject alternative names, keyed by the subject type that reads them. Keyed rather
       * than four lists because matching only ever asks for the one the client registered. */
     subjectAlternativeNames: Map[MutualTlsSubjectType, Set[String]],
+    /** The certificate's DER-encoded `SubjectPublicKeyInfo`, which is what §2.2 compares
+      * against a registered key: the same key in two certificates has the same encoding here,
+      * and nothing else about either certificate takes part in the comparison. */
+    subjectPublicKeyInfo: Array[Byte],
 ):
 
   /** RFC 8705 §2.1.2: the certificate authenticates the client when the value the client
     * registered appears in the field its subject type names. Compared literally — the
     * registered value is normalised at registration, not here. */
-  def matches(auth: MutualTlsAuth): Boolean =
+  def matches(auth: MutualTlsAuth.TlsClientAuth): Boolean =
     auth.subjectType match
       case MutualTlsSubjectType.subject_dn =>
         subjectDn == auth.subjectValue
       case sanType =>
         subjectAlternativeNames.getOrElse(sanType, Set.empty).contains(auth.subjectValue)
+
+  /** RFC 8705 §2.2: the certificate authenticates the client when its public key is one the
+    * client registered. The key is the whole credential — a self-signed certificate has no
+    * chain to validate and its subject means nothing here — so a client may present any
+    * certificate it likes as long as the key inside it is a registered one.
+    *
+    * A key set that does not parse matches nothing rather than failing: registration
+    * validates the document, so an unparsable one means the column was written by something
+    * else, and letting that authenticate a client would be the wrong way to be wrong. A key
+    * that is not an asymmetric one is skipped for the same reason `JsonWebKeySet.validate`
+    * refuses it: there is no public key in it to compare.
+    */
+  def matchesKey(keySet: JsonWebKeySet): Boolean =
+    keySet.publicKeys.toOption.exists(
+      _.keys.getKeys.asScala.exists:
+        case key: AsymmetricJWK =>
+          Try(MessageDigest.isEqual(key.toPublicKey.getEncoded, subjectPublicKeyInfo)).getOrElse(false)
+        case _ =>
+          false,
+    )
 
 object ClientCertificate:
 
@@ -105,6 +131,7 @@ object ClientCertificate:
       ),
       subjectDn = certificate.getSubjectX500Principal.getName(X500Principal.RFC2253),
       subjectAlternativeNames = subjectAlternativeNames(certificate),
+      subjectPublicKeyInfo = certificate.getPublicKey.getEncoded,
     )
 
   /** `getSubjectAlternativeNames` returns `null` when the extension is absent, and throws on a

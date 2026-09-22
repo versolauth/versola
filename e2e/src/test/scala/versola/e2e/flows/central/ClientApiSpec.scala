@@ -244,6 +244,54 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.bool("certificateBoundAccessTokens")).contains(true))
         .label("RFC 8705 \u00a73.4 lets a client bind its tokens without authenticating by certificate")
     },
+    test("a self-signed mutual-TLS client reads back the method and the keys it matches against") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(
+          id,
+          mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth),
+          jwks = Some(Fixtures.ClientCertificates.client.jwks),
+        )
+        record <- withClient(central, body)(_ => read(central, id))
+        mtlsAuth = record.flatMap(_.obj("mtlsAuth"))
+      yield assertTrue(mtlsAuth.flatMap(_.str("type")).contains("self_signed_tls_client_auth")) &&
+        assertTrue(record.flatMap(_.obj("jwks")).isDefined)
+          .label("RFC 8705 §2.2 registers keys rather than a subject, and needs them stored together")
+    },
+    test("a self-signed mutual-TLS client with no keys to match against is refused") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        rejected <- central.post(path, Fixtures.client(id, mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth)))
+        _ <- central.delete(path, "clientId" -> id)
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("§2.2 has nothing to compare a certificate against without jwks")
+    },
+    test("mtlsAuth is refused for a tenant whose proxy terminates no mutual TLS") {
+      for
+        central <- api
+        tenantId <- CentralApi.id("e2e-tenant")
+        id <- CentralApi.id("e2e-client")
+        // A freshly created tenant has no challenge settings naming a certificate header, so
+        // auth would never look for this client's certificate (RFC 8705 §6.5).
+        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
+        rejected <- central.post(
+          path,
+          Fixtures.client(
+            id,
+            tenantId = tenantId,
+            mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")),
+          ),
+        )
+        accepted <- central.post(path, Fixtures.client(id, tenantId = tenantId))
+        _ <- central.delete(path, "clientId" -> id).ignore
+        _ <- central.delete("/configuration/tenants", "tenantId" -> tenantId).ignore
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("a client whose certificate nothing looks for can never authenticate") &&
+        assertTrue(accepted.status == Status.Created)
+          .label("the same tenant still registers a client that asks for no certificate")
+    },
     test("an unrecognised mtlsAuth subjectType is refused") {
       for
         central <- api

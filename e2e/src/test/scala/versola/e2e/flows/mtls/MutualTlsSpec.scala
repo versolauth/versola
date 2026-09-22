@@ -62,6 +62,28 @@ object MutualTlsSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield (id, result.secret)
 
+  /** A client that authenticates by RFC 8705 §2.2: it registers the public key inside the
+    * certificate it will present, and no subject value at all. The same `jwks` column RFC
+    * 7523 `private_key_jwt` reads, which is why §2.2 waited for it.
+    */
+  private def selfSignedClient(
+      auth: OAuthClient,
+      jwks: Json = Fixtures.ClientCertificates.client.jwks,
+      scopes: Set[String] = Set("openid", "email"),
+  ): Task[(String, String)] =
+    for
+      id <- uid.map(s => s"self-signed-client-$s")
+      result <- auth.registerClient(
+        id,
+        "Self-Signed Mutual TLS Test Client",
+        Set(redirectUri),
+        allowedScopes = scopes,
+        mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth),
+        jwks = Some(jwks),
+      ).success
+      _ <- auth.syncConfiguration()
+    yield (id, result.secret)
+
   /** A client that authenticates by secret as usual but has asked for its tokens to be bound
     * to the certificate they were issued over — RFC 8705 §3 without §2.
     */
@@ -250,6 +272,63 @@ object MutualTlsSpec extends E2ESpec:
           .label("the same push without the certificate must be refused")
     },
 
+    // ── §2.2 Self-signed certificate authentication ──────────────────
+
+    test("a self-signed client authenticates with the key inside its certificate") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, _) <- selfSignedClient(auth)
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, certificate = Some(header)).success
+      yield assertTrue(token.accessToken.nonEmpty)
+        .label("RFC 8705 §2.2: the registered key is the credential -- no CA, no subject comparison")
+    },
+
+    test("a self-signed client is refused a certificate carrying a key it never registered") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, _) <- selfSignedClient(auth)
+        // The impostor's certificate parses and is as valid as the client's own; what it does
+        // not carry is a key this client registered, which is the whole of §2.2's check.
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, certificate = Some(impostorHeader))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+    },
+
+    test("a self-signed client is refused without a certificate, secret or no secret") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, clientSecret) <- selfSignedClient(auth)
+        result <- auth.clientCredentials(clientId, clientSecret)
+        (status, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client") &&
+        assertTrue(status == Status.Unauthorized)
+          .label("the secret central issued must not stand in for the certificate")
+    },
+
+    test("a self-signed client's registered keys do not also authenticate an assertion") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        // Registered for §2.2 with keys the client also holds the private half of, which is
+        // what makes this a rule rather than an accident of the fixture: those keys are
+        // matched against a certificate, and RFC 7523 is a second credential nobody granted.
+        (clientId, _) <- selfSignedClient(auth, jwks = signer.jwks)
+        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+    },
+
+    test("a token issued to a self-signed client is bound to the certificate it presented") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, _) <- selfSignedClient(auth)
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, certificate = Some(header)).success
+        thumbprint <- thumbprintOf(token.accessToken)
+      yield assertTrue(thumbprint.contains(certificate.thumbprint))
+        .label("§2 implies §3 for this method exactly as it does for §2.1")
+    },
+
     // ── §3 Certificate-bound access tokens ────────────────────────────────
 
     test("a token issued to an mTLS client carries the certificate thumbprint") {
@@ -353,6 +432,78 @@ object MutualTlsSpec extends E2ESpec:
           .label("a certificate-bound grant must not refresh under a different certificate") &&
         assertTrue(thumbprint.contains(certificate.thumbprint))
           .label("the renewed token must carry the same binding")
+    },
+
+    test("/userinfo honours a certificate-bound token only over the certificate it is bound to") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, clientSecret) <- boundClient(
+          auth,
+          scopes = Set("openid", "email"),
+          authFlow = Some(Flows.emailOtpAuthFlow),
+        )
+        email <- uid.map(s => s"mtls-userinfo-$s@example.test")
+        userId <- auth.registerUser(email = Some(email))
+        _ <- auth.flushUserOutbox()
+
+        authorize <- auth.authorize(
+          scope = "openid email",
+          clientId = Some(clientId),
+          redirectUri = Some(redirectUri),
+        ).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitEmail(cookie, email, credential.csrf)
+        otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+        code <- auth.submitOtp(cookie, fixedOtp, otp.csrf).assertRedirect
+
+        issued <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(clientId),
+          clientSecret = Some(clientSecret),
+          redirectUri = Some(redirectUri),
+          certificate = Some(header),
+        ).success
+        thumbprint <- thumbprintOf(issued.accessToken)
+
+        // The resource endpoint's half of §3: the binding is worth nothing if the token is
+        // also accepted without the certificate, which is how a stolen copy would be used.
+        served <- auth.userinfo(issued.accessToken, certificate = Some(header))
+        bare <- auth.userinfo(issued.accessToken)
+        mismatched <- auth.userinfo(issued.accessToken, certificate = Some(impostorHeader))
+        _ <- auth.deleteUser(userId)
+      yield assertTrue(thumbprint.contains(certificate.thumbprint))
+        .label("the token has to be bound for the rest of this to mean anything") &&
+        assertTrue(served.isInstanceOf[UserinfoResult.Success])
+          .label("the same certificate the token was issued over must serve it") &&
+        assertTrue(bare match { case f: UserinfoResult.Failure => f.response.status == Status.Unauthorized; case _ => false })
+          .label("a bound token presented with no certificate is the downgrade §3 refuses") &&
+        assertTrue(mismatched match { case f: UserinfoResult.Failure => f.response.status == Status.Unauthorized; case _ => false })
+          .label("and another client's certificate is no better than none")
+    },
+
+    test("/userinfo leaves an unbound token alone though the tenant forwards certificates") {
+      for
+        (_, auth) <- setup(Flows.Id.EmailOtp)
+        email <- uid.map(s => s"mtls-plain-$s@example.test")
+        userId <- auth.registerUser(email = Some(email))
+        _ <- auth.flushUserOutbox()
+
+        authorize <- auth.authorize(scope = "openid email").assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitEmail(cookie, email, credential.csrf)
+        otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+        code <- auth.submitOtp(cookie, fixedOtp, otp.csrf).assertRedirect
+        issued <- auth.token(code, authorize.verifier).success
+
+        // Neither presentation is constrained: nothing bound this token, and a tenant whose
+        // proxy forwards a certificate on every connection must not start demanding one.
+        served <- auth.userinfo(issued.accessToken, certificate = Some(header))
+        bare <- auth.userinfo(issued.accessToken)
+        _ <- auth.deleteUser(userId)
+      yield assertTrue(served.isInstanceOf[UserinfoResult.Success], bare.isInstanceOf[UserinfoResult.Success])
     },
 
     // ── §6.5 Proxy termination ────────────────────────────────────────────

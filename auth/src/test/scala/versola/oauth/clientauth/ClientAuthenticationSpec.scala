@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithAssertion, ClientIdWithSecret, OAuthClientRecord}
+import versola.oauth.client.model.{ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret}
 import zio.*
 import zio.json.*
@@ -19,8 +19,10 @@ import java.security.interfaces.{ECPrivateKey, ECPublicKey}
 import java.time.Instant
 import java.util.Date
 
-/** RFC 7523 §2.2 `private_key_jwt` as the authenticator sees it: which credential a client's
-  * registration makes acceptable, and what the replay guard's answer does to the request.
+/** RFC 7523 §2.2 `private_key_jwt` and RFC 8705 §2.2 `self_signed_tls_client_auth` as the
+  * authenticator sees them: which credential a client's registration makes acceptable -- the
+  * two read the same `jwks` column and must not be interchangeable -- and what the replay
+  * guard's answer does to the request.
   *
   * The assertion service under test is the real one -- the rule being checked is how
   * verification and replay combine into an authentication decision, so only the repository the
@@ -90,6 +92,13 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private def recording = Ref.make(Set.empty[(String, String)]).map(RecordingRepository(_))
+
+  /** A client that authenticates by RFC 8705 §2.2: its certificate's public key is one of the
+    * keys it registered, and there is no subject value anywhere in its registration. */
+  private val selfSignedClient = TestEnvConfig.mtlsClient(clientId).copy(
+    mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+    jwks = Some(TestEnvConfig.clientCertificateKeySet),
+  )
 
   def spec = suite("ClientAuthentication")(
     test("authenticates a client whose registered keys verify the assertion it presented") {
@@ -187,6 +196,68 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
           endpoint = AuthenticatedEndpoint.Token,
         ).either
       yield assertTrue(result.left.exists(_.isInstanceOf[Throwable]))
+    },
+    test("authenticates a self-signed client whose certificate carries a key it registered") {
+      for
+        repository <- recording
+        result <- authentication(Some(selfSignedClient), repository).authenticate(
+          ClientIdWithSecret(clientId, None),
+          certificate = Some(TestEnvConfig.clientCertificate),
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(result.map(_.id) == Right(clientId))
+        .label("RFC 8705 §2.2: the key is the credential, so no subject is compared")
+    },
+    test("refuses a self-signed client presenting a certificate whose key it never registered") {
+      for
+        repository <- recording
+        result <- authentication(Some(selfSignedClient), repository).authenticate(
+          ClientIdWithSecret(clientId, None),
+          certificate = Some(TestEnvConfig.otherClientCertificate),
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(result == Left(()))
+    },
+    test("refuses a self-signed client that presented no certificate at all") {
+      for
+        repository <- recording
+        result <- authentication(Some(selfSignedClient), repository).authenticate(
+          ClientIdWithSecret(clientId, None),
+          certificate = None,
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(result == Left(()))
+    },
+    test("refuses an assertion signed with the keys a self-signed client registered for §2.2") {
+      for
+        now <- Clock.instant
+        repository <- recording
+        result <- authentication(
+          Some(selfSignedClient.copy(jwks = Some(keySet))),
+          repository,
+        ).authenticate(
+          ClientIdWithAssertion(clientId, assertion(now)),
+          certificate = None,
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(result == Left(()))
+        .label("those keys are matched against a certificate; an assertion is a second credential")
+    },
+    test("still matches a §2.1 client by subject, keys or no keys in the picture") {
+      for
+        repository <- recording
+        authenticator = authentication(Some(TestEnvConfig.mtlsClient(clientId)), repository)
+        matched <- authenticator.authenticate(
+          ClientIdWithSecret(clientId, None),
+          certificate = Some(TestEnvConfig.clientCertificate),
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+        mismatched <- authenticator.authenticate(
+          ClientIdWithSecret(clientId, None),
+          certificate = Some(TestEnvConfig.otherClientCertificate),
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(matched.map(_.id) == Right(clientId), mismatched == Left(()))
     },
     test("records the jti against the client, so two clients may use the same one") {
       val otherId = ClientId("other-assertion-client")

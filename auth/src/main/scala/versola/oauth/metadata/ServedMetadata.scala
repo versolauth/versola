@@ -40,6 +40,13 @@ object ServedMetadata:
     * whatever is already stored, not replaced: unlike the algorithm sets, this field also
     * names methods (`client_secret_basic`, `tls_client_auth`, ...) that this derivation has
     * no opinion on and must not drop.
+    *
+    * The mutual-TLS methods of RFC 8705 §2 are deliberately among those: whether a
+    * certificate can be honoured at all depends on the reverse proxy in front of a *tenant*
+    * (its `mtlsCertificateHeader`), while this document is served once for the deployment.
+    * Deriving them from one tenant's settings would advertise a promise the next tenant's
+    * proxy cannot keep, so they -- and §3.3's `tls_client_certificate_bound_access_tokens` --
+    * stay operator-set fields of the stored document, which passes through untouched.
     */
   private val AuthMethodsField = "token_endpoint_auth_methods_supported"
 

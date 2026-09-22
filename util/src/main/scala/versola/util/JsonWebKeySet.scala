@@ -17,8 +17,9 @@ import scala.util.Try
   * document, not a narrowing of it -- see [[JsonWebKeySet.validate]].
   *
   * Shared by every method that authenticates a client against keys it registered: RFC 7523
-  * `private_key_jwt` today, and RFC 8705 §2.2 `self_signed_tls_client_auth` when it lands,
-  * which matches a certificate against this same set.
+  * `private_key_jwt`, which verifies an assertion's signature with them, and RFC 8705 §2.2
+  * `self_signed_tls_client_auth`, which matches a presented certificate's public key against
+  * this same set.
   */
 case class JsonWebKeySet(document: Json.Obj):
   /** Parses the document into verification keys. Fails only where the stored document is not a

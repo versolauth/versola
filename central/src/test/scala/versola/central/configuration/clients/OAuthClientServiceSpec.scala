@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, MtlsCertificateEncoding, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.roles.{RoleRecord, RoleRepository}
@@ -161,15 +162,52 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
   )
 
+  /** A tenant whose reverse proxy terminates mTLS and forwards the certificate, which RFC
+    * 8705 §6.5 makes a precondition of registering `mtlsAuth` at all. */
+  private val mtlsTerminatingSettings = ChallengeSettingsRecord(
+    tenantId = tenantId,
+    allowedPrefixes = List.empty,
+    submissionLimits = SubmissionLimits.empty,
+    otpLength = 6,
+    otpResendAfter = 60,
+    passkeySettings = PasskeySettings("localhost", "Test", List("http://localhost"), "preferred"),
+    authConversationTtlSeconds = 900,
+    sessionTtlSeconds = 86400,
+    sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = 15552000,
+    ipHeader = "X-Real-IP",
+    acrVocabulary = None,
+    postLogoutRedirectUris = List.empty,
+    requireDpopNonce = false,
+    mtlsCertificateHeader = Some("ssl-client-cert"),
+    mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+    signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
+  )
+
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
     val tenantRepository = stub[TenantRepository]
     val roleRepository = stub[RoleRepository]
+    val challengeSettingsService = stub[ChallengeSettingsService]
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
     val config = TestCentralConfig.config
-    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, secureRandom, securityService, config)
+    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, config)
+
+    /** The tenant terminates mTLS, so an `mtlsAuth` registration is not refused for the lack
+      * of somewhere for a certificate to arrive from. */
+    def terminatesMtls: UIO[Unit] =
+      challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+
+    /** The tenant's proxy does not forward a certificate -- the case §6.5 registration has to
+      * refuse. */
+    def terminatesNoMtls: UIO[Unit] =
+      challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
+        mtlsCertificateHeader = None,
+        mtlsCertificateEncoding = None,
+      )))
 
   def spec = suite("OAuthClientService")(
     test("getTenantClients filters cache by tenant") {
@@ -327,15 +365,16 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.terminatesMtls
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
-          mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "  CN=client,O=Example  ")),
+          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "  CN=client,O=Example  ")),
         ))
         created = env.repository.createClient.calls.head
       yield assertTrue(
-        created.mtlsAuth == Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, "CN=client,O=Example")),
+        created.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=client,O=Example")),
         // registered without the §3.4 flag, yet still bound: §2 implies §3
         !created.certificateBoundAccessTokens,
         created.bindsAccessTokens,
@@ -367,17 +406,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(!created.bindsAccessTokens)
     },
     test("updateClient trims an mtlsAuth subject value and passes a deletion through untouched") {
-      val env = new Env()
+      val env = new Env(Vector(cachedClient))
 
       for
+        _ <- env.terminatesMtls
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(updateRequest.copy(
-          mtlsAuth = Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, " client.example.com "))),
+          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, " client.example.com "))),
         ))
         _ <- env.service.updateClient(updateRequest.copy(mtlsAuth = Some(Patch.Deleted)))
         calls = env.repository.updateClient.calls
       yield assertTrue(
-        calls.head._2.mtlsAuth == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        calls.head._2.mtlsAuth == Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
         calls(1)._2.mtlsAuth == Some(Patch.Deleted),
       )
     },
@@ -402,7 +442,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         result <- env.service.registerClient(createRequest.copy(
-          mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
           jwks = Some(publicKeySet),
         )).either
         createCalls = env.repository.createClient.times
@@ -549,7 +589,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateClient rejects keys added to a client that already authenticates by certificate") {
       val env = new Env(Vector(cachedClient.copy(
-        mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
       )))
 
       for
@@ -563,6 +603,118 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => false,
         updateCalls == 0,
       )
+    },
+    test("registerClient accepts self_signed_tls_client_auth alongside the keys it matches against") {
+      val env = new Env()
+
+      for
+        _ <- env.terminatesMtls
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+          jwks = Some(publicKeySet),
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.mtlsAuth == Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+        created.jwks == Some(publicKeySet),
+        // §2.2 registers no subject value, so there is nothing for normalisation to do to it
+        created.bindsAccessTokens,
+      )
+    },
+    test("registerClient rejects self_signed_tls_client_auth with no keys to match a certificate against") {
+      val env = new Env()
+
+      for
+        _ <- env.terminatesMtls
+        result <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("self_signed_tls_client_auth needs jwks")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient refuses mtlsAuth under a tenant whose proxy forwards no certificate") {
+      val env = new Env()
+
+      for
+        _ <- env.terminatesNoMtls
+        result <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("mtlsCertificateHeader")
+          case _ => false,
+        createCalls == 0,
+      )
+        .label("RFC 8705 §6.5: nothing would ever look for this client's certificate")
+    },
+    test("registerClient refuses mtlsAuth under a tenant with no challenge settings at all") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        result <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+          jwks = Some(publicKeySet),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("mtlsCertificateHeader")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient does not consult the tenant's mTLS termination for a client that registers no mtlsAuth") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest)
+        lookups = env.challengeSettingsService.getSettings.times
+        createCalls = env.repository.createClient.times
+      yield assertTrue(lookups == 0, createCalls == 1)
+        .label("every other registration would pay for a lookup whose answer it has no use for")
+    },
+    test("updateClient refuses mtlsAuth added under a tenant whose proxy forwards no certificate") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.terminatesNoMtls
+        result <- env.service.updateClient(updateRequest.copy(
+          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        )).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("mtlsCertificateHeader")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient leaves a stored mtlsAuth it does not mention alone when the tenant terminates mTLS") {
+      val env = new Env(Vector(cachedClient.copy(
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+      )))
+
+      for
+        _ <- env.terminatesMtls
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest)
+        patch = env.repository.updateClient.calls.head._2
+      yield assertTrue(patch.mtlsAuth.isEmpty)
+        .label("the effective value is still the stored one, which the tenant still supports")
     },
     test("registerClient rejects a non-HTTPS logoUri instead of silently dropping it") {
       val env = new Env()
