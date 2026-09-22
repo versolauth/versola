@@ -644,6 +644,56 @@ Logs are structured JSON, one object per line. To read them comfortably:
 docker compose -f docker-compose.prod.yml logs --tail=200 auth | jq -r '"\(.timestamp) \(.level) \(.message)"'
 ```
 
+### Checking a table's WAL contribution before proposing UNLOGGED
+
+`pg_stat_statements` is **not currently enabled** on the production cluster (no
+`shared_preload_libraries` entry, no `CREATE EXTENSION` run against `auth`) — see
+[10](#10-known-gaps). The only place this repository measures WAL per table/query today is the
+load emulator's `SutStatsReader`, and only against its own SUT target, and only when someone has
+turned the extension on there. So the answer to "are we watching WAL per table in production" is
+currently no; this is the checklist for turning that measurement on when a WAL-contention question
+comes up (e.g. "should `challenge_throttle` be `UNLOGGED`"), not something to run blind.
+
+1. **Enable the extension** (one-time, needs a full Postgres restart, not just a container
+   restart — it's native on the host, see [1](#1-topology)):
+   ```
+   # postgresql.conf
+   shared_preload_libraries = 'pg_stat_statements'
+   ```
+   ```sql
+   -- after the restart, once per database
+   CREATE EXTENSION pg_stat_statements;
+   ```
+2. **Take two snapshots around a representative window** (an hour of normal traffic, or a known
+   spike) — the columns are cumulative counters since the last reset, so a single reading says
+   nothing; only the difference between two does, the same reason `SutStats` in loadgen is split
+   into counters diffed across a campaign and gauges read once.
+   ```sql
+   SELECT query, calls, wal_bytes, wal_records, wal_fpi
+   FROM pg_stat_statements
+   WHERE query ILIKE '%challenge_throttle%'
+   ORDER BY wal_bytes DESC;
+   ```
+3. **Put the table's share against the cluster total** from `pg_stat_wal` (also cumulative —
+   diff the same two snapshots) so "this table's WAL" has a denominator, not just a number that
+   sounds large in isolation.
+4. **Check whether the `expires_at` index, not row volume, is the actual driver**, before
+   concluding the fix is UNLOGGED at all:
+   ```sql
+   SELECT n_tup_upd, n_tup_hot_upd, n_tup_ins
+   FROM pg_stat_user_tables WHERE relname = 'challenge_throttle';
+   ```
+   A low `n_tup_hot_upd / n_tup_upd` ratio means `recordAttempt`'s `expires_at` update is
+   defeating HOT and paying for an index tuple on every attempt — cheaper to fix than to accept
+   the durability loss of UNLOGGED (a crash truncates the whole table, lifting every active ban
+   at once, and the table isn't readable on a physical standby).
+5. **Compare the result against `dpop_proofs`**, the one table this codebase already unlogged
+   (`V0014__dpop_proofs_table.sql`), before treating that precedent as applicable: it's written
+   once per token/resource request, at the endpoint's full rate, and a crash only costs the
+   current `iat` leeway window. `challenge_throttle` is written once per challenge submission —
+   capped at a handful per subject per window by `SubmissionLimits` — and a crash costs every
+   active ban and counter, cluster-wide.
+
 ---
 
 ## 9. Troubleshooting
@@ -878,6 +928,15 @@ deploys stop shipping UTF-16.
 
 ## 10. Known gaps
 
+- **`pg_stat_statements` is not enabled on the production cluster.** There is no per-table or
+  per-query WAL visibility today — `wal_bytes`/`wal_fpi` in `pg_stat_statements` is the only source
+  of that, and it needs `shared_preload_libraries` set and a full Postgres restart (not just a
+  container restart, since Postgres is native on the host here) before `CREATE EXTENSION` even
+  applies. The load emulator's `SutStatsReader` reads the same view, but only against its own SUT
+  target and only when someone has turned the extension on there — that gives no production
+  signal. Worth turning on before, not during, the next WAL-contention question (see
+  [8](#8-routine-operations)'s checklist), since the extension's own bookkeeping has a small,
+  constant overhead that's easier to justify ahead of an incident than during one.
 - **The compose file is not in git.** It lives only at `/opt/versola/docker-compose.prod.yml`. It
   contains no secrets, so there is no reason for it not to be version-controlled alongside the
   code, in the way the nginx config already is and the way `env-config` now handles the `.conf`
