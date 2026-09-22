@@ -63,6 +63,8 @@ object ClientController extends Controller:
               mtlsAuth = client.mtlsAuth,
               certificateBoundAccessTokens = client.certificateBoundAccessTokens,
               jwks = client.jwks,
+              requireSignedRequestObject = client.requireSignedRequestObject,
+              requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -116,6 +118,8 @@ object ClientController extends Controller:
             mtlsAuth = client.mtlsAuth,
             certificateBoundAccessTokens = client.certificateBoundAccessTokens,
             jwks = client.jwks,
+            requireSignedRequestObject = client.requireSignedRequestObject,
+            requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

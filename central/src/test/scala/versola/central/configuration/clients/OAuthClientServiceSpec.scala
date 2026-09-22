@@ -78,6 +78,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -106,6 +108,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private val createRequest = CreateClientRequest(
@@ -226,6 +230,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
       )
 
       for
@@ -271,27 +277,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.updateClient.calls == List(
           (
             clientId,
-            Some(Map("en" -> "Updated Web App")),
-            updateRequest.redirectUris,
-            updateRequest.scope,
-            updateRequest.permissions,
-            Some(900.seconds),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
-            None,
-            None,
-            None,
-            None,
+            OAuthClientPatch.empty.copy(
+              clientName = Some(Map("en" -> "Updated Web App")),
+              redirectUris = updateRequest.redirectUris,
+              scope = updateRequest.scope,
+              permissions = updateRequest.permissions,
+              accessTokenTtl = Some(900.seconds),
+              consentFlow = Some(Patch.Modified(ConsentFlow(allowPartial = false, rememberDuration = Some(30.days)))),
+            ),
           ),
         ),
       )
@@ -374,8 +367,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.updateClient(updateRequest.copy(mtlsAuth = Some(Patch.Deleted)))
         calls = env.repository.updateClient.calls
       yield assertTrue(
-        calls.head._20 == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
-        calls(1)._20 == Some(Patch.Deleted),
+        calls.head._2.mtlsAuth == Some(Patch.Modified(MutualTlsAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        calls(1)._2.mtlsAuth == Some(Patch.Deleted),
       )
     },
     test("registerClient stores a JWK Set the client will authenticate assertions with") {
@@ -423,6 +416,65 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case error: InvalidRegistrationConfiguration => error.reason.startsWith("jwks")
           case _ => false,
         createCalls == 0,
+      )
+    },
+    test("registerClient stores the request form a client is held to") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          jwks = Some(publicKeySet),
+          requireSignedRequestObject = true,
+          requirePushedAuthorizationRequests = true,
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.requireSignedRequestObject,
+        created.requirePushedAuthorizationRequests,
+      )
+    },
+    test("registerClient rejects requireSignedRequestObject without the keys to verify one") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(requireSignedRequestObject = true)).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("requireSignedRequestObject needs jwks")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient rejects requireSignedRequestObject turned on for a client with no keys") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        result <- env.service.updateClient(updateRequest.copy(requireSignedRequestObject = Some(true))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("requireSignedRequestObject needs jwks")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient passes the request form through to the repository") {
+      val env = new Env(Vector(cachedClient.copy(jwks = Some(publicKeySet))))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest.copy(
+          requireSignedRequestObject = Some(true),
+          requirePushedAuthorizationRequests = Some(true),
+        ))
+        patch = env.repository.updateClient.calls.head._2
+      yield assertTrue(
+        patch.requireSignedRequestObject == Some(true),
+        patch.requirePushedAuthorizationRequests == Some(true),
       )
     },
     test("updateClient rejects keys added to a client that already authenticates by certificate") {
@@ -572,8 +624,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
             consentFlow = Some(Patch.Deleted),
           ),
         )
-        (_, _, _, _, _, _, _, _, _, _, _, frontChannelLogoutUri, _, _, _, _, _, consentFlow, _, _, _, _) = env.repository.updateClient.calls.head
-      yield assertTrue(frontChannelLogoutUri == Some(Patch.Deleted), consentFlow == Some(Patch.Deleted))
+        patch = env.repository.updateClient.calls.head._2
+      yield assertTrue(patch.frontChannelLogoutUri == Some(Patch.Deleted), patch.consentFlow == Some(Patch.Deleted))
     },
     test("updateClient stores a frontChannelLogoutUri with surrounding whitespace instead of clearing it") {
       val env = new Env()
@@ -583,7 +635,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.updateClient(
           updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified(" https://rp.example.com/front-logout "))),
         )
-        patched = env.repository.updateClient.calls.head._12
+        patched = env.repository.updateClient.calls.head._2.frontChannelLogoutUri
       yield assertTrue(patched == Some(Patch.Modified(URL.decode("https://rp.example.com/front-logout").toOption.get)))
     },
     test("registerClient rejects a registration flow granting an unknown role") {
@@ -713,7 +765,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.roleRepository.findRole.succeedsWith(Some(role))
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(updateRequest.copy(registrationFlow = Some(Patch.Deleted)))
-        patched = env.repository.updateClient.calls.head._10
+        patched = env.repository.updateClient.calls.head._2.registrationFlow
       yield assertTrue(patched == Some(Patch.Deleted))
     },
     test("rotateClientSecret returns new secret and stores encrypted secret") {

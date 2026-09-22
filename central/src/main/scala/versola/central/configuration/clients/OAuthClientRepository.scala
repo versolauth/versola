@@ -3,10 +3,8 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{CacheSource, JsonWebKeySet, Patch}
+import versola.util.CacheSource
 import zio.*
-import zio.http.URL
 
 trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
@@ -16,30 +14,7 @@ trait OAuthClientRepository extends CacheSource[Vector[OAuthClientRecord]]:
 
   def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit]
 
-  def updateClient(
-      clientId: ClientId,
-      clientName: Option[Map[String, String]],
-      patchRedirectUris: PatchClientRedirectUris,
-      patchScope: PatchClientScope,
-      patchPermissions: PatchPermissions,
-      accessTokenTtl: Option[Duration],
-      refreshTokenTtl: Option[Duration],
-      theme: Option[String],
-      authFlow: Option[Patch[AuthFlow]],
-      registrationFlow: Option[Patch[RegistrationFlow]],
-      otpTemplateId: Option[String],
-      frontChannelLogoutUri: Option[Patch[URL]],
-      frontChannelLogoutSessionRequired: Option[Boolean],
-      backChannelLogoutUri: Option[Patch[URL]],
-      logoUri: Option[Patch[String]] = None,
-      policyUri: Option[Patch[String]] = None,
-      tosUri: Option[Patch[String]] = None,
-      consentFlow: Option[Patch[ConsentFlow]] = None,
-      dpopBoundAccessTokens: Option[Boolean] = None,
-      mtlsAuth: Option[Patch[MutualTlsAuth]] = None,
-      certificateBoundAccessTokens: Option[Boolean] = None,
-      jwks: Option[Patch[JsonWebKeySet]] = None,
-  ): Task[Unit]
+  def updateClient(clientId: ClientId, patch: OAuthClientPatch): Task[Unit]
 
   def rotateClientSecret(clientId: ClientId, newSecret: Array[Byte]): Task[Unit]
 

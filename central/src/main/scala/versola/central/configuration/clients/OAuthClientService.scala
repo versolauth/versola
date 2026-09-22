@@ -146,6 +146,11 @@ object OAuthClientService:
           request.mtlsAuth,
           request.jwks,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
+          request.id,
+          request.requireSignedRequestObject,
+          request.jwks,
+        ))(ZIO.fail(_))
         secret <- request.clientType match
           case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case ClientType.native => ZIO.none
@@ -176,6 +181,8 @@ object OAuthClientService:
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
           jwks = request.jwks,
+          requireSignedRequestObject = request.requireSignedRequestObject,
+          requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -206,30 +213,39 @@ object OAuthClientService:
             clientId = request.clientId,
             mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
             jwks = request.jwks.applyTo(client.jwks),
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
+            clientId = request.clientId,
+            requireSignedRequestObject =
+              request.requireSignedRequestObject.getOrElse(client.requireSignedRequestObject),
+            jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_))
         _ <- clientRepository.updateClient(
-          clientId = request.clientId,
-          clientName = request.clientName,
-          patchRedirectUris = request.redirectUris,
-          patchScope = request.scope,
-          patchPermissions = request.permissions,
-          accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
-          refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
-          theme = request.theme,
-          authFlow = request.authFlow,
-          registrationFlow = request.registrationFlow,
-          otpTemplateId = request.otpTemplateId,
-          frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
-          frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
-          backChannelLogoutUri = request.backChannelLogoutUri.map(decodeUrlPatch),
-          logoUri = request.logoUri,
-          policyUri = request.policyUri,
-          tosUri = request.tosUri,
-          consentFlow = request.consentFlow.map(toConsentFlowPatch),
-          dpopBoundAccessTokens = request.dpopBoundAccessTokens,
-          mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
-          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
-          jwks = request.jwks,
+          request.clientId,
+          OAuthClientPatch(
+            clientName = request.clientName,
+            redirectUris = request.redirectUris,
+            scope = request.scope,
+            permissions = request.permissions,
+            accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds),
+            refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
+            theme = request.theme,
+            authFlow = request.authFlow,
+            registrationFlow = request.registrationFlow,
+            otpTemplateId = request.otpTemplateId,
+            frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
+            frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
+            backChannelLogoutUri = request.backChannelLogoutUri.map(decodeUrlPatch),
+            logoUri = request.logoUri,
+            policyUri = request.policyUri,
+            tosUri = request.tosUri,
+            consentFlow = request.consentFlow.map(toConsentFlowPatch),
+            dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+            mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
+            certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+            jwks = request.jwks,
+            requireSignedRequestObject = request.requireSignedRequestObject,
+            requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
+          ),
         )
       yield ()
 

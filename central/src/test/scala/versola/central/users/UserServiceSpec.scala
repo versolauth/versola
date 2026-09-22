@@ -97,6 +97,8 @@ object UserServiceSpec extends UnitSpecBase:
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",
@@ -151,6 +153,8 @@ object UserServiceSpec extends UnitSpecBase:
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
       )
       val sessionDto = AuthClient.SessionDto(
         publicId = "public-session-1",

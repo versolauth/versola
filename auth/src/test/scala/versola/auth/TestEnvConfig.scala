@@ -108,6 +108,8 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   /** Some other client's certificate, for checking that a registered subject is matched rather

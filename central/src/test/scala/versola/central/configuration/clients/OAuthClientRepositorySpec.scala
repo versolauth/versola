@@ -53,6 +53,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   /** Applies a registration-flow patch, leaving every other field of the client alone. */
@@ -64,20 +66,13 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       backChannelLogoutUri: Option[Patch[URL]] = None,
   ) =
     env.repository.updateClient(
-      clientId = clientId,
-      clientName = None,
-      patchRedirectUris = PatchClientRedirectUris(add = Set.empty, remove = Set.empty),
-      patchScope = PatchClientScope(add = Set.empty, remove = Set.empty),
-      patchPermissions = PatchPermissions(add = Set.empty, remove = Set.empty),
-      accessTokenTtl = None,
-      refreshTokenTtl = None,
-      theme = None,
-      authFlow = authFlow,
-      registrationFlow = registrationFlow,
-      otpTemplateId = None,
-      frontChannelLogoutUri = frontChannelLogoutUri,
-      frontChannelLogoutSessionRequired = None,
-      backChannelLogoutUri = backChannelLogoutUri,
+      clientId,
+      OAuthClientPatch.empty.copy(
+        authFlow = authFlow,
+        registrationFlow = registrationFlow,
+        frontChannelLogoutUri = frontChannelLogoutUri,
+        backChannelLogoutUri = backChannelLogoutUri,
+      ),
     )
 
   private def patchRegistrationFlow(
@@ -108,29 +103,23 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         for
           _ <- env.repository.createClient(client)
           _ <- env.repository.updateClient(
-            clientId = clientId,
-            clientName = Some(Map("en" -> "new-name")),
-            patchRedirectUris = PatchClientRedirectUris(
-              add = Set(redirectUri2),
-              remove = Set(redirectUri1),
+            clientId,
+            OAuthClientPatch.empty.copy(
+              clientName = Some(Map("en" -> "new-name")),
+              redirectUris = PatchClientRedirectUris(
+                add = Set(redirectUri2),
+                remove = Set(redirectUri1),
+              ),
+              scope = PatchClientScope(
+                add = Set(writeScope),
+                remove = Set(readScope),
+              ),
+              permissions = PatchPermissions(
+                add = Set(writePermission),
+                remove = Set(readPermission),
+              ),
+              accessTokenTtl = Some(15.minutes),
             ),
-            patchScope = PatchClientScope(
-              add = Set(writeScope),
-              remove = Set(readScope),
-            ),
-            patchPermissions = PatchPermissions(
-              add = Set(writePermission),
-              remove = Set(readPermission),
-            ),
-            accessTokenTtl = Some(15.minutes),
-            refreshTokenTtl = None,
-            theme = None,
-            authFlow = None,
-            registrationFlow = None,
-            otpTemplateId = None,
-            frontChannelLogoutUri = None,
-            frontChannelLogoutSessionRequired = None,
-            backChannelLogoutUri = None,
           )
           found <- env.repository.find(clientId)
         yield assertTrue(

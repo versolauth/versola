@@ -5,7 +5,7 @@ import versola.oauth.client.model.ClientCredentials
 import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
 import versola.oauth.mtls.ClientCertificate
-import versola.util.{CoreConfig, Secret, SecureRandom, SecurityService}
+import versola.util.{CoreConfig, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.http.Request
 import zio.{Chunk, IO, ZIO, ZLayer}
 
@@ -69,6 +69,12 @@ object PushedAuthorizationService:
         // A client_id that contradicts the authenticated one is already rejected while the
         // credentials are extracted, so only its absence is left to check here.
         _ <- ZIO.fail(PushedAuthorizationError.ClientIdMissing).unless(params.contains("client_id"))
+
+        // RFC 9101 §10.5: a client that registered the requirement states its request in a
+        // signed object here too -- `/authorize` reads a pushed request as already signed, so
+        // an unsigned one stored now would reach it having never been checked.
+        _ <- ZIO.fail(PushedAuthorizationError.RequestObjectRequired)
+          .when(client.requireSignedRequestObject && !params.contains(RequestObject.Parameter))
 
         // RFC 9126 §3: a pushed request may itself be a JAR request object. It is resolved
         // here rather than at redemption so that the object is verified while the client that

@@ -46,6 +46,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private val parsedRequest: AuthorizeRequest = AuthorizeRequest(
@@ -242,6 +244,44 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         result == PushedAuthorizationError.from(Error.InvalidRequestObject),
         env.repository.create.calls.isEmpty,
       )
+    },
+    test("refuses a plain pushed request from a client that registered require_signed_request_object") {
+      val env = Env()
+      for
+        _ <- env.happyPath
+        _ <- env.jarClient
+        _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
+        service <- env.service
+        result <- service.push(validParams(), assertionCredentials, None, request).flip
+      yield assertTrue(
+        result == PushedAuthorizationError.RequestObjectRequired,
+        env.repository.create.calls.isEmpty,
+      )
+    },
+    test("accepts a pushed request object from a client that registered require_signed_request_object") {
+      val env = Env()
+      val requestObject = signedRequestObject(
+        "iss" -> Json.Str(clientId),
+        "aud" -> Json.Str(config.jwt.issuer),
+        "exp" -> Json.Num(60),
+        "client_id" -> Json.Str(clientId),
+        "redirect_uri" -> Json.Str(redirectUri.encode),
+        "response_type" -> Json.Str("code"),
+        "scope" -> Json.Str("openid"),
+      )
+      for
+        _ <- env.happyPath
+        _ <- env.jarClient
+        _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
+        service <- env.service
+        _ <- service.push(
+          Map("client_id" -> Chunk(clientId.toString), "request" -> Chunk(requestObject)),
+          assertionCredentials,
+          None,
+          request,
+        )
+        created = env.repository.create.times
+      yield assertTrue(created == 1)
     },
     test("never persists the client authentication parameters") {
       val env = Env()

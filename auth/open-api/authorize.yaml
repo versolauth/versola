@@ -433,6 +433,11 @@ components:
         Error codes returned on the redirect: `invalid_request`, `unsupported_response_type`,
         `invalid_scope`, `login_required`, `access_denied`, `invalid_target`,
         `invalid_authorization_details`, `unmet_authentication_requirements`.
+
+        A client registered with `requireSignedRequestObject` (RFC 9101 §10.5) or
+        `requirePushedAuthorizationRequests` (RFC 9126 §6.2) is redirected `invalid_request`
+        when the request it sent is not in that form — a plain parameter set from a client
+        that must sign, or a request without a `request_uri` from one that must push.
       headers:
         Location:
           required: true

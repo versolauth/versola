@@ -79,6 +79,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -137,6 +139,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
       jwks = None,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -164,6 +168,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
       jwks = None,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
     ),
   )
 
@@ -303,6 +309,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 mtlsAuth = None,
                 certificateBoundAccessTokens = false,
                 jwks = None,
+                requireSignedRequestObject = false,
+                requirePushedAuthorizationRequests = false,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -329,6 +337,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 mtlsAuth = None,
                 certificateBoundAccessTokens = false,
                 jwks = None,
+                requireSignedRequestObject = false,
+                requirePushedAuthorizationRequests = false,
               ),
             ),
           ),
