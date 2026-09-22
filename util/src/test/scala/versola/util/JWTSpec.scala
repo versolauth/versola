@@ -28,6 +28,16 @@ object JWTSpec extends ZIOSpecDefault:
     ),
   )
 
+  private val ps256PublicKeys = JWT.PublicKeys(
+    com.nimbusds.jose.jwk.JWKSet(
+      new com.nimbusds.jose.jwk.RSAKey.Builder(publicKey)
+        .keyID("test-key-1")
+        .algorithm(com.nimbusds.jose.JWSAlgorithm.PS256)
+        .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
+        .build(),
+    ),
+  )
+
   // Test symmetric key
   private val keyGenerator = KeyGenerator.getInstance("HmacSHA256")
   keyGenerator.init(256)
@@ -43,7 +53,11 @@ object JWTSpec extends ZIOSpecDefault:
       new com.nimbusds.jose.jwk.ECKey.Builder(
         com.nimbusds.jose.jwk.Curve.P_256,
         ecKeyPair.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey],
-      ).keyID("ec-key-1").build(),
+      )
+        .keyID("ec-key-1")
+        .algorithm(com.nimbusds.jose.JWSAlgorithm.ES256)
+        .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
+        .build(),
     ),
   )
 
@@ -321,6 +335,42 @@ object JWTSpec extends ZIOSpecDefault:
           com.nimbusds.jose.crypto.MACSigner(symmetricKey),
         )(_.subject("user123"))
         result <- JWT.deserialize[Json.Obj](token, octetPublicKeys, JWT.Type.JWT)
+      yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
+    },
+    test("PS256 serialize and deserialize successfully") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj(),
+      )
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, "test-key-1", privateKey),
+        )
+        result <- JWT.deserialize[Json.Obj](token, ps256PublicKeys, JWT.Type.JWT)
+      yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
+    },
+    test("ES256 serialize and deserialize successfully") {
+      val claims = JWT.Claims(
+        issuer = "test-issuer",
+        subject = "user123",
+        audience = List("api"),
+        custom = Json.Obj(),
+      )
+      for
+        token <- JWT.serialize(
+          claims = claims,
+          ttl = 1.hour,
+          signature = JWT.Signature.Asymmetric(
+            JWT.Algorithm.ES256,
+            "ec-key-1",
+            ecKeyPair.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey],
+          ),
+        )
+        result <- JWT.deserialize[Json.Obj](token, ecPublicKeys, JWT.Type.JWT)
       yield assertTrue(result.get("sub") == Some(Json.Str("user123")))
     },
     // Closes the `case _ => false` gap in `verifySignature` (lines 258/263): a JWK type that

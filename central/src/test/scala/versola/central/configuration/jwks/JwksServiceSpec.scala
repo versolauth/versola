@@ -63,6 +63,28 @@ object JwksServiceSpec extends ZIOSpecDefault:
       JwksService.live,
     )
 
+  private val realKeyGenSecurity: ULayer[SecurityService] =
+    ZLayer.succeed(new SecurityService:
+      def encryptAes256(data: Array[Byte], key: JSecretKey): Task[Array[Byte]]    = ZIO.dieMessage("not used")
+      def decryptAes256(data: Array[Byte], key: JSecretKey): Task[Array[Byte]]    = ZIO.dieMessage("not used")
+      def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]]        = ZIO.dieMessage("not used")
+      def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]]       = ZIO.dieMessage("not used")
+      def mac(secret: Secret, key: Array[Byte]): Task[MAC]                        = ZIO.dieMessage("not used")
+      def hashPassword(p: Secret, s: Salt, pepper: Secret.Bytes16): Task[MAC]    = ZIO.dieMessage("not used")
+      def generateRsaKeyPair: UIO[RsaKeyPair] = ZIO.attempt {
+        val gen = KeyPairGenerator.getInstance("RSA")
+        gen.initialize(2048)
+        val kp = gen.generateKeyPair()
+        RsaKeyPair("test-rsa-key", kp.getPublic.asInstanceOf[java.security.interfaces.RSAPublicKey], kp.getPrivate.asInstanceOf[java.security.interfaces.RSAPrivateKey])
+      }.orDie
+      def generateEcKeyPair: UIO[EcKeyPair] = ZIO.attempt {
+        val gen = KeyPairGenerator.getInstance("EC")
+        gen.initialize(com.nimbusds.jose.jwk.Curve.P_256.toECParameterSpec)
+        val kp = gen.generateKeyPair()
+        EcKeyPair("test-ec-key", kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey], kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey])
+      }.orDie
+    )
+
   def spec = suite("JwksService")(
     test("getRaw returns the configured JWKS") {
       val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj])
@@ -86,5 +108,23 @@ object JwksServiceSpec extends ZIOSpecDefault:
         service <- ZIO.service[JwksService]
         keys    <- service.getPublicKeys
       yield assertTrue(keys.keys.size() == 0)).provide(serviceFrom(Vector.empty))
+    },
+    test("generateKey(PS256) returns a parseable RSA PEM private key") {
+      (for
+        service <- ZIO.service[JwksService]
+        pem     <- service.generateKey(versola.util.JWT.Algorithm.PS256)
+      yield assertTrue(
+        pem.startsWith("-----BEGIN PRIVATE KEY-----"),
+        versola.util.PrivateKeyUtil.parse(pem, "RSA").isRight,
+      )).provide(inMemoryRepo(Vector.empty), Scope.default, ZLayer.succeed(TestCentralConfig.config), realKeyGenSecurity, JwksService.live)
+    },
+    test("generateKey(ES256) returns a parseable EC PEM private key") {
+      (for
+        service <- ZIO.service[JwksService]
+        pem     <- service.generateKey(versola.util.JWT.Algorithm.ES256)
+      yield assertTrue(
+        pem.startsWith("-----BEGIN PRIVATE KEY-----"),
+        versola.util.PrivateKeyUtil.parse(pem, "EC").isRight,
+      )).provide(inMemoryRepo(Vector.empty), Scope.default, ZLayer.succeed(TestCentralConfig.config), realKeyGenSecurity, JwksService.live)
     },
   )

@@ -25,4 +25,5 @@ case class ChallengeSettingsRecord(
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: List[String],
+    signingAlgorithm: String = "RS256",
 ) derives Schema, JsonCodec

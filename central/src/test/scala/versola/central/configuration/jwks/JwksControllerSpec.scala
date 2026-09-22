@@ -194,4 +194,46 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.getRaw.calls.isEmpty)),
     ),
+    controllerTestCase(
+      description = "POST /configuration/jwks/generate?algorithm=PS256 generates key and returns 201 with privateKey",
+      request = Request(
+        method = Method.POST,
+        url = (URL.empty / "configuration" / "jwks" / "generate").addQueryParam("algorithm", "PS256"),
+      ),
+      expectedStatus = Status.Created,
+      setup = service => service.generateKey.succeedsWith("-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBg==\n-----END PRIVATE KEY-----"),
+      verify = (response, service) =>
+        for
+          body <- response.body.asString
+        yield assertTrue(
+          service.generateKey.calls == List(JWT.Algorithm.PS256),
+          body.contains("\"privateKey\""),
+          body.contains("BEGIN PRIVATE KEY"),
+        ), 
+    ),
+    controllerTestCase(
+      description = "POST /configuration/jwks/generate?algorithm=ES256 generates key and returns 201 with privateKey",
+      request = Request(
+        method = Method.POST,
+        url = (URL.empty / "configuration" / "jwks" / "generate").addQueryParam("algorithm", "ES256"),
+      ),
+      expectedStatus = Status.Created,
+      setup = service => service.generateKey.succeedsWith("-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMG\n-----END PRIVATE KEY-----"),
+      verify = (response, service) =>
+        for
+          body <- response.body.asString
+        yield assertTrue(
+          service.generateKey.calls == List(JWT.Algorithm.ES256),
+          body.contains("\"privateKey\""),
+          body.contains("BEGIN PRIVATE KEY"),
+        ),
+    ),
+    controllerTestCase(
+      description = "POST /configuration/jwks/generate returns 400 for unsupported algorithm",
+      request = Request(
+        method = Method.POST,
+        url = (URL.empty / "configuration" / "jwks" / "generate").addQueryParam("algorithm", "HS256"),
+      ),
+      expectedStatus = Status.BadRequest,
+    ),
   )

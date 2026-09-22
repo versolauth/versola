@@ -18,20 +18,20 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
     xa.connectMeasured("get-all-challenge-settings"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris FROM challenge_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, signing_algorithm FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
     xa.connectMeasured("find-challenge-settings-by-tenant"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris FROM challenge_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, signing_algorithm FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
-        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris})
+        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, signing_algorithm)
+        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris}, ${record.signingAlgorithm})
         ON CONFLICT (tenant_id) DO UPDATE SET
           allowed_prefixes = EXCLUDED.allowed_prefixes,
           submission_limits = EXCLUDED.submission_limits,
@@ -44,7 +44,8 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
           user_agent_ttl_seconds = EXCLUDED.user_agent_ttl_seconds,
           ip_header = EXCLUDED.ip_header,
           acr_vocabulary = EXCLUDED.acr_vocabulary,
-          post_logout_redirect_uris = EXCLUDED.post_logout_redirect_uris
+          post_logout_redirect_uris = EXCLUDED.post_logout_redirect_uris,
+          signing_algorithm = EXCLUDED.signing_algorithm
       """.update.run()
     .unit
 

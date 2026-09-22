@@ -1,11 +1,12 @@
 package versola.oauth.jwks
 
-import com.nimbusds.jose.jwk.{RSAKey as JwkRsaKey}
+import com.nimbusds.jose.jwk.{ECKey as JwkECKey, RSAKey as JwkRsaKey}
 import versola.util.{CacheSource, CoreConfig, JWT, ReloadingCache}
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 import java.security.PrivateKey
-import java.security.interfaces.RSAKey as JavaRsaKey
+import java.security.interfaces.{ECPrivateKey, RSAKey as JavaRsaKey}
+import org.bouncycastle.jce.ECNamedCurveTable
 import scala.jdk.CollectionConverters.*
 
 /** Provides the JWKS synced from central, plus this instance's own signing key.
@@ -40,6 +41,15 @@ object JwksService:
       case rsaPrivateKey: JavaRsaKey =>
         publicKeys.keys.getKeys.asScala.collectFirst {
           case key: JwkRsaKey if key.toRSAPublicKey.getModulus == rsaPrivateKey.getModulus =>
+            JWT.PublicKey(key)
+        }
+      case ecPrivateKey: ECPrivateKey =>
+        val bcParams = ECNamedCurveTable.getParameterSpec("P-256")
+        val q = bcParams.getG.multiply(ecPrivateKey.getS).normalize()
+        publicKeys.keys.getKeys.asScala.collectFirst {
+          case key: JwkECKey
+            if key.getX.decodeToBigInteger == q.getAffineXCoord.toBigInteger &&
+              key.getY.decodeToBigInteger == q.getAffineYCoord.toBigInteger =>
             JWT.PublicKey(key)
         }
       case _ => None

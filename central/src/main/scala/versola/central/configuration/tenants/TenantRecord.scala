@@ -6,8 +6,7 @@ import zio.schema.{DeriveSchema, Schema}
 case class TenantRecord(
     id: TenantId,
     description: String,
-    edgeId: Option[EdgeId],
-    signingAlgorithm: String = "RS256",
+    edgeId: Option[EdgeId]
 )
 
 object TenantRecord:

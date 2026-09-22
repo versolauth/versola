@@ -193,6 +193,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
     .mapOrFail: str =>
       PrivateKeyUtil.parse(str, "RSA")
+        .left.flatMap(_ => PrivateKeyUtil.parse(str, "EC"))
         .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
 
   given DeriveConfig[EnvName] = DeriveConfig[String]

@@ -13,7 +13,7 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         service <- ZIO.service[SecurityService]
         keyPair <- service.generateRsaKeyPair
       yield
-        val jwk = keyPair.toPublicJwk
+        val jwk = keyPair.toPublicJwk()
         val fieldsMap = jwk.fields.toMap
         val timestampPattern = "\\d{4}-\\d{2}-\\d{2}_\\d{2}-\\d{2}-\\d{2}".r
 

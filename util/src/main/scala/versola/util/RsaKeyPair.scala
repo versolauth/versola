@@ -12,10 +12,10 @@ case class RsaKeyPair(
     publicKey: RSAPublicKey,
     privateKey: RSAPrivateKey,
 ):
-  def toPublicJwk: Json.Obj =
+  def toPublicJwk(algorithm: JWSAlgorithm = JWSAlgorithm.RS256): Json.Obj =
     val jwk = new RSAKey.Builder(publicKey)
       .keyID(keyId)
-      .algorithm(JWSAlgorithm.RS256)
+      .algorithm(algorithm)
       .keyUse(KeyUse.SIGNATURE)
       .build()
 

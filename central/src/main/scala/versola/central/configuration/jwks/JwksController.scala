@@ -83,16 +83,22 @@ object JwksController extends Controller:
   val generateJwkEndpoint =
     Method.POST / "configuration" / "jwks" / "generate" -> handler { (request: Request) =>
       for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[JwksService]
-        algorithmStr <- request.url.queryZIO[String]("algorithm")
-        algorithm <- algorithmStr match
-          case "RS256" => ZIO.succeed(JWT.Algorithm.RS256)
-          case "PS256" => ZIO.succeed(JWT.Algorithm.PS256)
-          case "ES256" => ZIO.succeed(JWT.Algorithm.ES256)
-          case other   => ZIO.fail(new IllegalArgumentException(s"Unsupported algorithm: $other"))
-        _ <- service.generateKey(algorithm)
-      yield Response.status(Status.Created)
+        _             <- authorizeBasic(request)
+        service       <- ZIO.service[JwksService]
+        algorithmStr  <- request.url.queryZIO[String]("algorithm")
+        algorithm      = algorithmStr match
+                          case "RS256" => Some(JWT.Algorithm.RS256)
+                          case "PS256" => Some(JWT.Algorithm.PS256)
+                          case "ES256" => Some(JWT.Algorithm.ES256)
+                          case _       => None
+        response      <- algorithm match
+                          case Some(alg) =>
+                            service.generateKey(alg).map(pem =>
+                              Response.json(Json.Obj("privateKey" -> Json.Str(pem)).toJson).status(Status.Created)
+                            )
+                          case None =>
+                            ZIO.succeed(Response.badRequest(s"Unsupported algorithm: $algorithmStr"))
+      yield response
     }
 
   /** Parses the request body as a JWK and extracts its `kid`, replying with

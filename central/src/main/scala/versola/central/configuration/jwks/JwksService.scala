@@ -20,7 +20,7 @@ trait JwksService:
   def createKey(kid: String, jwk: Json.Obj): Task[Unit]
   def updateKey(kid: String, jwk: Json.Obj): Task[Unit]
   def deleteKey(kid: String): Task[Unit]
-  def generateKey(algorithm: JWT.Algorithm): Task[Unit]
+  def generateKey(algorithm: JWT.Algorithm): Task[String]
 
 object JwksService:
   def live: ZLayer[JwksRepository & SecurityService & Scope & CentralConfig, Throwable, JwksService] =
@@ -57,15 +57,21 @@ object JwksService:
     override def deleteKey(kid: String): Task[Unit] =
       repository.delete(kid)
 
-    override def generateKey(algorithm: JWT.Algorithm): Task[Unit] =
+    override def generateKey(algorithm: JWT.Algorithm): Task[String] =
       algorithm match
         case JWT.Algorithm.RS256 | JWT.Algorithm.PS256 =>
           security.generateRsaKeyPair.flatMap(pair =>
-            repository.create(pair.keyId, pair.toPublicJwk)
+            repository.create(pair.keyId, pair.toPublicJwk(algorithm.jwsAlgorithm))
+              .as(toPem(pair.privateKey))
           )
         case JWT.Algorithm.ES256 =>
           security.generateEcKeyPair.flatMap(pair =>
             repository.create(pair.keyId, pair.toPublicJwk)
+              .as(toPem(pair.privateKey))
           )
         case JWT.Algorithm.HS256 =>
           ZIO.fail(new IllegalArgumentException("HS256 is symmetric and not stored in JWKS"))
+
+    private def toPem(key: java.security.PrivateKey): String =
+      val encoded = java.util.Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(key.getEncoded)
+      s"-----BEGIN PRIVATE KEY-----\n$encoded\n-----END PRIVATE KEY-----"

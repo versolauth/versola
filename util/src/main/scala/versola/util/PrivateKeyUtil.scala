@@ -6,11 +6,10 @@ import java.util.Base64
 import scala.util.Try
 
 trait PrivateKeyUtil:
-  def parse(key: String, algorithm: "RSA"): Either[Throwable, PrivateKey]
+  def parse(key: String, algorithm: "RSA" | "EC"): Either[Throwable, PrivateKey]
 
 object PrivateKeyUtil extends PrivateKeyUtil:
-
-  override def parse(key: String, algorithm: "RSA"): Either[Throwable, PrivateKey] =
+  override def parse(key: String, algorithm: "RSA" | "EC"): Either[Throwable, PrivateKey] =
     Try {
       KeyFactory
         .getInstance(algorithm)
@@ -18,8 +17,8 @@ object PrivateKeyUtil extends PrivateKeyUtil:
           PKCS8EncodedKeySpec(
             Base64.getDecoder.decode(
               key
-                .replaceAll(" ", "")
-                .replaceAll("\n", ""),
+                .replaceAll("-----[A-Z ]+-----", "")
+                .replaceAll("\\s", ""),
             ),
           ),
         )

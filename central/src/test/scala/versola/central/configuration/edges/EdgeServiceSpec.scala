@@ -28,7 +28,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       privateKey = pair.getPrivate.asInstanceOf[RSAPrivateKey],
     )
 
-  val testJwk: Json.Obj = testKeyPair.toPublicJwk
+  val testJwk: Json.Obj = testKeyPair.toPublicJwk()
 
   class Env(initial: Vector[EdgeRecord] = Vector.empty):
     val repository = stub[EdgeRepository]
