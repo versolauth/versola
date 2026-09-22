@@ -142,6 +142,16 @@ object JWT:
 
   case class PublicKeys(keys: JWKSet):
     def active: PublicKey = PublicKey(keys.getKeys.get(0))
+
+    /** Every algorithm a key in this set is published under, deduplicated -- for a caller
+      * that has to state the possibilities before any specific token exists (discovery's
+      * `authorization_signing_alg_values_supported`), rather than one resolving a single
+      * token's own `kid`. A key without a usable `alg` contributes nothing, the same way one
+      * is skipped when this instance looks for something to sign with.
+      */
+    def algorithms: Set[Algorithm] =
+      keys.getKeys.asScala.iterator.flatMap(key => PublicKey(key).algorithm).toSet
+
     override def toString: String = keys.toString(true)
 
   object PublicKeys:

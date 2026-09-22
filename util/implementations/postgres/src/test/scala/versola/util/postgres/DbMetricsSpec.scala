@@ -133,8 +133,13 @@ object DbMetricsSpec extends ZIOSpecDefault:
         val perFiber = 5_000
         for
           collected <- Ref.make(Chunk.empty[(Double, Long)])
-          drainer <- (ZIO.succeed(accumulator.drain().replays).flatMap(replays => collected.update(_ ++ replays)) *>
-            ZIO.yieldNow).forever.forkDaemon
+          // A drain is the only thing that advances the accumulator's cursor, so whatever it
+          // returns is the sole remaining copy of those observations. Interrupting the drainer
+          // between the drain and the record would lose them -- not to the race under test, but
+          // to the harness -- so the pair is uninterruptible and only the yield between rounds
+          // is a point the interrupt can land on.
+          drainer <- ((ZIO.succeed(accumulator.drain().replays).flatMap(replays => collected.update(_ ++ replays)))
+            .uninterruptible *> ZIO.yieldNow).forever.forkDaemon
           _ <- ZIO.foreachParDiscard(1 to fibers): _ =>
             ZIO.succeed:
               var i = 0

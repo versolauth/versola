@@ -30,6 +30,7 @@ import versola.oauth.client.model.{
   ThemeRecord,
 }
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
 import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -170,10 +171,17 @@ object OAuthConfigurationService:
     // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
     // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --
     // rather than on every `getMetadata`/`getDpopSigningAlgorithms` call.
-    val metadataCacheSource: URLayer[MetadataSyncClient, CacheSource[ServedMetadata]] =
-      ZLayer.fromFunction((client: MetadataSyncClient) =>
+    // `authorization_signing_alg_values_supported` is derived from the synced JWKS (not the
+    // stored metadata document -- see `ServedMetadata.AuthorizationSigningAlgField`), so this
+    // source also reads the JWKS, through the public-only half of `JwksSyncClient`: what a
+    // JARM response can be signed with is a fact about this deployment's published keys, not
+    // about which of them auth can itself sign with.
+    val metadataCacheSource: URLayer[MetadataSyncClient & JwksSyncClient, CacheSource[ServedMetadata]] =
+      ZLayer.fromFunction((client: MetadataSyncClient, jwksClient: JwksSyncClient) =>
         new CacheSource[ServedMetadata]:
-          override def getAll: Task[ServedMetadata] = client.getAll.map(ServedMetadata.derive),
+          override def getAll: Task[ServedMetadata] =
+            client.getAll.zip(jwksClient.getPublicKeys)
+              .map((stored, keys) => ServedMetadata.derive(stored, keys.algorithms)),
       )
     val syncClients =
       CentralSyncTokenService.live >+>
@@ -185,10 +193,63 @@ object OAuthConfigurationService:
           (OtpTemplateSyncClient.live >+> cacheLayer[Vector[OtpTemplateRecord]]) >+>
           (ChallengeSettingsSyncClient.live >+> cacheLayer[Vector[ChallengeSettingsRecord]]) >+>
           (SystemSettingsSyncClient.live >+> cacheLayer[SystemSettingsRecord]) >+>
-          (MetadataSyncClient.live >+> metadataCacheSource >+> cacheLayer[ServedMetadata]) >+>
+          (JwksSyncClient.live >+> MetadataSyncClient.live >+> metadataCacheSource >+> cacheLayer[ServedMetadata]) >+>
           (ResourceSyncClient.live >+> cacheLayer[ResourceSyncClient.SyncResult]) >+>
           (AuthorizationDetailTypeSyncClient.live >+> cacheLayer[Vector[AuthorizationDetailTypeRecord]]))
-    syncClients >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    // `ZLayer.fromFunction` tops out at 22 parameters (Scala's old `FunctionN` ceiling); `Impl`
+    // has 23, so it is constructed from `ZIO.service` lookups instead of a `Impl.apply` eta
+    // expansion -- functionally identical, just past the point the macro gives up.
+    syncClients >>> ZLayer.fromZIO(
+      for
+        clientCache <- ZIO.service[ReloadingCache[Map[ClientId, OAuthClientRecord]]]
+        clientRepository <- ZIO.service[OAuthClientSyncClient]
+        scopeCache <- ZIO.service[ReloadingCache[Vector[ScopeRecord]]]
+        scopeRepository <- ZIO.service[OAuthScopeSyncClient]
+        formCache <- ZIO.service[ReloadingCache[Vector[FormRecord]]]
+        formRepository <- ZIO.service[FormSyncClient]
+        themeCache <- ZIO.service[ReloadingCache[Vector[ThemeRecord]]]
+        themeRepository <- ZIO.service[ThemeSyncClient]
+        localeCache <- ZIO.service[ReloadingCache[Locales]]
+        localeRepository <- ZIO.service[LocaleSyncClient]
+        otpTemplateCache <- ZIO.service[ReloadingCache[Vector[OtpTemplateRecord]]]
+        otpTemplateRepository <- ZIO.service[OtpTemplateSyncClient]
+        challengeSettingsCache <- ZIO.service[ReloadingCache[Vector[ChallengeSettingsRecord]]]
+        challengeSettingsRepository <- ZIO.service[ChallengeSettingsSyncClient]
+        systemSettingsCache <- ZIO.service[ReloadingCache[SystemSettingsRecord]]
+        systemSettingsRepository <- ZIO.service[SystemSettingsSyncClient]
+        metadataCache <- ZIO.service[ReloadingCache[ServedMetadata]]
+        metadataRepository <- ZIO.service[MetadataSyncClient]
+        resourceCache <- ZIO.service[ReloadingCache[ResourceSyncClient.SyncResult]]
+        resourceRepository <- ZIO.service[ResourceSyncClient]
+        authorizationDetailTypeCache <- ZIO.service[ReloadingCache[Vector[AuthorizationDetailTypeRecord]]]
+        authorizationDetailTypeRepository <- ZIO.service[AuthorizationDetailTypeSyncClient]
+        jwksRepository <- ZIO.service[JwksSyncClient]
+      yield Impl(
+        clientCache,
+        clientRepository,
+        scopeCache,
+        scopeRepository,
+        formCache,
+        formRepository,
+        themeCache,
+        themeRepository,
+        localeCache,
+        localeRepository,
+        otpTemplateCache,
+        otpTemplateRepository,
+        challengeSettingsCache,
+        challengeSettingsRepository,
+        systemSettingsCache,
+        systemSettingsRepository,
+        metadataCache,
+        metadataRepository,
+        resourceCache,
+        resourceRepository,
+        authorizationDetailTypeCache,
+        authorizationDetailTypeRepository,
+        jwksRepository,
+      ),
+    )
   }
 
   case class Impl(
@@ -214,6 +275,11 @@ object OAuthConfigurationService:
       resourceRepository: ResourceSyncClient,
       authorizationDetailTypeCache: ReloadingCache[Vector[AuthorizationDetailTypeRecord]],
       authorizationDetailTypeRepository: AuthorizationDetailTypeSyncClient,
+      // Not paired with a `ReloadingCache` of its own: `metadataCache` already refreshes off
+      // it (via `metadataCacheSource`) on the same schedule as `metadataRepository`. Kept here
+      // only so `syncConfiguration`'s immediate resync can recompute the same derivation
+      // instead of waiting for `metadataCache`'s own timer to notice the JWKS moved.
+      jwksRepository: JwksSyncClient,
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -519,7 +585,8 @@ object OAuthConfigurationService:
         systemSettings <- systemSettingsRepository.getAll
         _ <- systemSettingsCache.set(systemSettings)
         metadata <- metadataRepository.getAll
-        _ <- metadataCache.set(ServedMetadata.derive(metadata))
+        jwks <- jwksRepository.getPublicKeys
+        _ <- metadataCache.set(ServedMetadata.derive(metadata, jwks.algorithms))
         resources <- resourceRepository.getAll
         _ <- resourceCache.set(resources)
         authorizationDetailTypes <- authorizationDetailTypeRepository.getAll

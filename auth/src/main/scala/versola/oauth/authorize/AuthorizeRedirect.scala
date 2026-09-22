@@ -6,7 +6,8 @@ import versola.util.encodeQueryParam
 import zio.http.URL
 
 object AuthorizeRedirect:
-  /** The single parameter a JARM response is carried in (JARM §4.2). */
+  /** The single parameter a JARM response is carried in, on the query string or the fragment
+    * alike (JARM §2.3.1 and §2.3.2). */
   val JwtParameter = "response"
 
   /** The parameters of a successful authorization response, in the order they are placed on

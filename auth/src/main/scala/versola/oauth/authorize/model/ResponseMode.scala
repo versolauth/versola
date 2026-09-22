@@ -63,7 +63,7 @@ object ResponseMode:
       case "fragment" => Some(Fragment)
       case "query.jwt" => Some(QueryJwt)
       case "fragment.jwt" => Some(FragmentJwt)
-      // JARM §2.1: `jwt` asks for the JWT form of whichever mode the response type implies.
+      // JARM §2.3.4: `jwt` asks for the JWT form of whichever mode the response type implies.
       case "jwt" => Some(if requiresFragment then FragmentJwt else QueryJwt)
       case _ => None
     mode.filter(mode => mode.useFragment || !requiresFragment)
