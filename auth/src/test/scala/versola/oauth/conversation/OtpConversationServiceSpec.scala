@@ -108,6 +108,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    responseMode = versola.oauth.authorize.model.ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,
@@ -309,6 +310,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           uiLocales = None,
           nonce = None,
           responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+          responseMode = versola.oauth.authorize.model.ResponseMode.Query,
           userEmail = Some(email),
           userPhone = None,
           userLogin = None,
@@ -363,6 +365,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           uiLocales = None,
           nonce = None,
           responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+          responseMode = versola.oauth.authorize.model.ResponseMode.Query,
           userEmail = Some(email),
           userPhone = None,
           userLogin = None,
@@ -451,6 +454,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             versola.oauth.authorize.model.ResponseTypeEntry.Code,
             versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
           ),
+          responseMode = versola.oauth.authorize.model.ResponseMode.Fragment,
           nonce = Some(nonce),
           userEmail = Some(userEmail),
           userClaims = Some(userClaims),
@@ -510,6 +514,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
             versola.oauth.authorize.model.ResponseTypeEntry.Code,
             versola.oauth.authorize.model.ResponseTypeEntry.IdToken,
           ),
+          responseMode = versola.oauth.authorize.model.ResponseMode.Fragment,
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))
@@ -547,6 +552,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           scope = Set(ScopeToken.OpenId, ScopeToken("profile")),
           grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("profile"))),
           responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+          responseMode = versola.oauth.authorize.model.ResponseMode.Query,
         )
         val testCode = versola.oauth.model.AuthorizationCode(Array.fill(32)(1.toByte))
         val testSessionId = versola.oauth.session.model.SessionId(Array.fill(32)(2.toByte))

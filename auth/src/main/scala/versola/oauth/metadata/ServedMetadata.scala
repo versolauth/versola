@@ -1,6 +1,6 @@
 package versola.oauth.metadata
 
-import versola.util.{ClientAssertion, Dpop, RequestObject}
+import versola.util.{ClientAssertion, Dpop, JWT, RequestObject}
 import zio.json.ast.Json
 
 /** The authorization server metadata document as `auth` actually serves it, paired with what
@@ -52,7 +52,18 @@ object ServedMetadata:
   private val RequestParameterField = "request_parameter_supported"
   private val RequestUriParameterField = "request_uri_parameter_supported"
 
-  def derive(stored: Json.Obj): ServedMetadata =
+  /** JARM §4: the algorithms a `response` JWT may be signed with. Unlike the algorithm sets
+    * above -- which validate a *stored* value against what this code recognizes -- this one
+    * has no stored value to validate: a JARM response is signed with whichever algorithm the
+    * tenant's own key happens to be published under (see `AuthorizationResponseService`), so
+    * the only honest set is whatever this deployment's JWKS actually publishes right now.
+    * `derive`'s caller supplies it (from the synced JWKS, not the stored document) for exactly
+    * that reason -- a value written into the stored document here would be silently replaced,
+    * never read.
+    */
+  private val AuthorizationSigningAlgField = "authorization_signing_alg_values_supported"
+
+  def derive(stored: Json.Obj, publishedSigningAlgorithms: Set[JWT.Algorithm] = Set.empty): ServedMetadata =
     val dpopAlgorithms = Dpop.Algorithm.fromMetadata(stored)
     val assertionAlgorithms = ClientAssertion.Algorithm.fromMetadata(stored)
     val requestObjectAlgorithms = RequestObject.Algorithm.fromMetadata(stored)
@@ -62,12 +73,16 @@ object ServedMetadata:
         advertise(
           advertise(
             advertise(
-              advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
-              ClientAssertion.Algorithm.MetadataField,
-              assertionAlgorithms.map(_.toString),
+              advertise(
+                advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
+                ClientAssertion.Algorithm.MetadataField,
+                assertionAlgorithms.map(_.toString),
+              ),
+              RequestObject.Algorithm.MetadataField,
+              requestObjectAlgorithms.map(_.toString),
             ),
-            RequestObject.Algorithm.MetadataField,
-            requestObjectAlgorithms.map(_.toString),
+            AuthorizationSigningAlgField,
+            publishedSigningAlgorithms.map(_.toString),
           ),
           AuthMethodsField,
           storedMethods + ClientAssertion.MethodName,

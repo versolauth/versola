@@ -76,13 +76,13 @@ object AuthorizeEndpointService:
         registrationFlow = client.flatMap(_.registrationFlow)
         flow <- ZIO
           .fromOption(authFlow)
-          .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state, useFragment = request.isHybrid))
+          .orElseFail(Error.AuthFlowMissing(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
         // Unreachable when authFlow resolved: the flow came off this very record.
         clientRecord <- ZIO
           .fromOption(client)
-          .orElseFail(Error.AuthFlowMissing(request.redirectUri, request.state, useFragment = request.isHybrid))
+          .orElseFail(Error.AuthFlowMissing(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
 
-        _ <- ZIO.fail(Error.ConflictingHints(request.redirectUri, request.state, useFragment = request.isHybrid))
+        _ <- ZIO.fail(Error.ConflictingHints(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
           .when(request.loginHint.isDefined && request.idTokenHint.isDefined)
 
         idTokenUserId <- extractHintSub(request)
@@ -96,14 +96,14 @@ object AuthorizeEndpointService:
 
         response <- (sessionInfo, idTokenUserId) match
           case (None, _) if request.promptNone =>
-            ZIO.fail(Error.LoginRequired(request.redirectUri, request.state, useFragment = request.isHybrid))
+            ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
 
           case (None, Some(userId)) =>
             request.acrValues match
               case Some(values) =>
                 acrResolutionService.resolveAchievableAcr(userId, values, request.clientId, flow, Set.empty).flatMap:
                   case None =>
-                    ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state, useFragment = request.isHybrid))
+                    ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                   case Some(targetAcr) =>
                     createConversation(
                       authId,
@@ -158,7 +158,7 @@ object AuthorizeEndpointService:
 
               result <-
                 if (forceReauth || !acrSatisfied || !factorsSatisfied) && request.promptNone then
-                  ZIO.fail(Error.LoginRequired(request.redirectUri, request.state, useFragment = request.isHybrid))
+                  ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                 else if forceReauth then
                   val targetUserId = if request.promptLogin then idTokenUserId else idTokenUserId.orElse(Some(session.userId))
                   // Re-verifying the existing session identity must deny on a missing user; switching to a
@@ -170,7 +170,7 @@ object AuthorizeEndpointService:
                     case Some(values) if targetUserId.isDefined =>
                       acrResolutionService.resolveAchievableAcr(targetUserId.get, values, request.clientId, flow, Set.empty).flatMap:
                         case None =>
-                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state, useFragment = request.isHybrid))
+                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                         case Some(targetAcr) =>
                           createConversation(
                             authId,
@@ -202,7 +202,7 @@ object AuthorizeEndpointService:
                   // return None → UnmetAuthenticationRequirements instead of AccessDenied.
                   // Check existence first so the right error is returned.
                   userRepository.find(session.userId).flatMap:
-                    case None => ZIO.fail(Error.AccessDenied(request.redirectUri, request.state, useFragment = request.isHybrid))
+                    case None => ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                     case Some(_) =>
                       acrResolutionService.resolveAchievableAcr(
                         session.userId,
@@ -212,7 +212,7 @@ object AuthorizeEndpointService:
                         session.amr.keySet,
                       ).flatMap:
                         case None =>
-                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.redirectUri, request.state, useFragment = request.isHybrid))
+                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                         case Some(targetAcr) =>
                           createConversation(
                             authId,
@@ -251,7 +251,7 @@ object AuthorizeEndpointService:
                   // for it, taking precedence over the generic interaction_required.
                   consentService.decide(session.userId, clientRecord, request.scope, request.prompt).flatMap:
                     case ConsentDecision.Required(_) if request.promptNone =>
-                      ZIO.fail(Error.ConsentRequired(request.redirectUri, request.state, useFragment = request.isHybrid))
+                      ZIO.fail(Error.ConsentRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                     case ConsentDecision.Required(_) =>
                       // The conversation's factors are all satisfied, so advancing it lands
                       // directly on the consent step.
@@ -307,7 +307,7 @@ object AuthorizeEndpointService:
         effectiveUserId <- (knownUserId, userOpt) match
           case (Some(_), None) =>
             missingUser match
-              case MissingUserBehavior.Deny => ZIO.fail(Error.AccessDenied(request.redirectUri, request.state, useFragment = request.isHybrid))
+              case MissingUserBehavior.Deny => ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
               case _ => ZIO.none
           case _ => ZIO.succeed(knownUserId)
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))
@@ -336,6 +336,7 @@ object AuthorizeEndpointService:
           uiLocales = uiLocales,
           nonce = request.nonce,
           responseType = request.responseType,
+          responseMode = request.responseMode,
           userEmail = userOpt.flatMap(_.email),
           userPhone = userOpt.flatMap(_.phone),
           userLogin = userOpt.flatMap(_.login),
@@ -435,7 +436,7 @@ object AuthorizeEndpointService:
         userOpt <- userRepository.find(session.userId)
         user <- ZIO
           .fromOption(userOpt)
-          .orElseFail(Error.AccessDenied(request.redirectUri, request.state, useFragment = request.isHybrid))
+          .orElseFail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
           scope = grantedScope,
@@ -448,8 +449,13 @@ object AuthorizeEndpointService:
         client <- configurationService.get(request.clientId)
         signingKey <- jwksService.signingKey(client.tenantId)
         cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
+        // FAPI 1.0 Advanced §5.2.2-4: `s_hash` binds the id_token to the `state` it was
+        // issued for, the same way `c_hash` binds it to the code. Absent when the request
+        // carried no state, since there is then nothing to bind to.
+        sHash = request.state.map(state => "s_hash" -> Json.Str(JWT.leftHalfHash(state, signingKey.algorithm)))
         claims = userInfo.claims ++
-          AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) +
+          AuthMethodRef.idTokenClaims(amr, Some(session.createdAt), acr) ++
+          sHash +
           ("c_hash" -> Json.Str(cHash)) + ("sid" -> Json.Str(session.publicId))
         token <- JWT.serialize(
           typ = JWT.Type.JWT,
@@ -470,7 +476,7 @@ object AuthorizeEndpointService:
         case Some(token) =>
           jwksService.getPublicKeys.flatMap: keys =>
             JWT.deserialize[HintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
-              .orElseFail(Error.IdTokenHintInvalid(request.redirectUri, request.state, useFragment = request.isHybrid))
+              .orElseFail(Error.IdTokenHintInvalid(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
               .flatMap: claims =>
                 val audList = claims.aud match
                   case None => List.empty
@@ -483,7 +489,7 @@ object AuthorizeEndpointService:
                 if audValid && issValid then
                   ZIO.some(claims.sub)
                 else
-                  ZIO.fail(Error.IdTokenHintInvalid(request.redirectUri, request.state, useFragment = request.isHybrid))
+                  ZIO.fail(Error.IdTokenHintInvalid(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
      * preference order. Rejects the request when none of the requested locales are available.
@@ -498,5 +504,5 @@ object AuthorizeEndpointService:
             ZIO.cond(
               intersection.nonEmpty,
               Some(intersection),
-              Error.UnsupportedUiLocales(request.redirectUri, request.state, useFragment = request.isHybrid),
+              Error.UnsupportedUiLocales(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode),
             )

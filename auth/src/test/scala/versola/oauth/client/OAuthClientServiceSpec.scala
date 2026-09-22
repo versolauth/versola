@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
 import versola.util.*
 import zio.*
@@ -138,6 +139,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     val metadataSync = stub[MetadataSyncClient]
     val resourceSync = stub[ResourceSyncClient]
     val authorizationDetailTypeSync = stub[AuthorizationDetailTypeSyncClient]
+    val jwksSync = stub[JwksSyncClient]
     val service: OAuthConfigurationService =
       OAuthConfigurationService.Impl(
         clientCache,
@@ -162,6 +164,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         resourceSync,
         authorizationDetailTypeCache,
         authorizationDetailTypeSync,
+        jwksSync,
       )
 
   private def makeEnv(
@@ -518,6 +521,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         _ <- env.metadataSync.getAll.succeedsWith(Json.Obj("a" -> Json.Num(1)))
         _ <- env.resourceSync.getAll.succeedsWith(ResourceSyncClient.SyncResult(Vector.empty, Nil))
         _ <- env.authorizationDetailTypeSync.getAll.succeedsWith(Vector.empty)
+        _ <- env.jwksSync.getPublicKeys.succeedsWith(JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr())))
 
         _ <- env.service.syncConfiguration
 

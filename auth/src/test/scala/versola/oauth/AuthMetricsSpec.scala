@@ -1,6 +1,6 @@
 package versola.oauth
 
-import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.model.{ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.ConversationRecord
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod}
@@ -29,6 +29,7 @@ object AuthMetricsSpec extends ZIOSpecDefault:
     uiLocales = None,
     nonce = None,
     responseType = responseType,
+    responseMode = ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,

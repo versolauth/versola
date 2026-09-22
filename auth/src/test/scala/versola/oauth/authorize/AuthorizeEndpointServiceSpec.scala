@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
-import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
   Acr,
@@ -32,7 +32,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.UserRepository
 import versola.user.model.UserRecord
-import versola.util.{AuthPropertyGenerator, Email, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -95,6 +95,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     codeChallenge = codeChallenge,
     codeChallengeMethod = CodeChallengeMethod.S256,
     responseType = NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -172,6 +173,17 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     otpType = OtpType.email,
   )
 
+  /** The claims of the id_token a silent authorization returned, verified against the JWKS
+    * the tenant's key was published in.
+    */
+  def idTokenClaims(response: AuthorizeResponse): Task[zio.json.ast.Json.Obj] =
+    response match
+      case AuthorizeResponse.Authorized(_, Some(idToken)) =>
+        JWT.deserialize[zio.json.ast.Json.Obj](idToken, TestEnvConfig.publicKeys, JWT.Type.JWT)
+          .mapError(error => RuntimeException(s"not a verifiable id_token: $error"))
+      case other =>
+        ZIO.fail(RuntimeException(s"expected an authorized response carrying an id_token, got $other"))
+
   /** Everything the silent authorization path reaches for once consent is settled. */
   def silentAuthorizeStubs(env: Env) =
     for
@@ -218,6 +230,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     responseType = NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,
@@ -346,6 +359,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         sessionId = Some(rawSessionId),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -361,7 +375,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.userRepository.find.succeedsWith(None)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(hybridRequest).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = true))
+      yield assertTrue(result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Fragment))
     },
     test("silently authorize when passkey satisfies otp via equivalents") {
       val env = Env()
@@ -998,7 +1012,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId))).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with AccessDenied when max_age forces re-auth and session user no longer exists") {
       val env = Env()
@@ -1021,7 +1035,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.userRepository.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0))).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fall back to credential entry when id_token_hint user no longer exists") {
       val env = Env()
@@ -1175,7 +1189,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), prompt = Set(Prompt.none))).flip
         createTimes = env.conversationRepository.create.times
       yield assertTrue(
-        result == Error.ConsentRequired(redirectUri, baseRequest.state, useFragment = false),
+        result == Error.ConsentRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
         createTimes == 0,
       )
     },
@@ -1243,12 +1257,13 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(hybridRequest).flip
-      yield assertTrue(result == Error.LoginRequired(redirectUri, baseRequest.state, useFragment = true))
+      yield assertTrue(result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Fragment))
     },
     test("fail with LoginRequired with useFragment=true when session not satisfied, prompt=none, and hybrid response_type") {
       val env = Env()
@@ -1257,6 +1272,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         sessionId = Some(rawSessionId),
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
@@ -1264,7 +1280,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         result <- env.service.authorize(hybridRequest).flip
-      yield assertTrue(result == Error.LoginRequired(redirectUri, baseRequest.state, useFragment = true))
+      yield assertTrue(result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Fragment))
     },
     test("fail with ConsentRequired with useFragment=true when consent needed, prompt=none, and hybrid response_type") {
       val env = Env()
@@ -1273,6 +1289,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         sessionId = Some(rawSessionId),
         prompt = Set(Prompt.none),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
       )
       for
         _ <- env.configurationService.find.succeedsWith(Some(clientWithConsent))
@@ -1284,7 +1301,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(hybridRequest).flip
         createTimes = env.conversationRepository.create.times
       yield assertTrue(
-        result == Error.ConsentRequired(redirectUri, baseRequest.state, useFragment = true),
+        result == Error.ConsentRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Fragment),
         createTimes == 0,
       )
     },
@@ -1295,7 +1312,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         _ <- env.configurationService.find.succeedsWith(None)
         result <- env.service.authorize(baseRequest).flip
-      yield assertTrue(result == Error.AuthFlowMissing(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.AuthFlowMissing(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with ConflictingHints when both login_hint and id_token_hint are provided") {
       val env = Env()
@@ -1305,7 +1322,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(
           baseRequest.copy(loginHint = Some(Left(emailHint)), idTokenHint = Some("dummy-token")),
         ).flip
-      yield assertTrue(result == Error.ConflictingHints(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.ConflictingHints(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with IdTokenHintInvalid when id_token_hint is not a valid JWT") {
       val env = Env()
@@ -1313,7 +1330,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some("not-a-valid-jwt"))).flip
-      yield assertTrue(result == Error.IdTokenHintInvalid(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.IdTokenHintInvalid(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with IdTokenHintInvalid when id_token_hint has no audience claim") {
       val env = Env()
@@ -1331,7 +1348,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         result <- env.service.authorize(baseRequest.copy(idTokenHint = Some(jwtToken.serialize()))).flip
-      yield assertTrue(result == Error.IdTokenHintInvalid(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.IdTokenHintInvalid(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("resolve id_token_hint subject when audience claim is a JSON array containing this client") {
       val env = Env()
@@ -1388,7 +1405,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(
           baseRequest.copy(idTokenHint = Some(idTokenHintStr), acrValues = Some(NonEmptyList(Acr("mfa")))),
         ).flip
-      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with UnmetAuthenticationRequirements when forceReauth and ACR not achievable for the known user") {
       val env = Env()
@@ -1419,7 +1436,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
             acrValues = Some(NonEmptyList(Acr("mfa"))),
           ),
         ).flip
-      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with AccessDenied when acr not satisfied by session and session user no longer exists") {
       val env = Env()
@@ -1433,7 +1450,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(
           baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))),
         ).flip
-      yield assertTrue(result == Error.AccessDenied(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.AccessDenied(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     test("fail with UnmetAuthenticationRequirements when acr not satisfied by session but user still exists") {
       val env = Env()
@@ -1448,7 +1465,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result <- env.service.authorize(
           baseRequest.copy(sessionId = Some(rawSessionId), acrValues = Some(NonEmptyList(Acr("mfa")))),
         ).flip
-      yield assertTrue(result == Error.UnmetAuthenticationRequirements(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     // ── createConversation field population branches ──────────────────────────
     test("mark the credential step as offering registration when the client has a registration flow and no known user") {
@@ -1566,6 +1583,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       val hybridRequest = baseRequest.copy(
         sessionId = Some(rawSessionId),
         responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
         // OIDC requires nonce whenever response_type includes id_token; a hybrid request
         // without one is not spec-compliant, so it shouldn't be what this success case models.
         nonce = Some(Nonce("test-nonce")),
@@ -1582,6 +1600,54 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield result match
         case AuthorizeResponse.Authorized(_, Some(idToken)) => assertTrue(idToken.nonEmpty)
         case _ => assertTrue(false)
+    },
+    test("bind the hybrid id_token to the request's state with an s_hash") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val user = UserRecord.empty(session.userId)
+      val hybridRequest = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
+        nonce = Some(Nonce("test-nonce")),
+        state = Some(State("test-state")),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- silentAuthorizeStubs(env)
+        _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+        _ <- env.configurationService.get.succeedsWith(clientWithOtpFlow)
+        result <- env.service.authorize(hybridRequest)
+        claims <- idTokenClaims(result)
+      yield assertTrue(
+        claims.get("s_hash") == Some(zio.json.ast.Json.Str(
+          JWT.leftHalfHash("test-state", TestEnvConfig.signingKey.algorithm),
+        )),
+      )
+    },
+    test("omit s_hash from the hybrid id_token when the request carried no state") {
+      val env = Env()
+      val session = sessionWithAmr(Map(PassedAuthFactor.otp -> PassedFactorRecord(now, Set(AuthMethodRef.otp))))
+      val user = UserRecord.empty(session.userId)
+      val hybridRequest = baseRequest.copy(
+        sessionId = Some(rawSessionId),
+        responseType = NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+        responseMode = ResponseMode.Fragment,
+        nonce = Some(Nonce("test-nonce")),
+        state = None,
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
+        _ <- silentAuthorizeStubs(env)
+        _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
+        _ <- env.configurationService.get.succeedsWith(clientWithOtpFlow)
+        result <- env.service.authorize(hybridRequest)
+        claims <- idTokenClaims(result)
+      yield assertTrue(claims.get("s_hash").isEmpty, claims.get("c_hash").isDefined)
     },
     // ── ui_locales negotiation ─────────────────────────────────────────────────
     test("resolve ui_locales to the intersection with configured locales") {
@@ -1619,6 +1685,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           versola.oauth.client.model.Locales(Vector(versola.oauth.client.model.LocaleRecord("en", "English")), "en"),
         )
         result <- env.service.authorize(baseRequest.copy(uiLocales = Some(List("de")))).flip
-      yield assertTrue(result == Error.UnsupportedUiLocales(redirectUri, baseRequest.state, useFragment = false))
+      yield assertTrue(result == Error.UnsupportedUiLocales(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
   )

@@ -33,9 +33,12 @@ object HybridFlowSpec extends E2ESpec:
   private def decodeJwtPayload(jwt: String): String =
     String(Base64.getUrlDecoder.decode(jwt.split('.')(1)), StandardCharsets.UTF_8)
 
-  /** OIDC Core §3.3.2.11: `c_hash` = base64url(left-half(SHA-256(ASCII(code)))). */
-  private def expectedCHash(code: String): String =
-    val digest = MessageDigest.getInstance("SHA-256").digest(code.getBytes(StandardCharsets.UTF_8))
+  /** OIDC Core §3.3.2.11: `c_hash` = base64url(left-half(SHA-256(ASCII(value)))); `s_hash`
+    * (FAPI 1.0 Advanced §5.2.2-4) is the identical construction over `state` instead of the
+    * code, so the two share this helper.
+    */
+  private def expectedHash(value: String): String =
+    val digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))
     Base64.getUrlEncoder.withoutPadding.encodeToString(digest.take(digest.length / 2))
 
   private case class HybridIdTokenClaims(
@@ -45,6 +48,7 @@ object HybridFlowSpec extends E2ESpec:
       exp: Long,
       nonce: Option[String] = None,
       c_hash: Option[String] = None,
+      s_hash: Option[String] = None,
   ) derives JsonDecoder
 
   def spec = suite("Hybrid Flow (response_type=code id_token)")(
@@ -80,8 +84,10 @@ object HybridFlowSpec extends E2ESpec:
           .label(s"id_token 'sub' must equal registered userId ${s.userId}, got ${claims.sub}") &&
         assertTrue(claims.aud == s.clientId).label(s"id_token 'aud' must equal clientId ${s.clientId}") &&
         assertTrue(claims.exp > Instant.now.getEpochSecond).label("id_token 'exp' must be in the future") &&
-        assertTrue(claims.c_hash.contains(expectedCHash(code)))
+        assertTrue(claims.c_hash.contains(expectedHash(code)))
           .label(s"id_token 'c_hash' must be the left-half SHA-256 hash of the fragment code, got ${claims.c_hash}") &&
+        assertTrue(claims.s_hash.contains(expectedHash(authorize.state)))
+          .label(s"id_token 's_hash' must be the left-half SHA-256 hash of the sent state, got ${claims.s_hash}") &&
         assertTrue(userinfo.sub == s.userId)
           .label("the code exchanged at /token must resolve to the same 'sub' as the fragment id_token")
     },

@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.oauth.client.model.*
 import versola.oauth.conversation.otp.model.OtpTemplate
+import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
 import versola.util.*
 import zio.*
@@ -145,6 +146,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       resourceRepository = stub[ResourceSyncClient],
       authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
       authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient],
+      jwksRepository = stub[JwksSyncClient],
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -420,6 +422,30 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(
         result.get("authorization_details_types_supported") ==
           stored.get("authorization_details_types_supported"),
+      )
+    },
+    // JARM §4. Unlike the algorithm fields below, this one has no stored value to narrow --
+    // it is entirely a fact about the synced JWKS, so `derive` is exercised directly with the
+    // algorithms a caller (`OAuthConfigurationService.live`'s `metadataCacheSource`, in
+    // production) read off it, rather than through `makeEnv`'s `metadata` document.
+    test("getMetadata advertises the algorithms the synced JWKS actually publishes") {
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(
+          ServedMetadata.derive(Json.Obj(), Set(JWT.Algorithm.PS256, JWT.Algorithm.ES256)),
+        )
+        served <- env.getMetadata
+      yield assertTrue(
+        served.get("authorization_signing_alg_values_supported")
+          .contains(Json.Arr(Json.Str("ES256"), Json.Str("PS256"))),
+      )
+    },
+    test("getMetadata advertises no signing algorithm when the synced JWKS publishes none") {
+      for
+        env <- makeEnv()
+        served <- env.getMetadata
+      yield assertTrue(
+        served.get("authorization_signing_alg_values_supported").contains(Json.Arr()),
       )
     },
     // RFC 9449 §5.1. The set is served and enforced off the same field, so a document that
@@ -738,6 +764,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         val metadataRepository = stub[MetadataSyncClient]
         val resourceRepository = stub[ResourceSyncClient]
         val authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient]
+        val jwksRepository = stub[JwksSyncClient]
 
         for
           clientRef <- Ref.make(Map(clientId1 -> privateClient, publicClientId -> publicClient))
@@ -774,7 +801,9 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
             resourceRepository = resourceRepository,
             authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
             authorizationDetailTypeRepository = authorizationDetailTypeRepository,
+            jwksRepository = jwksRepository,
           )
+          _ <- jwksRepository.getPublicKeys.succeedsWith(JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr())))
           _ <- clientRepository.getAll.succeedsWith(newClients)
           _ <- scopeRepository.getAll.succeedsWith(newScopes)
           _ <- formRepository.getAll.succeedsWith(newForms)

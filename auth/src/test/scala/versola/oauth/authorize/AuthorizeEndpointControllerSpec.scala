@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
-import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.AuthId
@@ -32,6 +32,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     codeChallenge      = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
     codeChallengeMethod = CodeChallengeMethod.S256,
     responseType       = NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     requestedClaims    = None,
     uiLocales          = None,
     nonce              = None,
@@ -67,6 +68,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         parser         = stub[AuthorizeRequestParser]
         authService    = stub[AuthorizeEndpointService]
         configService  = stub[OAuthConfigurationService]
+        responseService = AuthorizationResponseService.Impl(config, configService, TestEnvConfig.jwksService)
         tracing       <- NoopTracing.layer.build
         services       = Services(parser, authService, configService)
         _             <- TestClient.addRoutes(
@@ -76,6 +78,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                 ZEnvironment(parser) ++
                   ZEnvironment(authService) ++
                   ZEnvironment(configService) ++
+                  ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
                   tracing,
               )

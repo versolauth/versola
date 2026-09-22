@@ -3,6 +3,8 @@ package versola.oauth.conversation
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.auth.model.{OtpCode, PasskeyName, Password}
+import versola.oauth.authorize.AuthorizationResponseService
+import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
@@ -37,7 +39,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             clientId,
             redirectUri = "https://example.com/callback",
             state = Some("test-state"),
-            useFragment = None,
+            responseMode = Some(ResponseMode.Query),
           ),
           Duration.Zero,
           TestEnvConfig.coreConfig.security.conversationCookieSecret,
@@ -80,6 +82,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     uiLocales = None,
     nonce = None,
     responseType = zio.prelude.NonEmptySet(versola.oauth.authorize.model.ResponseTypeEntry.Code),
+    responseMode = versola.oauth.authorize.model.ResponseMode.Query,
     userEmail = None,
     userPhone = None,
     userLogin = None,
@@ -122,6 +125,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
             ZLayer.succeed(TestEnvConfig.jwksService),
+            AuthorizationResponseService.live,
           )
 
         tracing <- NoopTracing.layer.build
@@ -171,6 +175,7 @@ object ConversationControllerSpec extends UnitSpecBase:
             ZLayer.succeed(TestEnvConfig.coreConfig),
             ZLayer.succeed(configuration),
             ZLayer.succeed(TestEnvConfig.jwksService),
+            AuthorizationResponseService.live,
           )
 
         tracing <- NoopTracing.layer.build
@@ -593,7 +598,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders step") {
@@ -641,7 +646,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Expired</html>",
-        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
+        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders service unavailable when conversation lookup fails") {
@@ -666,7 +671,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), false)),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge/passkey/options returns options") {

@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
 import versola.auth.TestEnvConfig
-import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizationError, ResponseTypeEntry}
+import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizationError, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
@@ -56,6 +56,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     codeChallenge = CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"),
     codeChallengeMethod = CodeChallengeMethod.S256,
     responseType = NonEmptySet(ResponseTypeEntry.Code),
+    responseMode = ResponseMode.Query,
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -304,7 +305,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
-        _ <- env.parser.validate.failsWith(Error.ScopeMissing(redirectUri, None, useFragment = false))
+        _ <- env.parser.validate.failsWith(Error.ScopeMissing(clientId, redirectUri, None, responseMode = ResponseMode.Query))
         service <- env.service
         result <- service.push(validParams(), credentials, None, request).either
       yield assertTrue(result.left.toOption.exists(_.asInstanceOf[PushedAuthorizationError].error == "invalid_scope"))

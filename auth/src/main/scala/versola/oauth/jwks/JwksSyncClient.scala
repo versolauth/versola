@@ -18,7 +18,14 @@ import java.security.{KeyFactory, PrivateKey}
   * private key. The private halves arrive encrypted under the shared transport secret
   * `central.secretKey`, the same channel client secrets already travel on.
   */
-trait JwksSyncClient extends CacheSource[JwksSyncClient.Keys]
+trait JwksSyncClient extends CacheSource[JwksSyncClient.Keys]:
+  /** The published keys alone, without the signing-keys endpoint's private halves -- for a
+    * caller that only needs to state what this deployment's JWKS publishes (discovery's
+    * `authorization_signing_alg_values_supported`), never to sign with any of it. The same
+    * separation [[getAll]] draws for edge, drawn again here for a second caller with the
+    * same non-need.
+    */
+  def getPublicKeys: Task[JWT.PublicKeys]
 
 object JwksSyncClient:
   /** `privateKeys` is keyed by `kid`, and holds only the keys central could supply a private
@@ -39,11 +46,14 @@ object JwksSyncClient:
     private val JwksURL = config.central.url / "configuration" / "jwks" / "sync"
     private val SigningKeysURL = config.central.url / "configuration" / "jwks" / "signing-keys" / "sync"
 
+    override def getPublicKeys: Task[JWT.PublicKeys] =
+      ZIO.scoped:
+        centralSyncTokenService.syncRequest(Request.get(JwksURL))
+          .flatMap(_.body.asJsonFromCodec[JWT.PublicKeys])
+
     override def getAll: Task[Keys] =
       for
-        publicKeys <- ZIO.scoped:
-          centralSyncTokenService.syncRequest(Request.get(JwksURL))
-            .flatMap(_.body.asJsonFromCodec[JWT.PublicKeys])
+        publicKeys <- getPublicKeys
         encrypted <- ZIO.scoped:
           centralSyncTokenService.syncRequest(Request.get(SigningKeysURL))
             .flatMap(_.body.asJsonFromCodec[SigningKeysResponse])

@@ -1,6 +1,7 @@
 package versola.oauth.model
 
 import versola.auth.TestEnvConfig
+import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
@@ -47,7 +48,7 @@ object CookiesSpec extends ZIOSpecDefault:
           clientId,
           redirectUri = "https://example.com/callback",
           state = Some("state-1"),
-          useFragment = None,
+          responseMode = Some(ResponseMode.Query),
         )
         val content = ConversationCookie.responseCookie(cookie, 15.minutes, secret).content
         assertTrue(ConversationCookie.parse(content, secret) == Right(cookie))

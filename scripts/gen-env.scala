@@ -136,11 +136,14 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val rng = SecureRandom()
 
   // ── Key pairs ─────────────────────────────────────────────────────────────────
-  println("Generating RSA-2048 key pairs...")
+  println("Generating RSA-2048 and EC (P-256) key pairs...")
 
   case class RsaKey(privateB64: String, jwk: String, kid: String)
 
-  def genRsaKey(kid: String): RsaKey =
+  /** `alg` only changes the JWK's own claim about itself -- an RSA key pair signs the same
+    * way under RS256 or PS256, so this is what decides which one a deployment publishes.
+    */
+  def genRsaKey(kid: String, alg: String = "RS256"): RsaKey =
     val kpg = KeyPairGenerator.getInstance("RSA")
     kpg.initialize(2048, rng)
     val kp      = kpg.generateKeyPair()
@@ -148,17 +151,51 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     val pubKey  = kp.getPublic.asInstanceOf[RSAPublicKey]
     val n       = b64url(pubKey.getModulus)
     val e       = b64url(pubKey.getPublicExponent)
-    val jwk     = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"RS256","n":"$n"}"""
+    val jwk     = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
     RsaKey(b64std(privKey.getEncoded), jwk, kid)
 
+  case class EcKey(privateB64: String, jwk: String, kid: String)
+
+  /** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
+    * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
+    * strip a genuine leading zero byte instead, so coordinates get their own encoding.
+    */
+  def genEcKey(kid: String): EcKey =
+    val kpg = KeyPairGenerator.getInstance("EC")
+    kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
+    val kp      = kpg.generateKeyPair()
+    val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
+    val pubKey  = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+    def coordinate(value: java.math.BigInteger): String =
+      val raw = value.toByteArray
+      val fixed =
+        if raw.length == 32 then raw
+        else if raw.length > 32 then raw.takeRight(32)
+        else Array.fill[Byte](32 - raw.length)(0) ++ raw
+      Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
+    val x   = coordinate(pubKey.getW.getAffineX)
+    val y   = coordinate(pubKey.getW.getAffineY)
+    val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
+    EcKey(b64std(privKey.getEncoded), jwk, kid)
+
   val today = java.time.LocalDate.now.toString
-  // JWT signing key: auth signs access tokens with the private half; central serves
-  // the public half in the JWKS so auth/edge/admin-console can verify those tokens.
-  val jwtKey = genRsaKey(s"jwt-$today")
+  // JWT signing key: auth signs access tokens with the private half; central serves the
+  // public half in the JWKS so auth/edge/admin-console can verify those tokens. PS256, not
+  // RS256: FAPI 1.0 Advanced §8.6 and FAPI 2.0 both require PS256 or ES256 and disallow
+  // RS256's PKCS#1 v1.5 padding, and there is no reason a fresh deployment should start out
+  // non-compliant with that. The key itself is still RSA -- PS256 is the same key, read with
+  // RSASSA-PSS padding instead of PKCS#1 v1.5.
+  val jwtKey = genRsaKey(s"jwt-$today", "PS256")
+  // A second, EC signing key published alongside it: FAPI's other permitted algorithm, so a
+  // fresh deployment demonstrates verifying both rather than only the one it happens to sign
+  // with. Verify-only from central's perspective -- see `BootstrapService.seedJwks` -- same as
+  // `jwtKey`; nothing here is `bootstrap.jwks`'s private half, only auth's own `JWT_PRIVATE_KEY`
+  // is, so this key can be rotated in for real signing later without this script's involvement.
+  val esKey = genEcKey(s"jwt-es256-$today")
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
   val edgeKey = genRsaKey(s"edge-$today")
-  val jwks    = s"""{"keys":[${jwtKey.jwk}]}"""
+  val jwks    = s"""{"keys":[${jwtKey.jwk}, ${esKey.jwk}]}"""
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
@@ -401,6 +438,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // "token_endpoint_auth_signing_alg_values_supported" (RFC 8414 §2) works the same way for the
   // `alg` of an RFC 7523 client assertion, and "request_object_signing_alg_values_supported"
   // (RFC 9101 §4) for the `alg` of a JAR request object.
+  //
+  // "authorization_signing_alg_values_supported" (JARM §4) has no line below, unlike its
+  // siblings above: it is derived from the synced JWKS itself (see `ServedMetadata.derive`),
+  // not read off this stored document, so a value written into it here would be computed once
+  // and then silently replaced -- never served, never even wrong on its own terms. What a
+  // JARM response is signed with is a fact about the tenant's own signing key, not something
+  // this document could state independently of the JWKS without risking the two disagreeing.
   val metadata =
     s"""{
        |  "issuer": "$authUrl",
@@ -414,10 +458,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "end_session_endpoint": "$authUrl/logout",
        |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
+       |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
        |  "code_challenge_methods_supported": ["S256"],
        |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
        |  "subject_types_supported": ["public", "pairwise"],
-       |  "id_token_signing_alg_values_supported": ["RS256"],
+       |  "id_token_signing_alg_values_supported": ["PS256"],
        |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
        |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
        |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
