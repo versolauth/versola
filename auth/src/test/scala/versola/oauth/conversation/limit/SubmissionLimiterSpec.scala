@@ -41,6 +41,8 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   // Short window 3/min acts as an immediate rate limit; the broadest 9/hour window applies the ban.

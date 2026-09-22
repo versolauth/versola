@@ -60,6 +60,24 @@ object InvalidRegistrationConfiguration:
       jwks.flatMap(keySet => JsonWebKeySet.validate(keySet.document).left.toOption)
         .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason"))
 
+  /** RFC 9101 §6.2: a request object is verified against the client's registered key set and
+    * nothing else, so requiring one from a client that registered no keys registers a client
+    * whose every authorization request is refused. Caught here rather than at `/authorize`,
+    * where it would surface as a client that simply stopped working.
+    */
+  def validateRequestObjectRequirement(
+      clientId: ClientId,
+      requireSignedRequestObject: Boolean,
+      jwks: Option[JsonWebKeySet],
+  ): Option[InvalidRegistrationConfiguration] =
+    if requireSignedRequestObject && jwks.isEmpty then
+      Some(InvalidRegistrationConfiguration(
+        clientId,
+        "requireSignedRequestObject needs jwks - a request object is verified against no other keys",
+      ))
+    else
+      None
+
   /** Registration is only reachable from a credential card that asks for a phone or an
     * email, since account creation requires proving ownership of the entry credential.
     */

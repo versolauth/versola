@@ -56,6 +56,8 @@ object RevocationControllerSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =

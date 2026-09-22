@@ -130,6 +130,8 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = true,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
 

@@ -61,6 +61,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
@@ -963,6 +965,94 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result.clientId == clientId,
           env.configuration.getRequestObjectSigningAlgorithms.calls.isEmpty,
         )
+      },
+    ),
+    suite("registered request form")(
+      test("refuses a plain request from a client that registered require_signed_request_object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.SignedRequestObjectRequired(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          ResponseMode.Query,
+        )))
+      },
+      test("accepts a signed request object from a client that registered require_signed_request_object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request)
+        yield assertTrue(result.clientId == clientId)
+      },
+      test("accepts a pushed request from a client that registered require_signed_request_object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.clientId == clientId)
+      },
+      test("refuses an unpushed request from a client that registered require_pushed_authorization_requests") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(requirePushedAuthorizationRequests = true)))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.PushedAuthorizationRequired(
+          clientId,
+          redirectUri,
+          Some(State("test-state")),
+          ResponseMode.Query,
+        )))
+      },
+      test("refuses a request object sent straight to /authorize by a client that must push") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requirePushedAuthorizationRequests = true)))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.PushedAuthorizationRequired]))
+      },
+      test("accepts a pushed request from a client that registered require_pushed_authorization_requests") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(requirePushedAuthorizationRequests = true)))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.clientId == clientId)
+      },
+      test("leaves a client that registered neither requirement alone") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.clientId == clientId)
       },
     ),
         suite("request_uri")(

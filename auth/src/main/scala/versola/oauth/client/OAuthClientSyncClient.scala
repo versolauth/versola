@@ -55,6 +55,8 @@ object OAuthClientSyncClient:
             mtlsAuth = client.mtlsAuth,
             certificateBoundAccessTokens = client.certificateBoundAccessTokens,
             jwks = client.jwks,
+            requireSignedRequestObject = client.requireSignedRequestObject,
+            requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -93,6 +95,10 @@ object OAuthClientSyncClient:
         mtlsAuth: Option[MutualTlsAuth],
         certificateBoundAccessTokens: Boolean,
         jwks: Option[JsonWebKeySet],
+        /** Defaulted so that an auth node reading a central that predates the field keeps the
+          * behaviour it already had, rather than failing to decode the sync response. */
+        requireSignedRequestObject: Boolean = false,
+        requirePushedAuthorizationRequests: Boolean = false,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

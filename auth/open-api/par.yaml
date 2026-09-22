@@ -191,8 +191,9 @@ components:
 
     PushError:
       description: |
-        `invalid_request` when `request_uri` was supplied, `client_id` is missing, or the body
-        is not a readable form. Otherwise the authorization-request validation error, reported
+        `invalid_request` when `request_uri` was supplied, `client_id` is missing, the body
+        is not a readable form, or the client registered `requireSignedRequestObject`
+        (RFC 9101 §10.5) and pushed a plain parameter set rather than a `request` object. Otherwise the authorization-request validation error, reported
         with the same `error` code `/authorize` would have redirected — for example
         `unsupported_response_type`, `invalid_scope`, `invalid_target` or
         `invalid_authorization_details`.

@@ -40,6 +40,8 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
   private val scope = ScopeRecord(
     tenantId,

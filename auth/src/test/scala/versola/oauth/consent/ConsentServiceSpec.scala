@@ -48,6 +48,8 @@ object ConsentServiceSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   private def clientWith(

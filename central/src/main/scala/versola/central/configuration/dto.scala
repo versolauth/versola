@@ -323,6 +323,11 @@ case class OAuthClientResponse(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
+    /** RFC 9101 §10.5: the client states its authorization request in a request object it
+      * signed. */
+    requireSignedRequestObject: Boolean,
+    /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
+    requirePushedAuthorizationRequests: Boolean,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -381,6 +386,12 @@ case class CreateClientRequest(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
+    /** RFC 9101 §10.5: defaults to `false`, leaving a plain parameter set acceptable for a
+      * caller that does not ask for signed request objects. */
+    requireSignedRequestObject: Boolean = false,
+    /** RFC 9126 §6.2: defaults to `false`, leaving `/par` optional for a caller that does not
+      * ask for it. */
+    requirePushedAuthorizationRequests: Boolean = false,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -415,6 +426,8 @@ case class UpdateClientRequest(
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
+    requireSignedRequestObject: Option[Boolean] = None,
+    requirePushedAuthorizationRequests: Option[Boolean] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -596,6 +609,12 @@ case class SyncOAuthClientRecord(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
+    /** RFC 9101 §10.5: the client states its authorization request in a request object it
+      * signed. Defaults to `false` so that an auth node reading a central that predates the
+      * field keeps the behaviour it already had. */
+    requireSignedRequestObject: Boolean = false,
+    /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
+    requirePushedAuthorizationRequests: Boolean = false,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

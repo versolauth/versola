@@ -56,6 +56,29 @@ object JarFlowSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield Flows.Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
+  /** The same client, registered as one that may only state its request in a signed object
+    * (RFC 9101 §10.5).
+    */
+  private def signingOnlyClient(auth: OAuthClient, signer: AssertionSigner): Task[Flows.Setup] =
+    for
+      suffix <- uid
+      clientId = s"jar-required-$suffix"
+      login = s"jar-required-user-$suffix"
+      password = s"Pass-$suffix-1!"
+      clientResult <- auth.registerClient(
+        clientId,
+        "JAR Required Client",
+        Set(redirectUri),
+        authFlow = Some(Flows.loginPasswordAuthFlow),
+        jwks = Some(signer.jwks),
+        requireSignedRequestObject = true,
+      ).success
+      userId <- auth.registerUser(login = Some(login))
+      _ <- auth.flushUserOutbox()
+      _ <- auth.setUserPassword(userId, password)
+      _ <- auth.syncConfiguration()
+    yield Flows.Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
+
   /** The claims of a request object carrying a whole authorization request, addressed at
     * `client`. The object -- not the query string -- is what auth checks PKCE against, so
     * the `code_challenge` here must be the one whose verifier the caller later redeems with.
@@ -257,6 +280,55 @@ object JarFlowSpec extends E2ESpec:
         ).success
       yield assertTrue(token.accessToken.nonEmpty)
         .label("redeeming the request_uri must not need to re-verify the object's own exp")
+    },
+
+    test("a client registered as require_signed_request_object is refused a plain request") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- signingOnlyClient(auth, signer)
+        _ <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+        ).assertErrorRedirect("invalid_request")
+      yield assertCompletes
+    },
+
+    test("a client registered as require_signed_request_object still completes with an object") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- signingOnlyClient(auth, signer)
+        requestObject <- signer.requestObject(requestClaims(client, auth, codeChallenge)*)()
+        authorize <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        ).assertChallengeRedirect
+      yield assertTrue(authorize.conversationCookie.isDefined)
+        .label("the requirement must not stand in the way of a request that meets it")
+    },
+
+    test("a client registered as require_signed_request_object cannot push a plain parameter set") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- signingOnlyClient(auth, signer)
+        assertion <- signer.assertion(client.clientId, s"${auth.issuer}/par")
+        pushed <- auth.pushAuthorization(
+          client.clientId,
+          "",
+          client.redirectUri,
+          assertion = Some(assertion),
+        )
+        error = pushed match
+          case PushedAuthorizationResult.Failure(_, _, code) => code
+          case _ => None
+      yield assertTrue(
+        pushed.response.status == zio.http.Status.BadRequest,
+        error.contains("invalid_request"),
+      ).label(s"expected /par to refuse an unsigned push, got ${pushed.response.status}")
     },
 
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

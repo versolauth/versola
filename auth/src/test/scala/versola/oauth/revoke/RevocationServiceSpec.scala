@@ -63,6 +63,8 @@ object RevocationServiceSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

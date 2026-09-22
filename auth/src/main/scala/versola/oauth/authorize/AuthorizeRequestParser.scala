@@ -9,7 +9,7 @@ import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.CoreConfig
 import versola.util.http.Observability
-import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, Secret, SecurityService}
+import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, RequestObject, Secret, SecurityService}
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -71,7 +71,41 @@ object AuthorizeRequestParser:
         // request object sent straight to `/authorize` (RFC 9101 §5.1).
         params <- requestObjectService.resolve(pushedParams)
         authorizeRequest <- validate(params, request)
+        _ <- enforceRegisteredRequestForm(authorizeRequest, rawParams)
       yield authorizeRequest
+
+    /** RFC 9101 §10.5 and RFC 9126 §6.2: how a client registered that it states its requests.
+      *
+      * Checked here rather than in `validate`, which `/par` also runs -- a pushed request is
+      * being stated at `/par`, so holding it to "must be pushed" there would refuse every
+      * client that registered the requirement. It runs after `validate` so that a client that
+      * fails it is told so through its registered `redirect_uri` rather than a bare 400.
+      *
+      * A pushed request satisfies the signed-object requirement because
+      * `PushedAuthorizationService` refuses to store an unsigned one for such a client, which
+      * is the same check one step earlier.
+      */
+    private def enforceRegisteredRequestForm(
+        authorizeRequest: AuthorizeRequest,
+        rawParams: Map[String, Chunk[String]],
+    ): IO[Error, Unit] =
+      val pushed = rawParams.contains("request_uri")
+      val signed = pushed || rawParams.contains(RequestObject.Parameter)
+      for
+        client <- oauthClientService.find(authorizeRequest.clientId).someOrFail(Error.BadRequest)
+        _ <- ZIO.fail(Error.PushedAuthorizationRequired(
+          authorizeRequest.clientId,
+          authorizeRequest.redirectUri,
+          authorizeRequest.state,
+          authorizeRequest.responseMode,
+        )).when(client.requirePushedAuthorizationRequests && !pushed)
+        _ <- ZIO.fail(Error.SignedRequestObjectRequired(
+          authorizeRequest.clientId,
+          authorizeRequest.redirectUri,
+          authorizeRequest.state,
+          authorizeRequest.responseMode,
+        )).when(client.requireSignedRequestObject && !signed)
+      yield ()
 
     /** RFC 9126 §4: a `request_uri` obtained from `/par` replaces the authorization request
       * payload entirely, is bound to the client that pushed it, and is single-use.

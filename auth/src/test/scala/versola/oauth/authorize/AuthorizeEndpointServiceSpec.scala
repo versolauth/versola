@@ -85,6 +85,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
   )
 
   val baseRequest = AuthorizeRequest(

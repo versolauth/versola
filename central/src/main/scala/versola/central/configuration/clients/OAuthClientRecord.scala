@@ -55,6 +55,15 @@ case class OAuthClientRecord(
       * Mutually exclusive with [[mtlsAuth]] — a client authenticates one way, and registering
       * a second credential only widens what a single compromise reaches. */
     jwks: Option[JsonWebKeySet],
+    /** RFC 9101 §10.5 `require_signed_request_object`: the client states its authorization
+      * request in a request object it signed, so a plain parameter set from it is refused
+      * rather than answered. Requires [[jwks]], the only keys such an object is verified
+      * against. */
+    requireSignedRequestObject: Boolean,
+    /** RFC 9126 §6.2 `require_pushed_authorization_requests`: the client pushes its
+      * authorization request to `/par` first, so a request that arrives at `/authorize`
+      * without a `request_uri` is refused rather than answered. */
+    requirePushedAuthorizationRequests: Boolean,
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

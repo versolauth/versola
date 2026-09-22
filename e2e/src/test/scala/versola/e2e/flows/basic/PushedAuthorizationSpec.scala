@@ -164,6 +164,53 @@ object PushedAuthorizationSpec extends E2ESpec:
       )
     },
 
+    test("a client registered as require_pushed_authorization_requests is refused an unpushed request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        suffix = java.util.UUID.randomUUID().toString.take(8)
+        clientId = s"par-required-$suffix"
+        _ <- auth.registerClient(
+          clientId,
+          "PAR Required Client",
+          Set(s.redirectUri),
+          authFlow = Some(Flows.loginPasswordAuthFlow),
+          requirePushedAuthorizationRequests = true,
+        ).success
+        _ <- auth.syncConfiguration()
+        _ <- auth.authorizeRaw(
+          clientId = clientId,
+          redirectUri = s.redirectUri,
+        ).assertErrorRedirect("invalid_request")
+      yield assertCompletes
+    },
+
+    test("a client registered as require_pushed_authorization_requests completes once pushed") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        suffix = java.util.UUID.randomUUID().toString.take(8)
+        clientId = s"par-required-ok-$suffix"
+        registered <- auth.registerClient(
+          clientId,
+          "PAR Required Client",
+          Set(s.redirectUri),
+          authFlow = Some(Flows.loginPasswordAuthFlow),
+          requirePushedAuthorizationRequests = true,
+        ).success
+        _ <- auth.syncConfiguration()
+        pushed <- auth.pushAuthorization(
+          clientId = clientId,
+          clientSecret = registered.secret,
+          redirectUri = s.redirectUri,
+        ).success
+        authorize <- auth.authorizeRaw(
+          clientId = clientId,
+          redirectUri = s.redirectUri,
+          requestUri = Some(pushed.requestUri),
+        ).assertChallengeRedirect
+      yield assertTrue(authorize.conversationCookie.isDefined)
+        .label("the requirement must not stand in the way of a request that meets it")
+    },
+
     test("non-POST /par returns 405 with an Allow header") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

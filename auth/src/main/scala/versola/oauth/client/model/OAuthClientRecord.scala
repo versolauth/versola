@@ -49,6 +49,14 @@ case class OAuthClientRecord(
       *
       * Mutually exclusive with [[mtlsAuth]], which registration enforces. */
     jwks: Option[JsonWebKeySet],
+    /** RFC 9101 §10.5 `require_signed_request_object`: the client states its authorization
+      * request in a request object it signed, so a plain parameter set from it is refused
+      * rather than answered. */
+    requireSignedRequestObject: Boolean,
+    /** RFC 9126 §6.2 `require_pushed_authorization_requests`: the client pushes its
+      * authorization request to `/par` first, so one that arrives at `/authorize` without a
+      * `request_uri` is refused rather than answered. */
+    requirePushedAuthorizationRequests: Boolean,
 ) derives CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

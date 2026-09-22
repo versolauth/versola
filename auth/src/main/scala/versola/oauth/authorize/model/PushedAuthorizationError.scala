@@ -30,6 +30,12 @@ object PushedAuthorizationError:
     val errorDescription = Some("Missing required parameter - client_id")
     val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9126#section-2.1")
 
+  case object RequestObjectRequired extends PushedAuthorizationError:
+    val status = Status.BadRequest
+    val error: String = ErrorCode.InvalidRequest
+    val errorDescription = Some("This client must state its authorization request in a signed request object")
+    val errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9101#section-10.5")
+
   case object MethodNotAllowed extends PushedAuthorizationError:
     val status = Status.MethodNotAllowed
     val error: String = ErrorCode.InvalidRequest

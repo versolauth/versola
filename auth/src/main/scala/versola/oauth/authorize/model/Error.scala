@@ -232,3 +232,24 @@ private[authorize] object Error:
       errorDescription = s"The authorization_details parameter is invalid, malformed, or unknown - $value",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-5"),
     )
+
+  /** RFC 9101 §10.5: the client registered that it states its requests in a signed object,
+    * and this one is a plain parameter set.
+    *
+    * Redirected rather than answered directly, unlike [[InvalidRequestObject]]: there is no
+    * object here whose contents could be in doubt, and the `redirect_uri` reached this point
+    * only by matching one the client registered.
+    */
+  case class SignedRequestObjectRequired(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "This client must state its authorization request in a signed request object",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9101#section-10.5"),
+    )
+
+  /** RFC 9126 §6.2: the client registered that it pushes its requests, and this one arrived
+    * at `/authorize` without a `request_uri`. */
+  case class PushedAuthorizationRequired(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "This client must push its authorization request to the pushed authorization request endpoint",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9126#section-6.2"),
+    )

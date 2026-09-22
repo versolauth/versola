@@ -1084,6 +1084,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: the public keys this client signs its assertions with, instead of
         * authenticating by secret. Build it with `AssertionSigner.jwks`. */
       jwks: Option[zio.json.ast.Json] = None,
+      /** RFC 9101 §10.5: the client states its authorization request in a request object it
+        * signed. Needs `jwks`, which registration enforces. */
+      requireSignedRequestObject: Boolean = false,
+      /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
+      requirePushedAuthorizationRequests: Boolean = false,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1107,6 +1112,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = certificateBoundAccessTokens,
       jwks = jwks,
+      requireSignedRequestObject = requireSignedRequestObject,
+      requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1679,4 +1686,6 @@ object OAuthClient:
       mtlsAuth: Option[zio.json.ast.Json],
       certificateBoundAccessTokens: Boolean,
       jwks: Option[zio.json.ast.Json],
+      requireSignedRequestObject: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
   ) derives JsonEncoder
