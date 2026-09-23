@@ -54,8 +54,9 @@ case class ClientCertificate(
     * A key set that does not parse matches nothing rather than failing: registration
     * validates the document, so an unparsable one means the column was written by something
     * else, and letting that authenticate a client would be the wrong way to be wrong. A key
-    * that is not an asymmetric one is skipped for the same reason `JsonWebKeySet.validate`
-    * refuses it: there is no public key in it to compare.
+    * that is not an asymmetric one is skipped for the same reason
+    * `JsonWebKeySet.validateForCertificateMatching` refuses it: there is no public key in it
+    * to compare.
     */
   def matchesKey(keySet: JsonWebKeySet): Boolean =
     keySet.publicKeys.toOption.exists(

@@ -53,6 +53,22 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
   )
 
+  /** A key set no `private_key_jwt` assertion could be verified against -- no supported JWS
+    * algorithm names P-384 -- but a perfectly good thing to match a certificate's public key
+    * against, which is all RFC 8705 §2.2 does with it.
+    */
+  private val p384KeyPairGenerator = java.security.KeyPairGenerator.getInstance("EC")
+  p384KeyPairGenerator.initialize(Curve.P_384.toECParameterSpec)
+  private val p384KeySet = JsonWebKeySet(
+    Json.Obj(
+      "keys" -> Json.Arr(
+        ECKey.Builder(Curve.P_384, p384KeyPairGenerator.generateKeyPair().getPublic.asInstanceOf[ECPublicKey])
+          .keyID("ec-384").build()
+          .toJSONString.fromJson[Json.Obj].toOption.get,
+      ),
+    ),
+  )
+
   private val cachedClient = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
@@ -622,6 +638,47 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         created.jwks == Some(publicKeySet),
         // §2.2 registers no subject value, so there is nothing for normalisation to do to it
         created.bindsAccessTokens,
+      )
+    },
+    // V1030 rewrites every pre-existing mtls_auth row into this shape. The migration writes
+    // the discriminator as a literal, so nothing but a test keeps it agreeing with the codec
+    // that has to read those rows back.
+    test("the shape V1030 migrates a stored tls_client_auth row into is the shape the codec reads") {
+      val migrated = """{"type":"tls_client_auth","subjectType":"san_dns","subjectValue":"client.example.com"}"""
+      val selfSigned = """{"type":"self_signed_tls_client_auth"}"""
+      assertTrue(
+        migrated.fromJson[MutualTlsAuth] ==
+          Right(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
+        selfSigned.fromJson[MutualTlsAuth] == Right(MutualTlsAuth.SelfSignedTlsClientAuth()),
+        (MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"): MutualTlsAuth).toJson == migrated,
+      )
+    },
+    test("registerClient accepts a self_signed_tls_client_auth key set on a curve no assertion could use") {
+      val env = new Env()
+
+      for
+        _ <- env.terminatesMtls
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+          jwks = Some(p384KeySet),
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.jwks == Some(p384KeySet))
+    },
+    test("registerClient still refuses the same key set from a private_key_jwt client") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(jwks = Some(p384KeySet))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("P-256")
+          case _ => false,
+        createCalls == 0,
       )
     },
     test("registerClient rejects self_signed_tls_client_auth with no keys to match a certificate against") {

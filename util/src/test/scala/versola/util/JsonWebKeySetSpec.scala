@@ -39,30 +39,30 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
       .toOption.get.asInstanceOf[Json.Obj]
 
   def spec = suite("JsonWebKeySet")(
-    suite("validate")(
+    suite("validateForAssertions")(
       test("accepts a set of public RSA and EC keys") {
         val json = document(ecKey("ec-1").toJSONString, rsaKey("rsa-1").toJSONString)
-        assertTrue(JsonWebKeySet.validate(json).isRight)
+        assertTrue(JsonWebKeySet.validateForAssertions(json).isRight)
       },
       test("accepts a single key with no kid, which has nothing to disambiguate") {
         val pair = ecKeyPairGenerator.generateKeyPair()
         val key = ECKey.Builder(Curve.P_256, pair.getPublic.asInstanceOf[ECPublicKey]).build()
-        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isRight)
+        assertTrue(JsonWebKeySet.validateForAssertions(document(key.toJSONString)).isRight)
       },
       test("rejects a document that is not a JWK Set") {
         val json = Json.decoder.decodeJson("""{"not":"a key set"}""").toOption.get.asInstanceOf[Json.Obj]
-        assertTrue(JsonWebKeySet.validate(json).isLeft)
+        assertTrue(JsonWebKeySet.validateForAssertions(json).isLeft)
       },
       test("rejects an empty set, which could never authenticate anything") {
-        assertTrue(JsonWebKeySet.validate(document()) == Left("must contain at least one key"))
+        assertTrue(JsonWebKeySet.validateForAssertions(document()) == Left("must contain at least one key"))
       },
       test("rejects private key material rather than storing it unused") {
         val json = document(ecKeyPairWithPrivate("ec-1").toJSONString)
-        assertTrue(JsonWebKeySet.validate(json) == Left("must contain public keys only"))
+        assertTrue(JsonWebKeySet.validateForAssertions(json) == Left("must contain public keys only"))
       },
       test("rejects a symmetric key, which would be client_secret_jwt") {
         val json = document("""{"kty":"oct","kid":"oct-1","k":"c2VjcmV0LXZhbHVlLWhlcmUtMzJieXRlcy1sb25n"}""")
-        assertTrue(JsonWebKeySet.validate(json) == Left("must contain public keys only"))
+        assertTrue(JsonWebKeySet.validateForAssertions(json) == Left("must contain public keys only"))
       },
       test("rejects a key registered for encryption") {
         val pair = ecKeyPairGenerator.generateKeyPair()
@@ -71,14 +71,14 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
           .keyUse(KeyUse.ENCRYPTION)
           .build()
         assertTrue(
-          JsonWebKeySet.validate(document(key.toJSONString)) ==
+          JsonWebKeySet.validateForAssertions(document(key.toJSONString)) ==
             Left("must not contain keys marked for encryption"),
         )
       },
       test("rejects an EC key on a curve no supported algorithm names") {
         val pair = p384KeyPairGenerator.generateKeyPair()
         val key = ECKey.Builder(Curve.P_384, pair.getPublic.asInstanceOf[ECPublicKey]).keyID("ec-1").build()
-        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isLeft)
+        assertTrue(JsonWebKeySet.validateForAssertions(document(key.toJSONString)).isLeft)
       },
       test("rejects a key whose own alg its type cannot perform") {
         val pair = rsaKeyPairGenerator.generateKeyPair()
@@ -86,7 +86,7 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
           .keyID("rsa-1")
           .algorithm(JWSAlgorithm.ES256)
           .build()
-        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isLeft)
+        assertTrue(JsonWebKeySet.validateForAssertions(document(key.toJSONString)).isLeft)
       },
       test("accepts a key pinned to an algorithm its type can perform") {
         val pair = rsaKeyPairGenerator.generateKeyPair()
@@ -94,16 +94,55 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
           .keyID("rsa-1")
           .algorithm(JWSAlgorithm.PS256)
           .build()
-        assertTrue(JsonWebKeySet.validate(document(key.toJSONString)).isRight)
+        assertTrue(JsonWebKeySet.validateForAssertions(document(key.toJSONString)).isRight)
       },
       test("rejects a repeated key id, which cannot be indexed by kid") {
         val json = document(ecKey("same").toJSONString, rsaKey("same").toJSONString)
-        assertTrue(JsonWebKeySet.validate(json) == Left("must not repeat a key id"))
+        assertTrue(JsonWebKeySet.validateForAssertions(json) == Left("must not repeat a key id"))
       },
       test("rejects more keys than one request should ever verify against") {
         val keys = (1 to JsonWebKeySet.MaxKeys + 1).map(i => ecKey(s"ec-$i").toJSONString)
         assertTrue(
-          JsonWebKeySet.validate(document(keys*)) ==
+          JsonWebKeySet.validateForAssertions(document(keys*)) ==
+            Left(s"must not contain more than ${JsonWebKeySet.MaxKeys} keys"),
+        )
+      },
+    ),
+    // RFC 8705 §2.2 matches encoded public key material and verifies no signature, so the
+    // curve a key sits on decides nothing here -- only the constraints that make a key set a
+    // credential at all still apply.
+    suite("validateForCertificateMatching")(
+      test("accepts an EC key on a curve no assertion algorithm names") {
+        val pair = p384KeyPairGenerator.generateKeyPair()
+        val key = ECKey.Builder(Curve.P_384, pair.getPublic.asInstanceOf[ECPublicKey]).keyID("ec-1").build()
+        assertTrue(
+          JsonWebKeySet.validateForCertificateMatching(document(key.toJSONString)).isRight,
+          JsonWebKeySet.validateForAssertions(document(key.toJSONString)).isLeft,
+        )
+      },
+      test("accepts a key whose own alg its type cannot perform, which nothing here signs with") {
+        val pair = rsaKeyPairGenerator.generateKeyPair()
+        val key = RSAKey.Builder(pair.getPublic.asInstanceOf[RSAPublicKey])
+          .keyID("rsa-1")
+          .algorithm(JWSAlgorithm.ES256)
+          .build()
+        assertTrue(JsonWebKeySet.validateForCertificateMatching(document(key.toJSONString)).isRight)
+      },
+      test("still refuses private key material") {
+        val json = document(ecKeyPairWithPrivate("ec-1").toJSONString)
+        assertTrue(JsonWebKeySet.validateForCertificateMatching(json) == Left("must contain public keys only"))
+      },
+      test("still refuses a symmetric key, which carries no certificate's public key") {
+        val json = document("""{"kty":"oct","kid":"oct-1","k":"c2VjcmV0LXZhbHVlLWhlcmUtMzJieXRlcy1sb25n"}""")
+        assertTrue(JsonWebKeySet.validateForCertificateMatching(json) == Left("must contain public keys only"))
+      },
+      test("still refuses an empty set, a repeated kid and a set past MaxKeys") {
+        val repeated = document(ecKey("same").toJSONString, rsaKey("same").toJSONString)
+        val tooMany = document((1 to JsonWebKeySet.MaxKeys + 1).map(i => ecKey(s"ec-$i").toJSONString)*)
+        assertTrue(
+          JsonWebKeySet.validateForCertificateMatching(document()) == Left("must contain at least one key"),
+          JsonWebKeySet.validateForCertificateMatching(repeated) == Left("must not repeat a key id"),
+          JsonWebKeySet.validateForCertificateMatching(tooMany) ==
             Left(s"must not contain more than ${JsonWebKeySet.MaxKeys} keys"),
         )
       },
@@ -111,7 +150,7 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
     suite("publicKeys")(
       test("parses a validated set into verification keys") {
         val json = document(ecKey("ec-1").toJSONString)
-        val parsed = JsonWebKeySet.validate(json).flatMap(_.publicKeys)
+        val parsed = JsonWebKeySet.validateForAssertions(json).flatMap(_.publicKeys)
         assertTrue(parsed.map(_.keys.getKeys.size) == Right(1))
       },
       test("keeps members it does not model, rather than dropping them on the way through") {
@@ -120,7 +159,7 @@ object JsonWebKeySetSpec extends ZIOSpecDefault:
           .add("x-custom", Json.Str("kept"))
         val json = Json.Obj("keys" -> Json.Arr(key))
         assertTrue(
-          JsonWebKeySet.validate(json).map(_.document) == Right(json),
+          JsonWebKeySet.validateForAssertions(json).map(_.document) == Right(json),
         )
       },
     ),

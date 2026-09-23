@@ -105,6 +105,27 @@ object MutualTlsSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield (id, result.secret)
 
+  /** A client with no RFC 8705 registration of any kind: it authenticates by secret and asked
+    * for no binding, so its tokens carry no `cnf`. The control the certificate tests are read
+    * against -- a tenant that forwards a certificate must not start constraining it.
+    */
+  private def plainClient(
+      auth: OAuthClient,
+      scopes: Set[String] = Set("openid", "email"),
+      authFlow: Option[Json] = None,
+  ): Task[(String, String)] =
+    for
+      id <- uid.map(s => s"plain-client-$s")
+      result <- auth.registerClient(
+        id,
+        "Unbound Test Client",
+        Set(redirectUri),
+        allowedScopes = scopes,
+        authFlow = authFlow,
+      ).success
+      _ <- auth.syncConfiguration()
+    yield (id, result.secret)
+
   /** The `cnf` claim of an access token, or `None` when the token carries no binding. */
   private def confirmation(accessToken: String): Task[Option[Json.Obj]] =
     for
@@ -485,25 +506,46 @@ object MutualTlsSpec extends E2ESpec:
 
     test("/userinfo leaves an unbound token alone though the tenant forwards certificates") {
       for
-        (_, auth) <- setup(Flows.Id.EmailOtp)
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, clientSecret) <- plainClient(
+          auth,
+          scopes = Set("openid", "email"),
+          authFlow = Some(Flows.emailOtpAuthFlow),
+        )
         email <- uid.map(s => s"mtls-plain-$s@example.test")
         userId <- auth.registerUser(email = Some(email))
         _ <- auth.flushUserOutbox()
 
-        authorize <- auth.authorize(scope = "openid email").assertChallengeRedirect
+        authorize <- auth.authorize(
+          scope = "openid email",
+          clientId = Some(clientId),
+          redirectUri = Some(redirectUri),
+        ).assertChallengeRedirect
         cookie = authorize.conversationCookie.get
         credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitEmail(cookie, email, credential.csrf)
         otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
         code <- auth.submitOtp(cookie, fixedOtp, otp.csrf).assertRedirect
-        issued <- auth.token(code, authorize.verifier).success
+        issued <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(clientId),
+          clientSecret = Some(clientSecret),
+          redirectUri = Some(redirectUri),
+        ).success
+        binding <- confirmation(issued.accessToken)
 
         // Neither presentation is constrained: nothing bound this token, and a tenant whose
         // proxy forwards a certificate on every connection must not start demanding one.
         served <- auth.userinfo(issued.accessToken, certificate = Some(header))
         bare <- auth.userinfo(issued.accessToken)
         _ <- auth.deleteUser(userId)
-      yield assertTrue(served.isInstanceOf[UserinfoResult.Success], bare.isInstanceOf[UserinfoResult.Success])
+      yield assertTrue(binding.isEmpty)
+        .label("the token has to be unbound for the rest of this to mean anything") &&
+        assertTrue(served.isInstanceOf[UserinfoResult.Success])
+          .label("a forwarded certificate must not constrain a token nobody bound") &&
+        assertTrue(bare.isInstanceOf[UserinfoResult.Success])
+          .label("and neither must its absence")
     },
 
     // ── §6.5 Proxy termination ────────────────────────────────────────────

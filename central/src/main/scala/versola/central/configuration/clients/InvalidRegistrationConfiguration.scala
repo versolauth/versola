@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.util.{Dpop, JsonWebKeySet}
+import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
 /** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
@@ -50,6 +51,11 @@ object InvalidRegistrationConfiguration:
     * assertion is a registration mistake, and reporting it at registration costs an error
     * message, while reporting it at the token endpoint costs an `invalid_client` the operator
     * has to reverse-engineer.
+    *
+    * Which validation depends on what the keys are for. A §2.2 set is matched against a
+    * certificate's public key rather than verified as a signature, so it is held only to
+    * [[JsonWebKeySet.validateForCertificateMatching]] -- holding it to the assertion rules
+    * would refuse a P-384 client whose certificate this server matches perfectly well.
     */
   def validateClientAuthentication(
       clientId: ClientId,
@@ -66,8 +72,12 @@ object InvalidRegistrationConfiguration:
       case _ =>
         None
 
+    val validateKeys: Json.Obj => Either[String, JsonWebKeySet] = mtlsAuth match
+      case Some(MutualTlsAuth.SelfSignedTlsClientAuth()) => JsonWebKeySet.validateForCertificateMatching
+      case _ => JsonWebKeySet.validateForAssertions
+
     combination.orElse(
-      jwks.flatMap(keySet => JsonWebKeySet.validate(keySet.document).left.toOption)
+      jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)
         .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason")),
     )
 

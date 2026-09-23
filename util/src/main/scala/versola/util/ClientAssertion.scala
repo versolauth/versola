@@ -209,7 +209,7 @@ object ClientAssertion:
 
   /** True where [[verify]] could ever check a signature against this key, for any algorithm
     * this object implements. Registration validates against it (see
-    * [[JsonWebKeySet.validate]]) so a key that could only ever fail authentication is refused
+    * [[JsonWebKeySet.validateForAssertions]]) so a key that could only ever fail authentication is refused
     * at the point the operator can still fix it, rather than registering and then never
     * working.
     */

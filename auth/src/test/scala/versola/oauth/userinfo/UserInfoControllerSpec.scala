@@ -43,6 +43,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
   /** The certificate a token bound by RFC 8705 §3 was issued over, and the thumbprint its
     * `cnf.x5t#S256` therefore carries. */
   val clientCertificate: ClientCertificate = TestEnvConfig.clientCertificate
+  val boundThumbprint1 = clientCertificate.thumbprint
 
   /** The record `checkDpop` looks up to learn which tenant an edge assertion for this token's
     * client has to be scoped to -- see `EdgeAssertionService.verify`. */
