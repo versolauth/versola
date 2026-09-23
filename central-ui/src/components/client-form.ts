@@ -21,6 +21,8 @@ import {
   MIN_DPOP_RSA_KEY_SIZE,
   validateJwksJson,
   validateClientCredential,
+  validateMtlsTermination,
+  jwksVerifiesRequestObjects,
   MTLS_SUBJECT_TYPES,
   MAX_JWKS_KEYS,
 } from '../utils/validators';
@@ -870,6 +872,10 @@ export class VersolaClientForm extends LitElement {
       return;
     }
 
+    if (!this.mtlsTerminationValidation.valid) {
+      return;
+    }
+
     const authFlow = this.formData.authFlow ?? null;
     if (authFlow) {
       const authFlowError = this.getAuthFlowValidationError(authFlow);
@@ -969,7 +975,7 @@ export class VersolaClientForm extends LitElement {
       // the backend) - this flag only has a say for a client that authenticates some other way.
       certificateBoundAccessTokens: !this.effectiveMtlsAuth && !!this.formData.certificateBoundAccessTokens,
       jwks: this.effectiveJwks,
-      requireSignedRequestObject: !!this.effectiveJwks && !!this.formData.requireSignedRequestObject,
+      requireSignedRequestObject: this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
     };
 
@@ -1212,6 +1218,18 @@ export class VersolaClientForm extends LitElement {
     return validateClientCredential(this.effectiveMtlsAuth, !!this.effectiveJwks);
   }
 
+  private get mtlsTerminationValidation() {
+    return validateMtlsTermination(this.effectiveMtlsAuth, this.mtlsCertificateHeader);
+  }
+
+  /** Whether the registered keys could verify a request object. A self-signed mTLS set is
+   *  matched against a certificate rather than a signature, so it may hold only keys no
+   *  signature algorithm here can use - requiring JAR from such a client would refuse its
+   *  every authorization request. */
+  private get canRequireSignedRequestObject(): boolean {
+    return jwksVerifiesRequestObjects(this.effectiveJwks);
+  }
+
   private get accessTokenTtlValidation() {
     return validateAccessTokenTtl(
       ttlToSeconds(this.ttlValue, this.ttlUnit),
@@ -1229,6 +1247,12 @@ export class VersolaClientForm extends LitElement {
     if (this.backChannelLogoutUriError) {
       this.backChannelLogoutUriError = '';
     }
+  }
+
+  private renderMtlsTerminationError() {
+    return this.mtlsTerminationValidation.valid
+      ? ''
+      : html`<div class="error-message" style="margin-bottom: 0.75rem;">${this.mtlsTerminationValidation.error}</div>`;
   }
 
   private renderJwksField() {
@@ -2030,11 +2054,7 @@ export class VersolaClientForm extends LitElement {
 
               ${this.clientCredentialMode === 'mtls' ? html`
                 <div class="cred-options">
-                  ${!this.mtlsCertificateHeader ? html`
-                    <div class="error-message" style="margin-bottom: 0.75rem;">
-                      This tenant has no mTLS certificate header configured under Challenges &amp; Security - a client registered here can never authenticate until it does.
-                    </div>
-                  ` : ''}
+                  ${this.renderMtlsTerminationError()}
                   <label for="mtls-subject-type">Subject type</label>
                   <select id="mtls-subject-type" class="compact-input" .value=${this.mtlsSubjectType} @change=${this.handleMtlsSubjectTypeChange}>
                     ${MTLS_SUBJECT_TYPES.map(type => html`<option value=${type} ?selected=${this.mtlsSubjectType === type}>${type}</option>`)}
@@ -2056,11 +2076,7 @@ export class VersolaClientForm extends LitElement {
 
               ${this.clientCredentialMode === 'mtls-self-signed' ? html`
                 <div class="cred-options">
-                  ${!this.mtlsCertificateHeader ? html`
-                    <div class="error-message" style="margin-bottom: 0.75rem;">
-                      This tenant has no mTLS certificate header configured under Challenges &amp; Security - a client registered here can never authenticate until it does.
-                    </div>
-                  ` : ''}
+                  ${this.renderMtlsTerminationError()}
                   ${this.renderJwksField()}
                 </div>
               ` : ''}
@@ -2112,16 +2128,18 @@ export class VersolaClientForm extends LitElement {
               <label class="plain-checkbox-label">
                 <input
                   type="checkbox"
-                  .checked=${!!this.formData.requireSignedRequestObject}
-                  ?disabled=${!this.effectiveJwks}
+                  .checked=${this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject}
+                  ?disabled=${!this.canRequireSignedRequestObject}
                   @change=${() => this.toggleRequireSignedRequestObject()}
                 />
                 Require signed request objects (JAR)
               </label>
               <div class="hint">
-                ${this.effectiveJwks
+                ${this.canRequireSignedRequestObject
                   ? 'RFC 9101 §10.5: this client must state its authorization request in a request object it signed with a registered key; a plain parameter set is refused.'
-                  : 'Requires a registered JWK Set (mTLS self-signed or private_key_jwt above) - a request object is verified against no other keys.'}
+                  : this.effectiveJwks
+                    ? 'None of the registered keys can verify a signature - a request object is checked with RS256, PS256 or ES256, which names P-256 as its curve. A certificate this set matches needs no such key.'
+                    : 'Requires a registered JWK Set (mTLS self-signed or private_key_jwt above) - a request object is verified against no other keys.'}
               </div>
             </div>
 

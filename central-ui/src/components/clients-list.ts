@@ -22,12 +22,30 @@ import {
   updateClient,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
+import { ClientCredentialKind, clientCredentialKind } from '../utils/validators';
 import { copyToClipboard, formatDuration, getLocalizedDescription } from '../utils/helpers';
 import './client-form';
 import './content-header';
 import './error-card';
 import './loading-cards';
 import './preset-form';
+
+/** What the create banner says instead of offering a secret, for a client whose secret is
+ *  not the credential it authenticates with. `null` for one whose secret is. */
+function secretlessText(credential: ClientCredentialKind | undefined): string | null {
+  switch (credential) {
+    case 'public':
+      return 'This is a native (public) client, so no secret was issued and none can be added later.';
+    case 'mtls':
+      return 'This client authenticates with its certificate, so the secret Central generated for it '
+        + 'is refused at the token endpoint and is not shown.';
+    case 'private_key_jwt':
+      return 'This client authenticates with an assertion signed by its registered keys, so the secret '
+        + 'Central generated for it is refused at the token endpoint and is not shown.';
+    default:
+      return null;
+  }
+}
 
 @customElement('versola-clients-list')
 export class VersolaClientsList extends LitElement {
@@ -56,9 +74,11 @@ export class VersolaClientsList extends LitElement {
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
   @state() private isPreparingForm = false;
-  // `secret` is null for a native client, which is created without one; the banner then
-  // confirms the creation instead of offering something to copy.
-  @state() private createdSecret: { clientName: string; secret: string | null; action: 'created' | 'rotated' } | null = null;
+  // `secret` is null whenever the created client does not authenticate with one - a native
+  // client is issued none, and a client that registered an mTLS credential or a key set
+  // has its generated secret refused at the token endpoint. The banner then confirms the
+  // creation and says what the client authenticates with instead.
+  @state() private createdSecret: { clientName: string; secret: string | null; action: 'created' | 'rotated'; credential: ClientCredentialKind } | null = null;
   @state() private copyFeedback = '';
   @state() private editingPresetsForClient: OAuthClient | null = null;
   @state() private presetDrafts: AuthorizationPreset[] = [];
@@ -870,6 +890,7 @@ export class VersolaClientsList extends LitElement {
         clientName,
         secret,
         action: 'rotated',
+        credential: 'secret',
       };
       this.copyFeedback = '';
       this.expandedClients = new Set([...this.expandedClients, clientId]);
@@ -934,10 +955,12 @@ export class VersolaClientsList extends LitElement {
       this.handleFormClose();
 
       if (created) {
+        const credential = clientCredentialKind(client);
         this.createdSecret = {
           clientName: getLocalizedDescription(client.clientName),
-          secret: generatedSecret,
+          secret: credential === 'secret' ? generatedSecret : null,
           action: 'created',
+          credential,
         };
         this.copyFeedback = '';
         this.expandedClients = new Set([...this.expandedClients, client.id]);
@@ -962,9 +985,8 @@ export class VersolaClientsList extends LitElement {
         : '';
     const secretText = this.createdSecret?.action === 'rotated'
       ? 'Copy the new client secret now. It may not be shown again.'
-      : this.createdSecret && !this.createdSecret.secret
-        ? 'This is a native (public) client, so no secret was issued and none can be added later.'
-        : 'Copy this secret now. It may not be shown again.';
+      : secretlessText(this.createdSecret?.credential)
+        ?? 'Copy this secret now. It may not be shown again.';
 
     if (this.isPreparingForm && !this.showCreateForm) {
       return html`

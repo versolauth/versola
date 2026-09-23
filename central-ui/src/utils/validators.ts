@@ -1,7 +1,7 @@
 /**
  * Validation utilities for Versola Central UI
  */
-import type { MutualTlsAuth } from '../types';
+import type { MutualTlsAuth, OAuthClient } from '../types';
 
 /**
  * Validates resource/action format: lowercase letters, numbers, underscore, starting with letter
@@ -345,6 +345,81 @@ export function validateRequestObjectRequirement(
     return { valid: false, error: 'Requires a registered JWK Set - a request object is verified against no other keys' };
   }
   return { valid: true };
+}
+
+/**
+ * Kept in sync with `InvalidRegistrationConfiguration.validateMtlsTermination` - `auth` reads
+ * a certificate only from the header the client's own tenant names, so registering mtlsAuth
+ * under a tenant that names none is refused by the backend outright, not merely left unable
+ * to authenticate.
+ */
+export function validateMtlsTermination(
+  mtlsAuth: MutualTlsAuth | null | undefined,
+  mtlsCertificateHeader: string | null | undefined,
+): { valid: boolean; error?: string } {
+  if (mtlsAuth && !mtlsCertificateHeader) {
+    return {
+      valid: false,
+      error: 'This tenant has no mTLS certificate header configured under Challenges & Security - '
+        + 'Central refuses a client that registers an mTLS credential without one, '
+        + 'since no certificate would ever reach auth for it.',
+    };
+  }
+  return { valid: true };
+}
+
+/**
+ * Whether every key in a set could verify a signature, which is what a request object is
+ * checked against - kept in sync with `ClientAssertion.usableWith`: RS256 or PS256 for an RSA
+ * key, ES256 for an EC key, which names P-256 as its curve, and a key that pinned its own
+ * `alg` is usable only with that one.
+ *
+ * A `self_signed_tls_client_auth` set is held to nothing of the sort on the backend - §2.2
+ * matches encoded public key material, so a P-384 key registers perfectly well. Requiring
+ * signed request objects from such a client registers one whose every authorization request
+ * is refused, since no key in the set can verify the object.
+ */
+export function jwksVerifiesRequestObjects(keySet: Record<string, unknown> | null | undefined): boolean {
+  const keys = keySet?.keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return false;
+  }
+  return keys.every(key => {
+    if (typeof key !== 'object' || key === null) {
+      return false;
+    }
+    const { kty, crv, alg, use } = key as Record<string, unknown>;
+    if (use === 'enc') {
+      return false;
+    }
+    if (kty === 'RSA') {
+      return alg === undefined || alg === 'RS256' || alg === 'PS256';
+    }
+    if (kty === 'EC') {
+      return crv === 'P-256' && (alg === undefined || alg === 'ES256');
+    }
+    return false;
+  });
+}
+
+/** What a registered client actually authenticates with at the token endpoint. */
+export type ClientCredentialKind = 'secret' | 'public' | 'mtls' | 'private_key_jwt';
+
+/**
+ * Kept in sync with `ClientAuthentication`: a client that registered an mTLS credential or a
+ * key set authenticates with that and only that - the secret Central still generates for it
+ * is refused at the token endpoint, so nothing should present it as the client's credential.
+ */
+export function clientCredentialKind(
+  client: Pick<OAuthClient, 'mtlsAuth' | 'jwks' | 'clientType'>,
+): ClientCredentialKind {
+  if (client.mtlsAuth) {
+    return 'mtls';
+  }
+  if (client.jwks) {
+    return 'private_key_jwt';
+  }
+  return client.clientType === 'native' ? 'public' : 'secret';
 }
 
 /**
