@@ -1,7 +1,7 @@
 package versola.auth
 
 import com.nimbusds.jose.crypto.RSASSASigner
-import com.nimbusds.jose.jwk.RSAKey
+import com.nimbusds.jose.jwk.{Curve, ECKey, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
@@ -11,7 +11,8 @@ import versola.oauth.client.model.{ClientId, MtlsCertificateEncoding, MtlsCertif
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, JWT, Secret}
+import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, Secret}
+import zio.json.*
 import zio.json.ast.Json
 import zio.prelude.NonEmptySet
 import zio.{Task, UIO, ZIO}
@@ -107,20 +108,39 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
-    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
     certificateBoundAccessTokens = false,
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
   )
 
+  /** [[clientCertificate]]'s own public key as an RFC 7517 key set, which is what RFC 8705
+    * §2.2 matches a self-signed certificate against. Derived from the certificate rather than
+    * written out beside it, so the two cannot drift. */
+  val clientCertificateKeySet: JsonWebKeySet =
+    val publicKey = java.security.KeyFactory.getInstance("EC")
+      .generatePublic(java.security.spec.X509EncodedKeySpec(clientCertificate.subjectPublicKeyInfo))
+      .asInstanceOf[java.security.interfaces.ECPublicKey]
+    val jwk = ECKey.Builder(Curve.P_256, publicKey).keyID("cert-ec-1").build()
+    JsonWebKeySet(
+      Json.Obj("keys" -> Json.Arr(jwk.toJSONString.fromJson[Json.Obj].toOption.get)),
+    )
+
   /** Some other client's certificate, for checking that a registered subject is matched rather
-    * than merely that a certificate arrived. */
+    * than merely that a certificate arrived. Its key differs too: §2.2 compares the key and
+    * nothing else, so a stand-in that kept this one's would authenticate as it. */
   val otherClientCertificate: ClientCertificate = clientCertificate.copy(
     thumbprint = "b0HRnkRZIOoyEKTJQTrIdUMKrPwSZSe9Ei-MbvVLt1E",
     subjectDn = "C=KZ,O=Versola Test,CN=other-client",
     subjectAlternativeNames = Map(MutualTlsSubjectType.san_dns -> Set("other.example.com")),
+    subjectPublicKeyInfo = otherPublicKeyInfo,
   )
+
+  private def otherPublicKeyInfo: Array[Byte] =
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(Curve.P_256.toECParameterSpec)
+    generator.generateKeyPair().getPublic.getEncoded
 
   // Generate test RSA key pair for JWT
   private val keyPairGenerator = KeyPairGenerator.getInstance("RSA")

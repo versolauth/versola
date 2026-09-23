@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.util.{Dpop, JsonWebKeySet}
+import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
 /** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
@@ -41,24 +42,69 @@ object InvalidRegistrationConfiguration:
     * two independent ways to do it, and leaves the operator reading one of them believing it
     * is the one in force.
     *
+    * RFC 8705 §2.2 `self_signed_tls_client_auth` is the one combination that is not two
+    * credentials but one: it *is* the key set, matched against the presented certificate
+    * rather than against an assertion's signature, so it needs `jwks` and refuses to be
+    * registered without it -- a client with nothing to match against could never authenticate.
+    *
     * The key set is validated here rather than at first use: a set that could never verify an
     * assertion is a registration mistake, and reporting it at registration costs an error
     * message, while reporting it at the token endpoint costs an `invalid_client` the operator
     * has to reverse-engineer.
+    *
+    * Which validation depends on what the keys are for. A §2.2 set is matched against a
+    * certificate's public key rather than verified as a signature, so it is held only to
+    * [[JsonWebKeySet.validateForCertificateMatching]] -- holding it to the assertion rules
+    * would refuse a P-384 client whose certificate this server matches perfectly well.
     */
   def validateClientAuthentication(
       clientId: ClientId,
       mtlsAuth: Option[MutualTlsAuth],
       jwks: Option[JsonWebKeySet],
   ): Option[InvalidRegistrationConfiguration] =
-    if mtlsAuth.nonEmpty && jwks.nonEmpty then
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, reason))
+
+    val combination = mtlsAuth match
+      case Some(_: MutualTlsAuth.TlsClientAuth) if jwks.nonEmpty =>
+        invalid("a client authenticates either with mtlsAuth or with jwks, not both")
+      case Some(MutualTlsAuth.SelfSignedTlsClientAuth()) if jwks.isEmpty =>
+        invalid("self_signed_tls_client_auth needs jwks - the registered keys are what a certificate is matched against")
+      case _ =>
+        None
+
+    val validateKeys: Json.Obj => Either[String, JsonWebKeySet] = mtlsAuth match
+      case Some(MutualTlsAuth.SelfSignedTlsClientAuth()) => JsonWebKeySet.validateForCertificateMatching
+      case _ => JsonWebKeySet.validateForAssertions
+
+    combination.orElse(
+      jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)
+        .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason")),
+    )
+
+  /** RFC 8705 §6.5 leaves it to the deployment to hand a terminated certificate to the
+    * application, and this one does it per tenant: `auth` looks for a certificate only where
+    * that tenant's `mtlsCertificateHeader` names one. A client registering `mtlsAuth` under a
+    * tenant that names no header is a client that can never authenticate -- nothing will ever
+    * look for the certificate its registration makes mandatory -- so it is refused here
+    * rather than left to fail as an `invalid_client` at every token request.
+    *
+    * @param mtlsCertificateHeader the header of the client's own tenant, `None` both for a
+    *                             tenant that configured none and for one with no settings
+    *                             row at all: neither can produce a certificate.
+    */
+  def validateMtlsTermination(
+      clientId: ClientId,
+      mtlsAuth: Option[MutualTlsAuth],
+      mtlsCertificateHeader: Option[String],
+  ): Option[InvalidRegistrationConfiguration] =
+    if mtlsAuth.nonEmpty && mtlsCertificateHeader.isEmpty then
       Some(InvalidRegistrationConfiguration(
         clientId,
-        "a client authenticates either with mtlsAuth or with jwks, not both",
+        "mtlsAuth needs the client's tenant to set mtlsCertificateHeader - " +
+          "without it no certificate ever reaches auth for this client",
       ))
     else
-      jwks.flatMap(keySet => JsonWebKeySet.validate(keySet.document).left.toOption)
-        .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason"))
+      None
 
   /** RFC 9101 §6.2: a request object is verified against the client's registered key set and
     * nothing else, so requiring one from a client that registered no keys registers a client

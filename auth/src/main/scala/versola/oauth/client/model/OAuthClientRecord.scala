@@ -43,19 +43,25 @@ case class OAuthClientRecord(
       * RFC 7518 §3.3 floor [[Dpop.KeyPolicy.MinRsaKeySize]], which applies either way -- the
       * registered value can only raise it. */
     dpopMinRsaKeySize: Option[Int],
-    /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
-      * authenticates with a secret. */
+    /** RFC 8705 mutual-TLS client authentication, and which of its two methods; `None` when
+      * the client authenticates with a secret. [[MutualTlsAuth.SelfSignedTlsClientAuth]]
+      * matches the presented certificate against [[jwks]], so the two are set together for
+      * that method and apart for every other. */
     mtlsAuth: Option[MutualTlsAuth],
     /** RFC 8705 §3.4 `tls_client_certificate_bound_access_tokens`, as the client
       * registered it. Only clients that authenticate some other way have a say: read
       * [[bindsAccessTokens]] rather than this field to find out whether a token gets a
       * `cnf` claim. */
     certificateBoundAccessTokens: Boolean,
-    /** RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
-      * assertions with, and the only keys an assertion from it is verified against. `None`
-      * when the client does not use the method.
+    /** The public keys this client registered, read by whichever method [[mtlsAuth]] says is
+      * in force: RFC 7523 §2.2 `private_key_jwt` verifies its client assertions against them
+      * when no `mtlsAuth` is registered, and RFC 8705 §2.2 `self_signed_tls_client_auth`
+      * matches its certificate's public key against them when that method is. `None` when the
+      * client uses neither.
       *
-      * Mutually exclusive with [[mtlsAuth]], which registration enforces. */
+      * Never set alongside [[MutualTlsAuth.TlsClientAuth]], which registration enforces:
+      * a subject-matched certificate and a registered key set would be two credentials for
+      * one client. */
     jwks: Option[JsonWebKeySet],
     /** RFC 9101 §10.5 `require_signed_request_object`: the client states its authorization
       * request in a request object it signed, so a plain parameter set from it is refused

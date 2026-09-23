@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
+import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -55,14 +56,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -94,6 +95,7 @@ object OAuthClientService:
       clientRepository: OAuthClientRepository,
       tenantRepository: TenantRepository,
       roleRepository: RoleRepository,
+      challengeSettingsService: ChallengeSettingsService,
       secureRandom: SecureRandom,
       securityService: SecurityService,
       config: CentralConfig,
@@ -155,6 +157,7 @@ object OAuthClientService:
           request.id,
           request.dpopMinRsaKeySize,
         ))(ZIO.fail(_))
+        _ <- validateMtlsTermination(request.id, request.tenantId, request.mtlsAuth)
         secret <- request.clientType match
           case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case ClientType.native => ZIO.none
@@ -227,7 +230,11 @@ object OAuthClientService:
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
-          ))(ZIO.fail(_))
+          ))(ZIO.fail(_)) *> validateMtlsTermination(
+            request.clientId,
+            client.tenantId,
+            request.mtlsAuth.applyTo(client.mtlsAuth),
+          )
         _ <- clientRepository.updateClient(
           request.clientId,
           OAuthClientPatch(
@@ -311,6 +318,23 @@ object OAuthClientService:
               InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
       yield ()
 
+    /** Reads the tenant's challenge settings only when there is an `mtlsAuth` to justify it:
+      * every other registration would pay for a lookup whose answer it has no use for.
+      */
+    private def validateMtlsTermination(
+        clientId: ClientId,
+        tenantId: TenantId,
+        mtlsAuth: Option[MutualTlsAuth],
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      ZIO.when(mtlsAuth.nonEmpty):
+        challengeSettingsService.getSettings(tenantId).flatMap: settings =>
+          ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateMtlsTermination(
+            clientId,
+            mtlsAuth,
+            settings.flatMap(_.mtlsCertificateHeader),
+          ))(ZIO.fail(_))
+      .unit
+
     /** An unparsable URI clears the column, matching how create drops undecodable URIs.
       * Trims before parsing so this agrees with `validateLogoutUri`, which validates the
       * trimmed value - otherwise a value with leading/trailing whitespace could pass
@@ -324,9 +348,14 @@ object OAuthClientService:
     /** RFC 8705 §2.1.2 compares the registered value against the certificate literally, so
       * surrounding whitespace an operator pastes in would silently stop every certificate
       * from matching. Trimming is the only normalisation applied: the RFC 4514 form of a
-      * subject DN is otherwise significant, down to attribute order. */
+      * subject DN is otherwise significant, down to attribute order. §2.2 registers no
+      * subject value at all, so there is nothing to normalise for it. */
     private def normaliseMtlsAuth(auth: MutualTlsAuth): MutualTlsAuth =
-      auth.copy(subjectValue = auth.subjectValue.trim)
+      auth match
+        case tls: MutualTlsAuth.TlsClientAuth =>
+          tls.copy(subjectValue = tls.subjectValue.trim)
+        case MutualTlsAuth.SelfSignedTlsClientAuth() =>
+          auth
 
     private def toMtlsAuthPatch(patch: Patch[MutualTlsAuth]): Patch[MutualTlsAuth] = patch match
       case Patch.Deleted        => Patch.Deleted

@@ -661,6 +661,35 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         ),
       )
     },
+    // RFC 8705 §3.3 needs no code of its own: `tls_client_auth`,
+    // `self_signed_tls_client_auth` and `tls_client_certificate_bound_access_tokens` are all
+    // things only the operator knows -- whether a tenant's reverse proxy terminates mTLS at
+    // all -- so an operator advertises them by putting them in the stored document, and this
+    // is the guarantee that doing so works: a field `derive` has no opinion on survives it
+    // unchanged, whatever its shape, and an auth method it does not derive is not dropped.
+    test("getMetadata passes a stored field it does not derive through untouched") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          "token_endpoint_auth_methods_supported" -> Json.Arr(
+            Json.Str("tls_client_auth"),
+            Json.Str("self_signed_tls_client_auth"),
+          ),
+          "tls_client_certificate_bound_access_tokens" -> Json.Bool(true),
+          "an_unknown_field" -> Json.Obj("nested" -> Json.Arr(Json.Num(1))),
+        ))
+        served <- env.getMetadata
+      yield assertTrue(
+        served.get("token_endpoint_auth_methods_supported").contains(
+          Json.Arr(
+            Json.Str("private_key_jwt"),
+            Json.Str("self_signed_tls_client_auth"),
+            Json.Str("tls_client_auth"),
+          ),
+        ),
+        served.get("tls_client_certificate_bound_access_tokens").contains(Json.Bool(true)),
+        served.get("an_unknown_field").contains(Json.Obj("nested" -> Json.Arr(Json.Num(1)))),
+      )
+    },
     test("findByTenant returns only the clients of that tenant") {
       val otherTenant = privateClient.copy(id = ClientId("other"), tenantId = TenantId("other"))
       for

@@ -1,6 +1,6 @@
 package versola.util
 
-import com.nimbusds.jose.jwk.{ECKey, JWKSet, KeyUse, RSAKey}
+import com.nimbusds.jose.jwk.{ECKey, JWK, JWKSet, KeyUse, RSAKey}
 import zio.json.*
 import zio.json.ast.Json
 import zio.prelude.Equal
@@ -14,11 +14,13 @@ import scala.util.Try
   * Stored as the document the client registered rather than as parsed key material: a JWK
   * carries members this server has no opinion on, and re-serializing from a parsed form would
   * quietly drop the ones it does not model. Validation is therefore a check applied to the
-  * document, not a narrowing of it -- see [[JsonWebKeySet.validate]].
+  * document, not a narrowing of it -- see [[JsonWebKeySet.validateForAssertions]] and
+  * [[JsonWebKeySet.validateForCertificateMatching]].
   *
   * Shared by every method that authenticates a client against keys it registered: RFC 7523
-  * `private_key_jwt` today, and RFC 8705 §2.2 `self_signed_tls_client_auth` when it lands,
-  * which matches a certificate against this same set.
+  * `private_key_jwt`, which verifies an assertion's signature with them, and RFC 8705 §2.2
+  * `self_signed_tls_client_auth`, which matches a presented certificate's public key against
+  * this same set.
   */
 case class JsonWebKeySet(document: Json.Obj):
   /** Parses the document into verification keys. Fails only where the stored document is not a
@@ -37,7 +39,7 @@ object JsonWebKeySet:
     */
   val MaxKeys = 10
 
-  /** Accepts a document only if every key in it can actually authenticate the client.
+  /** The constraints every registered key set is held to, whatever it authenticates with.
     *
     * Private key material is refused rather than ignored: a client pasting its private key
     * into a field labelled "public keys" has published that key, and storing it -- even
@@ -46,7 +48,7 @@ object JsonWebKeySet:
     * `client_secret_jwt`, a different method whose security properties this one is chosen to
     * avoid.
     */
-  def validate(document: Json.Obj): Either[String, JsonWebKeySet] =
+  private def structure(document: Json.Obj): Either[String, List[JWK]] =
     for
       parsed <- Try(JWKSet.parse(document.toJson)).toEither.left
         .map(error => s"must be a JWK Set: ${error.getMessage}")
@@ -64,10 +66,23 @@ object JsonWebKeySet:
         (),
         "must not contain keys marked for encryption",
       )
-      // A key of the right type can still be one no assertion could be verified against --
-      // an EC key on a curve no algorithm here names, or a key whose own `alg` pins it to an
-      // algorithm its type cannot perform. Registering it would report a credential the
-      // client can never authenticate with.
+      // RFC 7517 §4.5: `kid` is optional for a single key, since there is nothing to
+      // disambiguate, but a set that repeats one cannot be indexed by it at all.
+      kids = keys.flatMap(key => Option(key.getKeyID))
+      _ <- Either.cond(kids.distinct.sizeIs == kids.size, (), "must not repeat a key id")
+    yield keys
+
+  /** For RFC 7523 `private_key_jwt`: the keys an assertion's signature is verified with.
+    *
+    * Adds the one constraint that only signature verification imposes. A key of the right
+    * type can still be one no assertion could be verified against -- an EC key on a curve no
+    * algorithm here names, or a key whose own `alg` pins it to an algorithm its type cannot
+    * perform. Registering it would report a credential the client can never authenticate
+    * with.
+    */
+  def validateForAssertions(document: Json.Obj): Either[String, JsonWebKeySet] =
+    for
+      keys <- structure(document)
       _ <- Either.cond(
         keys.forall(ClientAssertion.canVerifyWith),
         (),
@@ -75,11 +90,18 @@ object JsonWebKeySet:
           ClientAssertion.Algorithm.values.map(_.toString).mkString(", ") +
           " (an EC key must be on P-256)",
       )
-      // RFC 7517 §4.5: `kid` is optional for a single key, since there is nothing to
-      // disambiguate, but a set that repeats one cannot be indexed by it at all.
-      kids = keys.flatMap(key => Option(key.getKeyID))
-      _ <- Either.cond(kids.distinct.sizeIs == kids.size, (), "must not repeat a key id")
     yield JsonWebKeySet(document)
+
+  /** For RFC 8705 §2.2 `self_signed_tls_client_auth`: the keys a presented certificate's own
+    * public key is matched against.
+    *
+    * [[structure]] and nothing more. §2.2 verifies no signature -- the match is over encoded
+    * public key material -- so the usability constraint
+    * [[validateForAssertions]] adds has nothing to say here, and applying it would refuse a
+    * P-384 or P-521 certificate this server matches perfectly well.
+    */
+  def validateForCertificateMatching(document: Json.Obj): Either[String, JsonWebKeySet] =
+    structure(document).map(_ => JsonWebKeySet(document))
 
   given Schema[JsonWebKeySet] = Schema.primitive[String].transformOrFail(
     string => string.fromJson[Json.Obj].map(JsonWebKeySet(_)),

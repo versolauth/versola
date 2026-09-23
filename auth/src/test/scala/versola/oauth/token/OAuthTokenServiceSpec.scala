@@ -176,7 +176,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   val mtlsClient = testClient.copy(
     secret = None,
-    mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 
   /** RFC 8705 §3.4: authenticates by secret, and asks for its tokens to be bound anyway. */
@@ -1872,7 +1872,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("authenticates a subject_dn client against the certificate's RFC 4514 subject") {
         val env = new Env
         val client = mtlsClient.copy(
-          mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.subject_dn, TestEnvConfig.clientCertificateSubjectDn)),
+          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, TestEnvConfig.clientCertificateSubjectDn)),
         )
         for
           _ <- env.clientService.find.succeedsWith(Some(client))
@@ -2003,7 +2003,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           now <- Clock.instant
           _ <- env.clientService.find.succeedsWith(Some(mtlsClient.copy(
-            mtlsAuth = Some(MutualTlsAuth(MutualTlsSubjectType.san_dns, "other.example.com")),
+            mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "other.example.com")),
           )))
           _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
           _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.certificate(certificateThumbprint1)))))

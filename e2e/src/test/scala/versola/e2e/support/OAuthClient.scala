@@ -1367,11 +1367,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
       else
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"deleteJwksKey failed: status=${resp.status} body=$body"))
-  /** GET /userinfo — fetches claims for a bearer token. */
-  def userinfo(accessToken: String): Task[UserinfoResult] =
+  /** GET /userinfo — fetches claims for a bearer token.
+    *
+    * @param certificate the client certificate the tenant's proxy would have forwarded. RFC
+    *   8705 §3 makes it part of presenting a certificate-bound token: the resource endpoint
+    *   compares its thumbprint against the token's `cnf.x5t#S256`, so a bound token sent
+    *   without one is refused.
+    */
+  def userinfo(accessToken: String, certificate: Option[String] = None): Task[UserinfoResult] =
     Client.batched(
-      Request.get(s"${config.authUrl}/userinfo")
-        .addHeader(Authorization.Bearer(accessToken)),
+      withCertificate(
+        Request.get(s"${config.authUrl}/userinfo")
+          .addHeader(Authorization.Bearer(accessToken)),
+        certificate,
+      ),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
 
   /** GET /userinfo under the `DPoP` scheme (RFC 9449 §7.1), with a proof naming this endpoint

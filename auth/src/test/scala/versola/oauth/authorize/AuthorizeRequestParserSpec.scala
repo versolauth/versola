@@ -84,7 +84,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     .build()
 
   private val clientWithJwks = clientRecord.copy(
-    jwks = JsonWebKeySet.validate(
+    jwks = JsonWebKeySet.validateForAssertions(
       com.nimbusds.jose.jwk.JWKSet(signingJwk).toString(true).fromJson[Json.Obj].toOption.get,
     ).toOption,
   )

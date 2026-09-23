@@ -588,6 +588,13 @@ object EdgeService:
       * choosing `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to
       * refuse, so that refusal is unconditional -- it holds whether or not this edge has a
       * `dpop` block configured, and for a token arriving in the session cookie too.
+      *
+      * The RFC 8705 §3 half of the same rule is not enforced here: a token bound by
+      * `cnf.x5t#S256` is accepted by this edge with no certificate at all, which `/userinfo`
+      * now refuses. Closing it needs edge to see a client certificate in the first place --
+      * there is no `ChallengeSettings` sync and no certificate parsing on this side -- and
+      * whether it sits behind the same mTLS-terminating proxy as `auth` is a deployment
+      * question rather than a code one. Tracked in issue #320.
       */
     private def checkDpop(
         request: Request,

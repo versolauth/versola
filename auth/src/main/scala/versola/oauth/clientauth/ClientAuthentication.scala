@@ -1,7 +1,7 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientIdWithAssertion, ClientIdWithSecret, OAuthClientRecord}
+import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.CoreConfig
 import versola.util.http.Observability
@@ -11,12 +11,17 @@ import zio.http.Request
 /** How a client proves who it is, shared by every endpoint that authenticates one: `/token`,
   * `/introspect`, `/revoke` and `/par`.
   *
-  * Three methods reach here. A secret (RFC 6749 §2.3) is the baseline every confidential
+  * Four methods reach here. A secret (RFC 6749 §2.3) is the baseline every confidential
   * client has. A client may additionally register exactly one stronger credential -- an mTLS
-  * subject (RFC 8705 §2.1) or a JWK Set it signs assertions with (RFC 7523 §2.2) -- and
-  * having registered one, that credential is the only thing that authenticates it: the secret
-  * still exists but is no longer accepted, or registering the stronger method would weaken
-  * the client to whichever of the two an attacker found easier.
+  * subject (RFC 8705 §2.1), a certificate whose public key it registered (RFC 8705 §2.2), or
+  * a JWK Set it signs assertions with (RFC 7523 §2.2) -- and having registered one, that
+  * credential is the only thing that authenticates it: the secret still exists but is no
+  * longer accepted, or registering the stronger method would weaken the client to whichever
+  * of the two an attacker found easier.
+  *
+  * §2.2 and RFC 7523 read the same `jwks` column, so a client that registered the former is
+  * refused an assertion for the same reason: two credentials for one client is the weaker of
+  * the two, and `mtlsAuth` is what says which of the two readings of that column is in force.
   *
   * Each endpoint reports failure in its own error format, so the operations here fail with a
   * raw value — the unparseable header's reason, or nothing beyond "invalid" — leaving the
@@ -43,6 +48,23 @@ trait ClientAuthentication:
       request: Request,
       credentials: ClientCredentials,
       relevance: CertificateRelevance,
+  ): IO[String, Option[ClientCertificate]]
+
+  /** The same header, for a caller that holds an access token rather than client credentials.
+    *
+    * `/userinfo` is reached with a token, so the client whose tenant names the header is the
+    * one the token was issued to. There is no [[CertificateRelevance]] here either: the reason
+    * to read the header is that the token says it is bound to a certificate (RFC 8705 §3), a
+    * fact the caller already has in hand, and not anything about how the client registered —
+    * a token bound at issuance has to stay bound however the client's registration changes
+    * afterwards.
+    *
+    * Fails the same way and for the same reason as [[certificate]]: with the reason the
+    * header could not be read.
+    */
+  def certificateForClient(
+      request: Request,
+      clientId: ClientId,
   ): IO[String, Option[ClientCertificate]]
 
   /** Authenticates the client named by the request's credentials.
@@ -130,18 +152,30 @@ object ClientAuthentication:
 
       oauthClientService.find(clientId).flatMap:
         case Some(client) if relevance.appliesTo(client) =>
-          oauthClientService.getMtlsCertificateSource(clientId).flatMap: source =>
-            source.flatMap(s => request.headers.get(s.header).map(_ -> s.encoding)) match
-              case None =>
-                ZIO.none
-              case Some((headerValue, encoding)) =>
-                ZIO.fromEither(ClientCertificate.parse(headerValue, encoding))
-                  .tapError(reason =>
-                    ZIO.logWarning(s"Couldn't parse the client certificate of $clientId: $reason"),
-                  )
-                  .asSome
+          readCertificate(request, clientId)
         case _ =>
           ZIO.none
+
+    override def certificateForClient(
+        request: Request,
+        clientId: ClientId,
+    ): IO[String, Option[ClientCertificate]] =
+      readCertificate(request, clientId)
+
+    private def readCertificate(
+        request: Request,
+        clientId: ClientId,
+    ): IO[String, Option[ClientCertificate]] =
+      oauthClientService.getMtlsCertificateSource(clientId).flatMap: source =>
+        source.flatMap(s => request.headers.get(s.header).map(_ -> s.encoding)) match
+          case None =>
+            ZIO.none
+          case Some((headerValue, encoding)) =>
+            ZIO.fromEither(ClientCertificate.parse(headerValue, encoding))
+              .tapError(reason =>
+                ZIO.logWarning(s"Couldn't parse the client certificate of $clientId: $reason"),
+              )
+              .asSome
 
     override def authenticate(
         credentials: ClientCredentials,
@@ -154,8 +188,11 @@ object ClientAuthentication:
           oauthClientService.find(clientId).flatMap:
             // A client that registered no keys cannot be authenticated this way, whatever the
             // assertion says -- including a client that authenticates by secret, which must
-            // not become assertion-authenticable just by being sent one.
-            case Some(client) if client.jwks.nonEmpty =>
+            // not become assertion-authenticable just by being sent one. Nor one whose keys
+            // are there for RFC 8705 §2.2: those keys are matched against a certificate, and
+            // accepting an assertion signed with them would hand the client a second
+            // credential it never registered.
+            case Some(client) if client.jwks.nonEmpty && client.mtlsAuth.isEmpty =>
               clientAssertionService
                 .verify(client, assertion, endpoint.acceptedAudiences(config.jwt.issuer))
                 .mapError {
@@ -168,9 +205,16 @@ object ClientAuthentication:
 
         case ClientIdWithSecret(clientId, clientSecret) =>
           oauthClientService.find(clientId).flatMap:
+            // RFC 8705 §2.2 reads the certificate's public key against the same `jwks` §2.1
+            // has no use for, so which of the two the client registered decides what the
+            // presented certificate is compared against.
             case Some(client) if client.mtlsAuth.nonEmpty =>
               ZIO.succeed(client).filterOrFail(
-                _.mtlsAuth.exists(auth => certificate.exists(_.matches(auth))),
+                _.mtlsAuth.exists:
+                  case auth: MutualTlsAuth.TlsClientAuth =>
+                    certificate.exists(_.matches(auth))
+                  case MutualTlsAuth.SelfSignedTlsClientAuth() =>
+                    certificate.exists(cert => client.jwks.exists(cert.matchesKey)),
               )(())
             // The client registered a key set, so an assertion is its credential and the
             // secret it also holds is not one. Accepting the secret here would leave

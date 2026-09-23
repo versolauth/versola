@@ -5,6 +5,7 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessTokenPayload
@@ -36,7 +37,7 @@ import scala.jdk.CollectionConverters.*
 object UserInfoController extends Controller:
   type Env = Tracing & UserInfoService & JwksService & CoreConfig & DpopService & EdgeAssertionService &
     OAuthConfigurationService &
-    OAuthConfigurationService
+    ClientAuthentication
 
   private val DpopHeader = "DPoP"
 
@@ -75,6 +76,7 @@ object UserInfoController extends Controller:
         _ <- Observability.setUserId(userId.toString)
 
         _ <- checkDpop(request, tokenString, token, scheme, config)
+        _ <- checkCertificateBinding(request, token)
 
         _ <- ZIO.fail(UserInfoError.InsufficientScope)
           .unless(token.scope.contains(ScopeToken.OpenId))
@@ -300,6 +302,44 @@ object UserInfoController extends Controller:
           boundKeyThumbprint.getBytes(StandardCharsets.UTF_8),
         ))
     yield ()
+
+  /** RFC 8705 §3: a certificate-bound token belongs to whoever presents the certificate it was
+    * bound to, so a token carrying `cnf.x5t#S256` is only honoured over that certificate. Left
+    * unchecked, a stolen one would be accepted here under plain `Bearer` with no certificate
+    * at all -- the same downgrade `checkDpop` refuses for RFC 9449.
+    *
+    * Which header to read comes from the tenant of the client the token was issued to, not from
+    * the caller's credentials: `/userinfo` is reached with an access token. The token saying it
+    * is bound is the whole reason to look, so the header is read for that client whatever its
+    * registration says today -- see `ClientAuthentication.certificateForClient`.
+    *
+    * Every way this fails is `invalid_token`: RFC 8705 registers no `WWW-Authenticate` error
+    * code of its own for a broken binding the way RFC 9449 §7.1 does for DPoP, and a token
+    * that cannot be shown to be this caller's is not usable -- which is what `invalid_token`
+    * says. A mangled header is included: something arrived for a token whose validity depends
+    * on it, and reading that as "no certificate" would accept the very presentation the
+    * binding exists to refuse.
+    */
+  private def checkCertificateBinding(
+      request: Request,
+      token: AccessTokenPayload,
+  ): ZIO[ClientAuthentication, UserInfoError, Unit] =
+    token.confirmation.flatMap(_.x5tS256) match
+      case None =>
+        ZIO.unit
+
+      case Some(boundThumbprint) =>
+        ZIO.serviceWithZIO[ClientAuthentication](_.certificateForClient(request, token.clientId))
+          .orElseFail(UserInfoError.InvalidToken)
+          .flatMap: certificate =>
+            ZIO.fail(UserInfoError.InvalidToken).unless(
+              certificate.exists(presented =>
+                MessageDigest.isEqual(
+                  presented.thumbprint.getBytes(StandardCharsets.UTF_8),
+                  boundThumbprint.getBytes(StandardCharsets.UTF_8),
+                ),
+              ),
+            ).unit
 
   private def singleDpopHeader(request: Request): IO[UserInfoError, String] =
     request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue) match

@@ -1,6 +1,7 @@
 package versola.e2e.support
 
 import zio.*
+import zio.json.*
 import zio.json.ast.Json
 
 /** Minimal valid request bodies for central's admin API.
@@ -70,6 +71,7 @@ object Fixtures:
       mtlsAuth: Option[Json] = None,
       certificateBoundAccessTokens: Boolean = false,
       dpopSigningAlgs: Set[String] = Set.empty,
+      jwks: Option[Json] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -97,15 +99,28 @@ object Fixtures:
           policyUri.map(value => "policyUri" -> Json.Str(value)),
           tosUri.map(value => "tosUri" -> Json.Str(value)),
           mtlsAuth.map("mtlsAuth" -> _),
+          jwks.map("jwks" -> _),
         ).flatten,
       ),
     )
 
-  /** The `MutualTlsAuth` shape RFC 8705 §2.1 registration expects: a discriminator naming
-    * which certificate attribute is checked, and the literal value it must carry.
+  /** The `MutualTlsAuth` shape RFC 8705 §2.1 `tls_client_auth` registration expects: the
+    * method, a discriminator naming which certificate attribute is checked, and the literal
+    * value it must carry.
     */
   def mutualTlsAuth(subjectType: String, subjectValue: String): Json.Obj =
-    Json.Obj("subjectType" -> Json.Str(subjectType), "subjectValue" -> Json.Str(subjectValue))
+    Json.Obj(
+      "type" -> Json.Str("tls_client_auth"),
+      "subjectType" -> Json.Str(subjectType),
+      "subjectValue" -> Json.Str(subjectValue),
+    )
+
+  /** RFC 8705 §2.2 `self_signed_tls_client_auth`, which registers no subject value at all --
+    * the client's `jwks` is what its certificate is matched against, so the method carries
+    * nothing beyond naming itself.
+    */
+  val selfSignedTlsClientAuth: Json.Obj =
+    Json.Obj("type" -> Json.Str("self_signed_tls_client_auth"))
 
   /** Certificates for the mutual-TLS tests, standing in for what a reverse proxy would
     * forward after terminating mTLS.
@@ -204,6 +219,17 @@ object Fixtures:
         .collectFirst:
           case entry if entry.get(0) == 2 => entry.get(1).toString
         .getOrElse(throw RuntimeException(s"Fixture certificate carries no dNSName: $subjectDn"))
+
+    /** The certificate's own public key as an RFC 7517 key set, which is what a client
+      * registers for RFC 8705 §2.2: the key inside the certificate is the credential, so the
+      * document is derived from the certificate rather than written out beside it.
+      */
+    val jwks: Json.Obj =
+      val jwk = com.nimbusds.jose.jwk.RSAKey
+        .Builder(x509.getPublicKey.asInstanceOf[java.security.interfaces.RSAPublicKey])
+        .keyID("e2e-mtls-cert")
+        .build()
+      Json.Obj("keys" -> Json.Arr(jwk.toJSONString.fromJson[Json.Obj].toOption.get))
 
     /** RFC 8705 §3.1 `x5t#S256` -- what a token bound to this certificate must carry. */
     val thumbprint: String =

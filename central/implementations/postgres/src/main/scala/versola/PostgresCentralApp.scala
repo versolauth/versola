@@ -151,10 +151,12 @@ object PostgresCentralApp extends VersolaApp("central"):
       SecurityService.live >+>
       CelEvaluator.live >+>
       JsonSchemaValidator.live >+>
-      OAuthClientService.live >+>
-      BootstrapService.live >+>
       ChallengeSettingsService.signingKeyReferences >+>
       ChallengeSettingsService.live >+>
+      // RFC 8705 §6.5: registering `mtlsAuth` is refused unless the client's tenant names a
+      // certificate header, so client registration reads the challenge settings.
+      OAuthClientService.live >+>
+      BootstrapService.live >+>
       TenantService.live >+>
       PermissionService.live >+>
       ResourceService.live >+>
