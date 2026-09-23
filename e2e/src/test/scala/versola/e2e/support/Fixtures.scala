@@ -69,6 +69,7 @@ object Fixtures:
       tosUri: Option[String] = None,
       mtlsAuth: Option[Json] = None,
       certificateBoundAccessTokens: Boolean = false,
+      dpopSigningAlgs: Set[String] = Set.empty,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -83,6 +84,7 @@ object Fixtures:
         "otpTemplateId" -> Json.Str(otpTemplateId),
         "frontChannelLogoutSessionRequired" -> Json.Bool(frontChannelLogoutSessionRequired),
         "certificateBoundAccessTokens" -> Json.Bool(certificateBoundAccessTokens),
+        "dpopSigningAlgs" -> strings(dpopSigningAlgs),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
