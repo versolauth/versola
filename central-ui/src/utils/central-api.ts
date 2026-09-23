@@ -11,6 +11,7 @@ import type {
   ChallengeSettingsRecord,
   JwksKeySummary,
   MtlsCertificateEncoding,
+  MutualTlsAuth,
   SystemSettingsRecord,
   PasskeySettings,
   SubmissionLimits,
@@ -138,6 +139,11 @@ type ClientsResponse = {
     dpopBoundAccessTokens?: boolean;
     dpopSigningAlgs?: string[];
     dpopMinRsaKeySize?: number | null;
+    mtlsAuth?: MutualTlsAuth | null;
+    certificateBoundAccessTokens?: boolean;
+    jwks?: Record<string, unknown> | null;
+    requireSignedRequestObject?: boolean;
+    requirePushedAuthorizationRequests?: boolean;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -226,6 +232,12 @@ function sameStringSet(a: string[] | null | undefined, b: string[] | null | unde
   const left = [...(a ?? [])].sort();
   const right = [...(b ?? [])].sort();
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+// mtlsAuth and jwks are plain JSON-serializable structures with no ordering ambiguity, so a
+// stringify comparison is exact - unlike sameStringSet, there's no set to normalise first.
+function sameJsonValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
 function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
@@ -722,6 +734,11 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         dpopBoundAccessTokens: client.dpopBoundAccessTokens ?? false,
         dpopSigningAlgs: client.dpopSigningAlgs ?? [],
         dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
+        mtlsAuth: client.mtlsAuth ?? null,
+        certificateBoundAccessTokens: client.certificateBoundAccessTokens ?? false,
+        jwks: client.jwks ?? null,
+        requireSignedRequestObject: client.requireSignedRequestObject ?? false,
+        requirePushedAuthorizationRequests: client.requirePushedAuthorizationRequests ?? false,
         tenantId,
       };
     }),
@@ -1092,9 +1109,11 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       dpopSigningAlgs: client.dpopSigningAlgs ?? [],
       dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
       clientType: client.clientType ?? 'web',
-      // Not yet exposed in the dashboard: a client can only get mTLS auth or
-      // certificate-bound tokens through the sync API for now.
-      certificateBoundAccessTokens: false,
+      mtlsAuth: client.mtlsAuth ?? null,
+      certificateBoundAccessTokens: !!client.certificateBoundAccessTokens,
+      jwks: client.jwks ?? null,
+      requireSignedRequestObject: !!client.requireSignedRequestObject,
+      requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
     },
   });
 
@@ -1176,6 +1195,18 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       dpopMinRsaKeySize: (existing.dpopMinRsaKeySize ?? null) === (client.dpopMinRsaKeySize ?? null)
         ? undefined
         : client.dpopMinRsaKeySize ?? null,
+      // Patch semantics: omitted leaves the stored credential alone, null clears it.
+      mtlsAuth: sameJsonValue(existing.mtlsAuth, client.mtlsAuth) ? undefined : (client.mtlsAuth ?? null),
+      certificateBoundAccessTokens: existing.certificateBoundAccessTokens !== client.certificateBoundAccessTokens
+        ? client.certificateBoundAccessTokens
+        : undefined,
+      jwks: sameJsonValue(existing.jwks, client.jwks) ? undefined : (client.jwks ?? null),
+      requireSignedRequestObject: existing.requireSignedRequestObject !== client.requireSignedRequestObject
+        ? client.requireSignedRequestObject
+        : undefined,
+      requirePushedAuthorizationRequests: existing.requirePushedAuthorizationRequests !== client.requirePushedAuthorizationRequests
+        ? client.requirePushedAuthorizationRequests
+        : undefined,
     },
   });
 

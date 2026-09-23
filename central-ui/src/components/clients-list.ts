@@ -54,6 +54,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
+  @state() private mtlsCertificateHeader: string | null = null;
   @state() private isPreparingForm = false;
   // `secret` is null for a native client, which is created without one; the banner then
   // confirms the creation instead of offering something to copy.
@@ -77,6 +78,7 @@ export class VersolaClientsList extends LitElement {
       this.availableRoles = [];
       this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
+      this.mtlsCertificateHeader = null;
       this.createdSecret = null;
       this.copyFeedback = '';
       this.formOptionsTenantId = null;
@@ -726,6 +728,7 @@ export class VersolaClientsList extends LitElement {
       this.availableRoles = roles;
       this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
+      this.mtlsCertificateHeader = challengeSettings?.mtlsCertificateHeader ?? null;
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -1029,6 +1032,7 @@ export class VersolaClientsList extends LitElement {
           .availableRoles=${this.availableRoles}
           .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
+          .mtlsCertificateHeader=${this.mtlsCertificateHeader}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}

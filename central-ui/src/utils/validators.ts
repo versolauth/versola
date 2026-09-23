@@ -1,6 +1,7 @@
 /**
  * Validation utilities for Versola Central UI
  */
+import type { MutualTlsAuth } from '../types';
 
 /**
  * Validates resource/action format: lowercase letters, numbers, underscore, starting with letter
@@ -277,6 +278,71 @@ export function validateAccessTokenTtl(seconds: number, dpopBoundAccessTokens: b
   }
   if (seconds > MAX_ACCESS_TOKEN_TTL_SECONDS) {
     return { valid: false, error: 'Must not exceed 24 hours' };
+  }
+  return { valid: true };
+}
+
+/** RFC 8705 section 2.1.2 subject types a client's certificate can be recognised by. */
+export const MTLS_SUBJECT_TYPES = ['subject_dn', 'san_dns', 'san_uri', 'san_ip', 'san_email'] as const;
+
+/** Kept in sync with `JsonWebKeySet.MaxKeys` on the backend. */
+export const MAX_JWKS_KEYS = 10;
+
+/**
+ * Parses and shallow-validates a pasted JWK Set document. Deeper checks the backend also
+ * applies - key type, usability with a supported algorithm, no private key material - are
+ * left to it; this only catches what's worth surfacing before a submit round-trip.
+ */
+export function validateJwksJson(raw: string): { valid: boolean; error?: string; keySet?: Record<string, unknown> } {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'A JWK Set is required' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { valid: false, error: 'Must be valid JSON' };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { valid: false, error: 'Must be a JWK Set object, e.g. {"keys": [...]}' };
+  }
+  const keys = (parsed as Record<string, unknown>).keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return { valid: false, error: 'Must contain at least one key under "keys"' };
+  }
+  if (keys.length > MAX_JWKS_KEYS) {
+    return { valid: false, error: `Must not contain more than ${MAX_JWKS_KEYS} keys` };
+  }
+  return { valid: true, keySet: parsed as Record<string, unknown> };
+}
+
+/**
+ * Kept in sync with `InvalidRegistrationConfiguration.validateClientAuthentication` - a client
+ * authenticates one way, so mtlsAuth and jwks combine in exactly one direction: tls_client_auth
+ * refuses jwks (two credentials for one client), self_signed_tls_client_auth requires it (the
+ * registered keys are what the certificate is matched against).
+ */
+export function validateClientCredential(
+  mtlsAuth: MutualTlsAuth | null | undefined,
+  hasJwks: boolean,
+): { valid: boolean; error?: string } {
+  if (mtlsAuth?.type === 'tls_client_auth' && hasJwks) {
+    return { valid: false, error: 'A client authenticates either with mtlsAuth or with jwks, not both' };
+  }
+  if (mtlsAuth?.type === 'self_signed_tls_client_auth' && !hasJwks) {
+    return { valid: false, error: 'self_signed_tls_client_auth needs a registered JWK Set to match the certificate against' };
+  }
+  return { valid: true };
+}
+
+/** Kept in sync with `InvalidRegistrationConfiguration.validateRequestObjectRequirement`. */
+export function validateRequestObjectRequirement(
+  requireSignedRequestObject: boolean,
+  hasJwks: boolean,
+): { valid: boolean; error?: string } {
+  if (requireSignedRequestObject && !hasJwks) {
+    return { valid: false, error: 'Requires a registered JWK Set - a request object is verified against no other keys' };
   }
   return { valid: true };
 }

@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
@@ -19,7 +19,13 @@ import {
   validateDpopMinRsaKeySize,
   DPOP_SIGNING_ALGS,
   MIN_DPOP_RSA_KEY_SIZE,
+  validateJwksJson,
+  validateClientCredential,
+  MTLS_SUBJECT_TYPES,
+  MAX_JWKS_KEYS,
 } from '../utils/validators';
+
+type ClientCredentialMode = 'secret' | 'mtls' | 'mtls-self-signed' | 'private-key-jwt';
 
 @customElement('versola-client-form')
 export class VersolaClientForm extends LitElement {
@@ -32,6 +38,11 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableRoles: Role[] = [];
   @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
+  /** The tenant's RFC 8705 section 6.5 certificate header, from Challenges & Security. `null`
+   *  means the tenant configured none, in which case an mTLS-authenticating client registered
+   *  here could never actually authenticate - see
+   *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
+  @property({ type: String }) mtlsCertificateHeader: string | null = null;
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
@@ -50,9 +61,16 @@ export class VersolaClientForm extends LitElement {
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
     dpopMinRsaKeySize: null,
+    certificateBoundAccessTokens: false,
+    requireSignedRequestObject: false,
+    requirePushedAuthorizationRequests: false,
   };
 
   @state() private redirectUriInput = '';
+  @state() private clientCredentialMode: ClientCredentialMode = 'secret';
+  @state() private mtlsSubjectType: MtlsSubjectType = 'subject_dn';
+  @state() private mtlsSubjectValue = '';
+  @state() private jwksInput = '';
   @state() private ttlValue = 1;
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
   @state() private refreshTokenTtlDays = 90;
@@ -802,6 +820,18 @@ export class VersolaClientForm extends LitElement {
         : this.client.backChannelLogoutUri
           ? 'back'
           : 'none';
+      if (this.client.mtlsAuth?.type === 'tls_client_auth') {
+        this.clientCredentialMode = 'mtls';
+        this.mtlsSubjectType = this.client.mtlsAuth.subjectType;
+        this.mtlsSubjectValue = this.client.mtlsAuth.subjectValue;
+      } else if (this.client.mtlsAuth?.type === 'self_signed_tls_client_auth') {
+        this.clientCredentialMode = 'mtls-self-signed';
+      } else if (this.client.jwks) {
+        this.clientCredentialMode = 'private-key-jwt';
+      } else {
+        this.clientCredentialMode = 'secret';
+      }
+      this.jwksInput = this.client.jwks ? JSON.stringify(this.client.jwks, null, 2) : '';
     } else {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
@@ -833,6 +863,10 @@ export class VersolaClientForm extends LitElement {
     }
 
     if (!this.dpopMinRsaKeySizeValidation.valid) {
+      return;
+    }
+
+    if (!this.jwksValidation.valid || this.mtlsSubjectValueError || !this.clientCredentialValidation.valid) {
       return;
     }
 
@@ -930,6 +964,13 @@ export class VersolaClientForm extends LitElement {
       dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
       dpopSigningAlgs: [...(this.formData.dpopSigningAlgs ?? [])],
       dpopMinRsaKeySize: this.formData.dpopMinRsaKeySize ?? null,
+      mtlsAuth: this.effectiveMtlsAuth,
+      // A cert-authenticating client already binds every token it gets (bindsAccessTokens on
+      // the backend) - this flag only has a say for a client that authenticates some other way.
+      certificateBoundAccessTokens: !this.effectiveMtlsAuth && !!this.formData.certificateBoundAccessTokens,
+      jwks: this.effectiveJwks,
+      requireSignedRequestObject: !!this.effectiveJwks && !!this.formData.requireSignedRequestObject,
+      requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -1094,6 +1135,83 @@ export class VersolaClientForm extends LitElement {
     return validateDpopMinRsaKeySize(this.formData.dpopMinRsaKeySize);
   }
 
+  private setClientCredentialMode(mode: ClientCredentialMode) {
+    this.clientCredentialMode = mode;
+  }
+
+  private handleMtlsSubjectTypeChange(e: Event) {
+    this.mtlsSubjectType = (e.target as HTMLSelectElement).value as MtlsSubjectType;
+  }
+
+  private handleMtlsSubjectValueInput(e: Event) {
+    this.mtlsSubjectValue = (e.target as HTMLInputElement).value;
+  }
+
+  private handleJwksInput(e: Event) {
+    this.jwksInput = (e.target as HTMLTextAreaElement).value;
+  }
+
+  private toggleCertificateBoundAccessTokens() {
+    this.formData = { ...this.formData, certificateBoundAccessTokens: !this.formData.certificateBoundAccessTokens };
+  }
+
+  private toggleRequireSignedRequestObject() {
+    this.formData = { ...this.formData, requireSignedRequestObject: !this.formData.requireSignedRequestObject };
+  }
+
+  private toggleRequirePushedAuthorizationRequests() {
+    this.formData = {
+      ...this.formData,
+      requirePushedAuthorizationRequests: !this.formData.requirePushedAuthorizationRequests,
+    };
+  }
+
+  /** Whether the selected credential mode registers a JWK Set at all - `private_key_jwt`
+   *  verifies an assertion's signature with it, `self_signed_tls_client_auth` matches a
+   *  certificate's public key against it. */
+  private get credentialModeNeedsJwks(): boolean {
+    return this.clientCredentialMode === 'private-key-jwt' || this.clientCredentialMode === 'mtls-self-signed';
+  }
+
+  private get jwksValidation() {
+    if (!this.credentialModeNeedsJwks) {
+      return { valid: true } as ReturnType<typeof validateJwksJson>;
+    }
+    return validateJwksJson(this.jwksInput);
+  }
+
+  private get mtlsSubjectValueError(): string {
+    return this.clientCredentialMode === 'mtls' && !this.mtlsSubjectValue.trim()
+      ? 'Subject value is required'
+      : '';
+  }
+
+  /** The mtlsAuth this credential mode would submit - `null` for every mode but the two mTLS
+   *  ones. Computed rather than kept in formData directly so switching modes back and forth
+   *  can't leave a stale mtlsAuth behind for a mode that no longer registers one. */
+  private get effectiveMtlsAuth(): MutualTlsAuth | null {
+    if (this.clientCredentialMode === 'mtls') {
+      return { type: 'tls_client_auth', subjectType: this.mtlsSubjectType, subjectValue: this.mtlsSubjectValue.trim() };
+    }
+    if (this.clientCredentialMode === 'mtls-self-signed') {
+      return { type: 'self_signed_tls_client_auth' };
+    }
+    return null;
+  }
+
+  /** The jwks this credential mode would submit - see effectiveMtlsAuth for why this is
+   *  computed rather than stored directly. */
+  private get effectiveJwks(): Record<string, unknown> | null {
+    if (!this.credentialModeNeedsJwks) {
+      return null;
+    }
+    return this.jwksValidation.valid ? this.jwksValidation.keySet ?? null : null;
+  }
+
+  private get clientCredentialValidation() {
+    return validateClientCredential(this.effectiveMtlsAuth, !!this.effectiveJwks);
+  }
+
   private get accessTokenTtlValidation() {
     return validateAccessTokenTtl(
       ttlToSeconds(this.ttlValue, this.ttlUnit),
@@ -1111,6 +1229,24 @@ export class VersolaClientForm extends LitElement {
     if (this.backChannelLogoutUriError) {
       this.backChannelLogoutUriError = '';
     }
+  }
+
+  private renderJwksField() {
+    return html`
+      <label for="client-jwks">JWK Set</label>
+      <textarea
+        id="client-jwks"
+        class="compact-input ${this.jwksValidation.valid ? '' : 'input-error'}"
+        rows="6"
+        style="font-family: var(--font-mono); resize: vertical;"
+        .value=${this.jwksInput}
+        @input=${this.handleJwksInput}
+        placeholder='{"keys": [...]}'
+      ></textarea>
+      ${this.jwksValidation.valid
+        ? html`<div class="hint">Public keys only - up to ${MAX_JWKS_KEYS} RSA or EC keys, no private key material.</div>`
+        : html`<div class="error-message">${this.jwksValidation.error}</div>`}
+    `;
   }
 
   private renderLogoutSettings() {
@@ -1868,6 +2004,125 @@ export class VersolaClientForm extends LitElement {
                     can only raise it.
                   </div>`
                 : html`<div class="error-message">${this.dpopMinRsaKeySizeValidation.error}</div>`}
+            </div>
+
+            <div class="form-group">
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;">Client credential</label>
+                ${this.renderOptionInfo(
+                  'client-credential',
+                  'Client credential',
+                  html`
+                    <div class="option-tooltip-item">How this client authenticates itself at the token endpoint, alongside or instead of its secret. A client authenticates one way - registering more than one credential does not make it harder to impersonate, it gives an attacker a second independent path in.</div>
+                    <div class="option-tooltip-item"><code>mTLS certificate</code> (RFC 8705 §2.1): a certificate issued by a trusted CA, matched against the subject value registered here. Every access token this client receives is automatically certificate-bound.</div>
+                    <div class="option-tooltip-item"><code>mTLS self-signed</code> (RFC 8705 §2.2): any certificate, matched by public key against a registered JWK Set instead of a CA-issued subject.</div>
+                    <div class="option-tooltip-item"><code>private_key_jwt</code> (RFC 7523 §2.2): the client signs a JWT assertion with a key from its registered JWK Set instead of sending a secret.</div>
+                  `,
+                  'Client credential info',
+                )}
+              </div>
+              <div class="cred-mode-cards">
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'secret' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('secret')}>secret</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('mtls')}>mTLS certificate</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls-self-signed' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('mtls-self-signed')}>mTLS self-signed</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'private-key-jwt' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('private-key-jwt')}>private_key_jwt</button>
+              </div>
+
+              ${this.clientCredentialMode === 'mtls' ? html`
+                <div class="cred-options">
+                  ${!this.mtlsCertificateHeader ? html`
+                    <div class="error-message" style="margin-bottom: 0.75rem;">
+                      This tenant has no mTLS certificate header configured under Challenges &amp; Security - a client registered here can never authenticate until it does.
+                    </div>
+                  ` : ''}
+                  <label for="mtls-subject-type">Subject type</label>
+                  <select id="mtls-subject-type" class="compact-input" .value=${this.mtlsSubjectType} @change=${this.handleMtlsSubjectTypeChange}>
+                    ${MTLS_SUBJECT_TYPES.map(type => html`<option value=${type} ?selected=${this.mtlsSubjectType === type}>${type}</option>`)}
+                  </select>
+                  <label for="mtls-subject-value" style="margin-top: 0.75rem;">Subject value</label>
+                  <input
+                    type="text"
+                    id="mtls-subject-value"
+                    class="compact-input ${this.mtlsSubjectValueError ? 'input-error' : ''}"
+                    .value=${this.mtlsSubjectValue}
+                    @input=${this.handleMtlsSubjectValueInput}
+                    placeholder=${this.mtlsSubjectType === 'subject_dn' ? 'CN=client,O=Example' : 'client.example.com'}
+                  />
+                  ${this.mtlsSubjectValueError
+                    ? html`<div class="error-message">${this.mtlsSubjectValueError}</div>`
+                    : html`<div class="hint">Compared literally against the certificate's ${this.mtlsSubjectType === 'subject_dn' ? 'subject' : 'subject alternative name'}.</div>`}
+                </div>
+              ` : ''}
+
+              ${this.clientCredentialMode === 'mtls-self-signed' ? html`
+                <div class="cred-options">
+                  ${!this.mtlsCertificateHeader ? html`
+                    <div class="error-message" style="margin-bottom: 0.75rem;">
+                      This tenant has no mTLS certificate header configured under Challenges &amp; Security - a client registered here can never authenticate until it does.
+                    </div>
+                  ` : ''}
+                  ${this.renderJwksField()}
+                </div>
+              ` : ''}
+
+              ${this.clientCredentialMode === 'private-key-jwt' ? html`
+                <div class="cred-options">
+                  ${this.renderJwksField()}
+                </div>
+              ` : ''}
+
+              ${!this.clientCredentialValidation.valid
+                ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.clientCredentialValidation.error}</div>`
+                : ''}
+            </div>
+
+            <div class="form-group">
+              <label class="plain-checkbox-label">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.certificateBoundAccessTokens}
+                  ?disabled=${!!this.effectiveMtlsAuth}
+                  @change=${() => this.toggleCertificateBoundAccessTokens()}
+                />
+                Bind access tokens to a presented certificate
+              </label>
+              <div class="hint">
+                ${this.effectiveMtlsAuth
+                  ? 'Already implied by the mTLS credential above - every token this client receives is bound regardless of this checkbox.'
+                  : 'RFC 8705 §3.4: for a client that authenticates by secret or private_key_jwt but still presents a certificate purely to have its tokens bound to it.'}
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="plain-checkbox-label">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.requirePushedAuthorizationRequests}
+                  @change=${() => this.toggleRequirePushedAuthorizationRequests()}
+                />
+                Require Pushed Authorization Requests (PAR)
+              </label>
+              <div class="hint">
+                RFC 9126 §6.2: this client must push its authorization request to /par first;
+                one that arrives at /authorize without a request_uri is refused.
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="plain-checkbox-label">
+                <input
+                  type="checkbox"
+                  .checked=${!!this.formData.requireSignedRequestObject}
+                  ?disabled=${!this.effectiveJwks}
+                  @change=${() => this.toggleRequireSignedRequestObject()}
+                />
+                Require signed request objects (JAR)
+              </label>
+              <div class="hint">
+                ${this.effectiveJwks
+                  ? 'RFC 9101 §10.5: this client must state its authorization request in a request object it signed with a registered key; a plain parameter set is refused.'
+                  : 'Requires a registered JWK Set (mTLS self-signed or private_key_jwt above) - a request object is verified against no other keys.'}
+              </div>
             </div>
 
             <div class="form-group">

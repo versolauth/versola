@@ -204,6 +204,7 @@ type ChallengeSettingsDto = {
   passkeySettings?: PasskeySettingsDto | null;
   requireDpopNonce?: boolean | null;
   signingKeyId?: string | null;
+  mtlsCertificateHeader?: string | null;
 };
 type JwksKeyDto = { kid: string; kty: string; alg?: string; use?: string };
 type JwksKeySummaryDto = {
@@ -232,6 +233,7 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   passkeySettings: null,
   requireDpopNonce: false,
   signingKeyId: null,
+  mtlsCertificateHeader: null,
 });
 
 // One key central generated (both halves, so it can sign) and one seeded from
@@ -1249,6 +1251,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           passkeySettings: payload.passkeySettings ?? null,
           requireDpopNonce: payload.requireDpopNonce ?? false,
           signingKeyId: payload.signingKeyId ?? null,
+          mtlsCertificateHeader: payload.mtlsCertificateHeader ?? null,
         };
         await route.fulfill({ status: 204, body: '' });
         return;
