@@ -3,6 +3,7 @@ package versola.e2e.flows.basic
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.util.UUID
@@ -33,6 +34,7 @@ object DpopKeyPolicySpec extends E2ESpec:
       auth: OAuthClient,
       dpopSigningAlgs: Set[String] = Set.empty,
       dpopMinRsaKeySize: Option[Int] = None,
+      authFlow: Option[Json] = None,
   ): Task[(String, String)] =
     for
       id <- uid.map(s => s"dpop-policy-$s")
@@ -40,6 +42,7 @@ object DpopKeyPolicySpec extends E2ESpec:
         id,
         "DPoP Key Policy Test Client",
         Set(redirectUri),
+        authFlow = authFlow,
         dpopSigningAlgs = dpopSigningAlgs,
         dpopMinRsaKeySize = dpopMinRsaKeySize,
       ).success
@@ -117,5 +120,46 @@ object DpopKeyPolicySpec extends E2ESpec:
         )
       yield assertTrue(!result.response.status.isSuccess)
         .label("a stored value auth would ignore is a registration that lies about what it enforces")
+    },
+    // The policy constrains the moment a token is bound to a key, not every later use of that
+    // binding. An authorization code flow rather than `client_credentials` because the proof
+    // has to be re-presented at `/userinfo`, which needs a user behind the token.
+    test("narrowing the policy leaves a token already bound under the wider one working") {
+      for
+        (login, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, clientSecret) <- client(auth, authFlow = Some(Flows.loginPasswordAuthFlow))
+        prover <- DpopProver.rsa()
+        started <- auth.authorizeRaw(clientId, redirectUri)
+        conversation <- ZIO.fromOption(started.conversationCookie)
+          .orElseFail(RuntimeException(s"the OP started no conversation (status=${started.response.status})"))
+        challenge <- auth.getChallenge(conversation)
+        submitted <- auth.submitLoginPassword(conversation, login.login.get, login.password, challenge.csrf)
+        code <- submitted.assertRedirect
+        issued <- auth.token(
+          code,
+          started.verifier,
+          clientId = Some(clientId),
+          clientSecret = Some(clientSecret),
+          redirectUri = Some(redirectUri),
+          dpop = Some(prover),
+        ).success
+
+        _ <- auth.updateClient(
+          Fixtures.clientUpdate(clientId, "dpopSigningAlgs" -> Json.Arr(Json.Str("ES256"))),
+        )
+        _ <- auth.syncConfiguration()
+
+        // The narrowing has to be in force, or the assertion below passes for the wrong reason.
+        refused <- auth.clientCredentials(clientId, clientSecret, dpop = Some(prover))
+        error <- rejection(refused)
+
+        served <- auth.userinfoDpop(issued.accessToken, prover).success
+      yield assertTrue(error == "invalid_dpop_proof")
+        .label("a new binding to this key is refused: the client no longer registers PS256")
+        && assertTrue(served.sub == login.userId)
+          .label(
+            "the existing binding stands: it was made under the wider policy, and auth cannot " +
+              "unbind a token an operator's later edit would not have allowed",
+          )
     },
   ) @@ TestAspect.sequential

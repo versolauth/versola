@@ -33,6 +33,11 @@ object UserInfoControllerSpec extends UnitSpecBase:
   val tenantId1 = TenantId("tenant-1")
   val boundJkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
 
+  /** What the deployment advertises in `dpop_signing_alg_values_supported`. This endpoint is
+    * presented with a binding rather than making one, so this is the whole of what a proof is
+    * held to here -- no client registration narrows it. */
+  val deploymentDpopAlgorithms = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256)
+
   /** The record `checkDpop` looks up to learn which tenant an edge assertion for this token's
     * client has to be scoped to -- see `EdgeAssertionService.verify`. */
   val client1 = OAuthClientRecord(
@@ -113,11 +118,13 @@ object UserInfoControllerSpec extends UnitSpecBase:
       edgeAssertionSetup: Stub[EdgeAssertionService] => UIO[Unit] = _.verify.succeedsWith(None),
       // The lookups made against the token's client: the tenant an edge assertion has to be
       // scoped to, (RFC 9449 §8) whether that client's tenant demands a nonce, and the tenant
-      // whose key signs a JWT-formatted response. Defaults to the fixture client every test
-      // above assumes, with no nonce required.
+      // whose key signs a JWT-formatted response -- plus (§5.1) the deployment's advertised
+      // algorithms, which are not per-client. Defaults to the fixture client every test above
+      // assumes, with no nonce required.
       oAuthConfigurationSetup: Stub[OAuthConfigurationService] => UIO[Unit] = service =>
         service.find.succeedsWith(Some(client1)) *> service.get.succeedsWith(client1) *>
-          service.requireDpopNonce.succeedsWith(false),
+          service.requireDpopNonce.succeedsWith(false) *>
+          service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       config: CoreConfig = TestEnvConfig.coreConfig,
@@ -336,7 +343,8 @@ object UserInfoControllerSpec extends UnitSpecBase:
             verifyDpop = dpopService =>
               ZIO.succeed(assertTrue(dpopService.verify.calls.map(_._4) == List(true))),
             oAuthConfigurationSetup = service =>
-              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true) *>
+                service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
           ),
           // §9: the nonce travels in its own header rather than in the challenge, and the client
           // is expected to retry once over it -- so the refusal has to carry both.
@@ -351,8 +359,45 @@ object UserInfoControllerSpec extends UnitSpecBase:
                 response.headers.get("DPoP-Nonce").contains("fresh-nonce"),
               )),
             oAuthConfigurationSetup = service =>
-              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true),
+              service.find.succeedsWith(Some(client1)) *> service.requireDpopNonce.succeedsWith(true) *>
+                service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms),
           ),
+        )
+      },
+      locally {
+        val boundAccessToken = createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          cnfJkt = Some(boundJkt1),
+        )
+        // §5.1: the token was bound at `/token` against the client's registration as it stood
+        // then, and a key too weak for that registration never received a `cnf.jkt`. Holding
+        // the proof to the registration as it stands *now* would make narrowing it revoke
+        // bindings it never covered -- so what applies here is the deployment's own policy,
+        // the same choice edge makes at the other endpoint presented with a binding.
+        userInfoTestCase(
+          description = "hold a proof to the deployment's key policy, not the client's registration",
+          request = Request.get(url = URL.empty / "userinfo")
+            .addHeader(Header.Custom("Authorization", s"DPoP $boundAccessToken"))
+            .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder")),
+          expectedStatus = Status.Ok,
+          setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+          dpopSetup = _.verify.succeedsWith(
+            Dpop.Proof(
+              jkt = boundJkt1,
+              jti = "proof-jti-1",
+              iat = Instant.now(),
+              nonce = None,
+              ath = Some(Dpop.ath(boundAccessToken)),
+            ),
+          ),
+          verifyDpop = dpopService =>
+            ZIO.succeed(assertTrue(
+              dpopService.verify.calls.map(_._5) ==
+                List(Dpop.KeyPolicy(deploymentDpopAlgorithms, Dpop.KeyPolicy.MinRsaKeySize)),
+            )),
         )
       },
       locally {

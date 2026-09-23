@@ -1139,6 +1139,21 @@ final class OAuthClient(client: Client, config: E2EConfig):
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
 
+  /** PUT /configuration/clients — patches a registered client through the Central API.
+    *
+    * The body is an `UpdateClientRequest`, whose three mandatory patches `Fixtures.clientUpdate`
+    * already fills in as no-ops, so a caller names only the member it is changing.
+    */
+  def updateClient(body: Json.Obj): Task[Unit] =
+    val req = Request.put(s"${config.centralUrl}/configuration/clients", Body.fromString(body.toJson))
+      .addHeader(centralAuthorization)
+      .addHeader(Header.ContentType(MediaType.application.json))
+    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+      if resp.status.isSuccess then ZIO.unit
+      else
+        resp.body.asString.flatMap: responseBody =>
+          ZIO.fail(RuntimeException(s"updateClient failed: status=${resp.status} body=$responseBody"))
+
   /** POST /configuration/resources — registers a protected resource via the Central API, so
     * that `resource` (RFC 8707) can name it and introspection can resolve it for `audience`.
     * `resource` must be an absolute URI with no path, query or fragment.

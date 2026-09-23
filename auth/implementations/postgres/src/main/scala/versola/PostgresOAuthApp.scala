@@ -153,8 +153,6 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       EdgeAssertionService.live >+>
       JsonSchemaValidator.live >+>
       OAuthConfigurationService.live >+>
-      // Reads its accepted algorithms off the metadata document, so it has to follow the
-      // service that serves it.
       DpopService.live >+>
       // Reads the algorithms an assertion may be signed with off the same document.
       ClientAssertionService.live >+>

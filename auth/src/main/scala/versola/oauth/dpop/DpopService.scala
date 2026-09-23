@@ -1,7 +1,6 @@
 package versola.oauth.dpop
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
 import versola.util.{CoreConfig, Dpop}
 import zio.http.Method
 import zio.{Clock, IO, ZIO, ZLayer}
@@ -13,9 +12,10 @@ import java.time.Instant
   * [[DpopProofRepository]] and, when the caller requires it, a fresh server nonce via
   * [[DpopNonceService]].
   *
-  * What a proof may be signed with, and how strong its key has to be, come from the
-  * authorization server metadata document narrowed by the presenting client's registration,
-  * not from [[CoreConfig]] -- see [[OAuthConfigurationService.getDpopKeyPolicy]].
+  * What a proof may be signed with, and how strong its key has to be, is the caller's to
+  * resolve rather than this service's, since the answer differs by what the endpoint is doing
+  * -- see the `keyPolicy` parameter. Either way it comes from the authorization server
+  * metadata document, not from [[CoreConfig]].
   */
 trait DpopService:
   /**
@@ -26,15 +26,20 @@ trait DpopService:
    *   fails with [[DpopService.Error.NonceRequired]] carrying a freshly issued one for the
    *   caller to return via the `DPoP-Nonce` response header. When false the nonce claim is
    *   not consulted at all -- see `checkNonce`.
-   * @param clientId the client presenting the proof, whose registration narrows the key
-   *   policy the proof is held to
+   * @param keyPolicy what the proof's `alg` and key strength are held to. An endpoint that
+   *   binds a token to the proof's key passes the presenting client's registered policy
+   *   ([[OAuthConfigurationService.getDpopKeyPolicy]]), that being the moment a registration
+   *   is meant to constrain. An endpoint presented with an already-bound token passes the
+   *   deployment's own ([[OAuthConfigurationService.getDpopSigningAlgorithms]] at the
+   *   [[Dpop.KeyPolicy.MinRsaKeySize]] floor): narrowing a registration afterwards must not
+   *   retire tokens already bound under the wider one.
    */
   def verify(
       token: String,
       method: Method,
       uri: String,
       requireNonce: Boolean,
-      clientId: ClientId,
+      keyPolicy: Dpop.KeyPolicy,
   ): IO[Throwable | DpopService.Error, Dpop.Proof]
 
 object DpopService:
@@ -44,16 +49,15 @@ object DpopService:
     case NonceRequired(nonce: String)
 
   def live: ZLayer[
-    DpopProofRepository & DpopNonceService & OAuthConfigurationService & CoreConfig,
+    DpopProofRepository & DpopNonceService & CoreConfig,
     Nothing,
     DpopService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       proofRepository: DpopProofRepository,
       nonceService: DpopNonceService,
-      configurationService: OAuthConfigurationService,
       config: CoreConfig,
   ) extends DpopService:
 
@@ -62,15 +66,11 @@ object DpopService:
         method: Method,
         uri: String,
         requireNonce: Boolean,
-        clientId: ClientId,
+        keyPolicy: Dpop.KeyPolicy,
     ): IO[Throwable | Error, Dpop.Proof] =
       val dpopConfig = config.dpopOrDefault
       for
         now <- Clock.instant
-
-        // §5.1: what the metadata document advertises, narrowed by what this client
-        // registered -- see `OAuthConfigurationService.getDpopKeyPolicy`.
-        keyPolicy <- configurationService.getDpopKeyPolicy(clientId)
 
         proof <- Dpop.verify(
           token = token,

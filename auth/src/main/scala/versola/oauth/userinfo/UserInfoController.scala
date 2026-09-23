@@ -264,13 +264,20 @@ object UserInfoController extends Controller:
     for
       proofHeader <- singleDpopHeader(request)
       requireNonce <- ZIO.serviceWithZIO[OAuthConfigurationService](_.requireDpopNonce(clientId))
+      // The key policy here is the deployment's, not the presenting client's: the token was
+      // bound at `/token` against the client's registration as it stood then, and a key too
+      // weak for it never received a `cnf.jkt`. Re-applying the current registration would
+      // make narrowing it revoke tokens already bound under the wider one -- which edge, the
+      // other endpoint presented with an existing binding, deliberately does not do either.
+      keyPolicy <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getDpopSigningAlgorithms)
+        .map(Dpop.KeyPolicy(_, Dpop.KeyPolicy.MinRsaKeySize))
       proof <- ZIO.serviceWithZIO[DpopService](
         _.verify(
           token = proofHeader,
           method = request.method,
           uri = userInfoEndpointUri(config),
           requireNonce = requireNonce,
-          clientId = clientId,
+          keyPolicy = keyPolicy,
         ),
       ).mapError {
         case DpopService.Error.InvalidProof(reason) => UserInfoError.InvalidDpopProof(reason.toString)

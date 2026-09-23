@@ -123,13 +123,18 @@ object TokenEndpointController extends Controller:
       case proof :: Nil =>
         for
           requireNonce <- ZIO.serviceWithZIO[OAuthConfigurationService](_.requireDpopNonce(clientId))
+          // §5.1: this is where the token is bound to the key, so this is where the client's
+          // registered narrowing of the advertised algorithms and RSA floor applies -- an
+          // endpoint later presented with the binding holds it to the deployment's policy
+          // instead, or tightening a registration would retire tokens already issued.
+          keyPolicy <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getDpopKeyPolicy(clientId))
           verified <- ZIO.serviceWithZIO[DpopService](
             _.verify(
               token = proof,
               method = Method.POST,
               uri = tokenEndpointUri(config),
               requireNonce = requireNonce,
-              clientId = clientId,
+              keyPolicy = keyPolicy,
             ),
           ).mapError {
             case DpopService.Error.InvalidProof(reason) => TokenEndpointError.InvalidDpopProof(reason.toString)

@@ -69,6 +69,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
 
   val jkt1 = "0ZcOCORZNYy-DWpqq30jZyJGHTN0d2HglBV3uiguA4I"
 
+  /** §5.1: what `getDpopKeyPolicy` resolves to for the client presenting the proof. Narrower
+    * than anything a deployment would advertise on its own, so a test can tell which of the
+    * two policies reached the service. */
+  val clientKeyPolicy = Dpop.KeyPolicy(Set(Dpop.Algorithm.ES256), 3072)
+
   val proof1 = Dpop.Proof(
     jkt = jkt1,
     jti = "jti-1",
@@ -166,6 +171,10 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       // RFC 9449 §8 is the requesting client's tenant setting, consulted only where a proof
       // is actually present -- a request with no `DPoP` header never reaches it.
       _ <- clientService.requireDpopNonce.succeedsWith(requireDpopNonce)
+
+      // §5.1: the endpoint that binds the token resolves the client's registered policy and
+      // hands it to the service, so the stub has to answer for it.
+      _ <- clientService.getDpopKeyPolicy.succeedsWith(clientKeyPolicy)
 
       services = Services(tokenService, userInfoService, dpopService, clientService)
 
@@ -1222,6 +1231,18 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         verifyServices = services =>
           ZIO.succeed(assertTrue(services.dpopService.verify.calls.map(_._4) == List(true))),
         requireDpopNonce = true,
+      ),
+      // §5.1: binding is the moment a client's registered narrowing is meant to apply, so the
+      // policy reaching the service here is the client's and not the deployment's.
+      tokenEndpointTestCase(
+        description = "holds the proof to the presenting client's registered key policy",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.dpopService.verify.succeedsWith(proof1) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(services.dpopService.verify.calls.map(_._5) == List(clientKeyPolicy))),
       ),
     ),
     suite("POST /token - mutual TLS")(
