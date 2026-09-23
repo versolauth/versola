@@ -172,6 +172,11 @@ test('client create form', async ({ page }) => {
 
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Create New Client', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await shot(page, 'client-form-kind-step', true);
+
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await shot(page, 'client-form-empty', true);
 
   await page.getByLabel('Client ID').fill('checkout-web');
@@ -195,6 +200,9 @@ test('client registration flow form', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
   await page.getByLabel('Client ID').fill('checkout-web');
   await page.getByLabel('Client Name').fill('Checkout Web');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');

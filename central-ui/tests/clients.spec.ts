@@ -55,6 +55,18 @@ function clientCard(page: Page, text: string) {
   return page.locator('.client-card').filter({ hasText: text }).first();
 }
 
+/**
+ * Creation opens on step 1, which decides the client's credential and request-integrity
+ * settings. Web x Compatibility is the combination these tests configure by hand afterwards:
+ * a secret, no PAR, no signed request objects.
+ */
+async function startCreate(page: Page, kind = 'Web app', tier = 'Compatibility') {
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: new RegExp(kind) }).click();
+  await page.getByRole('button', { name: tier, exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+}
+
 test('renders client details and filters by client id', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
@@ -134,7 +146,7 @@ test('shows refresh token TTL only after selecting offline_access when creating 
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveCount(0);
   await page.getByLabel('Client ID').fill('offline-client');
   await page.getByLabel('Client Name').fill('Offline Client');
@@ -155,7 +167,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     state: { clients: { 'tenant-alpha': [alphaClient, serviceClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
 
   await page.getByLabel('Client ID').fill('dashboard-client');
   await page.getByLabel('Client Name').fill('Dashboard Client');
@@ -224,7 +236,7 @@ test('creates a native client without a secret and without rotation controls', a
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('mobile-app');
   await page.getByLabel('Client Name').fill('Mobile App');
   await page.getByPlaceholder('https://app.example.com/callback').fill('com.example.app://callback');
@@ -257,7 +269,7 @@ test('offers the client type only while the auth flow is on, and fixes it once c
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await expect(page.getByText('Client type', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'web', exact: true })).toBeEnabled();
 
@@ -284,7 +296,7 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('mtls-client');
   await page.getByLabel('Client Name').fill('mTLS Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
@@ -313,7 +325,7 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('mtls-client');
   await page.getByLabel('Client Name').fill('mTLS Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
@@ -343,7 +355,7 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('self-signed-client');
   await page.getByLabel('Client Name').fill('Self Signed Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://self-signed.example/callback');
@@ -374,13 +386,103 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
 });
 
+test('applies the credential and request integrity a high-assurance web client implies', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await startCreate(page, 'Web app', 'High assurance');
+
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveClass(/selected/);
+  await expect(page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ })).toBeChecked();
+
+  // The preset asks for signed request objects, but they are verified against the client's
+  // own keys - the requirement only takes effect once a key set that can verify one is in.
+  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
+
+  await page.getByLabel('Client ID').fill('high-web');
+  await page.getByLabel('Client Name').fill('High Web');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://high.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] }));
+  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeChecked();
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'high-web',
+    clientType: 'web',
+    requirePushedAuthorizationRequests: true,
+    requireSignedRequestObject: true,
+    dpopBoundAccessTokens: false,
+  });
+});
+
+test('binds a high-assurance mobile client to a device key and leaves it public', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await startCreate(page, 'Mobile or desktop app', 'High assurance');
+
+  await expect(page.getByRole('checkbox', { name: /Require DPoP-bound access tokens/ })).toBeChecked();
+
+  await page.getByLabel('Client ID').fill('mobile-client');
+  await page.getByLabel('Client Name').fill('Mobile Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('com.example.app://callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'mobile-client',
+    clientType: 'native',
+    dpopBoundAccessTokens: true,
+    requirePushedAuthorizationRequests: true,
+    requireSignedRequestObject: false,
+  });
+});
+
+test('leaves a service client with no sign-in flow to configure', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await startCreate(page, 'Service app', 'High assurance');
+
+  await expect(page.getByPlaceholder('https://app.example.com/callback')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveClass(/selected/);
+
+  await page.getByLabel('Client ID').fill('batch-service');
+  await page.getByLabel('Client Name').fill('Batch Service');
+  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] }));
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  const body = findRequest(api.requests, 'POST', '/configuration/clients').body as Record<string, unknown>;
+  expect(body).toMatchObject({ id: 'batch-service', clientType: 'web', authFlow: null });
+  expect(body.redirectUris).toEqual([]);
+});
+
+test('re-applies the preset when the tier changes before continuing', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+
+  await expect(page.getByRole('button', { name: 'secret', exact: true })).toHaveClass(/selected/);
+  await expect(page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ })).not.toBeChecked();
+});
+
 test('registers a private_key_jwt client with signed request objects and PAR', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('assertion-client');
   await page.getByLabel('Client Name').fill('Assertion Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://assertion.example/callback');
@@ -422,7 +524,7 @@ test('creates a client with localized consent name', async ({ page }) => {
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('localized-client');
   const nameEditor = page.locator('versola-client-form versola-localized-text-editor');
   await page.getByLabel('Client Name').fill('Localized Client');
@@ -450,7 +552,7 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
   await expect(page.getByLabel('OTP Template')).toBeVisible();
   await expect(page.getByLabel('OTP Template').locator('option')).toHaveCount(1);
@@ -492,7 +594,7 @@ test('configures a registration flow and sends it when creating a client', async
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('registering-client');
   await page.getByLabel('Client Name').fill('Registering Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://registering.example/callback');
@@ -530,7 +632,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('consenting-client');
   await page.getByLabel('Client Name').fill('Consenting Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://consenting.example/callback');
@@ -594,7 +696,7 @@ test('explains consent settings with info buttons', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
 
   await page.getByRole('button', { name: 'Consent settings info' }).click();
   await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
@@ -622,7 +724,7 @@ test('explains which client fields are shown on the consent screen', async ({ pa
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
   await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
@@ -635,7 +737,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   const consentRow = page.getByText('Consent', { exact: true }).locator('..');
   await consentRow.locator('label.toggle').click();
 
@@ -652,7 +754,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await expect(page.getByText('Consent', { exact: true })).toBeVisible();
 
   const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
@@ -667,7 +769,7 @@ test('hides registration settings when inline password is enabled', async ({ pag
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('inline-password-client');
   await page.getByLabel('Client Name').fill('Inline Password Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://inline-password.example/callback');
@@ -698,7 +800,7 @@ test('hides registration settings for a login+password flow', async ({ page }) =
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('login-password-client');
   await page.getByLabel('Client Name').fill('Login Password Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://login-password.example/callback');
@@ -727,7 +829,7 @@ test('hides logout settings and clears logout values when auth flow is disabled'
     },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('no-auth-flow-client');
   await page.getByLabel('Client Name').fill('No Auth Flow Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://no-auth-flow.example/callback');
@@ -765,7 +867,7 @@ test('shows client form validation before submitting', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   const clientIdField = page.getByLabel('Client ID');
   await clientIdField.fill('Bad-client');
   await page.getByLabel('Client Name').fill('Broken Client');
@@ -787,7 +889,7 @@ test('rejects logout notification URIs with a non-http(s) scheme', async ({ page
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('good-client');
   await page.getByLabel('Client Name').fill('Good Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://good.example/callback');
@@ -814,7 +916,7 @@ test('preserves the front-channel URI when switching logout modes', async ({ pag
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByRole('button', { name: 'front-channel', exact: true }).click();
   const frontUri = page.getByPlaceholder('https://app.example.com/logout/frontchannel');
   await frontUri.fill('https://good.example/logout/frontchannel');
@@ -830,7 +932,7 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   const redirectUriField = page.getByPlaceholder('https://app.example.com/callback');
   await redirectUriField.fill('not-a-uri');
 
@@ -995,7 +1097,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await startCreate(page);
   await page.getByLabel('Client ID').fill('alpha-web');
   await page.getByLabel('Client Name').fill('Duplicate Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://duplicate.example/callback');

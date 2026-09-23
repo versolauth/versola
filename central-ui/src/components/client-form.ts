@@ -6,6 +6,15 @@ import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectT
 import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
+import './client-kind-step';
+import {
+  AssuranceTier,
+  ClientCredentialMode,
+  ClientKind,
+  certificateBoundFor,
+  clientPreset,
+  defaultCredentialMode,
+} from '../utils/client-presets';
 import {
   validateClientId,
   validateRedirectUri,
@@ -27,7 +36,6 @@ import {
   MAX_JWKS_KEYS,
 } from '../utils/validators';
 
-type ClientCredentialMode = 'secret' | 'mtls' | 'mtls-self-signed' | 'private-key-jwt';
 
 @customElement('versola-client-form')
 export class VersolaClientForm extends LitElement {
@@ -85,6 +93,10 @@ export class VersolaClientForm extends LitElement {
   @state() private tosUriError = '';
   @state() private authFlowError = '';
   @state() private openInfoKey: string | null = null;
+  /** Creation only: step 1 asks what is being built, step 2 is the form the preset filled in. */
+  @state() private wizardStep: 1 | 2 = 1;
+  @state() private kind: ClientKind | null = null;
+  @state() private tier: AssuranceTier = 'high';
 
   private handleDocumentClick = () => {
     this.openInfoKey = null;
@@ -1504,6 +1516,38 @@ export class VersolaClientForm extends LitElement {
     this.formData = { ...this.formData, clientType };
   }
 
+  private selectKind(kind: ClientKind) {
+    this.kind = kind;
+    this.applyPreset();
+  }
+
+  private selectTier(tier: AssuranceTier) {
+    this.tier = tier;
+    this.applyPreset();
+  }
+
+  /**
+   * A kind x tier pair settles the client's credential and its request-integrity settings.
+   * Everything it leaves open stays editable in the step after it.
+   */
+  private applyPreset() {
+    if (!this.kind) {
+      return;
+    }
+
+    const preset = clientPreset(this.kind, this.tier);
+    const mode = defaultCredentialMode(this.kind, this.tier);
+    const signsUsersIn = this.kind !== 'service';
+
+    this.clientCredentialMode = mode;
+    this.formData = {
+      ...this.formData,
+      ...preset.patch,
+      certificateBoundAccessTokens: certificateBoundFor(mode),
+      authFlow: signsUsersIn ? this.formData.authFlow ?? createDefaultAuthFlow() : null,
+    };
+  }
+
   private toggleAuthFlowEnabled() {
     const enablingAuthFlow = !this.hasAuthFlow;
     this.formData = {
@@ -1828,7 +1872,49 @@ export class VersolaClientForm extends LitElement {
     this.setAuthFlow({ factors: this.withPasskeyEnroll(type ? [first, { type, required: true }] : [first]) });
   }
 
+  /** Step 1 of creation: the pair that decides what the client can be trusted to hold. */
+  private renderKindStep() {
+    return html`
+      <div class="form-header">
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">Create New Client</h1>
+            <div class="entity-id-meta">What are you building?</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <versola-client-kind-step
+          .kind=${this.kind}
+          .tier=${this.tier}
+          @kind-change=${(e: CustomEvent<{ kind: ClientKind }>) => this.selectKind(e.detail.kind)}
+          @tier-change=${(e: CustomEvent<{ tier: AssuranceTier }>) => this.selectTier(e.detail.tier)}
+        ></versola-client-kind-step>
+
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" @click=${this.handleClose}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            ?disabled=${!this.kind}
+            @click=${() => (this.wizardStep = 2)}
+          >
+            Continue
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
+    if (!this.client && this.wizardStep === 1) {
+      return this.renderKindStep();
+    }
+
     return html`
       <div class="form-header">
         <div class="form-header-lead">
@@ -2774,6 +2860,11 @@ export class VersolaClientForm extends LitElement {
                 >Rotate Secret</button>
               `}
             ` : ''}
+            ${this.client ? '' : html`
+              <button type="button" class="btn btn-secondary" @click=${() => (this.wizardStep = 1)}>
+                Back
+              </button>
+            `}
             <button type="button" class="btn btn-secondary" @click=${this.handleClose}>
               Cancel
             </button>
