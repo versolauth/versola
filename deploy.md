@@ -179,6 +179,27 @@ CREATE SCHEMA IF NOT EXISTS edge    AUTHORIZATION versola_app;
 > is exactly how the first deployment failed. See
 > [Troubleshooting](#91-flywayvalidateexception-on-startup).
 
+While Postgres itself is still being set up, also enable `pg_stat_statements` — it's the only
+source of per-query WAL bytes (`wal_bytes`/`wal_fpi`), and adding it later means a full Postgres
+restart specifically for it instead of piggybacking on the one this step already requires:
+
+```
+# postgresql.conf, before starting Postgres for the first time
+shared_preload_libraries = 'pg_stat_statements'
+```
+
+```sql
+-- after Postgres is up, once against the `auth` database (superuser, same session as above)
+\c auth
+CREATE EXTENSION pg_stat_statements;
+```
+
+> **Existing cluster, added after the fact.** This host's Postgres predates this step, so the
+> extension isn't enabled yet — run the block above against it once: add the config line, restart
+> Postgres (a real restart, not `docker compose restart` — Postgres is native on the host, not a
+> container, see [2](#2-prerequisites)), then run `CREATE EXTENSION`. This is the one production
+> action this doc can describe but not perform.
+
 ### 3.2 Generate configuration
 
 On your workstation, in a checkout of this repo:
@@ -646,25 +667,15 @@ docker compose -f docker-compose.prod.yml logs --tail=200 auth | jq -r '"\(.time
 
 ### Checking a table's WAL contribution before proposing UNLOGGED
 
-`pg_stat_statements` is **not currently enabled** on the production cluster (no
-`shared_preload_libraries` entry, no `CREATE EXTENSION` run against `auth`) — see
-[10](#10-known-gaps). The only place this repository measures WAL per table/query today is the
-load emulator's `SutStatsReader`, and only against its own SUT target, and only when someone has
-turned the extension on there. So the answer to "are we watching WAL per table in production" is
-currently no; this is the checklist for turning that measurement on when a WAL-contention question
-comes up (e.g. "should `challenge_throttle` be `UNLOGGED`"), not something to run blind.
+`pg_stat_statements` is enabled by [3.1](#31-database-role-and-schemas) on any cluster set up from
+this doc, and should be applied once to this host's existing cluster the same way (see the
+callout there) — it's the only source of per-query WAL bytes, and until it's on, "are we watching
+WAL per table in production" is no. The load emulator's `SutStatsReader` reads the same view, but
+only against its own SUT target, so it gives no production signal either way. Once the extension
+is on, use it like this, rather than reading it blind whenever a WAL-contention question comes up
+(e.g. "should `challenge_throttle` be `UNLOGGED`"):
 
-1. **Enable the extension** (one-time, needs a full Postgres restart, not just a container
-   restart — it's native on the host, see [1](#1-topology)):
-   ```
-   # postgresql.conf
-   shared_preload_libraries = 'pg_stat_statements'
-   ```
-   ```sql
-   -- after the restart, once per database
-   CREATE EXTENSION pg_stat_statements;
-   ```
-2. **Take two snapshots around a representative window** (an hour of normal traffic, or a known
+1. **Take two snapshots around a representative window** (an hour of normal traffic, or a known
    spike) — the columns are cumulative counters since the last reset, so a single reading says
    nothing; only the difference between two does, the same reason `SutStats` in loadgen is split
    into counters diffed across a campaign and gauges read once.
@@ -674,10 +685,10 @@ comes up (e.g. "should `challenge_throttle` be `UNLOGGED`"), not something to ru
    WHERE query ILIKE '%challenge_throttle%'
    ORDER BY wal_bytes DESC;
    ```
-3. **Put the table's share against the cluster total** from `pg_stat_wal` (also cumulative —
+2. **Put the table's share against the cluster total** from `pg_stat_wal` (also cumulative —
    diff the same two snapshots) so "this table's WAL" has a denominator, not just a number that
    sounds large in isolation.
-4. **Check whether the `expires_at` index, not row volume, is the actual driver**, before
+3. **Check whether the `expires_at` index, not row volume, is the actual driver**, before
    concluding the fix is UNLOGGED at all:
    ```sql
    SELECT n_tup_upd, n_tup_hot_upd, n_tup_ins
@@ -687,7 +698,7 @@ comes up (e.g. "should `challenge_throttle` be `UNLOGGED`"), not something to ru
    defeating HOT and paying for an index tuple on every attempt — cheaper to fix than to accept
    the durability loss of UNLOGGED (a crash truncates the whole table, lifting every active ban
    at once, and the table isn't readable on a physical standby).
-5. **Compare the result against `dpop_proofs`**, the one table this codebase already unlogged
+4. **Compare the result against `dpop_proofs`**, the one table this codebase already unlogged
    (`V0014__dpop_proofs_table.sql`), before treating that precedent as applicable: it's written
    once per token/resource request, at the endpoint's full rate, and a crash only costs the
    current `iat` leeway window. `challenge_throttle` is written once per challenge submission —
@@ -928,15 +939,13 @@ deploys stop shipping UTF-16.
 
 ## 10. Known gaps
 
-- **`pg_stat_statements` is not enabled on the production cluster.** There is no per-table or
-  per-query WAL visibility today — `wal_bytes`/`wal_fpi` in `pg_stat_statements` is the only source
-  of that, and it needs `shared_preload_libraries` set and a full Postgres restart (not just a
-  container restart, since Postgres is native on the host here) before `CREATE EXTENSION` even
-  applies. The load emulator's `SutStatsReader` reads the same view, but only against its own SUT
-  target and only when someone has turned the extension on there — that gives no production
-  signal. Worth turning on before, not during, the next WAL-contention question (see
-  [8](#8-routine-operations)'s checklist), since the extension's own bookkeeping has a small,
-  constant overhead that's easier to justify ahead of an incident than during one.
+- **`pg_stat_statements` is not yet enabled on this host's existing cluster.** [3.1](#31-database-role-and-schemas)
+  now enables it for any cluster set up from this doc, and [8](#8-routine-operations) documents how
+  to use it, but this host's Postgres predates that step and someone still needs to apply the
+  callout in 3.1 to it once — add `shared_preload_libraries = 'pg_stat_statements'`, take a real
+  Postgres restart (not a container restart; it's native on the host), then `CREATE EXTENSION`.
+  Until that happens there is no per-table or per-query WAL visibility in production, only in the
+  load emulator's own SUT target via `SutStatsReader`, which gives no production signal.
 - **The compose file is not in git.** It lives only at `/opt/versola/docker-compose.prod.yml`. It
   contains no secrets, so there is no reason for it not to be version-controlled alongside the
   code, in the way the nginx config already is and the way `env-config` now handles the `.conf`
