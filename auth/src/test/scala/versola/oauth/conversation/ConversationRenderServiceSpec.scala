@@ -51,6 +51,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,

@@ -59,7 +59,7 @@ object DpopExchangeSpec extends ZIOSpecDefault:
 
   private def verify(proof: String, method: Method = Method.POST, uri: String = tokenHtu) =
     zio.Clock.instant.flatMap: now =>
-      Dpop.verify(proof, Dpop.Algorithm.Default, method, uri, now, leeway).mapError(error => RuntimeException(error.toString))
+      Dpop.verify(proof, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), method, uri, now, leeway).mapError(error => RuntimeException(error.toString))
 
   private def key = DpopKeyPool.derive("exchange-spec", 1).map(_.keyFor(0L))
 

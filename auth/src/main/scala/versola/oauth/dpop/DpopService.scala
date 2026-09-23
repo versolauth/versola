@@ -1,6 +1,7 @@
 package versola.oauth.dpop
 
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ClientId
 import versola.util.{CoreConfig, Dpop}
 import zio.http.Method
 import zio.{Clock, IO, ZIO, ZLayer}
@@ -12,9 +13,9 @@ import java.time.Instant
   * [[DpopProofRepository]] and, when the caller requires it, a fresh server nonce via
   * [[DpopNonceService]].
   *
-  * The algorithms a proof may be signed with come from the authorization server metadata
-  * document, not from [[CoreConfig]] -- see
-  * [[OAuthConfigurationService.getDpopSigningAlgorithms]].
+  * What a proof may be signed with, and how strong its key has to be, come from the
+  * authorization server metadata document narrowed by the presenting client's registration,
+  * not from [[CoreConfig]] -- see [[OAuthConfigurationService.getDpopKeyPolicy]].
   */
 trait DpopService:
   /**
@@ -25,12 +26,15 @@ trait DpopService:
    *   fails with [[DpopService.Error.NonceRequired]] carrying a freshly issued one for the
    *   caller to return via the `DPoP-Nonce` response header. When false the nonce claim is
    *   not consulted at all -- see `checkNonce`.
+   * @param clientId the client presenting the proof, whose registration narrows the key
+   *   policy the proof is held to
    */
   def verify(
       token: String,
       method: Method,
       uri: String,
       requireNonce: Boolean,
+      clientId: ClientId,
   ): IO[Throwable | DpopService.Error, Dpop.Proof]
 
 object DpopService:
@@ -58,18 +62,19 @@ object DpopService:
         method: Method,
         uri: String,
         requireNonce: Boolean,
+        clientId: ClientId,
     ): IO[Throwable | Error, Dpop.Proof] =
       val dpopConfig = config.dpopOrDefault
       for
         now <- Clock.instant
 
-        // §5.1: whatever the metadata document advertises, and nothing else -- see
-        // `OAuthConfigurationService.getDpopSigningAlgorithms`.
-        allowedAlgorithms <- configurationService.getDpopSigningAlgorithms
+        // §5.1: what the metadata document advertises, narrowed by what this client
+        // registered -- see `OAuthConfigurationService.getDpopKeyPolicy`.
+        keyPolicy <- configurationService.getDpopKeyPolicy(clientId)
 
         proof <- Dpop.verify(
           token = token,
-          allowedAlgorithms = allowedAlgorithms,
+          keyPolicy = keyPolicy,
           expectedMethod = method,
           expectedUri = uri,
           now = now,

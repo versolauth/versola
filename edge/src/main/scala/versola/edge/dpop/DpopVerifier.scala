@@ -88,9 +88,14 @@ object DpopVerifier:
           for
             now <- Clock.instant
             allowedAlgorithms <- policy.allowedAlgorithms
+            // The key policy here is the deployment's, not the presenting client's: edge syncs
+            // no client records, and does not need them -- a key too weak for the client's
+            // registered policy never received a `cnf.jkt` at `/token`, so no token reaching
+            // edge can be bound to one. What remains is the RFC 7518 §3.3 floor `KeyPolicy`
+            // applies by default, which holds whoever registered what.
             proof <- Dpop.verify(
               token = proofHeader,
-              allowedAlgorithms = allowedAlgorithms,
+              keyPolicy = Dpop.KeyPolicy(allowedAlgorithms, Dpop.KeyPolicy.MinRsaKeySize),
               expectedMethod = method,
               expectedUri = htu(config.edgeUrl, path),
               now = now,

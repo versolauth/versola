@@ -245,6 +245,25 @@ export function secondsToDays(seconds: number): number {
   * authoritative check - this only lets the admin catch the mistake before submitting. */
 export const MIN_DPOP_BOUND_ACCESS_TOKEN_TTL_SECONDS = 3600;
 export const MAX_ACCESS_TOKEN_TTL_SECONDS = 86400;
+export const MIN_DPOP_RSA_KEY_SIZE = 2048;
+
+/** The DPoP signing algorithms the backend knows how to verify a proof with. */
+export const DPOP_SIGNING_ALGS = ['ES256', 'PS256', 'RS256'] as const;
+
+/**
+ * Validates a client's minimum RSA DPoP proof key size. The floor is RFC 7518 section 3.3 and
+ * auth applies it whether or not a client registered anything, so a lower value here would be
+ * a number the server ignores rather than a policy.
+ */
+export function validateDpopMinRsaKeySize(bits: number | null | undefined): { valid: boolean; error?: string } {
+  if (bits === null || bits === undefined) {
+    return { valid: true };
+  }
+  if (!Number.isInteger(bits) || bits < MIN_DPOP_RSA_KEY_SIZE) {
+    return { valid: false, error: `Must be at least ${MIN_DPOP_RSA_KEY_SIZE} bits` };
+  }
+  return { valid: true };
+}
 
 /**
  * Validates access token TTL. A DPoP-bound access token has no bearer-replay risk without

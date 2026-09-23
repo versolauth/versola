@@ -6,6 +6,7 @@ import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.ClientId
 import versola.util.{Dpop, DpopNonce, UnitSpecBase}
 import zio.*
 import zio.http.Method
@@ -27,6 +28,7 @@ object DpopServiceSpec extends UnitSpecBase:
   private val ecPublicKey = ecKeyPair.getPublic.asInstanceOf[ECPublicKey]
   private val ecJwk = ECKey.Builder(Curve.P_256, ecPublicKey).build()
 
+  private val ClientIdentifier = ClientId("web-app")
   private val Htm = Method.POST
   private val Htu = "https://auth.example.com/token"
 
@@ -55,11 +57,18 @@ object DpopServiceSpec extends UnitSpecBase:
 
     val service: DpopService = DpopService.Impl(proofRepository, nonceService, configurationService, config)
 
-  /** §5.1: the accepted algorithms come from the metadata document, so every test has to say
-    * what it advertises. Defaults to the set assumed for a document that stays silent. */
-  private def makeEnv(algorithms: Set[Dpop.Algorithm] = Dpop.Algorithm.Default): UIO[Env] =
+  /** §5.1: what a proof is held to is the metadata document narrowed by the presenting
+    * client's registration, resolved before this service is reached -- so every test has to
+    * say what that resolved to. Defaults to the set assumed for a document that stays silent,
+    * at the RFC 7518 §3.3 floor. */
+  private def makeEnv(
+      algorithms: Set[Dpop.Algorithm] = Dpop.Algorithm.Default,
+      minRsaKeySize: Int = Dpop.KeyPolicy.MinRsaKeySize,
+  ): UIO[Env] =
     val created = Env()
-    created.configurationService.getDpopSigningAlgorithms.succeedsWith(algorithms).as(created)
+    created.configurationService.getDpopKeyPolicy
+      .succeedsWith(Dpop.KeyPolicy(algorithms, minRsaKeySize))
+      .as(created)
 
   def spec = suite("DpopService")(
     test("returns the validated proof when it's fresh and no nonce is required") {
@@ -67,7 +76,7 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         now <- Clock.instant
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
-        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(result.map(_.jti) == Right("jti-1"))
     },
     // §5.1: the metadata document is the allow-list, so narrowing it has to narrow what is
@@ -77,7 +86,7 @@ object DpopServiceSpec extends UnitSpecBase:
       for
         env <- makeEnv(algorithms = Set(Dpop.Algorithm.PS256))
         now <- Clock.instant
-        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(
         result == Left(DpopService.Error.InvalidProof(Dpop.Error.UnsupportedAlgorithm)),
         env.proofRepository.recordIfAbsent.calls.isEmpty,
@@ -88,14 +97,14 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv(algorithms = Set(Dpop.Algorithm.ES256))
         now <- Clock.instant
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
-        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(result.isRight)
     },
     test("fails with InvalidProof when the proof itself doesn't validate (e.g. wrong htm)") {
       for
         env <- makeEnv()
         now <- Clock.instant
-        result <- env.service.verify(proof(htm = "GET", iat = now), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(htm = "GET", iat = now), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(result == Left(DpopService.Error.InvalidProof(Dpop.Error.MethodMismatch)))
     },
     test("fails with Replayed when the (jkt, jti) pair was already recorded") {
@@ -103,7 +112,7 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         now <- Clock.instant
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(false)
-        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(result == Left(DpopService.Error.Replayed))
     },
     test("fails with NonceRequired carrying a fresh nonce when one is required but absent") {
@@ -111,7 +120,7 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         now <- Clock.instant
         _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
-        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
+        result <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
       yield assertTrue(result == Left(DpopService.Error.NonceRequired("fresh-nonce")))
     },
     test("does not consult the repository at all when a required nonce is missing") {
@@ -119,7 +128,7 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         now <- Clock.instant
         _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
-        _ <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
+        _ <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
       yield assertTrue(env.proofRepository.recordIfAbsent.calls.isEmpty)
     },
     test("proceeds past the nonce check when the proof carries a valid nonce") {
@@ -128,7 +137,7 @@ object DpopServiceSpec extends UnitSpecBase:
         now <- Clock.instant
         _ <- env.nonceService.verify.succeedsWith(())
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
-        result <- env.service.verify(proof(iat = now, nonce = Some("srv-nonce")), Htm, Htu, requireNonce = true).either
+        result <- env.service.verify(proof(iat = now, nonce = Some("srv-nonce")), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
       yield assertTrue(result.isRight)
     },
     test("fails with a fresh NonceRequired when the proof's nonce doesn't verify") {
@@ -137,7 +146,7 @@ object DpopServiceSpec extends UnitSpecBase:
         now <- Clock.instant
         _ <- env.nonceService.verify.failsWith(DpopNonce.Error.Expired)
         _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
-        result <- env.service.verify(proof(iat = now, nonce = Some("stale-nonce")), Htm, Htu, requireNonce = true).either
+        result <- env.service.verify(proof(iat = now, nonce = Some("stale-nonce")), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
       yield assertTrue(result == Left(DpopService.Error.NonceRequired("fresh-nonce")))
     },
     // §11.3: dropping the nonce after being challenged for one must not be a way back to
@@ -149,8 +158,8 @@ object DpopServiceSpec extends UnitSpecBase:
         now <- Clock.instant
         _ <- env.nonceService.issue.succeedsWith("fresh-nonce")
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
-        challenged <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
-        retried <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true).either
+        challenged <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
+        retried <- env.service.verify(proof(iat = now), Htm, Htu, requireNonce = true, clientId = ClientIdentifier).either
       yield assertTrue(
         challenged == Left(DpopService.Error.NonceRequired("fresh-nonce")),
         retried == Left(DpopService.Error.NonceRequired("fresh-nonce")),
@@ -164,7 +173,7 @@ object DpopServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         now <- Clock.instant
         _ <- env.proofRepository.recordIfAbsent.succeedsWith(true)
-        result <- env.service.verify(proof(iat = now, nonce = Some("srv-nonce")), Htm, Htu, requireNonce = false).either
+        result <- env.service.verify(proof(iat = now, nonce = Some("srv-nonce")), Htm, Htu, requireNonce = false, clientId = ClientIdentifier).either
       yield assertTrue(env.nonceService.verify.calls.isEmpty, result.isRight)
     },
   )

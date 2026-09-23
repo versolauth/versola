@@ -34,6 +34,14 @@ object DpopSpec extends ZIOSpecDefault:
   private val rsaPublicKey = rsaKeyPair.getPublic.asInstanceOf[RSAPublicKey]
   private val rsaJwk = RSAKey.Builder(rsaPublicKey).build()
 
+  // 1024 bits: below the RFC 7518 §3.3 floor, and a size Nimbus's RSASSAVerifier is perfectly
+  // willing to verify a signature with -- which is the whole reason the floor is checked here.
+  private val weakRsaKeyPairGenerator = KeyPairGenerator.getInstance("RSA")
+  weakRsaKeyPairGenerator.initialize(1024)
+  private val weakRsaKeyPair = weakRsaKeyPairGenerator.generateKeyPair()
+  private val weakRsaPrivateKey = weakRsaKeyPair.getPrivate.asInstanceOf[RSAPrivateKey]
+  private val weakRsaJwk = RSAKey.Builder(weakRsaKeyPair.getPublic.asInstanceOf[RSAPublicKey]).build()
+
   // A public key type Dpop.verifySignature doesn't special-case (neither RSAKey nor ECKey), to
   // exercise its fallback branch. Ed25519 rather than a symmetric key: Nimbus's own JWS header
   // parsing already refuses to round-trip a `jwk` carrying private/symmetric material (see the
@@ -90,8 +98,12 @@ object DpopSpec extends ZIOSpecDefault:
   private val now = Instant.parse("2024-01-01T00:00:00Z")
   private val leeway = 60.seconds
 
-  private def verify(token: String, allowed: Set[Dpop.Algorithm] = AllAlgorithms) =
-    Dpop.verify(token, allowed, Htm, Htu, now, leeway)
+  private def verify(
+      token: String,
+      allowed: Set[Dpop.Algorithm] = AllAlgorithms,
+      minRsaKeySize: Int = Dpop.KeyPolicy.MinRsaKeySize,
+  ) =
+    Dpop.verify(token, Dpop.KeyPolicy(allowed, minRsaKeySize), Htm, Htu, now, leeway)
 
   def spec = suite("Dpop")(
     test("accepts a well-formed ES256 proof and returns its claims") {
@@ -130,6 +142,26 @@ object DpopSpec extends ZIOSpecDefault:
       val token = proof(typ = JOSEObjectType.JWT)
       for result <- verify(token).either
       yield assertTrue(result == Left(Dpop.Error.InvalidType))
+    },
+    test("rejects an RSA proof key below the RFC 7518 §3.3 floor, whose signature is otherwise valid") {
+      // Nimbus refuses to *sign* with a short modulus unless asked twice; it verifies one
+      // without complaint, which is the asymmetry this check exists to close.
+      val token = proof(
+        alg = JWSAlgorithm.PS256,
+        jwk = Some(weakRsaJwk),
+        signer = RSASSASigner(weakRsaPrivateKey, true),
+      )
+      for result <- verify(token).either
+      yield assertTrue(result == Left(Dpop.Error.WeakKey))
+    },
+    test("rejects an RSA proof key below a client's own, higher minimum") {
+      val token = proof(alg = JWSAlgorithm.PS256, jwk = Some(rsaJwk), signer = RSASSASigner(rsaPrivateKey))
+      for result <- verify(token, minRsaKeySize = 4096).either
+      yield assertTrue(result == Left(Dpop.Error.WeakKey))
+    },
+    test("leaves an EC proof alone whatever the RSA minimum is -- the curve already fixes the size") {
+      for result <- verify(proof(), minRsaKeySize = 4096).either
+      yield assertTrue(result.isRight)
     },
     test("rejects an algorithm outside the allowed set") {
       val token = proof()
@@ -213,12 +245,12 @@ object DpopSpec extends ZIOSpecDefault:
     // collapse that distinction and let a proof made for one validate a request to the other.
     test("rejects an htu whose encoded slash would collapse into the request's literal one") {
       val token = proof(htu = "https://auth.example.com/a%2Fb")
-      for result <- Dpop.verify(token, AllAlgorithms, Htm, "https://auth.example.com/a/b", now, leeway).either
+      for result <- Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a/b", now, leeway).either
       yield assertTrue(result == Left(Dpop.Error.UriMismatch))
     },
     test("still accepts an htu whose encoded slash matches the request's own encoded slash") {
       val token = proof(htu = "https://auth.example.com/a%2Fb")
-      for result <- Dpop.verify(token, AllAlgorithms, Htm, "https://auth.example.com/a%2Fb", now, leeway).either
+      for result <- Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a%2Fb", now, leeway).either
       yield assertTrue(result.isRight)
     },
     test("rejects an iat too far in the past") {

@@ -794,6 +794,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * whole credential -- paired with `useBasicAuth = false`, since presenting a secret
         * beside it is two authentication methods in one request. */
       assertion: Option[String] = None,
+      /** RFC 9449 §5: binds the issued access token to this key, the same way `token` does for
+        * the authorization code grant. */
+      dpop: Option[DpopProver] = None,
   ): Task[TokenResult] =
     // With `useBasicAuth = false` the client only names itself, in `client_id`, and sends
     // no secret at all - the one way a public client can present itself at /token.
@@ -810,7 +813,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val req0 = Request.post(s"${config.authUrl}/token", body)
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
     val req = if useBasicAuth then req0.addHeader(Authorization.Basic(clientId, clientSecret)) else req0
-    Client.batched(withCertificate(req, certificate)).provide(ZLayer.succeed(client)).flatMap(TokenResult.parse)
+    for
+      // The issuer is what auth compares `htu` against, not the inbound request's own URL.
+      proofed <- dpop.fold(ZIO.succeed(req))(prover =>
+        prover.proof(Method.POST, s"${config.authUrl}/token")
+          .map(proof => req.addHeader(Header.Custom("DPoP", proof))),
+      )
+      result <- Client.batched(withCertificate(proofed, certificate)).provide(ZLayer.succeed(client))
+        .flatMap(TokenResult.parse)
+    yield result
 
   /** POST /introspect — introspects a token (access or refresh) per RFC 7662. */
   def introspect(
@@ -1089,6 +1100,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
       requireSignedRequestObject: Boolean = false,
       /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
       requirePushedAuthorizationRequests: Boolean = false,
+      /** RFC 9449 §5.1: the signing algorithms this client's proofs may use, narrowing what
+        * the metadata document advertises. Empty registers no narrowing. */
+      dpopSigningAlgs: Set[String] = Set.empty,
+      /** The modulus an RSA proof key from this client must reach; `None` leaves the RFC 7518
+        * §3.3 floor auth applies to every client. */
+      dpopMinRsaKeySize: Option[Int] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1114,6 +1131,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       jwks = jwks,
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
+      dpopSigningAlgs = dpopSigningAlgs,
+      dpopMinRsaKeySize = dpopMinRsaKeySize,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1688,4 +1707,6 @@ object OAuthClient:
       jwks: Option[zio.json.ast.Json],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
+      dpopSigningAlgs: Set[String],
+      dpopMinRsaKeySize: Option[Int],
   ) derives JsonEncoder

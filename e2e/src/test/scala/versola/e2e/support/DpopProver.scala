@@ -1,15 +1,15 @@
 package versola.e2e.support
 
-import com.nimbusds.jose.crypto.ECDSASigner
-import com.nimbusds.jose.jwk.{Curve, ECKey}
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.crypto.{ECDSASigner, RSASSASigner}
+import com.nimbusds.jose.jwk.{Curve, ECKey, JWK, RSAKey}
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader, JWSSigner}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.*
 import zio.http.{Method, Response}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.security.interfaces.{ECPrivateKey, ECPublicKey}
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Base64, Date, UUID}
 
@@ -20,10 +20,12 @@ import java.util.{Base64, Date, UUID}
   * possession at every resource server afterwards, and a helper that generated a fresh one
   * per call would pass while proving nothing.
   *
-  * `ES256`, which is what both auth and edge allow by default: RFC 9449 §5 mandates it, and
-  * `RS256` — verifiable, but off unless a deployment opts in — is not accepted by either.
+  * [[DpopProver.make]] holds an `ES256` key, which is what both auth and edge allow by
+  * default: RFC 9449 §5 mandates it, and `RS256` — verifiable, but off unless a deployment
+  * opts in — is not accepted by either. [[DpopProver.rsa]] holds a `PS256` one, for the tests
+  * that turn on what a client's registered key policy does to an RSA proof.
   */
-final class DpopProver private (privateKey: ECPrivateKey, publicJwk: ECKey):
+final class DpopProver private (algorithm: JWSAlgorithm, signer: JWSSigner, publicJwk: JWK):
 
   /** The JWK thumbprint that ends up in a bound token's `cnf.jkt`. */
   val jkt: String = publicJwk.computeThumbprint().toString
@@ -40,7 +42,7 @@ final class DpopProver private (privateKey: ECPrivateKey, publicJwk: ECKey):
       nonce: Option[String] = None,
   ): Task[String] =
     ZIO.attempt:
-      val header = JWSHeader.Builder(JWSAlgorithm.ES256).`type`(DpopProver.JwtType).jwk(publicJwk).build()
+      val header = JWSHeader.Builder(algorithm).`type`(DpopProver.JwtType).jwk(publicJwk).build()
       val claims = JWTClaimsSet.Builder()
         .claim("htm", method.name)
         .claim("htu", uri)
@@ -49,7 +51,7 @@ final class DpopProver private (privateKey: ECPrivateKey, publicJwk: ECKey):
       accessToken.foreach(token => claims.claim("ath", DpopProver.ath(token)))
       nonce.foreach(value => claims.claim("nonce", value))
       val jwt = SignedJWT(header, claims.build())
-      jwt.sign(ECDSASigner(privateKey))
+      jwt.sign(signer)
       jwt.serialize()
 
 object DpopProver:
@@ -66,8 +68,26 @@ object DpopProver:
       generator.initialize(Curve.P_256.toECParameterSpec)
       val pair = generator.generateKeyPair().nn
       DpopProver(
-        pair.getPrivate.asInstanceOf[ECPrivateKey],
+        JWSAlgorithm.ES256,
+        ECDSASigner(pair.getPrivate.asInstanceOf[ECPrivateKey]),
         ECKey.Builder(Curve.P_256, pair.getPublic.asInstanceOf[ECPublicKey]).build(),
+      )
+
+  /** A prover holding an RSA key of the given modulus length, signing `PS256`.
+    *
+    * `allowWeakKey` is passed to Nimbus's signer because it refuses to sign with a modulus
+    * under 2048 bits — which is exactly the proof a test of the server's own floor has to be
+    * able to produce. Nothing verifies with that concession; only signing does.
+    */
+  def rsa(keySize: Int = 2048): Task[DpopProver] =
+    ZIO.attempt:
+      val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
+      generator.initialize(keySize)
+      val pair = generator.generateKeyPair().nn
+      DpopProver(
+        JWSAlgorithm.PS256,
+        RSASSASigner(pair.getPrivate.asInstanceOf[RSAPrivateKey], true),
+        RSAKey.Builder(pair.getPublic.asInstanceOf[RSAPublicKey]).build(),
       )
 
   /** The `DPoP-Nonce` a response carried, or `None` when it carried none. */

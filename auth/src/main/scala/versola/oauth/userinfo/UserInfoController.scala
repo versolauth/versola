@@ -270,6 +270,7 @@ object UserInfoController extends Controller:
           method = request.method,
           uri = userInfoEndpointUri(config),
           requireNonce = requireNonce,
+          clientId = clientId,
         ),
       ).mapError {
         case DpopService.Error.InvalidProof(reason) => UserInfoError.InvalidDpopProof(reason.toString)

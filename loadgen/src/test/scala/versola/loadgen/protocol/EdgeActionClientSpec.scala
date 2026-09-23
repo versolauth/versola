@@ -67,7 +67,7 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
       versola.util.Dpop
         .verify(
           request.rawHeader("DPoP").getOrElse(""),
-          versola.util.Dpop.Algorithm.Default,
+          versola.util.Dpop.KeyPolicy(versola.util.Dpop.Algorithm.Default, versola.util.Dpop.KeyPolicy.MinRsaKeySize),
           method,
           StubSut.edgeUrl + path,
           now,
@@ -196,7 +196,7 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
         proof <- versola.util.Dpop
           .verify(
             request.flatMap(_.rawHeader("DPoP")).getOrElse(""),
-            versola.util.Dpop.Algorithm.Default,
+            versola.util.Dpop.KeyPolicy(versola.util.Dpop.Algorithm.Default, versola.util.Dpop.KeyPolicy.MinRsaKeySize),
             Method.GET,
             StubSut.edgeUrl + "/resources/core/accounts",
             now,

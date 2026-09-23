@@ -40,6 +40,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -68,6 +70,8 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -506,6 +510,65 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(
         enforced.isEmpty,
         served.get(Dpop.Algorithm.MetadataField).contains(Json.Arr()),
+      )
+    },
+    // Per-client narrowing, RFC 9449 §5.1. An intersection rather than a replacement: a
+    // registration says which of the deployment's algorithms this client uses, and must not be
+    // able to add one the document does not advertise.
+    test("getDpopKeyPolicy narrows the advertised set to what the client registered") {
+      for
+        env <- makeEnv(
+          clients = Map(clientId1 -> privateClient.copy(dpopSigningAlgs = Set(Dpop.Algorithm.ES256))),
+          metadata = Json.Obj(
+            Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("PS256")),
+          ),
+        )
+        policy <- env.getDpopKeyPolicy(clientId1)
+      yield assertTrue(policy.algorithms == Set(Dpop.Algorithm.ES256))
+    },
+    test("getDpopKeyPolicy will not widen past the document for a client that registered more") {
+      for
+        env <- makeEnv(
+          clients = Map(clientId1 -> privateClient.copy(
+            dpopSigningAlgs = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.RS256),
+          )),
+          metadata = Json.Obj(Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"))),
+        )
+        policy <- env.getDpopKeyPolicy(clientId1)
+      yield assertTrue(policy.algorithms == Set(Dpop.Algorithm.ES256))
+    },
+    test("getDpopKeyPolicy leaves the advertised set alone for a client that registered nothing") {
+      for
+        env <- makeEnv(metadata = Json.Obj(
+          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("PS256")),
+        ))
+        policy <- env.getDpopKeyPolicy(clientId1)
+      yield assertTrue(
+        policy.algorithms == Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),
+        policy.minRsaKeySize == Dpop.KeyPolicy.MinRsaKeySize,
+      )
+    },
+    test("getDpopKeyPolicy raises the RSA floor to the client's registered minimum") {
+      for
+        env <- makeEnv(clients = Map(clientId1 -> privateClient.copy(dpopMinRsaKeySize = Some(4096))))
+        policy <- env.getDpopKeyPolicy(clientId1)
+      yield assertTrue(policy.minRsaKeySize == 4096)
+    },
+    // The stored value can only raise the floor. A row below it -- written before the check
+    // existed, or by something other than registration -- is read as the floor, not honoured.
+    test("getDpopKeyPolicy never drops below the RFC 7518 §3.3 floor") {
+      for
+        env <- makeEnv(clients = Map(clientId1 -> privateClient.copy(dpopMinRsaKeySize = Some(512))))
+        policy <- env.getDpopKeyPolicy(clientId1)
+      yield assertTrue(policy.minRsaKeySize == Dpop.KeyPolicy.MinRsaKeySize)
+    },
+    test("getDpopKeyPolicy gives a client it does not know the deployment's own policy") {
+      for
+        env <- makeEnv(metadata = Json.Obj(Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"))))
+        policy <- env.getDpopKeyPolicy(ClientId("unknown"))
+      yield assertTrue(
+        policy.algorithms == Set(Dpop.Algorithm.ES256),
+        policy.minRsaKeySize == Dpop.KeyPolicy.MinRsaKeySize,
       )
     },
     // A field too malformed to read an intent off is not an exclusion -- it is an operator

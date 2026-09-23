@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import versola.oauth.client.model.{AuthFlow, ClientId, ConsentFlow, MutualTlsAuth, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
-import versola.util.{Base64, CacheSource, CoreConfig, JsonWebKeySet, Secret, SecurityService}
+import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
 import zio.prelude.NonEmptySet
@@ -52,6 +52,8 @@ object OAuthClientSyncClient:
             tosUri = client.tosUri,
             consentFlow = client.consentFlow,
             dpopBoundAccessTokens = client.dpopBoundAccessTokens,
+            dpopSigningAlgs = client.dpopSigningAlgs,
+            dpopMinRsaKeySize = client.dpopMinRsaKeySize,
             mtlsAuth = client.mtlsAuth,
             certificateBoundAccessTokens = client.certificateBoundAccessTokens,
             jwks = client.jwks,
@@ -92,6 +94,10 @@ object OAuthClientSyncClient:
         tosUri: Option[String],
         consentFlow: Option[ConsentFlow],
         dpopBoundAccessTokens: Boolean,
+        /** Defaulted for the same reason as the flags below: an auth node may be reading a
+          * central that predates the field. */
+        dpopSigningAlgs: Set[Dpop.Algorithm] = Set.empty,
+        dpopMinRsaKeySize: Option[Int] = None,
         mtlsAuth: Option[MutualTlsAuth],
         certificateBoundAccessTokens: Boolean,
         jwks: Option[JsonWebKeySet],

@@ -129,6 +129,7 @@ object TokenEndpointController extends Controller:
               method = Method.POST,
               uri = tokenEndpointUri(config),
               requireNonce = requireNonce,
+              clientId = clientId,
             ),
           ).mapError {
             case DpopService.Error.InvalidProof(reason) => TokenEndpointError.InvalidDpopProof(reason.toString)

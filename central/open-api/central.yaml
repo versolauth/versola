@@ -2120,6 +2120,22 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
         jwks:
           oneOf:
             - $ref: '#/components/schemas/JsonWebKeySet'
@@ -2151,6 +2167,7 @@ components:
         - otpTemplateId
         - frontChannelLogoutSessionRequired
         - dpopBoundAccessTokens
+        - dpopSigningAlgs
         - requireSignedRequestObject
         - requirePushedAuthorizationRequests
     GetAllClientsResponse:
@@ -2227,6 +2244,22 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
         jwks:
           oneOf:
             - $ref: '#/components/schemas/JsonWebKeySet'
@@ -2256,6 +2289,7 @@ components:
         - theme
         - otpTemplateId
         - frontChannelLogoutSessionRequired
+        - dpopSigningAlgs
     UpdateClientRequest:
       type: object
       description: |
@@ -2322,6 +2356,22 @@ components:
           description: |
             RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
             proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
+        dpopSigningAlgs:
+          type: array
+          items:
+            type: string
+            enum: [ES256, PS256, RS256]
+          description: |
+            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
+            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
+            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
+            document does not advertise does not make it acceptable.
+        dpopMinRsaKeySize:
+          type: [integer, 'null']
+          description: |
+            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
+            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
+            regardless; a value below it is refused at registration.
         jwks:
           oneOf:
             - $ref: '#/components/schemas/JsonWebKeySet'

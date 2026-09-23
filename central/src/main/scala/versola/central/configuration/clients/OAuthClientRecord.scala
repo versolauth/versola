@@ -3,7 +3,7 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
-import versola.util.{JsonWebKeySet, RedirectUri, Secret}
+import versola.util.{Dpop, JsonWebKeySet, RedirectUri, Secret}
 import zio.http.URL
 import zio.prelude.Equal
 import zio.schema.*
@@ -40,6 +40,13 @@ case class OAuthClientRecord(
     /** RFC 9449 §5.2 `dpop_bound_access_tokens`: the client always uses DPoP, so a token
       * request from it without a proof is refused rather than answered with a bearer token. */
     dpopBoundAccessTokens: Boolean,
+    /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
+      * `dpop_signing_alg_values_supported`. Empty means no narrowing — the client is held to
+      * whatever the metadata document advertises. */
+    dpopSigningAlgs: Set[Dpop.Algorithm],
+    /** The modulus length an RSA DPoP proof key from this client must reach. `None` leaves the
+      * RFC 7518 §3.3 floor, which applies either way: a registration can only raise it. */
+    dpopMinRsaKeySize: Option[Int],
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client authenticates
       * with a secret. */
     mtlsAuth: Option[MutualTlsAuth],
