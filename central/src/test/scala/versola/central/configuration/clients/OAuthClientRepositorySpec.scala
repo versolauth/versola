@@ -5,7 +5,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{DatabaseSpecBase, Patch, RedirectUri, Secret}
+import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
 import zio.http.URL
 import zio.prelude.EqualOps
@@ -50,6 +50,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -224,6 +226,40 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         yield assertTrue(
           found.map(_.frontChannelLogoutUri) === Some(None),
           found.flatMap(_.backChannelLogoutUri) === Some(backLogoutUri),
+        )
+      },
+      test("create and find a client with a DPoP proof key policy") {
+        val narrowed = client.copy(
+          dpopSigningAlgs = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),
+          dpopMinRsaKeySize = Some(4096),
+        )
+
+        for
+          _ <- env.repository.createClient(narrowed)
+          found <- env.repository.find(clientId)
+        yield assertTrue(
+          found === Some(narrowed)
+        )
+      },
+      test("update client should replace the DPoP algorithms and clear the RSA minimum") {
+        val narrowed = client.copy(
+          dpopSigningAlgs = Set(Dpop.Algorithm.RS256),
+          dpopMinRsaKeySize = Some(4096),
+        )
+
+        for
+          _ <- env.repository.createClient(narrowed)
+          _ <- env.repository.updateClient(
+            clientId,
+            OAuthClientPatch.empty.copy(
+              dpopSigningAlgs = Some(Set(Dpop.Algorithm.ES256)),
+              dpopMinRsaKeySize = Some(Patch.Deleted),
+            ),
+          )
+          found <- env.repository.find(clientId)
+        yield assertTrue(
+          found.map(_.dpopSigningAlgs) === Some(Set(Dpop.Algorithm.ES256)),
+          found.map(_.dpopMinRsaKeySize) === Some(None),
         )
       },
       test("rotate secrets and delete client") {

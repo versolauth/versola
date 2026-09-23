@@ -7,7 +7,7 @@ import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{JsonWebKeySet, Patch, RedirectUri}
+import versola.util.{Dpop, JsonWebKeySet, Patch, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -315,6 +315,12 @@ case class OAuthClientResponse(
     tosUri: Option[String],
     consentFlow: Option[ConsentFlowDto],
     dpopBoundAccessTokens: Boolean,
+    /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
+      * what the metadata document advertises. Empty means no narrowing. */
+    dpopSigningAlgs: Set[Dpop.Algorithm],
+    /** The modulus length an RSA DPoP proof key from this client must reach; `None` leaves the
+      * RFC 7518 §3.3 floor, which a registration can only raise. */
+    dpopMinRsaKeySize: Option[Int],
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
     mtlsAuth: Option[MutualTlsAuth],
@@ -374,6 +380,12 @@ case class CreateClientRequest(
     /** RFC 9449 §5.2: defaults to `false`, leaving DPoP opt-in per request for a caller that
       * does not ask for it. */
     dpopBoundAccessTokens: Boolean = false,
+    /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
+      * what the metadata document advertises. Empty means no narrowing. */
+    dpopSigningAlgs: Set[Dpop.Algorithm],
+    /** The modulus length an RSA DPoP proof key from this client must reach; `None` leaves the
+      * RFC 7518 §3.3 floor, which a registration can only raise. */
+    dpopMinRsaKeySize: Option[Int],
     /** Defaults to `web` so that a caller written before native clients existed keeps
       * getting the confidential client it has always got.
       */
@@ -423,6 +435,8 @@ case class UpdateClientRequest(
     tosUri: Option[Patch[String]] = None,
     consentFlow: Option[Patch[ConsentFlowDto]] = None,
     dpopBoundAccessTokens: Option[Boolean] = None,
+    dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
+    dpopMinRsaKeySize: Option[Patch[Int]],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
@@ -601,6 +615,12 @@ case class SyncOAuthClientRecord(
     tosUri: Option[String],
     consentFlow: Option[ConsentFlow],
     dpopBoundAccessTokens: Boolean,
+    /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
+      * what the metadata document advertises. Empty means no narrowing. */
+    dpopSigningAlgs: Set[Dpop.Algorithm],
+    /** The modulus length an RSA DPoP proof key from this client must reach; `None` leaves the
+      * RFC 7518 §3.3 floor, which a registration can only raise. */
+    dpopMinRsaKeySize: Option[Int],
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
     mtlsAuth: Option[MutualTlsAuth],

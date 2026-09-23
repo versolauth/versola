@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{JsonWebKeySet, Patch}
+import versola.util.{Dpop, JsonWebKeySet, Patch}
 import zio.Duration
 import zio.http.URL
 
@@ -32,6 +32,8 @@ case class OAuthClientPatch(
     tosUri: Option[Patch[String]],
     consentFlow: Option[Patch[ConsentFlow]],
     dpopBoundAccessTokens: Option[Boolean],
+    dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
+    dpopMinRsaKeySize: Option[Patch[Int]],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
@@ -59,6 +61,8 @@ object OAuthClientPatch:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = None,
+    dpopSigningAlgs = None,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
     jwks = None,

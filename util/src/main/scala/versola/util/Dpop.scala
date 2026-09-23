@@ -5,7 +5,10 @@ import com.nimbusds.jose.jwk.{ECKey, JWK, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm}
 import com.nimbusds.jwt.SignedJWT
 import zio.http.Method
+import zio.json.*
 import zio.json.ast.Json
+import zio.prelude.Equal
+import zio.schema.Schema
 import zio.{Duration, IO, ZIO}
 
 import java.net.URI
@@ -57,6 +60,24 @@ object Dpop:
 
     def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
 
+    /** By registered `alg` name rather than by ordinal: the value travels to central's
+      * database and back through the client sync response, and a name survives reordering the
+      * enum where a position does not. */
+    given JsonCodec[Algorithm] =
+      JsonCodec(
+        JsonEncoder[String].contramap(_.toString),
+        JsonDecoder[String].mapOrFail(fromName(_).toRight("unknown DPoP signing algorithm")),
+      )
+
+    given Schema[Algorithm] = Schema.primitive[String].transformOrFail(
+      fromName(_).toRight("unknown DPoP signing algorithm"),
+      algorithm => Right(algorithm.toString),
+    )
+
+    given Equal[Algorithm] = (a, b) => a == b
+
+    given CanEqual[Algorithm, Algorithm] = CanEqual.derived
+
     /** The set an incoming proof's `alg` is checked against, read off the authorization server
       * metadata document -- [[MetadataField]] is the only place it is written down, so `auth`
       * (which serves the document) and `edge` (which syncs it) hold proofs to the same set
@@ -73,6 +94,26 @@ object Dpop:
       document.get(MetadataField) match
         case None => Default
         case Some(field) => field.as[Set[String]].toOption.fold(Default)(_.flatMap(fromName))
+
+  /** What a proof's key itself has to be, on top of the `alg` it was signed with.
+    *
+    * The signature verifying says nothing about whether the key is worth binding a token to:
+    * Nimbus' `RSASSAVerifier` accepts a modulus of any length, so a proof signed with a 512-bit
+    * RSA key validates and yields a `cnf.jkt` that constrains nothing an attacker could not
+    * reproduce. `ECDSAVerifier` already pins the curve for `ES256`, so only the RSA side needs
+    * a floor.
+    *
+    * @param algorithms the `alg` values a proof may use -- `dpop_signing_alg_values_supported`,
+    *   narrowed to what the presenting client registered where it registered anything.
+    * @param minRsaKeySize modulus length, in bits, an `RS256`/`PS256` proof's key must reach.
+    */
+  case class KeyPolicy(algorithms: Set[Algorithm], minRsaKeySize: Int)
+
+  object KeyPolicy:
+    /** RFC 7518 §3.3 requires at least 2048 bits of any key used with `RS`/`PS` algorithms, so
+      * this is the floor rather than a deployment's opinion -- a client may register a higher
+      * one, never a lower. */
+    val MinRsaKeySize: Int = 2048
 
   /** RFC 9449 §10: the authorization request parameter by which a client commits, before a code
     * exists, to the key that code will be redeemed against. Its value is the same RFC 7638
@@ -120,6 +161,7 @@ object Dpop:
     case InvalidType
     case UnsupportedAlgorithm
     case MissingJwk
+    case WeakKey
     case InvalidSignature
     case MissingClaim(name: String)
     case MalformedClaim(name: String)
@@ -134,8 +176,7 @@ object Dpop:
    * `versola.oauth.dpop.DpopService`.
    *
    * @param token the raw `DPoP` request header value
-   * @param allowedAlgorithms signing algorithms this deployment accepts
-   *   (`dpop_signing_alg_values_supported`)
+   * @param keyPolicy what the proof may be signed with, and what its key must be
    * @param expectedMethod the current request's HTTP method (`htm`)
    * @param expectedUri the current request's URI with no query or fragment, exactly as
    *   advertised to clients (`htu`) -- RFC 9449 \u00a74.3
@@ -144,7 +185,7 @@ object Dpop:
    */
   def verify(
       token: String,
-      allowedAlgorithms: Set[Algorithm],
+      keyPolicy: KeyPolicy,
       expectedMethod: Method,
       expectedUri: String,
       now: Instant,
@@ -153,11 +194,12 @@ object Dpop:
     for
       jwt <- ZIO.attempt(SignedJWT.parse(token)).orElseFail(Error.NotJWT)
       _ <- verifyType(jwt)
-      _ <- verifyAlgorithm(jwt, allowedAlgorithms)
+      _ <- verifyAlgorithm(jwt, keyPolicy.algorithms)
       // Nimbus's own JWS header parsing already rejects a `jwk` carrying private/symmetric key
       // material at the `SignedJWT.parse` call above (surfacing as `Error.NotJWT`), so by the
       // time a header reaches here its embedded key is guaranteed public.
       jwk <- ZIO.fromOption(Option(jwt.getHeader.getJWK)).orElseFail(Error.MissingJwk)
+      _ <- verifyKeyStrength(jwk, keyPolicy.minRsaKeySize)
       _ <- verifySignature(jwt, jwk)
 
       // Nimbus lazily parses the payload into a claims set; a compact JWS whose payload isn't a
@@ -238,6 +280,13 @@ object Dpop:
       .orElseFail(Error.UnsupportedAlgorithm)
       .filterOrFail(allowedAlgorithms.contains)(Error.UnsupportedAlgorithm)
       .unit
+
+  /** Checked before the signature rather than after: verifying against a key this deployment
+    * will not accept anyway only spends CPU on an attacker's behalf. */
+  private def verifyKeyStrength(jwk: JWK, minRsaKeySize: Int): IO[Error, Unit] =
+    jwk match
+      case key: RSAKey => ZIO.fail(Error.WeakKey).when(key.size() < minRsaKeySize).unit
+      case _ => ZIO.unit
 
   private def verifySignature(jwt: SignedJWT, jwk: JWK): IO[Error, Unit] =
     ZIO.attempt(

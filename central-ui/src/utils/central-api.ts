@@ -136,6 +136,8 @@ type ClientsResponse = {
     tosUri?: string | null;
     consentFlow?: BackendConsentFlow | null;
     dpopBoundAccessTokens?: boolean;
+    dpopSigningAlgs?: string[];
+    dpopMinRsaKeySize?: number | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -217,6 +219,13 @@ function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): Co
     allowPartial: flow.allowPartial,
     rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
   };
+}
+
+/** Set equality for the string lists a client registers, which the backend stores unordered. */
+function sameStringSet(a: string[] | null | undefined, b: string[] | null | undefined): boolean {
+  const left = [...(a ?? [])].sort();
+  const right = [...(b ?? [])].sort();
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
@@ -711,6 +720,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         tosUri: client.tosUri ?? null,
         consentFlow: consentFlowFromBackend(client.consentFlow),
         dpopBoundAccessTokens: client.dpopBoundAccessTokens ?? false,
+        dpopSigningAlgs: client.dpopSigningAlgs ?? [],
+        dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
         tenantId,
       };
     }),
@@ -1078,6 +1089,8 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       tosUri: client.tosUri ?? null,
       consentFlow: consentFlowToBackend(client.consentFlow),
       dpopBoundAccessTokens: client.dpopBoundAccessTokens,
+      dpopSigningAlgs: client.dpopSigningAlgs ?? [],
+      dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
       clientType: client.clientType ?? 'web',
       // Not yet exposed in the dashboard: a client can only get mTLS auth or
       // certificate-bound tokens through the sync API for now.
@@ -1155,6 +1168,14 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
         ? undefined
         : consentFlowToBackend(client.consentFlow),
       dpopBoundAccessTokens: existing.dpopBoundAccessTokens !== client.dpopBoundAccessTokens ? client.dpopBoundAccessTokens : undefined,
+      dpopSigningAlgs: sameStringSet(existing.dpopSigningAlgs, client.dpopSigningAlgs)
+        ? undefined
+        : [...(client.dpopSigningAlgs ?? [])],
+      // Patch semantics: omitted leaves the stored minimum alone, null clears it back to the
+      // floor auth applies to every client.
+      dpopMinRsaKeySize: (existing.dpopMinRsaKeySize ?? null) === (client.dpopMinRsaKeySize ?? null)
+        ? undefined
+        : client.dpopMinRsaKeySize ?? null,
     },
   });
 

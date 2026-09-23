@@ -94,6 +94,12 @@ export interface OAuthClient {
   /** RFC 9449 section 5.2: the client always uses DPoP, so a token request from it without a
    *  proof is refused rather than answered with a bearer token. */
   dpopBoundAccessTokens: boolean;
+  /** RFC 9449 section 5.1: the signing algorithms a proof from this client may use, narrowing
+   *  what the metadata document advertises. Empty or absent registers no narrowing. */
+  dpopSigningAlgs?: string[];
+  /** The modulus an RSA proof key from this client must reach. Absent leaves the RFC 7518
+   *  section 3.3 floor of 2048 bits, which applies to every client regardless. */
+  dpopMinRsaKeySize?: number | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

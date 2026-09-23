@@ -17,7 +17,7 @@ import versola.central.configuration.{
 }
 import versola.central.{CentralConfig, TestCentralConfig}
 import com.nimbusds.jose.jwk.{Curve, ECKey}
-import versola.util.{JsonWebKeySet, Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{Dpop, JsonWebKeySet, Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -75,6 +75,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -105,6 +107,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     tosUri = None,
     consentFlow = None,
     dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -128,6 +132,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -148,6 +154,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
     backChannelLogoutUri = None,
+    dpopSigningAlgs = None,
+    dpopMinRsaKeySize = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
     jwks = None,
@@ -227,6 +235,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         tosUri = None,
         consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = Some(14.days))),
         dpopBoundAccessTokens = false,
+        dpopSigningAlgs = Set.empty,
+        dpopMinRsaKeySize = None,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
@@ -475,6 +485,66 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         patch.requireSignedRequestObject == Some(true),
         patch.requirePushedAuthorizationRequests == Some(true),
+      )
+    },
+    test("registerClient stores the DPoP proof key policy a client is held to") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          dpopSigningAlgs = Set(Dpop.Algorithm.ES256),
+          dpopMinRsaKeySize = Some(4096),
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.dpopSigningAlgs == Set(Dpop.Algorithm.ES256),
+        created.dpopMinRsaKeySize == Some(4096),
+      )
+    },
+    test("registerClient rejects a dpopMinRsaKeySize below the RFC 7518 floor") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(dpopMinRsaKeySize = Some(1024))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("dpopMinRsaKeySize")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient rejects a dpopMinRsaKeySize lowered below the floor") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        result <- env.service.updateClient(
+          updateRequest.copy(dpopMinRsaKeySize = Some(Patch.Modified(1024))),
+        ).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("dpopMinRsaKeySize")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient passes the DPoP proof key policy through to the repository") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest.copy(
+          dpopSigningAlgs = Some(Set(Dpop.Algorithm.PS256)),
+          dpopMinRsaKeySize = Some(Patch.Modified(3072)),
+        ))
+        patch = env.repository.updateClient.calls.head._2
+      yield assertTrue(
+        patch.dpopSigningAlgs == Some(Set(Dpop.Algorithm.PS256)),
+        patch.dpopMinRsaKeySize == Some(Patch.Modified(3072)),
       )
     },
     test("updateClient rejects keys added to a client that already authenticates by certificate") {

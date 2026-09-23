@@ -151,6 +151,10 @@ object OAuthClientService:
           request.requireSignedRequestObject,
           request.jwks,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
+          request.id,
+          request.dpopMinRsaKeySize,
+        ))(ZIO.fail(_))
         secret <- request.clientType match
           case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case ClientType.native => ZIO.none
@@ -178,6 +182,8 @@ object OAuthClientService:
           tosUri = request.tosUri,
           consentFlow = request.consentFlow.map(_.toDomain),
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+          dpopSigningAlgs = request.dpopSigningAlgs,
+          dpopMinRsaKeySize = request.dpopMinRsaKeySize,
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
           jwks = request.jwks,
@@ -218,6 +224,9 @@ object OAuthClientService:
             requireSignedRequestObject =
               request.requireSignedRequestObject.getOrElse(client.requireSignedRequestObject),
             jwks = request.jwks.applyTo(client.jwks),
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
+            clientId = request.clientId,
+            dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
           ))(ZIO.fail(_))
         _ <- clientRepository.updateClient(
           request.clientId,
@@ -240,6 +249,8 @@ object OAuthClientService:
             tosUri = request.tosUri,
             consentFlow = request.consentFlow.map(toConsentFlowPatch),
             dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+            dpopSigningAlgs = request.dpopSigningAlgs,
+            dpopMinRsaKeySize = request.dpopMinRsaKeySize,
             mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
             certificateBoundAccessTokens = request.certificateBoundAccessTokens,
             jwks = request.jwks,

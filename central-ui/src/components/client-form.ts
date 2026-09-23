@@ -16,6 +16,9 @@ import {
   daysToSeconds,
   secondsToDays,
   validateAccessTokenTtl,
+  validateDpopMinRsaKeySize,
+  DPOP_SIGNING_ALGS,
+  MIN_DPOP_RSA_KEY_SIZE,
 } from '../utils/validators';
 
 @customElement('versola-client-form')
@@ -45,6 +48,8 @@ export class VersolaClientForm extends LitElement {
     consentFlow: null,
     frontChannelLogoutSessionRequired: true,
     dpopBoundAccessTokens: false,
+    dpopSigningAlgs: [],
+    dpopMinRsaKeySize: null,
   };
 
   @state() private redirectUriInput = '';
@@ -827,6 +832,10 @@ export class VersolaClientForm extends LitElement {
       return;
     }
 
+    if (!this.dpopMinRsaKeySizeValidation.valid) {
+      return;
+    }
+
     const authFlow = this.formData.authFlow ?? null;
     if (authFlow) {
       const authFlowError = this.getAuthFlowValidationError(authFlow);
@@ -919,6 +928,8 @@ export class VersolaClientForm extends LitElement {
       tosUri: (this.formData.tosUri || '').trim() || null,
       consentFlow: authFlow ? this.formData.consentFlow ?? null : null,
       dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
+      dpopSigningAlgs: [...(this.formData.dpopSigningAlgs ?? [])],
+      dpopMinRsaKeySize: this.formData.dpopMinRsaKeySize ?? null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -1063,6 +1074,24 @@ export class VersolaClientForm extends LitElement {
       this.ttlUnit = 'hours';
       this.ttlValue = 1;
     }
+  }
+
+  private toggleDpopSigningAlg(alg: string) {
+    const current = this.formData.dpopSigningAlgs ?? [];
+    const dpopSigningAlgs = current.includes(alg)
+      ? current.filter(value => value !== alg)
+      : [...current, alg];
+    this.formData = { ...this.formData, dpopSigningAlgs };
+  }
+
+  private handleDpopMinRsaKeySizeInput(e: Event) {
+    const raw = (e.target as HTMLInputElement).value.trim();
+    const dpopMinRsaKeySize = raw === '' ? null : Number(raw);
+    this.formData = { ...this.formData, dpopMinRsaKeySize };
+  }
+
+  private get dpopMinRsaKeySizeValidation() {
+    return validateDpopMinRsaKeySize(this.formData.dpopMinRsaKeySize);
   }
 
   private get accessTokenTtlValidation() {
@@ -1786,6 +1815,59 @@ export class VersolaClientForm extends LitElement {
                 A token request from this client must carry a DPoP proof; one without it is
                 refused rather than answered with a bearer token.
               </div>
+            </div>
+
+            <div class="form-group">
+              <div style="display: flex; align-items: center; gap: 0.4rem;">
+                <label style="margin-bottom: 0;">DPoP proof keys</label>
+                ${this.renderOptionInfo(
+                  'dpop-key-policy',
+                  'DPoP proof keys',
+                  html`
+                    <div class="option-tooltip-item">Which keys a proof from this client is accepted with. Left alone, the client is held to what the server advertises in <code>dpop_signing_alg_values_supported</code>, and to the 2048-bit RSA floor of RFC 7518 §3.3 that applies to every client.</div>
+                    <div class="option-tooltip-item">Narrowing only ever subtracts: selecting an algorithm the server does not advertise does not make it acceptable. Selecting none leaves the server's own set in force.</div>
+                    <div class="option-tooltip-item">Before narrowing: the client must already hold a key of a selected type. One that signs with anything else stops being able to get a bound token immediately.</div>
+                  `,
+                  'DPoP proof key policy info',
+                )}
+              </div>
+              <div class="checkbox-group">
+                ${DPOP_SIGNING_ALGS.map(alg => html`
+                  <div class="checkbox-item" @click=${() => this.toggleDpopSigningAlg(alg)}>
+                    <input
+                      type="checkbox"
+                      id="dpop-alg-${alg}"
+                      .checked=${(this.formData.dpopSigningAlgs ?? []).includes(alg)}
+                      @click=${(e: Event) => e.stopPropagation()}
+                      @change=${() => this.toggleDpopSigningAlg(alg)}
+                    />
+                    <label for="dpop-alg-${alg}" @click=${(e: Event) => e.stopPropagation()}>${alg}</label>
+                  </div>
+                `)}
+              </div>
+              <div class="hint">
+                Leave every algorithm unselected to hold this client to the server's own set.
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="dpop-min-rsa-key-size">Minimum RSA proof key size (bits)</label>
+              <input
+                type="number"
+                id="dpop-min-rsa-key-size"
+                class="compact-input ${this.dpopMinRsaKeySizeValidation.valid ? '' : 'input-error'}"
+                .value=${this.formData.dpopMinRsaKeySize == null ? '' : String(this.formData.dpopMinRsaKeySize)}
+                @input=${this.handleDpopMinRsaKeySizeInput}
+                min=${MIN_DPOP_RSA_KEY_SIZE}
+                step="1024"
+                placeholder=${String(MIN_DPOP_RSA_KEY_SIZE)}
+              />
+              ${this.dpopMinRsaKeySizeValidation.valid
+                ? html`<div class="hint">
+                    Empty leaves the ${MIN_DPOP_RSA_KEY_SIZE}-bit floor every client is held to; a value here
+                    can only raise it.
+                  </div>`
+                : html`<div class="error-message">${this.dpopMinRsaKeySizeValidation.error}</div>`}
             </div>
 
             <div class="form-group">

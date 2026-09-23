@@ -123,6 +123,17 @@ trait OAuthConfigurationService:
     * the same act. */
   def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]]
 
+  /** What a DPoP proof from this client is held to: [[getDpopSigningAlgorithms]] narrowed to
+    * the algorithms the client registered, and the strongest of the RFC 7518 §3.3 floor and
+    * the minimum RSA modulus it registered.
+    *
+    * Narrowing only ever subtracts. A client that registers an algorithm the document no
+    * longer advertises is left with a set the algorithm is not in, rather than one the server
+    * does not accept from anyone else -- a registration cannot widen what the deployment
+    * announced. A client auth does not know gets the deployment's own policy, the same answer
+    * it gave before any of this was registrable. */
+  def getDpopKeyPolicy(id: ClientId): UIO[Dpop.KeyPolicy]
+
   /** RFC 8414 §2: the signing algorithms an incoming client assertion's `alg` is checked
     * against, read off the same metadata document that advertises them. */
   def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]]
@@ -541,6 +552,17 @@ object OAuthConfigurationService:
 
     override def getDpopSigningAlgorithms: UIO[Set[Dpop.Algorithm]] =
       metadataCache.get.map(_.dpopSigningAlgorithms)
+
+    override def getDpopKeyPolicy(id: ClientId): UIO[Dpop.KeyPolicy] =
+      for
+        advertised <- getDpopSigningAlgorithms
+        client <- find(id)
+      yield Dpop.KeyPolicy(
+        algorithms = client.map(_.dpopSigningAlgs).filter(_.nonEmpty)
+          .fold(advertised)(advertised.intersect),
+        minRsaKeySize = client.flatMap(_.dpopMinRsaKeySize)
+          .fold(Dpop.KeyPolicy.MinRsaKeySize)(_.max(Dpop.KeyPolicy.MinRsaKeySize)),
+      )
 
     override def getClientAssertionSigningAlgorithms: UIO[Set[ClientAssertion.Algorithm]] =
       metadataCache.get.map(_.clientAssertionSigningAlgorithms)

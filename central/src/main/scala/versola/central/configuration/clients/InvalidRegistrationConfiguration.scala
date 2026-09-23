@@ -1,6 +1,6 @@
 package versola.central.configuration.clients
 
-import versola.util.JsonWebKeySet
+import versola.util.{Dpop, JsonWebKeySet}
 import zio.{Duration, duration2DurationOps}
 
 /** Raised when a client's `registrationFlow` cannot be satisfied by its `authFlow`,
@@ -77,6 +77,32 @@ object InvalidRegistrationConfiguration:
       ))
     else
       None
+
+  /** RFC 9449 §5.1 proof key policy: a client may narrow what its own proofs are accepted
+    * with, never widen it.
+    *
+    * `dpopMinRsaKeySize` is refused below [[Dpop.KeyPolicy.MinRsaKeySize]] rather than
+    * silently raised to it, so that a registration reading `1024` is not stored as a number
+    * the server ignores. Lowering the floor is what the field must never be able to do: a
+    * short-modulus key is forgeable, and a `cnf.jkt` bound to one constrains nobody.
+    *
+    * The algorithm set is not checked against what the metadata document currently
+    * advertises. That document is deployment state an operator can edit after the fact, so
+    * a registration validated against it would be valid until someone changed it elsewhere;
+    * the narrowing is applied as an intersection at proof time instead.
+    */
+  def validateDpopKeyPolicy(
+      clientId: ClientId,
+      dpopMinRsaKeySize: Option[Int],
+  ): Option[InvalidRegistrationConfiguration] =
+    dpopMinRsaKeySize
+      .filter(_ < Dpop.KeyPolicy.MinRsaKeySize)
+      .map(_ =>
+        InvalidRegistrationConfiguration(
+          clientId,
+          s"dpopMinRsaKeySize must be at least ${Dpop.KeyPolicy.MinRsaKeySize} bits (RFC 7518 §3.3)",
+        ),
+      )
 
   /** Registration is only reachable from a credential card that asks for a phone or an
     * email, since account creation requires proving ownership of the entry credential.
