@@ -112,7 +112,7 @@ TLS=off
 DOMAIN=""
 if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
   AUTH_SCHEME=$(printf '%s' "${AUTH_URL%%://*}" | tr 'A-Z' 'a-z')
-  if [ "$AUTH_SCHEME" = "https" ] && [ "$AUTH_SCHEME" != "$AUTH_URL" ]; then
+  if [ "$AUTH_SCHEME" = "https" ] && [ "${AUTH_URL%%://*}" != "$AUTH_URL" ]; then
     TLS=on
     # Host part of AUTH_URL: drop scheme, then any path. Anything that
     # isn't a plain domain is refused rather than silently misconfigured:
@@ -121,10 +121,13 @@ if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
     # (Let's Encrypt doesn't issue for IPs by default -- the ACME module
     # would just keep failing, burning the failed-validation rate limit).
     DOMAIN="${AUTH_URL#*://}"
-    DOMAIN="${DOMAIN%%/*}"
+    DOMAIN=$(printf '%s' "${DOMAIN%%/*}" | tr 'A-Z' 'a-z')
+    # Allow-list, not a deny-list: only letters, digits, dots and hyphens
+    # can reach listen.conf -- a stray ';' or space would otherwise end up
+    # inside the nginx config and restart-loop the gateway.
     DOMAIN_OK=yes
     case "$DOMAIN" in
-      ""|*:*|*\[*|*@*|*\?*|*\#*) DOMAIN_OK=no ;;
+      ""|*[!a-z0-9.-]*) DOMAIN_OK=no ;;
       *[!0-9.]*) ;;
       *) DOMAIN_OK=no ;;
     esac

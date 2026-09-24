@@ -178,7 +178,9 @@ services:
   #
   # `profiles: [gateway]`: compose ignores this service -- and its external
   # versola-acme-vps volume -- unless run with `--profile gateway`, which
-  # versola-cli does once it has created that volume. Without it, Compose
+  # versola-cli does once it has created that volume. Every compose call
+  # that should touch the gateway needs the profile, not just `up`: a plain
+  # `down`/`stop` leaves versola-nginx running and holding 80/443. Without it, Compose
   # before v2.29 checks every external volume in the file even for
   # `up -d auth edge` / `run migrate`, and a missing versola-acme-vps would
   # fail those too (e.g. an older CLI with this versola-tools release).
