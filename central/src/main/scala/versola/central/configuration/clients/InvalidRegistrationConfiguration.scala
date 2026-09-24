@@ -128,6 +128,11 @@ object InvalidRegistrationConfiguration:
     * and auth checks against `jwks` alone — so a signing key whose public half the client does
     * not publish configures an edge that fails every login it is asked to serve.
     *
+    * `mtlsAuth` rules the key out whatever it is. Auth accepts an assertion only from a client
+    * whose `mtlsAuth` is empty, because for an mTLS client the same `jwks` is what RFC 8705
+    * §2.2 matches a certificate against; an edge holding a key for such a client presents no
+    * certificate and is answered `invalid_client` at every `/par` and `/token` call.
+    *
     * Caught at registration for the same reason [[validateRequestObjectRequirement]] is: the
     * alternative is a client that looks registered and is refused at `/token` or `/authorize`,
     * with nothing at either end naming the mismatch.
@@ -135,13 +140,19 @@ object InvalidRegistrationConfiguration:
   def validateEdgeSigningKey(
       clientId: ClientId,
       edgeSigningKey: Option[PrivateJsonWebKey],
+      mtlsAuth: Option[MutualTlsAuth],
       jwks: Option[JsonWebKeySet],
   ): Option[InvalidRegistrationConfiguration] =
     edgeSigningKey.flatMap: key =>
-      val problem = jwks match
-        case None =>
+      val problem = (mtlsAuth, jwks) match
+        case (Some(_), _) =>
+          Some(
+            "cannot be combined with mtlsAuth - auth matches those keys against a certificate " +
+              "(RFC 8705 §2.2) and refuses an assertion signed with them",
+          )
+        case (None, None) =>
           Some("needs jwks - what an edge signs with it is verified against no other keys")
-        case Some(keySet) =>
+        case (None, Some(keySet)) =>
           PrivateJsonWebKey.validate(key.document)
             .flatMap(validated => PrivateJsonWebKey.publishedIn(validated, keySet))
             .left.toOption

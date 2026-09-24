@@ -35,20 +35,35 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
     test("accepts a signing key whose public half the client's jwks publishes") {
       assertTrue(
         InvalidRegistrationConfiguration
-          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), Some(publishedJwks))
+          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), None, Some(publishedJwks))
           .isEmpty,
       )
     },
     test("leaves a client that registers no signing key alone") {
       assertTrue(
-        InvalidRegistrationConfiguration.validateEdgeSigningKey(clientId, None, None).isEmpty,
+        InvalidRegistrationConfiguration.validateEdgeSigningKey(clientId, None, None, None).isEmpty,
       )
     },
     test("rejects a signing key with no jwks to verify what it signs") {
       assertTrue(
         InvalidRegistrationConfiguration
-          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), None)
+          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), None, None)
           .exists(_.reason.contains("needs jwks")),
+      )
+    },
+    // A `self_signed_tls_client_auth` client is the one that passes every other rule here: it
+    // is required to publish jwks, and the edge key can be published in it. Auth still refuses
+    // the assertion, because for an mTLS client those keys answer a certificate.
+    test("rejects a signing key for a client that authenticates by certificate") {
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeSigningKey(
+            clientId,
+            Some(edgeSigningKey),
+            Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+            Some(publishedJwks),
+          )
+          .exists(_.reason.contains("cannot be combined with mtlsAuth")),
       )
     },
     test("rejects a signing key the client's jwks does not publish") {
@@ -57,7 +72,7 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
       )
       assertTrue(
         InvalidRegistrationConfiguration
-          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), Some(other))
+          .validateEdgeSigningKey(clientId, Some(edgeSigningKey), None, Some(other))
           .exists(_.reason.contains("does not publish")),
       )
     },
@@ -67,6 +82,7 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
           .validateEdgeSigningKey(
             clientId,
             Some(PrivateJsonWebKey(jwkDocument("edge-key", withPrivate = false))),
+            None,
             Some(publishedJwks),
           )
           .exists(_.reason.contains("private")),

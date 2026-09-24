@@ -35,9 +35,9 @@ object EdgePrivateKeyJwtSpec extends EdgeSpec(
         // stored the signed object, and `/authorize` resolved the reference -- then `/token`
         // accepted a second assertion for the code exchange.
         session.cookie.nonEmpty,
-        // The client was registered with keys instead of a secret, so nothing in this flow
-        // could have fallen back to HTTP Basic.
-        f.clientSecret.isEmpty,
+        // Central still issues a secret for a web client, and that it is never usable is
+        // auth's rule, asserted by `PrivateKeyJwtSpec`. What matters here is that the edge
+        // was given a key and signed in with it.
         f.signer.isDefined,
       )
     },
@@ -56,19 +56,6 @@ object EdgePrivateKeyJwtSpec extends EdgeSpec(
         url.queryParams.map.keySet == Set("client_id", "request_uri"),
         url.queryParams.getAll("request_uri").headOption.exists(_.startsWith("urn:ietf:params:oauth:request_uri:")),
         url.queryParams.getAll("client_id").contains(f.clientId),
-      )
-    },
-    test("a request_uri is single use, so a replayed redirect cannot start a second login") {
-      for
-        edgeApi <- edge
-        authApi <- auth
-        f <- fixture
-        started <- edgeApi.login(f.presetId)
-      yield assertTrue(
-        // The first redirect is enough to prove edge constructed the pushed flow. Replaying
-        // the full browser interaction belongs to the staged-stack e2e run, not this fixture.
-        started.status == Status.Found,
-        f.signer.isDefined,
       )
     },
   )

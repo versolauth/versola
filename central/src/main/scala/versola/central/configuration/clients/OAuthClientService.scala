@@ -13,7 +13,8 @@ import versola.util.{CacheSource, Patch, PrivateJsonWebKey, ReloadingCache, Secr
 import zio.*
 import zio.http.{Scheme, URL}
 
-import zio.json.EncoderOps
+import zio.json.{DecoderOps, EncoderOps}
+import zio.json.ast.Json
 
 import java.nio.charset.StandardCharsets
 
@@ -162,6 +163,7 @@ object OAuthClientService:
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeSigningKey(
           request.id,
           request.edgeSigningKey,
+          request.mtlsAuth,
           request.jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
@@ -221,6 +223,7 @@ object OAuthClientService:
         _ <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri.flatMap(patchValue))
         _ <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri.flatMap(patchValue))
         current <- cache.get.map(_.find(_.id == request.clientId))
+        edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         _ <- ZIO.foreachDiscard(current): client =>
           validateRegistration(
             clientId = request.clientId,
@@ -242,7 +245,8 @@ object OAuthClientService:
             jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeSigningKey(
             clientId = request.clientId,
-            edgeSigningKey = request.edgeSigningKey.collect { case Patch.Modified(key) => key },
+            edgeSigningKey = edgeSigningKey,
+            mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
             jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
@@ -433,3 +437,29 @@ object OAuthClientService:
       * on — the same reason [[PrivateJsonWebKey]] keeps the document. */
     private def encryptEdgeSigningKey(key: PrivateJsonWebKey): Task[Secret] =
       encryptRawSecret(Secret(key.document.toJson.getBytes(StandardCharsets.UTF_8)))
+
+    /** The signing key the client will hold once this patch is applied, which is the stored one
+      * whenever the patch does not name it.
+      *
+      * A patch that leaves the key alone can still invalidate it: replacing or deleting `jwks`
+      * takes away the public half auth verifies against, and validating only what the request
+      * carries would let that through and break every key-authenticated login for the client.
+      *
+      * The stored document is read back only in that case. A patch that replaces or deletes the
+      * key never parses it, so a client whose stored key somehow cannot be read is still one an
+      * operator can repair rather than one locked out of its own registration.
+      */
+    private def effectiveEdgeSigningKey(
+        request: UpdateClientRequest,
+        client: OAuthClientRecord,
+    ): Task[Option[PrivateJsonWebKey]] =
+      request.edgeSigningKey match
+        case Some(Patch.Modified(key)) => ZIO.some(key)
+        case Some(Patch.Deleted) => ZIO.none
+        case None =>
+          ZIO.foreach(client.edgeSigningKey): stored =>
+            ZIO.fromEither(String(stored, StandardCharsets.UTF_8).fromJson[Json.Obj])
+              .mapBoth(
+                error => RuntimeException(s"stored edgeSigningKey of ${client.id} is not a JSON object: $error"),
+                PrivateJsonWebKey(_),
+              )
