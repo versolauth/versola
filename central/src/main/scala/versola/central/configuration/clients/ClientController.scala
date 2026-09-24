@@ -45,7 +45,7 @@ object ClientController extends Controller:
               scope = client.scope,
               permissions = client.permissions,
               secretRotation = client.previousSecret.nonEmpty,
-              clientType = if client.isConfidential then ClientType.web else ClientType.native,
+              authMethod = client.authMethod,
               accessTokenTtl = client.accessTokenTtl.toSeconds,
               refreshTokenTtl = client.refreshTokenTtl.toSeconds,
               theme = client.theme,
@@ -126,6 +126,7 @@ object ClientController extends Controller:
             dpopBoundAccessTokens = client.dpopBoundAccessTokens,
             dpopSigningAlgs = client.dpopSigningAlgs,
             dpopMinRsaKeySize = client.dpopMinRsaKeySize,
+            authMethod = client.authMethod,
             mtlsAuth = client.mtlsAuth,
             certificateBoundAccessTokens = client.certificateBoundAccessTokens,
             jwks = client.jwks,
@@ -200,11 +201,14 @@ object ClientController extends Controller:
       case Patch.Modified(_) => true
       case Patch.Deleted     => false
 
-  /** A native client has no secret to rotate or forget. Like an already-taken client id,
-    * this is a conflict with the client's own state rather than a malformed request.
+  /** A client that did not register [[AuthMethod.client_secret]] has no secret to rotate or
+    * forget - a public client because it holds no credential at all, a private_key_jwt or
+    * mTLS client because its credential is a key or a certificate. Like an already-taken
+    * client id, this is a conflict with the client's own state rather than a malformed
+    * request.
     */
   private def secretlessClientConflict(error: ClientHasNoSecret): Response =
-    Response.text(s"Client '${error.clientId}' is a native (public) client and has no secret")
+    Response.text(s"Client '${error.clientId}' has no secret")
       .status(Status.Conflict)
 
   val rotateSecretEndpoint =

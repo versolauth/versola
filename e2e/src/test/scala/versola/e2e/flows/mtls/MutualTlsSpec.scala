@@ -57,6 +57,7 @@ object MutualTlsSpec extends E2ESpec:
         "Mutual TLS Test Client",
         Set(redirectUri),
         allowedScopes = scopes,
+        authMethod = "tls_client_auth",
         mtlsAuth = Some(Fixtures.mutualTlsAuth(subjectType, subjectValue)),
       ).success
       _ <- auth.syncConfiguration()
@@ -78,6 +79,7 @@ object MutualTlsSpec extends E2ESpec:
         "Self-Signed Mutual TLS Test Client",
         Set(redirectUri),
         allowedScopes = scopes,
+        authMethod = "self_signed_tls_client_auth",
         mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth),
         jwks = Some(jwks),
       ).success

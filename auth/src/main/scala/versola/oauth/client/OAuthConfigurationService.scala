@@ -316,7 +316,7 @@ object OAuthConfigurationService:
         _ => ZIO.none,
         client =>
           secret match
-            case Some(secret) if client.isConfidential =>
+            case Some(secret) if client.usesSecret =>
               verifyOneSecret(secret, client.secret)
                 .flatMap {
                   case false => verifyOneSecret(secret, client.previousSecret)

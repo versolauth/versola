@@ -1,9 +1,9 @@
 import type {
   AuthFlow,
+  AuthMethod,
   AuthorizationDetailType,
   AuthorizationPreset,
   BackendProperty,
-  ClientType,
   Edge,
   Locale,
   FormRecord,
@@ -122,7 +122,7 @@ type ClientsResponse = {
     scope: string[];
     permissions: string[];
     secretRotation: boolean;
-    clientType?: ClientType;
+    authMethod?: AuthMethod;
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -712,7 +712,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        clientType: client.clientType ?? 'web',
+        clientType: (client.authMethod ?? 'client_secret') === 'none' ? 'native' : 'web',
+        authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
         // fell back to a page-memory-only cache that was empty — and silently wrong — after
@@ -1108,7 +1109,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       dpopBoundAccessTokens: client.dpopBoundAccessTokens,
       dpopSigningAlgs: client.dpopSigningAlgs ?? [],
       dpopMinRsaKeySize: client.dpopMinRsaKeySize ?? null,
-      clientType: client.clientType ?? 'web',
+      authMethod: client.authMethod,
       mtlsAuth: client.mtlsAuth ?? null,
       certificateBoundAccessTokens: !!client.certificateBoundAccessTokens,
       jwks: client.jwks ?? null,
@@ -1195,6 +1196,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       dpopMinRsaKeySize: (existing.dpopMinRsaKeySize ?? null) === (client.dpopMinRsaKeySize ?? null)
         ? undefined
         : client.dpopMinRsaKeySize ?? null,
+      authMethod: existing.authMethod !== client.authMethod ? client.authMethod : undefined,
       // Patch semantics: omitted leaves the stored credential alone, null clears it.
       mtlsAuth: sameJsonValue(existing.mtlsAuth, client.mtlsAuth) ? undefined : (client.mtlsAuth ?? null),
       certificateBoundAccessTokens: existing.certificateBoundAccessTokens !== client.certificateBoundAccessTokens

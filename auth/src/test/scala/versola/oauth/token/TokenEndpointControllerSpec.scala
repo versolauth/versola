@@ -12,7 +12,7 @@ import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.Dpop
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, AuthMethodRef, ClientId, ClientIdWithSecret, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, Cnf, CodeVerifier, Nonce, RefreshToken}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenResponse}
 import versola.oauth.session.model.RefreshTokenFamilyId
@@ -134,6 +134,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = true,
     jwks = None,

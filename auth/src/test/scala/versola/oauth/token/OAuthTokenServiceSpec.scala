@@ -3,7 +3,7 @@ package versola.oauth.token
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.mtls.ClientCertificate
@@ -87,6 +87,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -119,6 +120,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.none,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -176,6 +178,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   val mtlsClient = testClient.copy(
     secret = None,
+    authMethod = AuthMethod.tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 

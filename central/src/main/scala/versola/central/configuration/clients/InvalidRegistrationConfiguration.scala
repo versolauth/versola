@@ -36,16 +36,17 @@ object InvalidRegistrationConfiguration:
     else
       None
 
-  /** A client authenticates one way. RFC 8705 §2.1 `tls_client_auth` and RFC 7523 §2.2
-    * `private_key_jwt` are each a credential that replaces the secret at the token endpoint,
-    * so registering both does not make a client harder to impersonate -- it gives an attacker
-    * two independent ways to do it, and leaves the operator reading one of them believing it
-    * is the one in force.
+  /** A client authenticates one way, and [[AuthMethod]] says which -- so the credentials it
+    * registered have to be exactly the ones that method reads.
     *
-    * RFC 8705 §2.2 `self_signed_tls_client_auth` is the one combination that is not two
-    * credentials but one: it *is* the key set, matched against the presented certificate
-    * rather than against an assertion's signature, so it needs `jwks` and refuses to be
-    * registered without it -- a client with nothing to match against could never authenticate.
+    * A credential registered for a method that does not read it is one nothing would ever
+    * check, and an operator reading it would believe it is what protects the client. The
+    * reverse is worse: a method whose credential is missing registers a client that can never
+    * authenticate, and it fails as an `invalid_client` at every token request rather than here.
+    *
+    * RFC 8705 §2.2 `self_signed_tls_client_auth` is the one method that reads both columns:
+    * its credential *is* the key set, matched against the presented certificate rather than
+    * against an assertion's signature.
     *
     * The key set is validated here rather than at first use: a set that could never verify an
     * assertion is a registration mistake, and reporting it at registration costs an error
@@ -59,22 +60,35 @@ object InvalidRegistrationConfiguration:
     */
   def validateClientAuthentication(
       clientId: ClientId,
+      authMethod: AuthMethod,
       mtlsAuth: Option[MutualTlsAuth],
       jwks: Option[JsonWebKeySet],
   ): Option[InvalidRegistrationConfiguration] =
-    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, reason))
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"$authMethod $reason"))
 
-    val combination = mtlsAuth match
-      case Some(_: MutualTlsAuth.TlsClientAuth) if jwks.nonEmpty =>
-        invalid("a client authenticates either with mtlsAuth or with jwks, not both")
-      case Some(MutualTlsAuth.SelfSignedTlsClientAuth()) if jwks.isEmpty =>
-        invalid("self_signed_tls_client_auth needs jwks - the registered keys are what a certificate is matched against")
-      case _ =>
-        None
+    val combination = authMethod match
+      case AuthMethod.client_secret | AuthMethod.none =>
+        if mtlsAuth.nonEmpty then invalid("registers no certificate - nothing would ever match mtlsAuth")
+        else if jwks.nonEmpty then invalid("registers no keys - nothing would ever read jwks")
+        else None
+      case AuthMethod.private_key_jwt =>
+        if mtlsAuth.nonEmpty then invalid("authenticates with an assertion, so it registers no mtlsAuth")
+        else if jwks.isEmpty then invalid("needs jwks - an assertion is verified against no other keys")
+        else None
+      case AuthMethod.tls_client_auth =>
+        if !mtlsAuth.exists(_.isInstanceOf[MutualTlsAuth.TlsClientAuth]) then
+          invalid("needs mtlsAuth to carry the subject value a certificate is matched against")
+        else if jwks.nonEmpty then invalid("matches a subject value, so it registers no jwks")
+        else None
+      case AuthMethod.self_signed_tls_client_auth =>
+        if !mtlsAuth.contains(MutualTlsAuth.SelfSignedTlsClientAuth()) then
+          invalid("needs mtlsAuth to name the same method")
+        else if jwks.isEmpty then invalid("needs jwks - the registered keys are what a certificate is matched against")
+        else None
 
-    val validateKeys: Json.Obj => Either[String, JsonWebKeySet] = mtlsAuth match
-      case Some(MutualTlsAuth.SelfSignedTlsClientAuth()) => JsonWebKeySet.validateForCertificateMatching
-      case _ => JsonWebKeySet.validateForAssertions
+    val validateKeys: Json.Obj => Either[String, JsonWebKeySet] = authMethod match
+      case AuthMethod.self_signed_tls_client_auth => JsonWebKeySet.validateForCertificateMatching
+      case _                                      => JsonWebKeySet.validateForAssertions
 
     combination.orElse(
       jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)

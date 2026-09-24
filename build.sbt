@@ -337,6 +337,12 @@ lazy val commonSettings =
       "-indent",
       "-Wconf:msg=unused import:e",
       "-Wconf:msg=pattern selector should be an instance of Matchable:s",
+      // OAuthClientRecord's zio-schema `derives Schema, CanEqual, Equal` crossed the default
+      // 32 successive inlines once auth_method joined edge_signing_key -- not a sign of
+      // runaway recursion, just a wide record whose derivation macro nests one inline per
+      // field. Doubled rather than tuned to the exact count, so the next field added does not
+      // reopen this.
+      "-Xmax-inlines:64",
     ),
     libraryDependencies ++= Dependencies.core,
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),

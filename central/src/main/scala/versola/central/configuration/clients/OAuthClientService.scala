@@ -34,8 +34,10 @@ trait OAuthClientService:
       limit: Option[Int],
   ): Task[Vector[OAuthClientRecord]]
 
-  /** Returns the generated secret for a `web` client, and `None` for a `native` one -
-    * a public client is registered without a secret and can never be given one.
+  /** Returns the generated secret for a client that registered [[AuthMethod.client_secret]],
+    * and `None` for every other method - a client whose credential is a certificate, a key
+    * set, or nothing at all is registered without a secret, and issuing one anyway would
+    * leave a credential lying in the database that no endpoint would ever accept.
     */
   def registerClient(
       request: CreateClientRequest,
@@ -152,6 +154,7 @@ object OAuthClientService:
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
           request.id,
+          request.authMethod,
           request.mtlsAuth,
           request.jwks,
         ))(ZIO.fail(_))
@@ -171,9 +174,9 @@ object OAuthClientService:
           request.dpopMinRsaKeySize,
         ))(ZIO.fail(_))
         _ <- validateMtlsTermination(request.id, request.tenantId, request.mtlsAuth)
-        secret <- request.clientType match
-          case ClientType.web    => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
-          case ClientType.native => ZIO.none
+        secret <- request.authMethod match
+          case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
+          case _                        => ZIO.none
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
         client = OAuthClientRecord(
@@ -201,6 +204,7 @@ object OAuthClientService:
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
           dpopSigningAlgs = request.dpopSigningAlgs,
           dpopMinRsaKeySize = request.dpopMinRsaKeySize,
+          authMethod = request.authMethod,
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
           jwks = request.jwks,
@@ -236,6 +240,7 @@ object OAuthClientService:
             dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
             clientId = request.clientId,
+            authMethod = request.authMethod.getOrElse(client.authMethod),
             mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
             jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
@@ -282,6 +287,7 @@ object OAuthClientService:
             dpopBoundAccessTokens = request.dpopBoundAccessTokens,
             dpopSigningAlgs = request.dpopSigningAlgs,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize,
+            authMethod = request.authMethod,
             mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
             certificateBoundAccessTokens = request.certificateBoundAccessTokens,
             jwks = request.jwks,
@@ -294,22 +300,26 @@ object OAuthClientService:
 
     override def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret] =
       for
-        _ <- rejectPublicClient(clientId)
+        _ <- rejectSecretlessClient(clientId)
         newSecret <- generateSecret
         encryptedSecret <- encryptRawSecret(newSecret)
         _ <- clientRepository.rotateClientSecret(clientId, encryptedSecret)
       yield newSecret
 
     override def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
-      rejectPublicClient(clientId) *> clientRepository.deletePreviousClientSecret(clientId)
+      rejectSecretlessClient(clientId) *> clientRepository.deletePreviousClientSecret(clientId)
 
-    /** Reads the client from the repository rather than the cache: a client registered a
-      * moment ago may not have reached the cache yet, and a stale miss would let a public
-      * client through. An unknown client is left to the repository, which ignores it.
+    /** Refuses a client whose method is not `client_secret`, public or not: handing a
+      * `private_key_jwt` client a freshly rotated secret would print a credential the token
+      * endpoint refuses, and the operator would have no way to tell that from one it accepts.
+      *
+      * Reads the client from the repository rather than the cache: a client registered a
+      * moment ago may not have reached the cache yet, and a stale miss would let one through.
+      * An unknown client is left to the repository, which ignores it.
       */
-    private def rejectPublicClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
+    private def rejectSecretlessClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
       clientRepository.find(clientId).flatMap: client =>
-        ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(_.isPublic)).unit
+        ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(!_.usesSecret)).unit
 
     override def deleteClient(clientId: ClientId): Task[Unit] =
       clientRepository.deleteClient(clientId)

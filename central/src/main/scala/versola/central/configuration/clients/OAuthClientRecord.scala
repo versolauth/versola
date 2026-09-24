@@ -47,6 +47,11 @@ case class OAuthClientRecord(
     /** The modulus length an RSA DPoP proof key from this client must reach. `None` leaves the
       * RFC 7518 §3.3 floor, which applies either way: a registration can only raise it. */
     dpopMinRsaKeySize: Option[Int],
+    /** How this client authenticates, as it registered. Registration holds it to agree with
+      * [[mtlsAuth]] and [[jwks]], so reading it is the same as reading those two -- except
+      * that it also distinguishes a public client from a confidential one that keeps no
+      * secret, which the columns alone cannot. */
+    authMethod: AuthMethod,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client authenticates
       * with a secret. */
     mtlsAuth: Option[MutualTlsAuth],
@@ -87,7 +92,12 @@ case class OAuthClientRecord(
     edgeSigningKey: Option[Secret],
 ) derives Schema, CanEqual, Equal:
 
-  def isConfidential: Boolean = secret.nonEmpty
+  /** Whether this client holds a secret at all, which only [[AuthMethod.client_secret]]
+    * does -- every other method registers its credential elsewhere, and a secret sitting
+    * beside one would be a second way in that nothing checks. */
+  def usesSecret: Boolean = authMethod == AuthMethod.client_secret
+
+  def isConfidential: Boolean = authMethod != AuthMethod.none
 
   /** Whether an access token issued to this client carries an RFC 8705 §3 `x5t#S256`
     * confirmation. Authenticating with a certificate implies it: the certificate is

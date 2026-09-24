@@ -90,13 +90,13 @@ describe('jwksVerifiesRequestObjects', () => {
 
 describe('clientCredentialKind', () => {
   it('names the credential that replaces the secret', () => {
-    expect(clientCredentialKind({ clientType: 'web', mtlsAuth: { type: 'self_signed_tls_client_auth' }, jwks: { keys: [] } }))
-      .toBe('mtls');
-    expect(clientCredentialKind({ clientType: 'web', mtlsAuth: null, jwks: { keys: [] } })).toBe('private_key_jwt');
+    expect(clientCredentialKind({ authMethod: 'self_signed_tls_client_auth' })).toBe('mtls');
+    expect(clientCredentialKind({ authMethod: 'tls_client_auth' })).toBe('mtls');
+    expect(clientCredentialKind({ authMethod: 'private_key_jwt' })).toBe('private_key_jwt');
   });
 
   it('leaves the secret in force for a plain confidential client, and none for a native one', () => {
-    expect(clientCredentialKind({ clientType: 'web', mtlsAuth: null, jwks: null })).toBe('secret');
-    expect(clientCredentialKind({ clientType: 'native', mtlsAuth: null, jwks: null })).toBe('public');
+    expect(clientCredentialKind({ authMethod: 'client_secret' })).toBe('secret');
+    expect(clientCredentialKind({ authMethod: 'none' })).toBe('public');
   });
 });

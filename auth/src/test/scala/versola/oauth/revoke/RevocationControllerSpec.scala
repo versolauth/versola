@@ -6,7 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{AccessToken, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
@@ -55,6 +55,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,

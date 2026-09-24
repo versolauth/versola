@@ -69,7 +69,7 @@ export const mockTenants: Tenant[] = [
   },
 ];
 
-const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow' | 'clientType' | 'certificateBoundAccessTokens' | 'requireSignedRequestObject' | 'requirePushedAuthorizationRequests'>[] = [
+const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow' | 'clientType' | 'authMethod' | 'certificateBoundAccessTokens' | 'requireSignedRequestObject' | 'requirePushedAuthorizationRequests'>[] = [
   {
     id: 'web-app',
     clientName: { en: 'Web Application' },
@@ -219,6 +219,7 @@ const baseClients: Omit<OAuthClient, 'authFlow' | 'registrationFlow' | 'clientTy
 export const mockClients: OAuthClient[] = baseClients.map(client => ({
   ...client,
   clientType: 'web',
+  authMethod: 'client_secret',
   authFlow: createDefaultAuthFlow(),
   registrationFlow: null,
   certificateBoundAccessTokens: false,

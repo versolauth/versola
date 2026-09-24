@@ -80,7 +80,7 @@ final class HttpAdminClient(
       otpTemplateId = defaultOtpTemplateId,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = spec.backChannelLogoutUri,
-      clientType = if spec.publicClient then nativeClientType else webClientType,
+      authMethod = if spec.publicClient then publicAuthMethod else clientSecretAuthMethod,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -401,8 +401,8 @@ object HttpAdminClient:
   private val englishTag = "en"
   private val defaultTheme = "default"
   private val defaultOtpTemplateId = "default"
-  private val nativeClientType = "native"
-  private val webClientType = "web"
+  private val publicAuthMethod = "none"
+  private val clientSecretAuthMethod = "client_secret"
 
   private case class AdminResponse(status: Status, body: String)
 
@@ -429,7 +429,7 @@ object HttpAdminClient:
       otpTemplateId: String,
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
-      clientType: String,
+      authMethod: String,
   ) derives JsonEncoder
 
   private case class UpdateClientBody(

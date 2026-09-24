@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, ClientType, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -300,7 +300,9 @@ case class OAuthClientResponse(
     scope: Set[ScopeToken],
     permissions: Set[Permission],
     secretRotation: Boolean,
-    clientType: ClientType,
+    /** How the client authenticates, as it registered. Also says whether there is a secret
+      * to rotate: only `client_secret` has one. */
+    authMethod: AuthMethod,
     accessTokenTtl: Long,
     refreshTokenTtl: Long,
     theme: String,
@@ -386,10 +388,12 @@ case class CreateClientRequest(
     /** The modulus length an RSA DPoP proof key from this client must reach; `None` leaves the
       * RFC 7518 §3.3 floor, which a registration can only raise. */
     dpopMinRsaKeySize: Option[Int],
-    /** Defaults to `web` so that a caller written before native clients existed keeps
-      * getting the confidential client it has always got.
+    /** How the client will authenticate. Decides whether a secret is issued at all, and is
+      * held to agree with [[mtlsAuth]] and [[jwks]]: a method names the credential, and a
+      * credential registered for a method that does not read it is one nothing would ever
+      * check.
       */
-    clientType: ClientType = ClientType.web,
+    authMethod: AuthMethod,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
     mtlsAuth: Option[MutualTlsAuth],
@@ -441,6 +445,11 @@ case class UpdateClientRequest(
     dpopBoundAccessTokens: Option[Boolean] = None,
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
+    /** Moving a client to another method is a change of credential, not of transport, so it
+      * is validated against the resulting [[mtlsAuth]] and [[jwks]] exactly as a registration
+      * is. Leaving `client_secret` drops the stored secret: a credential the client no longer
+      * authenticates with is one nobody can be told has stopped working. */
+    authMethod: Option[AuthMethod] = None,
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
@@ -626,6 +635,10 @@ case class SyncOAuthClientRecord(
     /** The modulus length an RSA DPoP proof key from this client must reach; `None` leaves the
       * RFC 7518 §3.3 floor, which a registration can only raise. */
     dpopMinRsaKeySize: Option[Int],
+    /** How the client authenticates, as it registered. `auth` reads this rather than working
+      * it out from the fields below, so that the two can never disagree about which
+      * credential is in force. */
+    authMethod: AuthMethod,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
       * authenticates with a secret. */
     mtlsAuth: Option[MutualTlsAuth],

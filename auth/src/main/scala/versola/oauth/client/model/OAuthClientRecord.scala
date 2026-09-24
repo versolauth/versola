@@ -43,6 +43,11 @@ case class OAuthClientRecord(
       * RFC 7518 §3.3 floor [[Dpop.KeyPolicy.MinRsaKeySize]], which applies either way -- the
       * registered value can only raise it. */
     dpopMinRsaKeySize: Option[Int],
+    /** Which credential authenticates this client. Read this rather than inferring one from
+      * the fields below: they agree with it, Central having refused the registration
+      * otherwise, but only this distinguishes a public client from a confidential one that
+      * keeps no secret. */
+    authMethod: AuthMethod,
     /** RFC 8705 mutual-TLS client authentication, and which of its two methods; `None` when
       * the client authenticates with a secret. [[MutualTlsAuth.SelfSignedTlsClientAuth]]
       * matches the presented certificate against [[jwks]], so the two are set together for
@@ -73,7 +78,18 @@ case class OAuthClientRecord(
     requirePushedAuthorizationRequests: Boolean,
 ) derives CanEqual, Equal:
 
-  def isConfidential: Boolean = secret.nonEmpty
+  /** Whether a secret is what authenticates this client. A client that holds one without
+    * registering the method is not authenticated by it -- the secret is a leftover, and
+    * accepting it would be the weaker of the two credentials deciding. */
+  def usesSecret: Boolean = authMethod == AuthMethod.client_secret
+
+  /** Whether a presented certificate is what authenticates this client, under either of RFC
+    * 8705's two methods. Distinct from [[bindsAccessTokens]], which is about what the token
+    * carries rather than about who the caller is. */
+  def authenticatesWithCertificate: Boolean =
+    authMethod == AuthMethod.tls_client_auth || authMethod == AuthMethod.self_signed_tls_client_auth
+
+  def isConfidential: Boolean = authMethod != AuthMethod.none
 
   /** Whether an access token issued to this client carries an RFC 8705 §3 `x5t#S256`
     * confirmation. Authenticating with a certificate implies it: the certificate is

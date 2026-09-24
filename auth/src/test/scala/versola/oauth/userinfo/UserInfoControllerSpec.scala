@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
@@ -71,6 +71,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,

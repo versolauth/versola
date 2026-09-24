@@ -2260,6 +2260,8 @@ components:
             The modulus length, in bits, an RSA DPoP proof key from this client must reach.
             `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
             regardless; a value below it is refused at registration.
+        authMethod:
+          $ref: '#/components/schemas/AuthMethod'
         jwks:
           oneOf:
             - $ref: '#/components/schemas/JsonWebKeySet'
@@ -2290,6 +2292,7 @@ components:
         - otpTemplateId
         - frontChannelLogoutSessionRequired
         - dpopSigningAlgs
+        - authMethod
     UpdateClientRequest:
       type: object
       description: |
@@ -2372,6 +2375,14 @@ components:
             The modulus length, in bits, an RSA DPoP proof key from this client must reach.
             `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
             regardless; a value below it is refused at registration.
+        authMethod:
+          oneOf:
+            - $ref: '#/components/schemas/AuthMethod'
+            - type: 'null'
+          description: |
+            Absent or `null` leaves the stored method unchanged. A value moves the client to
+            it, which is validated against the resulting `mtlsAuth`/`jwks` exactly as a
+            registration is, and drops the stored secret when it leaves `client_secret`.
         jwks:
           oneOf:
             - $ref: '#/components/schemas/JsonWebKeySet'
@@ -2406,6 +2417,13 @@ components:
     ResponseType:
       type: string
       enum: [code, 'code id_token']
+    AuthMethod:
+      type: string
+      description: |
+        RFC 7591 `token_endpoint_auth_method`, minus the distinction between
+        `client_secret_basic` and `client_secret_post` - both carry the same credential, and
+        this server accepts either transport for a client registered with `client_secret`.
+      enum: [client_secret, private_key_jwt, tls_client_auth, self_signed_tls_client_auth, none]
     AuthorizationPresetInput:
       type: object
       properties:

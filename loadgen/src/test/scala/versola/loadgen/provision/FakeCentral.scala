@@ -80,7 +80,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         val create = state.modify: s =>
           if s.clients.contains(clientId) then (Response.status(Status.Conflict), s)
           else
-            val secret = if str(spec, "clientType") == "web" then Some(s"secret-$clientId-0") else None
+            val secret = if str(spec, "authMethod") == "client_secret" then Some(s"secret-$clientId-0") else None
             val response = json(Json.Obj(secret.map(v => "secret" -> Json.Str(v)).toList*), Status.Created)
             val stored = StoredClient(
               spec = spec,

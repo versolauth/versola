@@ -213,7 +213,7 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
+        body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
         record <- withClient(central, body)(_ => read(central, id))
         mtlsAuth = record.flatMap(_.obj("mtlsAuth"))
       yield assertTrue(mtlsAuth.flatMap(_.str("subjectType")).contains("subject_dn")) &&
@@ -223,7 +223,7 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("san_dns", "  client.example.com  ")))
+        body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("san_dns", "  client.example.com  ")))
         record <- withClient(central, body)(_ => read(central, id))
       yield assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("client.example.com"))
         .label("RFC 8705 \u00a72.1.2 compares this literally, so pasted whitespace must not survive registration")
@@ -250,6 +250,7 @@ object ClientApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-client")
         body = Fixtures.client(
           id,
+          authMethod = "self_signed_tls_client_auth",
           mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth),
           jwks = Some(Fixtures.ClientCertificates.client.jwks),
         )
@@ -263,7 +264,7 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Fixtures.client(id, mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth)))
+        rejected <- central.post(path, Fixtures.client(id, authMethod = "self_signed_tls_client_auth", mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth)))
         _ <- central.delete(path, "clientId" -> id)
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("§2.2 has nothing to compare a certificate against without jwks")
@@ -281,6 +282,7 @@ object ClientApiSpec extends CentralApiSpec:
           Fixtures.client(
             id,
             tenantId = tenantId,
+            authMethod = "tls_client_auth",
             mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")),
           ),
         )
@@ -298,7 +300,7 @@ object ClientApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-client")
         rejected <- central.post(
           path,
-          Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("not_a_subject_type", "CN=x"))),
+          Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("not_a_subject_type", "CN=x"))),
         )
         _ <- central.delete(path, "clientId" -> id)
       yield assertTrue(rejected.status == Status.BadRequest)
@@ -312,22 +314,44 @@ object ClientApiSpec extends CentralApiSpec:
             path,
             Fixtures.clientUpdate(
               clientId,
+              "authMethod" -> Json.Str("tls_client_auth"),
               "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example"),
             ),
           ).zip(read(central, id, _.obj("mtlsAuth").isDefined))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&
-        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example"))
+        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example")) &&
+        assertTrue(record.flatMap(_.str("authMethod")).contains("tls_client_auth"))
+          .label("the credential and the method it is read under move in one call")
+    },
+    test("an update adding mtlsAuth without moving the method is refused") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(
+            path,
+            Fixtures.clientUpdate(clientId, "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example")),
+          ).zip(read(central, id))
+        }
+        (rejected, record) = outcome
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("a client_secret client keeps authenticating by secret, so nothing would ever match the certificate") &&
+        assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
     },
     test("an update clears mtlsAuth with an explicit null") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
+        body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
         outcome <- withClient(central, body) { clientId =>
-          central.put(path, Fixtures.clientUpdate(clientId, "mtlsAuth" -> Json.Null))
-            .zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
+          // The method goes back with the credential: a tls_client_auth client whose subject
+          // value is deleted has nothing left to be matched against.
+          central.put(
+            path,
+            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("client_secret"), "mtlsAuth" -> Json.Null),
+          ).zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&
@@ -338,7 +362,7 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=untouched,O=Example")))
+        body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=untouched,O=Example")))
         record <- withClient(central, body) { clientId =>
           central.put(path, Fixtures.clientUpdate(clientId, "accessTokenTtl" -> Json.Num(60)))
             *> read(central, id, _.int("accessTokenTtl").contains(60))

@@ -3,7 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
@@ -842,6 +842,7 @@ object BootstrapService:
         backChannelLogoutUri = None,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
+        authMethod = AuthMethod.client_secret,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,

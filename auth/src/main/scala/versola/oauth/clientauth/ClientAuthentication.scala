@@ -1,7 +1,7 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.CoreConfig
 import versola.util.http.Observability
@@ -11,17 +11,18 @@ import zio.http.Request
 /** How a client proves who it is, shared by every endpoint that authenticates one: `/token`,
   * `/introspect`, `/revoke` and `/par`.
   *
-  * Four methods reach here. A secret (RFC 6749 §2.3) is the baseline every confidential
-  * client has. A client may additionally register exactly one stronger credential -- an mTLS
-  * subject (RFC 8705 §2.1), a certificate whose public key it registered (RFC 8705 §2.2), or
-  * a JWK Set it signs assertions with (RFC 7523 §2.2) -- and having registered one, that
-  * credential is the only thing that authenticates it: the secret still exists but is no
-  * longer accepted, or registering the stronger method would weaken the client to whichever
-  * of the two an attacker found easier.
+  * Four methods reach here: a secret (RFC 6749 §2.3), an mTLS subject (RFC 8705 §2.1), a
+  * certificate whose public key the client registered (RFC 8705 §2.2), and a JWK Set it
+  * signs assertions with (RFC 7523 §2.2). A client registers exactly one of them as its
+  * `authMethod`, and that one is the only thing that authenticates it -- anything else it
+  * presents is not consulted, or the client would be only as hard to impersonate as
+  * whichever credential an attacker found easier.
   *
-  * §2.2 and RFC 7523 read the same `jwks` column, so a client that registered the former is
-  * refused an assertion for the same reason: two credentials for one client is the weaker of
-  * the two, and `mtlsAuth` is what says which of the two readings of that column is in force.
+  * The registered method is what decides here, rather than which of the client's columns are
+  * populated. The two agree, Central having refused the registration otherwise, but §2.2 and
+  * RFC 7523 read the same `jwks` column, so the columns alone cannot say which reading is in
+  * force -- and a client that registered §2.2 is refused an assertion signed with those same
+  * keys, two credentials for one client being the weaker of the two.
   *
   * Each endpoint reports failure in its own error format, so the operations here fail with a
   * raw value — the unparseable header's reason, or nothing beyond "invalid" — leaving the
@@ -113,7 +114,7 @@ enum CertificateRelevance:
   case TokenIssuance
 
   def appliesTo(client: OAuthClientRecord): Boolean = this match
-    case CertificateRelevance.Authentication => client.mtlsAuth.nonEmpty
+    case CertificateRelevance.Authentication => client.authenticatesWithCertificate
     case CertificateRelevance.TokenIssuance  => client.bindsAccessTokens
 
 /** The endpoints that authenticate a client, and the path each is served at.
@@ -186,13 +187,13 @@ object ClientAuthentication:
       Observability.setClientId(credentials.clientId) *> (credentials match
         case ClientIdWithAssertion(clientId, assertion) =>
           oauthClientService.find(clientId).flatMap:
-            // A client that registered no keys cannot be authenticated this way, whatever the
-            // assertion says -- including a client that authenticates by secret, which must
-            // not become assertion-authenticable just by being sent one. Nor one whose keys
-            // are there for RFC 8705 §2.2: those keys are matched against a certificate, and
-            // accepting an assertion signed with them would hand the client a second
-            // credential it never registered.
-            case Some(client) if client.jwks.nonEmpty && client.mtlsAuth.isEmpty =>
+            // Only a client that registered the method is authenticated by an assertion,
+            // whatever the assertion says -- a client that authenticates by secret must not
+            // become assertion-authenticable just by being sent one, and neither must one
+            // whose keys are there for RFC 8705 §2.2: those keys are matched against a
+            // certificate, and accepting a signature from them would hand the client a
+            // second credential it never registered.
+            case Some(client) if client.authMethod == AuthMethod.private_key_jwt =>
               clientAssertionService
                 .verify(client, assertion, endpoint.acceptedAudiences(config.jwt.issuer))
                 .mapError {
@@ -206,9 +207,9 @@ object ClientAuthentication:
         case ClientIdWithSecret(clientId, clientSecret) =>
           oauthClientService.find(clientId).flatMap:
             // RFC 8705 §2.2 reads the certificate's public key against the same `jwks` §2.1
-            // has no use for, so which of the two the client registered decides what the
-            // presented certificate is compared against.
-            case Some(client) if client.mtlsAuth.nonEmpty =>
+            // has no use for, so which of the two methods the client registered decides what
+            // the presented certificate is compared against.
+            case Some(client) if client.authenticatesWithCertificate =>
               ZIO.succeed(client).filterOrFail(
                 _.mtlsAuth.exists:
                   case auth: MutualTlsAuth.TlsClientAuth =>
@@ -216,10 +217,10 @@ object ClientAuthentication:
                   case MutualTlsAuth.SelfSignedTlsClientAuth() =>
                     certificate.exists(cert => client.jwks.exists(cert.matchesKey)),
               )(())
-            // The client registered a key set, so an assertion is its credential and the
-            // secret it also holds is not one. Accepting the secret here would leave
-            // `private_key_jwt` as an option an attacker can simply decline to use.
-            case Some(client) if client.jwks.nonEmpty =>
+            // The client registered an assertion as its credential, so a secret is not one.
+            // Accepting one here would leave `private_key_jwt` an option an attacker can
+            // simply decline to use.
+            case Some(client) if client.authMethod == AuthMethod.private_key_jwt =>
               ZIO.fail(())
             case _ if secretRequired && clientSecret.isEmpty =>
               ZIO.fail(())

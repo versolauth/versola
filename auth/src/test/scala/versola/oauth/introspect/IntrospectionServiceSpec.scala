@@ -3,7 +3,7 @@ package versola.oauth.introspect
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, Cnf, RefreshToken}
@@ -61,6 +61,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -112,6 +113,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   val mtlsClient = testClient.copy(
     secret = None,
+    authMethod = AuthMethod.tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 

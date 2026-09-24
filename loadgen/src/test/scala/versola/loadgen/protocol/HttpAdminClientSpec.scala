@@ -63,7 +63,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         yield assertTrue(
           str(body, "tenantId") == tenantId,
           str(body, "id") == webClient.clientId,
-          str(body, "clientType") == "web",
+          str(body, "authMethod") == "client_secret",
           strings(body, "redirectUris").toSet == webClient.redirectUris,
           strings(body, "allowedScopes").toSet == webClient.allowedScopes,
           num(body, "accessTokenTtl").contains(BigDecimal(900)),
@@ -74,14 +74,14 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-0")),
         )
       },
-      test("marks a mobile client native and carries no secret back") {
+      test("marks a mobile client public and carries no secret back") {
         for
           (admin, fake) <- fakeAdmin()
           creds <- admin.registerClient(passkeyClient)
           state <- fake.snapshot
           body = state.clients(passkeyClient.clientId).spec
         yield assertTrue(
-          str(body, "clientType") == "native",
+          str(body, "authMethod") == "none",
           field(body, "registrationFlow").isEmpty,
           creds == ClientCreds(passkeyClient.clientId, None),
         )

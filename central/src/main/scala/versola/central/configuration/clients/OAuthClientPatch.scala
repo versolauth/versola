@@ -34,6 +34,10 @@ case class OAuthClientPatch(
     dpopBoundAccessTokens: Option[Boolean],
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
+    /** A method other than `client_secret` also clears the stored secrets: the repository
+      * applies both in the one statement, so a client is never left holding a credential its
+      * method no longer names. */
+    authMethod: Option[AuthMethod],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
@@ -66,6 +70,7 @@ object OAuthClientPatch:
     dpopBoundAccessTokens = None,
     dpopSigningAlgs = None,
     dpopMinRsaKeySize = None,
+    authMethod = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
     jwks = None,

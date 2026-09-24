@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import versola.auth.TestEnvConfig
-import versola.oauth.client.model.{ClientId, ConsentFlow, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, ScopeToken, TenantId}
 import versola.util.*
 import zio.*
 import zio.http.*
@@ -41,6 +41,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       tosUri: Option[String],
       consentFlow: Option[ConsentFlow],
       dpopBoundAccessTokens: Boolean,
+      authMethod: AuthMethod,
       certificateBoundAccessTokens: Boolean,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
@@ -101,6 +102,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       Some("https://example.com/terms"),
                       Some(ConsentFlow(allowPartial = true, rememberDuration = Some(30.days))),
                       true,
+                      AuthMethod.client_secret,
                       false,
                     )
                   ),

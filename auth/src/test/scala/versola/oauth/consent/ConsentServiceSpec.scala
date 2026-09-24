@@ -1,7 +1,7 @@
 package versola.oauth.consent
 
 import versola.oauth.authorize.model.Prompt
-import versola.oauth.client.model.{ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
@@ -47,6 +47,7 @@ object ConsentServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,

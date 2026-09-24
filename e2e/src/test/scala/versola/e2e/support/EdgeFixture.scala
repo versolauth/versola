@@ -117,6 +117,9 @@ object EdgeFixture:
         redirectUris = Set(edge.completeUri),
         allowedScopes = config.scopes,
         authFlow = Some(Flows.loginPasswordAuthFlow),
+        // Publishing keys is registering the method that reads them: central refuses a
+        // client_secret client that carries a jwks nothing would ever verify against.
+        authMethod = if config.privateKeyJwt then "private_key_jwt" else "client_secret",
         jwks = signer.map(_.jwks),
         edgeSigningKey = signer.map(_.privateJwk),
         requireSignedRequestObject = config.requireSignedRequestObject,

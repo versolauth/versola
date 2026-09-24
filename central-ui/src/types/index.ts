@@ -67,7 +67,15 @@ export interface ConsentFlow {
 
 // Whether a client can hold a secret. Chosen once, at creation: a web client is
 // confidential and is issued one, a native client is public and never has one.
+// Derived from authMethod ('none' is native, everything else is web) rather than stored
+// under this name - see AuthMethod.
 export type ClientType = 'web' | 'native';
+
+// How a client authenticates at the token endpoint, as it registered. Only client_secret
+// puts anything in the client's secret; every other method authenticates with a
+// certificate, a signed assertion, or nothing at all, and issuing a secret alongside one of
+// those would be a credential no endpoint ever reads.
+export type AuthMethod = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 
 // RFC 8705 section 2.1.2: which registered value a client's certificate is recognised by.
 export type MtlsSubjectType = 'subject_dn' | 'san_dns' | 'san_uri' | 'san_ip' | 'san_email';
@@ -85,6 +93,9 @@ export interface OAuthClient {
   redirectUris: string[];
   scope: string[];
   clientType: ClientType;
+  /** The stored source of truth behind clientType and behind whether a secret exists to
+   *  rotate - see AuthMethod. */
+  authMethod: AuthMethod;
   hasPreviousSecret: boolean;
   accessTokenTtl: number;
   refreshTokenTtl?: number;
