@@ -8,8 +8,8 @@ description: >-
   and are imported by whatever observability stack the campaign already runs
   (see versola-loadgen-dev-spec.md §11 and #280).
 type: application
-version: 0.1.0
-appVersion: "0.4.0"
+version: 0.2.0
+appVersion: "0.5.3"
 home: https://github.com/versolauth/versola
 sources:
   - https://github.com/versolauth/versola

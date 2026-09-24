@@ -1087,3 +1087,26 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Guards against the k8s/*/values.yaml `image.tag: ""` default -- which
+  # _helpers.tpl resolves to .Chart.AppVersion -- naming a tag that was never
+  # published. That is how k8s/loadgen shipped pointing at 0.4.0 images whose
+  # docker-* jobs did not exist until c17190d8, three releases later.
+  #
+  # No `needs:` -- it compiles nothing, so it stays off the critical path and
+  # reports in well under a minute. Skipped on `release`/`workflow_dispatch`
+  # because the docker-* jobs above are pushing these exact tags on those
+  # events and this check would race them.
+  helm-images:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart images exist in ghcr
+        run: .github/scripts/check-chart-images.sh
