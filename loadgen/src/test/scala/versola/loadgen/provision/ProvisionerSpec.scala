@@ -93,22 +93,22 @@ object ProvisionerSpec extends ZIOSpecDefault:
         second.roles == first.roles,
       )
     },
-    // Edge reads client and preset state from central, so a sync that ran before the writes
-    // leaves edge serving the previous campaign's configuration.
-    test("syncs auth and then edge, after every write") {
+    // Auth reads client and preset state from central, so a sync that ran before the writes
+    // leaves auth serving the previous campaign's configuration. Edge has no sync to call, so
+    // what follows is a read-back proving its caches turned over.
+    test("syncs auth after every write, then waits for edge to serve the campaign's resource") {
       for
         (admin, fake) <- fakeAdmin
         _ <- Provisioner.run(admin, blueprint)
         state <- fake.snapshot
-        lastWrite = state.calls.lastIndexWhere(!_.path.startsWith("/service"))
+        lastWrite = state.calls.lastIndexWhere(call => !call.path.startsWith("/service") && !call.path.startsWith("/resources/"))
         authSync = state.calls.indexWhere(call => call.path == "/service/configuration/sync")
-        edgeSync = state.calls.lastIndexWhere(call => call.path == "/service/configuration/sync")
+        edgeProbe = state.calls.lastIndexWhere(call => call.path == "/resources/core")
       yield assertTrue(
         state.authSyncs == 1,
-        state.edgeSyncs == 1,
         state.outboxFlushes == 1,
         lastWrite < authSync,
-        authSync < edgeSync,
+        authSync < edgeProbe,
       )
     },
     test("a second pass creates nothing and changes nothing") {

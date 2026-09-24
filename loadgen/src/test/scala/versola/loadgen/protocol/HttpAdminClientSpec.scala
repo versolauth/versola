@@ -36,6 +36,13 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
     yield (admin, fake)
 
+  /** Every admin call is made with a token from auth, so a stub central that never answers the
+    * token endpoint fails at authentication instead of at the step under test. */
+  private val issuedToken = Response.json("""{"access_token":"stub-token","token_type":"Bearer"}""")
+
+  private def isTokenRequest(request: Request): Boolean =
+    request.method == Method.POST && request.url.path.encode.endsWith("/token")
+
   /** Reads succeed with an empty listing, writes fail -- so the operation the failure names is
     * the write, not the read that preceded it.
     */
@@ -44,7 +51,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       _ <- TestClient.addRoutes(
         Handler
           .fromFunction[Request]: request =>
-            if request.method == Method.GET then Response.json("""{"clients":[],"resources":[],"permissions":[],"roles":[]}""")
+            if isTokenRequest(request) then issuedToken
+            else if request.method == Method.GET then Response.json("""{"clients":[],"resources":[],"permissions":[],"roles":[]}""")
             else Response.text("boom").status(status)
           .toRoutes,
       )
@@ -357,14 +365,13 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       },
     ),
     suite("syncs")(
-      test("tells auth and edge to reload, and flushes the user outbox") {
+      test("tells auth to reload, and flushes the user outbox") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.flushUserOutbox()
           _ <- admin.syncConfiguration()
-          _ <- admin.syncEdgeConfiguration()
           state <- fake.snapshot
-        yield assertTrue(state.outboxFlushes == 1, state.authSyncs == 1, state.edgeSyncs == 1)
+        yield assertTrue(state.outboxFlushes == 1, state.authSyncs == 1)
       },
     ),
     suite("failures")(
@@ -383,7 +390,12 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       },
       test("fails when a client listing cannot be read") {
         for
-          _ <- TestClient.addRoutes(Handler.fromResponse(Response.json("""{"unexpected":true}""")).toRoutes)
+          _ <- TestClient.addRoutes(
+            Handler
+              .fromFunction[Request]: request =>
+                if isTokenRequest(request) then issuedToken else Response.json("""{"unexpected":true}""")
+              .toRoutes,
+          )
           client <- ZIO.service[Client]
           admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
           error <- admin.registerClient(webClient).flip

@@ -21,8 +21,8 @@ object Provisioner:
     * grants a permission; roles before clients because a client's registration flow grants a
     * role by id and central rejects the write with a `400` if that role does not exist yet;
     * clients before presets because a preset is validated against its client's redirect URIs.
-    * The syncs come last, and edge's after auth's, because edge reads client and preset state
-    * from central.
+    * The sync comes last because auth reads client and preset state from central, and the wait
+    * on edge after it because edge reads the same state on its own schedule.
     */
   def run(admin: AdminClient, blueprint: CampaignBlueprint): Task[Map[String, ClientCreds]] =
     for
@@ -38,7 +38,9 @@ object Provisioner:
       // with users auth has not heard about yet measures failed logins.
       _ <- admin.flushUserOutbox()
       _ <- admin.syncConfiguration()
-      _ <- admin.syncEdgeConfiguration()
+      // Any of the campaign's resources proves the cache turned over, since one sync loads them
+      // all; the first is used so the wait is over a resource this run actually wrote.
+      _ <- ZIO.foreachDiscard(blueprint.resources.headOption)(spec => admin.awaitEdgeConfiguration(spec.resourceId))
       _ <- ZIO.logInfo(s"Provisioned ${blueprint.clients.size} clients, ${blueprint.resources.size} resources, " +
         s"${blueprint.permissions.size} permissions, ${blueprint.roles.size} roles")
     yield creds.toMap

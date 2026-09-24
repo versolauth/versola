@@ -123,8 +123,8 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |
       |provision {
       |  tenant-id = default
-      |  central-secret = "central-secret"
-      |  edge-secret = "edge-secret"
+      |  provisioner-client-id = loadgen-provisioner
+      |  provisioner-secret = "cHJvdmlzaW9uZXItc2VjcmV0"
       |  mobile-redirect-uri = "versola://callback"
       |  resources {
       |    core-uri   = "http://mockapi-core:8100"

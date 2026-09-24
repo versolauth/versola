@@ -8,9 +8,10 @@ import zio.json.ast.Json
 
 import java.util.UUID
 
-/** In-memory stand-in for central's configuration API and edge's service API, with the two
-  * behaviours the provisioner's idempotency actually turns on: a duplicate client is a `409`,
-  * while a duplicate role, permission or resource is the `500` a unique violation surfaces as.
+/** In-memory stand-in for the three hops a provision run makes -- auth's token endpoint, edge's
+  * proxy and central's configuration API behind it -- with the two behaviours the provisioner's
+  * idempotency actually turns on: a duplicate client is a `409`, while a duplicate role,
+  * permission or resource is the `500` a unique violation surfaces as.
   *
   * Holds real state rather than replaying canned responses, so that "run `provision` twice"
   * is a test of convergence and not of a script -- the second run reads back what the first
@@ -51,14 +52,47 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
   private def cold(path: String): UIO[Boolean] =
     state.modify(s => (s.coldPaths.contains(path), s.copy(coldPaths = s.coldPaths - path)))
 
+  /** Edge's proxy in miniature: an admin call arrives under `/resources/central`, must carry the
+    * bearer token auth issued, and is matched against central's own paths with that prefix
+    * removed -- the same rest-of-path forwarding `EdgeService.buildUpstreamRequest` does.
+    */
   private def respond(request: Request, body: String): UIO[Response] =
-    val path = request.url.path.encode
+    val rawPath = request.url.path.encode
+    val proxied = rawPath.startsWith(proxyPrefix + "/")
+    val path = if proxied then rawPath.stripPrefix(proxyPrefix) else rawPath
     val record = state.update(s => s.copy(calls = s.calls :+ Call(request.method, path, body)))
-    val fromEdge = request.header(Header.Authorization).exists {
-      case Header.Authorization.Basic(user, _) => user == "edge"
+    val bearer = request.header(Header.Authorization).exists {
+      case Header.Authorization.Bearer(token) => token.stringValue.startsWith(issuedTokenPrefix)
       case _ => false
     }
-    record *> ((request.method, path) match
+    if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
+    else record *> ((request.method, path) match
+      // auth's token endpoint. Only `client_credentials` for `resource://central` is modelled,
+      // since that is the one grant an admin client ever asks for.
+      case (Method.POST, "/token") =>
+        val form = Form.fromURLEncoded(body, Charsets.Utf8).toOption.getOrElse(Form.empty)
+        val requested = form.get("resource").flatMap(_.stringValue)
+        val credentialed = request.header(Header.Authorization).exists {
+          case Header.Authorization.Basic(user, _) => user.nonEmpty
+          case _ => false
+        }
+        if !credentialed || requested.contains("resource://central") == false then
+          ZIO.succeed(json(Json.Obj("error" -> Json.Str("invalid_target")), Status.BadRequest))
+        else
+          state.modify: s =>
+            (
+              json(Json.Obj("access_token" -> Json.Str(s"$issuedTokenPrefix${s.tokensIssued + 1}"))),
+              s.copy(tokensIssued = s.tokensIssued + 1),
+            )
+
+      // Edge serves a resource it has synced and 404s one it has not, which is what
+      // `awaitEdgeConfiguration` reads to tell that its writes have landed.
+      case (Method.GET, probe) if probe.startsWith("/resources/") && !probe.stripPrefix("/resources/").contains('/') =>
+        val resourceId = probe.stripPrefix("/resources/")
+        state.get.map: s =>
+          if s.resources.contains(resourceId) && s.authSyncs > 0 then Response.status(Status.NoContent)
+          else Response.status(Status.NotFound)
+
       case (Method.GET, "/configuration/clients") =>
         // `staleClientListing` reproduces the one race the provisioner cannot read its way out of:
         // the listing is served from a cache a PostgreSQL notification refreshes, so a peer's
@@ -212,12 +246,8 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       case (Method.POST, "/service/users/outbox/flush") =>
         state.modify(s => (Response.status(Status.NoContent), s.copy(outboxFlushes = s.outboxFlushes + 1)))
 
-      // Central and edge expose this on the same path, so which one was called is told apart by
-      // the credential that arrived rather than by the URL -- the test client routes on path only.
       case (Method.POST, "/service/configuration/sync") =>
-        state.modify: s =>
-          if fromEdge then (Response.status(Status.NoContent), s.copy(edgeSyncs = s.edgeSyncs + 1))
-          else (Response.status(Status.NoContent), s.copy(authSyncs = s.authSyncs + 1))
+        state.modify(s => (Response.status(Status.NoContent), s.copy(authSyncs = s.authSyncs + 1)))
 
       case _ => ZIO.succeed(Response.status(Status.NotFound)))
 
@@ -289,7 +319,7 @@ object FakeCentral:
       presets: Map[String, List[Json.Obj]],
       challengeSettings: Option[Json.Obj],
       authSyncs: Int,
-      edgeSyncs: Int,
+      tokensIssued: Int,
       outboxFlushes: Int,
       coldPaths: Set[String],
       calls: Chunk[Call],
@@ -305,7 +335,7 @@ object FakeCentral:
     presets = Map.empty,
     challengeSettings = None,
     authSyncs = 0,
-    edgeSyncs = 0,
+    tokensIssued = 0,
     outboxFlushes = 0,
     coldPaths = Set.empty,
     calls = Chunk.empty,
@@ -317,6 +347,12 @@ object FakeCentral:
   /** A unique-key violation as central reports it: an unhandled repository failure, not a 409.
     * This is why the provisioner reads before it writes.
     */
+  /** Where edge publishes central's admin API: `BootstrapService` seeds it as the internal
+    * resource `central`, so the proxy's path is this, then central's own. */
+  private val proxyPrefix: String = "/resources/central"
+
+  private val issuedTokenPrefix: String = "provisioner-token-"
+
   private val uniqueViolation: Response =
     Response.text("ERROR: duplicate key value violates unique constraint").status(Status.InternalServerError)
 
@@ -377,8 +413,8 @@ object ProvisionFixtures:
 
   val provision: ProvisionConfig = ProvisionConfig(
     tenantId = "default",
-    centralSecret = Config.Secret("central-secret"),
-    edgeSecret = Config.Secret("edge-secret"),
+    provisionerClientId = "loadgen-provisioner",
+    provisionerSecret = Config.Secret("provisioner-secret"),
     mobileRedirectUri = "versola://callback",
     resources = ProvisionResourcesConfig(
       coreUri = "http://mockapi-core:8100",

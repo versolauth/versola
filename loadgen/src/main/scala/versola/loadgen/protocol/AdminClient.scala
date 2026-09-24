@@ -25,5 +25,9 @@ trait AdminClient:
   def upsertAuthRequestPresets(spec: AuthRequestPresetsSpec): Task[Unit]
   def upsertChallengeSettings(spec: ChallengeSettingsSpec): Task[Unit]
   def syncConfiguration(): Task[Unit]
-  def syncEdgeConfiguration(): Task[Unit]
+
+  /** Blocks until edge serves `resourceId`, which is how a caller with no way to force edge's
+    * sync learns that the campaign's writes have reached the caches its traffic is authorized
+    * against. */
+  def awaitEdgeConfiguration(resourceId: String): Task[Unit]
   def flushUserOutbox(): Task[Unit]

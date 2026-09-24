@@ -9,9 +9,11 @@ import zio.json.ast.Json
 
 import java.util.UUID
 
-/** [[AdminClient]] over central's and edge's HTTP admin APIs, authenticating with HTTP Basic the
-  * same way e2e's `OAuthClient` does -- the central resource secret for central's configuration
-  * API, the edge internal secret for edge's service API.
+/** [[AdminClient]] over central's admin API as edge proxies it, the way `central-ui` reaches it:
+  * every call goes to `/resources/central/...` on edge with a `client_credentials` access token
+  * for `resource://central`, and edge -- having checked the token's audience and the client's
+  * permissions -- forwards it to central under the resource secret it holds. loadgen therefore
+  * holds no internal secret, and needs no route to central at all.
   *
   * Each `upsert` reads the current state first and then creates or updates, rather than creating
   * and treating the failure as "already there": only `/configuration/clients` reports a duplicate
@@ -25,17 +27,15 @@ import java.util.UUID
   */
 final class HttpAdminClient(
     client: Client,
-    centralUrl: URL,
+    authUrl: URL,
     edgeUrl: URL,
-    centralSecret: String,
-    edgeSecret: String,
+    provisionerClientId: String,
+    provisionerSecret: String,
     tenantId: String,
+    token: Ref.Synchronized[Option[Authorization]],
 ) extends AdminClient:
 
   import HttpAdminClient.*
-
-  private val centralAuthorization = Authorization.Basic("central", centralSecret)
-  private val edgeAuthorization = Authorization.Basic("edge", edgeSecret)
 
   override def registerClient(spec: ClientSpec): Task[ClientCreds] =
     for
@@ -299,22 +299,36 @@ final class HttpAdminClient(
     send(Method.PUT, central("configuration", "challenges", "challenge-settings"), Some(body.toJson))
       .flatMap(expectSuccess("upsertChallengeSettings", _))
 
-  override def syncConfiguration(): Task[Unit] =
-    send(Method.POST, central("service", "configuration", "sync"), None)
-      .flatMap(expectSuccess("syncConfiguration", _))
-
-  /** Retried on a 5xx for the reason e2e's client is: the sync makes edge call central over a
-    * pooled connection, and one central closed while it sat idle surfaces here as a 500 on the
+  /** Retried on a 5xx for the reason e2e's client is: the sync makes central call auth over a
+    * pooled connection, and one auth closed while it sat idle surfaces here as a 500 on the
     * first attempt.
     */
-  override def syncEdgeConfiguration(): Task[Unit] =
-    val post = send(Method.POST, edge("service", "configuration", "sync"), None, edgeAuthorization)
+  override def syncConfiguration(): Task[Unit] =
+    val post = send(Method.POST, central("service", "configuration", "sync"), None)
     post
       .repeat(Schedule.spaced(500.millis) *> Schedule.recurUntil[AdminResponse](!_.status.isServerError))
       .timeout(5.seconds)
       .someOrElseZIO(post)
       .withClock(Clock.ClockLive)
-      .flatMap(expectSuccess("syncEdgeConfiguration", _))
+      .flatMap(expectSuccess("syncConfiguration", _))
+
+  /** Edge has no sync a caller outside the cluster can reach, and publishing one would mean
+    * giving loadgen an internal secret again. What it does instead is wait for edge's own
+    * `configuration-cache-refresh-interval` to come round, and prove it has by reading the
+    * campaign's own resource back through the proxy -- a 404 from edge means the resource is
+    * still absent from the cache the campaign's traffic will be authorized against.
+    *
+    * Bounded rather than open-ended: a deployment whose interval is longer than this fails the
+    * run with the step named, which is a better answer than a campaign measuring 403s.
+    */
+  override def awaitEdgeConfiguration(resourceId: String): Task[Unit] =
+    val probe = send(Method.GET, edgeUrl.addPath(Path.root / "resources" / resourceId), None)
+    probe
+      .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[AdminResponse](_.status != Status.NotFound))
+      .timeout(edgeCacheTimeout)
+      .withClock(Clock.ClockLive)
+      .someOrFail(EdgeConfigurationStale(resourceId, edgeCacheTimeout))
+      .unit
 
   override def flushUserOutbox(): Task[Unit] =
     send(Method.POST, central("service", "users", "outbox", "flush"), None)
@@ -333,22 +347,60 @@ final class HttpAdminClient(
       maxAge = spec.maxAgeSeconds,
     )
 
-  private def central(segments: String*): URL = centralUrl.addPath(Path(segments.mkString("/", "/", "")))
-
-  private def edge(segments: String*): URL = edgeUrl.addPath(Path(segments.mkString("/", "/", "")))
+  /** Central's path as edge exposes it: the proxy matches the rest-of-path against the endpoint
+    * catalog `BootstrapService` registered for the `central` resource, so these are the same
+    * paths the direct API has, one prefix deeper.
+    */
+  private def central(segments: String*): URL =
+    edgeUrl.addPath(Path(("resources" +: "central" +: segments).mkString("/", "/", "")))
 
   private def send(
       method: Method,
       url: URL,
       body: Option[String],
-      authorization: Authorization = centralAuthorization,
   ): Task[AdminResponse] =
-    val base = Request(method = method, url = url, body = body.fold(Body.empty)(Body.fromString(_)))
-      .addHeader(authorization)
-    val request = body.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
+    def attempt(authorization: Authorization): Task[AdminResponse] =
+      val base = Request(method = method, url = url, body = body.fold(Body.empty)(Body.fromString(_)))
+        .addHeader(authorization)
+      val request = body.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
+      ZIO.scoped:
+        client.request(request).flatMap: response =>
+          response.body.asString.map(AdminResponse(response.status, _))
+
+    // A campaign's provisioning outlives a token whose TTL the deployment chose, so an expiry
+    // is re-authenticated once rather than failing the run. Anything else 401 means is a
+    // configuration problem the retry would repeat, and the second response is what surfaces.
+    for
+      authorization <- accessToken
+      response <- attempt(authorization)
+      retried <-
+        if response.status == Status.Unauthorized then token.set(None) *> accessToken.flatMap(attempt)
+        else ZIO.succeed(response)
+    yield retried
+
+  private def accessToken: Task[Authorization] =
+    token.modifyZIO:
+      case Some(existing) => ZIO.succeed((existing, Some(existing)))
+      case None => requestAccessToken.map(fresh => (fresh, Some(fresh)))
+
+  /** RFC 8707 `resource`: the token is bound to `resource://central` specifically, so a leaked
+    * one opens central's admin API and nothing else edge fronts.
+    */
+  private def requestAccessToken: Task[Authorization] =
+    val form = Form(
+      FormField.simpleField("grant_type", "client_credentials"),
+      FormField.simpleField("resource", centralResourceUri),
+    )
+    val request = Request
+      .post(authUrl.addPath(Path.root / "token"), Body.fromURLEncodedForm(form))
+      .addHeader(Authorization.Basic(provisionerClientId, provisionerSecret))
     ZIO.scoped:
       client.request(request).flatMap: response =>
-        response.body.asString.map(AdminResponse(response.status, _))
+        response.body.asString.flatMap: body =>
+          val received = AdminResponse(response.status, body)
+          expectSuccess("authenticate", received)
+            *> decode[TokenResponseBody]("authenticate", received)
+              .map(token => Authorization.Bearer(token.accessToken))
 
   /** Finishes a create central refused, by re-reading and applying the desired-state update when
     * the id turns out to be there after all.
@@ -381,15 +433,17 @@ object HttpAdminClient:
     */
   def make(client: Client, targets: TargetsConfig, provision: ProvisionConfig): Task[AdminClient] =
     for
-      central <- parseUrl("central-url", targets.centralUrl)
+      auth <- parseUrl("auth-url", targets.authUrl)
       edge <- parseUrl("edge-url", targets.edgeUrl)
+      token <- Ref.Synchronized.make(Option.empty[Authorization])
     yield HttpAdminClient(
       client = client,
-      centralUrl = central,
+      authUrl = auth,
       edgeUrl = edge,
-      centralSecret = provision.centralSecret.stringValue,
-      edgeSecret = provision.edgeSecret.stringValue,
+      provisionerClientId = provision.provisionerClientId,
+      provisionerSecret = provision.provisionerSecret.stringValue,
       tenantId = provision.tenantId,
+      token = token,
     )
 
   private def parseUrl(setting: String, url: String): Task[URL] =
@@ -404,7 +458,18 @@ object HttpAdminClient:
   private val publicAuthMethod = "none"
   private val clientSecretAuthMethod = "client_secret"
 
+  /** The internal resource id `BootstrapService` seeds central's admin API under; the RFC 8707
+    * identifier of an internal resource is `resource://<id>`, which is what edge's proxy checks
+    * the token's audience against. */
+  private val centralResourceUri = "resource://central"
+
+  /** Long enough to outlast the five minutes `scripts/gen-env.scala` gives a deployed
+    * environment, since that is the interval edge's caches actually run on outside local. */
+  private val edgeCacheTimeout = 6.minutes
+
   private case class AdminResponse(status: Status, body: String)
+
+  private case class TokenResponseBody(@jsonField("access_token") accessToken: String) derives JsonDecoder
 
   // Request/response bodies, field-for-field central's own DTOs. zio-json omits a `None` member,
   // which is what central's optional-means-absent members expect; the `Json`-typed members are
@@ -588,3 +653,9 @@ final case class InvalidAdminUrl(setting: String, url: String, cause: Throwable)
   */
 final case class AdminCallFailed(operation: String, status: Status, body: String)
     extends RuntimeException(s"$operation failed: status=$status body=$body")
+
+final case class EdgeConfigurationStale(resourceId: String, waited: Duration)
+    extends RuntimeException(
+      s"edge still does not serve resource '$resourceId' after $waited -- its " +
+        s"configuration-cache-refresh-interval is longer than provision waits",
+    )

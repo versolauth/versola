@@ -378,24 +378,25 @@ object Fixtures:
       "internal" -> Json.Bool(internal),
     )
 
+  /** The audience is a patch, not a replacement: `addAudience`/`removeAudience` name the two
+    * halves the way `PatchAudience` does, so two callers adding themselves cannot drop each
+    * other's client the way submitting a whole list did.
+    */
   def resourceUpdate(
       resourceId: String,
       resource: Option[String] = None,
-      audience: Option[Set[String]] = None,
+      addAudience: Set[String] = Set.empty,
+      removeAudience: Set[String] = Set.empty,
       deleteEndpoints: Set[String] = Set.empty,
       createEndpoints: List[Json] = Nil,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "resourceId" -> Json.Str(resourceId),
+        "audience" -> Json.Obj("add" -> strings(addAudience), "remove" -> strings(removeAudience)),
         "deleteEndpoints" -> strings(deleteEndpoints),
         "createEndpoints" -> Json.Arr(Chunk.fromIterable(createEndpoints)),
-      ) ++ Chunk.fromIterable(
-        List(
-          resource.map(value => "resource" -> Json.Str(value)),
-          audience.map(values => "audience" -> strings(values)),
-        ).flatten,
-      ),
+      ) ++ Chunk.fromIterable(resource.map(value => "resource" -> Json.Str(value)).toList),
     )
 
   def claim(id: String, description: String = "e2e claim"): Json.Obj =

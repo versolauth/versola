@@ -883,6 +883,7 @@ export async function updateResource(
   resourceId: string,
   existingEndpoints: Array<Pick<ResourceEndpoint, 'id'>>,
   resource: string,
+  existingAudience: string[],
   audience: string[],
   endpoints?: SaveResourceEndpointPayload[],
 ): Promise<Array<ResourceEndpointWriteDto & { id: ResourceEndpointId }>> {
@@ -894,7 +895,7 @@ export async function updateResource(
 
   await requestVoid('/configuration/resources', {
     method: 'PUT',
-    body: { resourceId, resource, audience, deleteEndpoints, createEndpoints },
+    body: { resourceId, resource, audience: patchSet(existingAudience, audience), deleteEndpoints, createEndpoints },
   });
 
   resourcesStore.clear();

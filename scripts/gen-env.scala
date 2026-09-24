@@ -319,6 +319,19 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val bootstrapResourceSecretLine =
     if isLocal then "  resource-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
 
+  // The client `loadgen provision` authenticates as, so that it reaches central's admin API
+  // through edge's proxy instead of holding an internal secret. Seeded locally, where e2e
+  // exercises that path against a pinned value; a deployment that runs a campaign adds the
+  // same block by hand, with the secret it also gives loadgen. Several lines rather than one,
+  // so unlike the two above it supplies its own newlines and nothing follows it on a line.
+  val bootstrapProvisionerLines =
+    if isLocal then
+      "  provisioner {\n" +
+        "    client-id = \"loadgen-provisioner\"\n" +
+        "    secret = \"ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI\"\n" +
+        "  }\n"
+    else ""
+
   // Same reasoning for the "auth" resource secret: e2e tests call auth's additional
   // listener (Account Settings) directly, with the Basic credentials edge would use.
   val accountResourceSecret =
@@ -735,7 +748,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  }
        |  auth-additional-url = "$authAdditionalUrl"
        |  auth-resource-secret = ${secretField(useOpenBao, accountResourceSecret, "ACCOUNT_RESOURCE_SECRET")}
-       |${bootstrapResourceSecretLine}|}
+       |${bootstrapProvisionerLines}${bootstrapResourceSecretLine}|}
        |
        |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
        |client-secrets-secret = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
