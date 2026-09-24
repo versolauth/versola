@@ -54,12 +54,25 @@ export AUTH_URL="${AUTH_URL:-}"
 # whoever's deploying (goshacodes' review on versolauth/versola#176:
 # "user should provide this URL, we should not set defaults").
 export POSTGRES_HOST="${POSTGRES_HOST:-}"
+# PROXY_MODE (vps only): "nginx" -- the gateway owns the host's web ports
+# itself; "external" -- another reverse proxy already does, and the
+# gateway listens on 127.0.0.1:2821 behind it. Only changes listen.conf
+# below. docker-local ignores it.
+PROXY_MODE="${PROXY_MODE:-nginx}"
 mkdir -p "$OUT_DIR"
 
 case "$TARGET" in
   docker-local|vps) ;;
   *)
     echo "versola-tools: unknown TARGET '$TARGET' (expected docker-local or vps)" >&2
+    exit 1
+    ;;
+esac
+
+case "$PROXY_MODE" in
+  nginx|external) ;;
+  *)
+    echo "versola-tools: unknown PROXY_MODE '$PROXY_MODE' (expected nginx or external)" >&2
     exit 1
     ;;
 esac
@@ -135,15 +148,20 @@ else
   cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 fi
 
-# nginx.conf/proxy_params.conf are docker-local only -- vps's nginx is a
-# native install on the VPS, deployed by a separate pipeline (see the
-# comment on compose.fragment.vps.yml.template), not something this image
-# generates config for.
-if [ "$TARGET" != "vps" ]; then
-  cp nginx.conf.template "$OUT_DIR"/nginx.conf
-  cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  cp upstreams.conf.template "$OUT_DIR"/upstreams.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, upstreams.conf, openbao.hcl to $OUT_DIR"
+# Gateway config, both targets: the routing (nginx.conf, proxy_params.conf)
+# is shared; upstreams.conf and listen.conf are the only per-target parts
+# (see nginx.conf.template's comments).
+cp nginx.conf.template "$OUT_DIR"/nginx.conf
+cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
+if [ "$TARGET" = "vps" ]; then
+  cp upstreams.vps.conf.template "$OUT_DIR"/upstreams.conf
+  if [ "$PROXY_MODE" = "external" ]; then
+    printf 'listen 127.0.0.1:2821;\n' > "$OUT_DIR"/listen.conf
+  else
+    printf 'listen 80;\nlisten [::]:80;\n' > "$OUT_DIR"/listen.conf
+  fi
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, openbao.hcl to $OUT_DIR"
+  cp upstreams.conf.template "$OUT_DIR"/upstreams.conf
+  printf 'listen 2821;\n' > "$OUT_DIR"/listen.conf
 fi
+echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, upstreams.conf, listen.conf, openbao.hcl to $OUT_DIR"

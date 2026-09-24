@@ -248,6 +248,7 @@ services:
       - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./proxy_params.conf:/etc/nginx/proxy_params.conf:ro
       - ./upstreams.conf:/etc/nginx/versola-upstreams.conf:ro
+      - ./listen.conf:/etc/nginx/versola-listen.conf:ro
     ports:
       - "2821:2821"
 
