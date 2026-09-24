@@ -104,6 +104,37 @@ if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   exit 1
 fi
 
+# TLS is on only for vps owning the host's ports (PROXY_MODE=nginx) with an
+# https:// AUTH_URL (scheme compared case-insensitively). Checked here, not
+# where the nginx files are written, so a bad AUTH_URL fails before any
+# config is generated instead of leaving a half-written bundle behind.
+TLS=off
+DOMAIN=""
+if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
+  AUTH_SCHEME=$(printf '%s' "${AUTH_URL%%://*}" | tr 'A-Z' 'a-z')
+  if [ "$AUTH_SCHEME" = "https" ] && [ "$AUTH_SCHEME" != "$AUTH_URL" ]; then
+    TLS=on
+    # Host part of AUTH_URL: drop scheme, then any path. Anything that
+    # isn't a plain domain is refused rather than silently misconfigured:
+    # a port (the certificate would be served on 443 while clients go
+    # elsewhere), userinfo/query/fragment, an empty host, or an IP address
+    # (Let's Encrypt doesn't issue for IPs by default -- the ACME module
+    # would just keep failing, burning the failed-validation rate limit).
+    DOMAIN="${AUTH_URL#*://}"
+    DOMAIN="${DOMAIN%%/*}"
+    DOMAIN_OK=yes
+    case "$DOMAIN" in
+      ""|*:*|*\[*|*@*|*\?*|*\#*) DOMAIN_OK=no ;;
+      *[!0-9.]*) ;;
+      *) DOMAIN_OK=no ;;
+    esac
+    if [ "$DOMAIN_OK" = "no" ]; then
+      echo "versola-tools: AUTH_URL '$AUTH_URL' -- with TLS on it must be https://<domain> (no port, IP address, user, query or fragment); Let's Encrypt issues the certificate for that domain on 443" >&2
+      exit 1
+    fi
+  fi
+fi
+
 echo "versola-tools ${VERSION}: generating configs for $TARGET..."
 
 # gen-env.scala's "Target" prompt is the only input it ever reads from
@@ -184,18 +215,18 @@ cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
 # needs a `resolver` to reach the ACME server, and the right one is only
 # known on the host, not here. Always written, comment-only when TLS is
 # off, so the compose bind mount never points at a missing file.
-TLS=off
-if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
-  case "$AUTH_URL" in
-    https://*) TLS=on ;;
-  esac
-fi
+# TLS / DOMAIN are decided (and AUTH_URL validated) up front, with the
+# other input checks -- see the block after the POSTGRES_HOST check.
 
 LISTEN6_80=""
 LISTEN6_443=""
+# Without IPv6 on the host, also keep the ACME client off AAAA records
+# (Let's Encrypt has them) -- an IPv6 address picked there can't connect.
+RESOLVER_OPTS=" ipv6=off"
 if [ "$LISTEN_IPV6" = "on" ]; then
   LISTEN6_80="listen [::]:80;"
   LISTEN6_443="listen [::]:443 ssl;"
+  RESOLVER_OPTS=""
 fi
 
 if [ "$TARGET" = "vps" ]; then
@@ -210,23 +241,15 @@ if [ "$TARGET" = "vps" ]; then
     # otherwise a client-supplied header passes through untouched and its
     # value would be trusted here. Written for this mode only -- when the
     # gateway owns the host's ports, nothing legitimate is ever in front.
+    # Loopback-only also means that proxy has to run on the host itself
+    # (natively, or a container with network_mode: host) -- one in a
+    # container on a Docker bridge network can't reach 127.0.0.1:2821.
     cat > "$OUT_DIR"/listen.conf <<EOF
 listen 127.0.0.1:2821;
 set_real_ip_from 127.0.0.1;
 real_ip_header X-Forwarded-For;
 EOF
   elif [ "$TLS" = "on" ]; then
-    # Host part of AUTH_URL: drop scheme, then any path. A port (or a
-    # bracketed IPv6 literal) is refused rather than silently ignored: the
-    # certificate would be served on 443 while clients go to that port.
-    DOMAIN="${AUTH_URL#*://}"
-    DOMAIN="${DOMAIN%%/*}"
-    case "$DOMAIN" in
-      *:*|*\[*)
-        echo "versola-tools: AUTH_URL '$AUTH_URL' has a port or an IP literal -- with TLS on it must be a plain https://<domain> served on 443" >&2
-        exit 1
-        ;;
-    esac
     cat > "$OUT_DIR"/listen.conf <<EOF
 listen 443 ssl;
 $LISTEN6_443
@@ -246,7 +269,7 @@ fi
 
 if [ "$TLS" = "on" ]; then
   cat > "$OUT_DIR"/acme.conf.template <<EOF
-resolver \${NGINX_LOCAL_RESOLVERS};
+resolver \${NGINX_LOCAL_RESOLVERS}$RESOLVER_OPTS;
 
 acme_issuer letsencrypt {
     uri $ACME_DIRECTORY;

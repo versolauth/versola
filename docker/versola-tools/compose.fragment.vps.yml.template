@@ -175,9 +175,17 @@ services:
   # on is decided by listen.conf -- 80 when it owns the host's web ports,
   # 127.0.0.1:2821 when another reverse proxy already does
   # (PROXY_MODE=external) and forwards to it.
+  #
+  # `profiles: [gateway]`: compose ignores this service -- and its external
+  # versola-acme-vps volume -- unless run with `--profile gateway`, which
+  # versola-cli does once it has created that volume. Without it, Compose
+  # before v2.29 checks every external volume in the file even for
+  # `up -d auth edge` / `run migrate`, and a missing versola-acme-vps would
+  # fail those too (e.g. an older CLI with this versola-tools release).
   nginx:
     image: ghcr.io/versolauth/versola-gateway:${VERSION}
     container_name: versola-nginx
+    profiles: ["gateway"]
     restart: unless-stopped
     depends_on:
       - auth
