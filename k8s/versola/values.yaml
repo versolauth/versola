@@ -259,10 +259,10 @@ ingress:
   #   api      -> edge:    /resources/ /permissions/
   #   console  -> console: console.basePath
   #
-  # `users`, `service` and `settings` are not for public/browser traffic --
-  # none of the example `routes` combinations below include them, and every
-  # endpoint in all three is guarded server-side even if you do add one, so
-  # an accidental host+group typo isn't an open door:
+  # `users`, `service`, `settings` and `central` are not for public/browser
+  # traffic -- none of the example `routes` combinations below include them,
+  # and every endpoint in all four is guarded server-side even if you do add
+  # one, so an accidental host+group typo isn't an open door:
   #   users    -> auth:    /users, /users/* (UserController). Called by
   #                        central over in-cluster Service DNS
   #                        (config.auth.url), not through the Ingress in
@@ -291,6 +291,27 @@ ingress:
   #                        Add it only if something outside the cluster
   #                        needs to call it directly instead of through
   #                        whatever already holds that secret.
+  #   central  -> central: /configuration/*, /service/* -- central's whole
+  #                        admin API. Normally reached over in-cluster
+  #                        Service DNS (auth and edge use config.central.url;
+  #                        central-ui reaches it through whatever fronts the
+  #                        console), so list it only when the caller really
+  #                        is outside the cluster. The case this exists for:
+  #                        the load emulator's `loadgen provision`, which
+  #                        writes a campaign's clients, resources, roles,
+  #                        presets and challenge settings and then syncs
+  #                        config and flushes the user outbox -- and which
+  #                        runs in its own cluster on purpose, so it never
+  #                        shares worker nodes with the system it drives.
+  #                        Guarded by the same `authorizeInternal` Bearer JWT
+  #                        as `users` and `service`. central's own /users is
+  #                        NOT in this group: nothing outside has needed it,
+  #                        and adding it would mean naming it deliberately.
+  #                        Do not put it on the same host as `service`: both
+  #                        are Prefix /service/ (central's ServiceController
+  #                        and auth's), so one path would have two backends
+  #                        and the controller picks -- ingress-nginx and an
+  #                        ALB need not pick the same one. Separate hostnames.
   hosts: []
   #  - host: id.example.com
   #    routes: [oidc, login]

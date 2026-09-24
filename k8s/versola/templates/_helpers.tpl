@@ -252,10 +252,12 @@ hostnames.
 {{- $fullname := include "versola.fullname" . -}}
 {{- $auth := printf "%s-auth" $fullname -}}
 {{- $edge := printf "%s-edge" $fullname -}}
+{{- $central := printf "%s-central" $fullname -}}
 {{- $console := printf "%s-console" $fullname -}}
 {{- $authPort := .Values.services.auth.port -}}
 {{- $authAdditionalPort := .Values.services.auth.additionalPort -}}
 {{- $edgePort := .Values.services.edge.port -}}
+{{- $centralPort := .Values.services.central.port -}}
 oidc:
   - {path: /authorize, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
   - {path: /token, pathType: Exact, service: {{ $auth }}, port: {{ $authPort }}}
@@ -299,4 +301,35 @@ service:
 settings:
   - {path: /settings, pathType: Exact, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
   - {path: /settings/, pathType: Prefix, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
+# central's admin API. Like `users`/`service`/`settings`, this is normally
+# reached over in-cluster Service DNS -- central-ui talks to it from the
+# browser through whatever fronts the console, and edge/auth reach it as
+# config.central.url. The group exists for the case where the caller is
+# genuinely outside the cluster: the load emulator's `loadgen provision`
+# (HttpAdminClient) writes a campaign's clients, resources, roles, presets
+# and challenge settings through /configuration, then triggers a config sync
+# and an outbox flush through /service, and it runs in its own cluster
+# precisely so it does not share worker nodes with the system it drives.
+#
+# Guarded server-side by authorizeInternal, the same Bearer JWT signed with
+# central's own secret key that `users` and `service` require -- never a user
+# session. Still not a group to add without meaning it: it is central's
+# entire configuration surface, and everything a campaign can provision, a
+# caller who reaches it can also change.
+#
+# central's own /users (UserController) is deliberately NOT here. Nothing
+# outside the cluster has needed it, and this chart names every exposed
+# endpoint rather than opening a prefix and hoping -- see the "no catch-all"
+# note above. Add it as its own group if that changes.
+#
+# Do not put this group on the same host as `service`. Both are Prefix
+# /service/ -- central's ServiceController and auth's -- so one host listing
+# both has two backends for one path and nothing to choose between them.
+# That is unlike oidc/login's /logout, where the paths differ and Ingress
+# precedence settles it; here the paths are identical and which backend wins
+# is the controller's own business, so the same manifest can route one way on
+# ingress-nginx and another on an ALB. Split them across hostnames.
+central:
+  - {path: /configuration/, pathType: Prefix, service: {{ $central }}, port: {{ $centralPort }}}
+  - {path: /service/, pathType: Prefix, service: {{ $central }}, port: {{ $centralPort }}}
 {{- end -}}
