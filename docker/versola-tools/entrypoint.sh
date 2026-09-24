@@ -64,6 +64,11 @@ PROXY_MODE="${PROXY_MODE:-nginx}"
 # (https://acme-staging-v02.api.letsencrypt.org/directory) when testing, so
 # repeated fresh deploys don't burn production rate limits.
 ACME_DIRECTORY="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
+# LISTEN_IPV6 (vps, PROXY_MODE=nginx): also listen on [::]. Off by default:
+# on a host with IPv6 disabled in the kernel, a [::] listen makes nginx fail
+# to start at all (and restart-loop). This image can't see the host's
+# network stack, so versola-cli checks it and turns this on when it's there.
+LISTEN_IPV6="${LISTEN_IPV6:-off}"
 mkdir -p "$OUT_DIR"
 
 case "$TARGET" in
@@ -78,6 +83,14 @@ case "$PROXY_MODE" in
   nginx|external) ;;
   *)
     echo "versola-tools: unknown PROXY_MODE '$PROXY_MODE' (expected nginx or external)" >&2
+    exit 1
+    ;;
+esac
+
+case "$LISTEN_IPV6" in
+  on|off) ;;
+  *)
+    echo "versola-tools: unknown LISTEN_IPV6 '$LISTEN_IPV6' (expected on or off)" >&2
     exit 1
     ;;
 esac
@@ -178,18 +191,45 @@ if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
   esac
 fi
 
+LISTEN6_80=""
+LISTEN6_443=""
+if [ "$LISTEN_IPV6" = "on" ]; then
+  LISTEN6_80="listen [::]:80;"
+  LISTEN6_443="listen [::]:443 ssl;"
+fi
+
 if [ "$TARGET" = "vps" ]; then
   cp upstreams.vps.conf.template "$OUT_DIR"/upstreams.conf
   if [ "$PROXY_MODE" = "external" ]; then
-    printf 'listen 127.0.0.1:2821;\n' > "$OUT_DIR"/listen.conf
+    # Real client IP from the reverse proxy in front of us: without this,
+    # $remote_addr -- and so the X-Real-IP proxy_params.conf passes on,
+    # which auth uses by default for per-IP throttling -- is 127.0.0.1 for
+    # everyone. Only that proxy (127.0.0.1) is trusted, and only the last
+    # X-Forwarded-For entry (the address it saw) is taken. That proxy MUST
+    # set X-Forwarded-For itself (e.g. $proxy_add_x_forwarded_for):
+    # otherwise a client-supplied header passes through untouched and its
+    # value would be trusted here. Written for this mode only -- when the
+    # gateway owns the host's ports, nothing legitimate is ever in front.
+    cat > "$OUT_DIR"/listen.conf <<EOF
+listen 127.0.0.1:2821;
+set_real_ip_from 127.0.0.1;
+real_ip_header X-Forwarded-For;
+EOF
   elif [ "$TLS" = "on" ]; then
-    # Host part of AUTH_URL: drop scheme, then any path, then any port.
+    # Host part of AUTH_URL: drop scheme, then any path. A port (or a
+    # bracketed IPv6 literal) is refused rather than silently ignored: the
+    # certificate would be served on 443 while clients go to that port.
     DOMAIN="${AUTH_URL#*://}"
     DOMAIN="${DOMAIN%%/*}"
-    DOMAIN="${DOMAIN%%:*}"
+    case "$DOMAIN" in
+      *:*|*\[*)
+        echo "versola-tools: AUTH_URL '$AUTH_URL' has a port or an IP literal -- with TLS on it must be a plain https://<domain> served on 443" >&2
+        exit 1
+        ;;
+    esac
     cat > "$OUT_DIR"/listen.conf <<EOF
 listen 443 ssl;
-listen [::]:443 ssl;
+$LISTEN6_443
 http2 on;
 acme_certificate letsencrypt $DOMAIN;
 ssl_certificate \$acme_certificate;
@@ -197,7 +237,7 @@ ssl_certificate_key \$acme_certificate_key;
 ssl_certificate_cache max=2;
 EOF
   else
-    printf 'listen 80;\nlisten [::]:80;\n' > "$OUT_DIR"/listen.conf
+    printf 'listen 80;\n%s\n' "$LISTEN6_80" > "$OUT_DIR"/listen.conf
   fi
 else
   cp upstreams.conf.template "$OUT_DIR"/upstreams.conf
@@ -210,8 +250,8 @@ resolver \${NGINX_LOCAL_RESOLVERS};
 
 acme_issuer letsencrypt {
     uri $ACME_DIRECTORY;
-    # A docker volume (see compose.fragment.vps.yml.template): without a
-    # persistent state_path every container restart would request a brand
+    # An external docker volume (see compose.fragment.vps.yml.template):
+    # without a persistent state_path every container restart would request a brand
     # new certificate and quickly run into Let's Encrypt's rate limits.
     state_path /var/cache/nginx/acme-letsencrypt;
     accept_terms_of_service;
@@ -220,7 +260,7 @@ acme_issuer letsencrypt {
 server {
     # Required by the ACME module to answer HTTP-01 challenges.
     listen 80;
-    listen [::]:80;
+    $LISTEN6_80
 
     location / {
         return 301 https://\$host\$request_uri;

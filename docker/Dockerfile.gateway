@@ -32,4 +32,10 @@ FROM nginx:1.30-alpine
 
 RUN sed -i '1i load_module modules/ngx_http_acme_module.so;' /etc/nginx/nginx.conf
 
+# ACME state dir (vps mounts a volume here, see compose.fragment.vps.yml
+# .template), pre-created owned by nginx so workers can write to it: Docker
+# copies this ownership into an empty volume on its first mount.
+RUN mkdir -p /var/cache/nginx/acme-letsencrypt \
+ && chown nginx:nginx /var/cache/nginx/acme-letsencrypt
+
 COPY central-ui/dist /usr/share/nginx/html/central/admin

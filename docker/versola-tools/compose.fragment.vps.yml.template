@@ -193,9 +193,11 @@ services:
       - ./upstreams.conf:/etc/nginx/versola-upstreams.conf:ro
       - ./listen.conf:/etc/nginx/versola-listen.conf:ro
       - ./acme.conf.template:/etc/nginx/templates/acme.conf.template:ro
-      # ACME account key, certificate and its private key. A plain named
-      # volume is enough here (unlike openbao's external one): this file's
-      # `name:` is fixed, so it's the same volume across every bundle.
+      # ACME account key, certificate and its private key. External, like
+      # openbao's: a plain named volume would be deleted by `versola down
+      # --volumes`, and every redeploy after that would request a brand new
+      # certificate -- Let's Encrypt allows only a few duplicates a week.
+      # versola-cli creates it (docker volume create) before `up`.
       - versola-acme-vps:/var/cache/nginx/acme-letsencrypt
 
 # Same external-volume reasoning as compose.fragment.yml.template -- see
@@ -207,3 +209,4 @@ volumes:
   versola-openbao-file-vps:
     external: true
   versola-acme-vps:
+    external: true
