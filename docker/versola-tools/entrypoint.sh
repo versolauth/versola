@@ -142,7 +142,8 @@ fi
 if [ "$TARGET" != "vps" ]; then
   cp nginx.conf.template "$OUT_DIR"/nginx.conf
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl to $OUT_DIR"
+  cp upstreams.conf.template "$OUT_DIR"/upstreams.conf
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, upstreams.conf, openbao.hcl to $OUT_DIR"
 else
   echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, openbao.hcl to $OUT_DIR"
 fi

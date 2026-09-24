@@ -1,0 +1,15 @@
+# docker-local upstreams, included by nginx.conf (see the comment there).
+# Container DNS names: the gateway is its own container on Compose's
+# bridge network, not sharing the host's network with auth/edge.
+#
+# No ${VERSION} placeholder -- copied as-is by entrypoint.sh.
+
+upstream auth_backend {
+    server auth:8080;
+    keepalive 32;
+}
+
+upstream edge_backend {
+    server edge:8095;
+    keepalive 32;
+}

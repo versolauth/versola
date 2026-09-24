@@ -1,0 +1,16 @@
+# vps upstreams, included by nginx.conf (see the comment there).
+# 127.0.0.1: every service in compose.fragment.vps.yml.template runs with
+# network_mode: host and binds loopback only (BIND_HOST), so the gateway
+# reaches auth/edge on the host's own ports, not via container DNS names.
+#
+# No ${VERSION} placeholder -- copied as-is by entrypoint.sh.
+
+upstream auth_backend {
+    server 127.0.0.1:8080;
+    keepalive 32;
+}
+
+upstream edge_backend {
+    server 127.0.0.1:8095;
+    keepalive 32;
+}

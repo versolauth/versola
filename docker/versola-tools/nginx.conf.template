@@ -12,9 +12,7 @@
 #      Port 2821 matches what "versola doctor" checks is free -- chosen
 #      deliberately over 8080, which collides with enough other local dev
 #      tooling to be worth avoiding.
-#   2. Upstreams point at container DNS names (auth, edge) instead of
-#      127.0.0.1 -- nginx is its own container here, not sharing the
-#      host's network with auth/edge like it does in prod.
+#   2. Upstreams are not in this file -- see the include just below.
 #
 # central-ui isn't an upstream at all, here or in prod: it's static files
 # nginx serves directly. Locally that means this nginx IS
@@ -30,15 +28,13 @@
 # Versola releases the way image tags do, so this is copied as-is by
 # entrypoint.sh rather than run through sed.
 
-upstream auth_backend {
-    server auth:8080;
-    keepalive 32;
-}
-
-upstream edge_backend {
-    server edge:8095;
-    keepalive 32;
-}
+# Upstreams live in their own file, one per target (upstreams.conf.template
+# for docker-local, upstreams.vps.conf.template for vps), picked by
+# entrypoint.sh. The routing below is identical on both targets; only where
+# auth/edge are reachable differs (container DNS names vs 127.0.0.1 under
+# network_mode: host). Keeping them apart also means scaling replicas later
+# only has to rewrite this one small file and reload, not the routing.
+include /etc/nginx/versola-upstreams.conf;
 
 server {
     listen 2821;
