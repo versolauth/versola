@@ -147,6 +147,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       jwks = None,
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
+      edgeSigningKey = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -178,6 +179,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       jwks = None,
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
+      edgeSigningKey = None,
     ),
   )
 
@@ -251,7 +253,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtl: Duration,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
-  )
+    )
 
   private def decryptSyncedClient(
       client: SyncOAuthClientRecord,

@@ -28,6 +28,18 @@ final class AssertionSigner private (private val signingKey: ECPrivateKey, publi
   val jwks: Json.Obj =
     Json.Obj("keys" -> Json.Arr(publicJwk.toJSONString.fromJson[Json.Obj].toOption.get))
 
+  /** The private half of the same key, as central stores it for an edge fronting this client.
+    *
+    * Carries the `alg` the public half in [[jwks]] leaves out: a signer has to state which
+    * algorithm it used, while a verifier can work it out from the signature's own header.
+    */
+  val privateJwk: Json.Obj =
+    ECKey.Builder(publicJwk)
+      .privateKey(signingKey)
+      .algorithm(JWSAlgorithm.ES256)
+      .build()
+      .toJSONString.fromJson[Json.Obj].toOption.get
+
   /** One assertion.
     *
     * @param audience RFC 7523 §3 requires this to name the server the assertion is sent to;

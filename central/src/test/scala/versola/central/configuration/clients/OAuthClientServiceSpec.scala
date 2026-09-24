@@ -99,6 +99,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -131,6 +132,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -296,6 +298,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         jwks = None,
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
+        edgeSigningKey = None,
       )
 
       for

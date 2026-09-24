@@ -1,11 +1,15 @@
 package versola.util
 
-import com.nimbusds.jwt.SignedJWT
+import com.nimbusds.jose.{JOSEObjectType, JWSHeader}
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import zio.json.*
 import zio.json.ast.Json
-import zio.{Chunk, Duration, IO, ZIO}
+import zio.{Chunk, Clock, Duration, IO, Task, ZIO, durationInt}
 
+import java.security.PrivateKey
 import java.time.Instant
+import java.util.{Date, UUID}
+import scala.jdk.CollectionConverters.*
 import scala.util.Try
 
 /** RFC 9101 JWT-Secured Authorization Request (JAR): the authorization request parameters
@@ -81,6 +85,75 @@ object RequestObject:
     case LifetimeTooLong
     case NestedRequest
     case ImpersonatesClientAssertion
+
+  /** How long a signed object stays valid. Minted per authorization request and spent on the
+    * redirect that carries it, so the only thing a longer life buys is a wider window for an
+    * object recovered from browser history or a referrer to be replayed. Well inside the
+    * `maxLifetime` [[verify]] is called with.
+    */
+  val Ttl: Duration = 5.minutes
+
+  /** Signs an authorization request as a request object -- the counterpart of [[verify]], for
+    * a caller acting as the client rather than as the server (`versola.edge.SSOClient`).
+    *
+    * Kept beside [[verify]] so the two cannot drift: what is set here is exactly what is
+    * required there. Two of those rules are why this cannot go through [[JWT.serialize]] --
+    * §10.8 refuses an object carrying `sub`, which `serialize` always sets, and §9.4.1's `typ`
+    * is not one of [[JWT.Type]]'s. The signer itself is still [[JWT.signerFor]].
+    *
+    * @param parameters the authorization request, in the shape a plain query would have
+    *   carried it -- the inverse of [[parameters]]. Must include `client_id`, which §6.3
+    *   requires to match the one sent alongside the object. Claims that carry the object
+    *   rather than a parameter are set here and dropped from this map, so a caller cannot
+    *   introduce an `iss` or `exp` of its own.
+    * @param audience what the receiving server accepts as `aud`: §4 names the issuer
+    *   identifier, and the authorization endpoint's URL is also taken in the wild.
+    */
+  def sign(
+      parameters: Map[String, Chunk[String]],
+      clientId: String,
+      audience: String,
+      algorithm: ClientAssertion.Algorithm,
+      keyId: String,
+      privateKey: PrivateKey,
+      ttl: Duration = Ttl,
+  ): Task[String] =
+    Clock.instant.flatMap: now =>
+      ZIO.attemptBlocking:
+        val header = JWSHeader.Builder(algorithm.jwsAlgorithm)
+          .keyID(keyId)
+          .`type`(JOSEObjectType(Type))
+          .build()
+
+        val builder = JWTClaimsSet.Builder()
+          .issuer(clientId)
+          .audience(audience)
+          .jwtID(UUID.randomUUID().toString)
+          .issueTime(Date.from(now))
+          .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
+
+        parameters.iterator
+          .filterNot((name, _) => ControlClaims.contains(name))
+          .foreach((name, values) => claim(name, values).foreach(builder.claim(name, _)))
+
+        val jwt = SignedJWT(header, builder.build())
+        jwt.sign(JWT.signerFor(JWT.Signature.Asymmetric(algorithm.jwtAlgorithm, keyId, privateKey)))
+        jwt.serialize()
+
+  /** A parameter's values as the claim [[parameter]] would have read them back from. A
+    * parameter whose value is itself JSON is re-parsed rather than embedded as a string, since
+    * that is the form the object is required to carry it in; one that does not parse is
+    * carried verbatim, which fails at the server rather than silently dropping the parameter
+    * the caller asked for. A parameter with no values contributes no claim at all -- an
+    * explicit null would be read as a value the client chose to send.
+    */
+  private def claim(name: String, values: Chunk[String]): Option[AnyRef] =
+    values match
+      case Chunk() => None
+      case Chunk(single) if JsonValuedParameters.contains(name) =>
+        Some(single.fromJson[Json].fold(_ => single, JsonJava.toJava))
+      case Chunk(single) => Some(single)
+      case many => Some(many.asJava)
 
   /** Verifies a request object and returns the authorization request parameters it carries.
     *

@@ -1100,6 +1100,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       requireSignedRequestObject: Boolean = false,
       /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
       requirePushedAuthorizationRequests: Boolean = false,
+      /** The private half of a key in `jwks`, which central hands to the edge fronting this
+        * client so it can authenticate and sign as it. Build it with
+        * `AssertionSigner.privateJwk`. */
+      edgeSigningKey: Option[zio.json.ast.Json] = None,
       /** RFC 9449 §5.1: the signing algorithms this client's proofs may use, narrowing what
         * the metadata document advertises. Empty registers no narrowing. */
       dpopSigningAlgs: Set[String] = Set.empty,
@@ -1131,6 +1135,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       jwks = jwks,
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
+      edgeSigningKey = edgeSigningKey,
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
     ).toJson)
@@ -1733,4 +1738,5 @@ object OAuthClient:
       requirePushedAuthorizationRequests: Boolean,
       dpopSigningAlgs: Set[String],
       dpopMinRsaKeySize: Option[Int],
+      edgeSigningKey: Option[zio.json.ast.Json],
   ) derives JsonEncoder

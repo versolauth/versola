@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.{Dpop, JsonWebKeySet, Patch}
+import versola.util.{Dpop, JsonWebKeySet, Patch, Secret}
 import zio.Duration
 import zio.http.URL
 
@@ -39,6 +39,9 @@ case class OAuthClientPatch(
     jwks: Option[Patch[JsonWebKeySet]],
     requireSignedRequestObject: Option[Boolean],
     requirePushedAuthorizationRequests: Option[Boolean],
+    /** The plaintext private JWK, already re-encrypted for storage by the caller — the
+      * repository writes what it is given, as it does for the secret. */
+    edgeSigningKey: Option[Patch[Secret]],
 )
 
 object OAuthClientPatch:
@@ -68,4 +71,5 @@ object OAuthClientPatch:
     jwks = None,
     requireSignedRequestObject = None,
     requirePushedAuthorizationRequests = None,
+    edgeSigningKey = None,
   )

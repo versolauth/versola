@@ -5,8 +5,9 @@ import com.nimbusds.jose.crypto.{ECDSAVerifier, RSASSAVerifier}
 import com.nimbusds.jose.jwk.{Curve, ECKey, JWK, KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import zio.json.ast.Json
-import zio.{Duration, IO, ZIO}
+import zio.{Duration, IO, Task, ZIO, durationInt}
 
+import java.security.PrivateKey
 import java.time.Instant
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
@@ -39,6 +40,14 @@ object ClientAssertion:
     case ES256 extends Algorithm(JWSAlgorithm.ES256)
     case PS256 extends Algorithm(JWSAlgorithm.PS256)
     case RS256 extends Algorithm(JWSAlgorithm.RS256)
+
+    /** The same algorithm as [[JWT.Algorithm]] names it, for [[issue]] -- signing goes through
+      * [[JWT.serialize]], which selects its signer from that enum. Total by construction:
+      * every case here has a counterpart there. */
+    def jwtAlgorithm: JWT.Algorithm = this match
+      case ES256 => JWT.Algorithm.ES256
+      case PS256 => JWT.Algorithm.PS256
+      case RS256 => JWT.Algorithm.RS256
 
   /** RFC 7591 §2 / RFC 8414 §2: the value `token_endpoint_auth_methods_supported` and a
     * client's own `token_endpoint_auth_method` name this method by. */
@@ -73,6 +82,46 @@ object ClientAssertion:
       document.get(MetadataField) match
         case None => Default
         case Some(field) => field.as[Set[String]].toOption.fold(Default)(_.flatMap(fromName))
+
+  /** Mints an assertion authenticating `clientId` to `audience`.
+    *
+    * The counterpart of [[verify]], for a caller acting as the client rather than as the
+    * server -- edge authenticating to auth for a client it fronts (`versola.edge.SSOClient`).
+    * Kept beside [[verify]] so the two cannot drift: every claim required there is set here,
+    * and `jti`/`iat`/`exp` come from [[JWT.serialize]], which mints a fresh `jti` per call.
+    *
+    * @param audience what the receiving server accepts as `aud`. RFC 7523 §3 names the token
+    *   endpoint's URL; the issuer identifier is also accepted in the wild, and [[verify]]
+    *   takes either -- so the caller states which one it is sending rather than this guessing.
+    */
+  def issue(
+      clientId: String,
+      audience: String,
+      algorithm: Algorithm,
+      keyId: String,
+      privateKey: PrivateKey,
+      ttl: Duration = Ttl,
+  ): Task[String] =
+    JWT.serialize(
+      claims = JWT.Claims(
+        issuer = clientId,
+        subject = clientId,
+        audience = List(audience),
+        custom = Json.Obj(),
+      ),
+      ttl = ttl,
+      signature = JWT.Signature.Asymmetric(
+        algorithm = algorithm.jwtAlgorithm,
+        keyId = keyId,
+        privateKey = privateKey,
+      ),
+    )
+
+  /** How long an issued assertion stays valid. Short because it is minted per request and
+    * never cached: the only thing a longer life buys is a wider replay window for anything
+    * that observed one. Well inside the `maxLifetime` [[verify]] is called with.
+    */
+  val Ttl: Duration = 1.minute
 
   /** The `sub` the assertion names, read without verifying anything.
     *

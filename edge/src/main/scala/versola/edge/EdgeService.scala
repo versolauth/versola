@@ -208,6 +208,11 @@ object EdgeService:
 
     private def prepareAuthorizeUrl(preset: AuthorizationPreset, overrideParams: Map[String, String]): zio.Task[URL] =
       for
+        // The client, not just the preset: what the authorization request may look like is
+        // the client's registration (RFC 9101 §10.5, RFC 9126 §6.2), and the credential that
+        // signs or pushes it hangs off the same record.
+        client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
+
         codeVerifier <- secureRandom.nextBytes(32).map(CodeVerifier.fromBytes)
 
         codeChallenge = Base64.urlEncode:
@@ -225,7 +230,7 @@ object EdgeService:
           ttl = loginTtl,
         )
 
-        authUrl <- ssoClient.authorizeUri(preset, codeChallenge, state, overrideParams)
+        authUrl <- ssoClient.authorizeUri(preset, client, codeChallenge, state, overrideParams)
       yield authUrl
 
     override def complete(
@@ -241,7 +246,7 @@ object EdgeService:
           codeVerifier = record.codeVerifier,
           redirectUri = preset.redirectUri,
           clientId = client.id,
-          clientSecret = client.secret,
+          credential = client.credential,
         )
         cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
         _ <- storeSession(tokens, preset.id, cookieTtl)
@@ -792,7 +797,7 @@ object EdgeService:
         for
           _ <- Observability.setPreviousRefreshToken(refreshToken)
           client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
-          tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.secret)
+          tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.credential)
           cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
           _ <- storeSession(tokens, presetId, cookieTtl)
           publicKeys <- jwksService.getPublicKeys

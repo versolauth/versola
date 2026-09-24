@@ -50,8 +50,8 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     cookiePath = Some("/"),
   )
 
-  private val oauthClient = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
-  private val svcClient = OAuthClient(id = ClientId("svc-1"), secret = Secret(Array.fill(48)(3.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val oauthClient = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val svcClient = OAuthClient(id = ClientId("svc-1"), credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
 
   /** What central currently says about this edge -- the only thing DpopVerifier reads it for.
     * Nonce required, algorithms as the metadata document defaults to. */
@@ -2013,7 +2013,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       val endpoint = centralEndpoint()
       val centralClient = OAuthClient(
         id = centralClientId,
-        secret = Secret(Array.fill(48)(2.toByte)),
+        credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
       )
@@ -2048,7 +2048,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       val endpoint = centralEndpoint()
       val centralClient = OAuthClient(
         id = centralClientId,
-        secret = Secret(Array.fill(48)(2.toByte)),
+        credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
       )
@@ -2083,7 +2083,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       val endpoint = centralEndpoint()
       val centralClient = OAuthClient(
         id = centralClientId,
-        secret = Secret(Array.fill(48)(2.toByte)),
+        credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
         permissions = Set.empty,
         accessTokenTtl = 15.minutes,
       )

@@ -1,6 +1,6 @@
 package versola.central.configuration.clients
 
-import versola.util.{Dpop, JsonWebKeySet}
+import versola.util.{Dpop, JsonWebKeySet, PrivateJsonWebKey}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
@@ -123,6 +123,29 @@ object InvalidRegistrationConfiguration:
       ))
     else
       None
+
+  /** The key an edge signs as this client with has to be one auth can check the signature of,
+    * and auth checks against `jwks` alone — so a signing key whose public half the client does
+    * not publish configures an edge that fails every login it is asked to serve.
+    *
+    * Caught at registration for the same reason [[validateRequestObjectRequirement]] is: the
+    * alternative is a client that looks registered and is refused at `/token` or `/authorize`,
+    * with nothing at either end naming the mismatch.
+    */
+  def validateEdgeSigningKey(
+      clientId: ClientId,
+      edgeSigningKey: Option[PrivateJsonWebKey],
+      jwks: Option[JsonWebKeySet],
+  ): Option[InvalidRegistrationConfiguration] =
+    edgeSigningKey.flatMap: key =>
+      val problem = jwks match
+        case None =>
+          Some("needs jwks - what an edge signs with it is verified against no other keys")
+        case Some(keySet) =>
+          PrivateJsonWebKey.validate(key.document)
+            .flatMap(validated => PrivateJsonWebKey.publishedIn(validated, keySet))
+            .left.toOption
+      problem.map(reason => InvalidRegistrationConfiguration(clientId, s"edgeSigningKey $reason"))
 
   /** RFC 9449 §5.1 proof key policy: a client may narrow what its own proofs are accepted
     * with, never widen it.

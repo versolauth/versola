@@ -71,6 +71,20 @@ case class OAuthClientRecord(
       * authorization request to `/par` first, so a request that arrives at `/authorize`
       * without a `request_uri` is refused rather than answered. */
     requirePushedAuthorizationRequests: Boolean,
+    /** The private JWK an edge fronting this client signs with — its client assertions (RFC
+      * 7523 §2.2) and its request objects (RFC 9101). `None` when no edge authenticates as
+      * this client by key.
+      *
+      * A JWK document rather than bare key material, because the `kid` and `alg` that travel
+      * with it are what the signature's header has to name for auth to select the right
+      * public key out of [[jwks]] — splitting them into columns would let the three drift.
+      *
+      * Requires [[jwks]] to hold the matching public key: registration checks it, since a key
+      * auth has no counterpart for can only ever produce a signature auth refuses.
+      *
+      * Encrypted at rest under the same key as [[secret]], and read back decrypted — a record
+      * that reaches a caller carries the key itself, never the ciphertext. */
+    edgeSigningKey: Option[Secret],
 ) derives Schema, CanEqual, Equal:
 
   def isConfidential: Boolean = secret.nonEmpty

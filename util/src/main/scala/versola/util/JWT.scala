@@ -56,27 +56,36 @@ object JWT:
         val claimsSet = claimsBuilder.build()
 
         val jwt = new com.nimbusds.jwt.SignedJWT(header, claimsSet)
-        // Matched on the key's own type rather than cast to the one the algorithm implies:
-        // a kid whose `alg` disagrees with the private key behind it is a configuration
-        // error, and it should read as one instead of a ClassCastException.
-        val signer = signature match {
-          case Signature.Asymmetric(algorithm, _, privateKey) =>
-            (algorithm, privateKey) match
-              case (Algorithm.RS256 | Algorithm.PS256, key: RSAPrivateKey) =>
-                new RSASSASigner(key)
-              case (Algorithm.ES256, key: ECPrivateKey) =>
-                new ECDSASigner(key)
-              case _ =>
-                throw new IllegalArgumentException(
-                  s"${algorithm} cannot sign with a ${privateKey.getAlgorithm} private key",
-                )
-          case Signature.Symmetric(key) =>
-            new MACSigner(key)
-        }
-        jwt.sign(signer)
+        jwt.sign(signerFor(signature))
         jwt.serialize()
       }
     }
+
+  /** The Nimbus signer a [[Signature]] names.
+    *
+    * Matched on the key's own type rather than cast to the one the algorithm implies: a kid
+    * whose `alg` disagrees with the private key behind it is a configuration error, and it
+    * should read as one instead of a ClassCastException.
+    *
+    * Visible to the module because [[RequestObject.sign]] signs a JWT this object cannot mint
+    * -- RFC 9101 forbids the `sub` [[serialize]] always sets, and the `typ` is not one of
+    * [[Type]]'s -- and a second copy of this could come to accept a key pairing that one
+    * refuses.
+    */
+  private[util] def signerFor(signature: Signature): JWSSigner =
+    signature match
+      case Signature.Asymmetric(algorithm, _, privateKey) =>
+        (algorithm, privateKey) match
+          case (Algorithm.RS256 | Algorithm.PS256, key: RSAPrivateKey) =>
+            new RSASSASigner(key)
+          case (Algorithm.ES256, key: ECPrivateKey) =>
+            new ECDSASigner(key)
+          case _ =>
+            throw new IllegalArgumentException(
+              s"${algorithm} cannot sign with a ${privateKey.getAlgorithm} private key",
+            )
+      case Signature.Symmetric(key) =>
+        new MACSigner(key)
 
   /** Computes the OIDC `c_hash` / `at_hash` value for a token string (RFC OIDC Core
     * §3.3.2.11): base64url of the left-most half of the hash produced by the id token's
