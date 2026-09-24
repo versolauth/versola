@@ -59,6 +59,11 @@ export POSTGRES_HOST="${POSTGRES_HOST:-}"
 # gateway listens on 127.0.0.1:2821 behind it. Only changes listen.conf
 # below. docker-local ignores it.
 PROXY_MODE="${PROXY_MODE:-nginx}"
+# ACME_DIRECTORY: which ACME server issues the vps certificate. Let's
+# Encrypt production by default; point it at Let's Encrypt staging
+# (https://acme-staging-v02.api.letsencrypt.org/directory) when testing, so
+# repeated fresh deploys don't burn production rate limits.
+ACME_DIRECTORY="${ACME_DIRECTORY:-https://acme-v02.api.letsencrypt.org/directory}"
 mkdir -p "$OUT_DIR"
 
 case "$TARGET" in
@@ -153,10 +158,44 @@ fi
 # (see nginx.conf.template's comments).
 cp nginx.conf.template "$OUT_DIR"/nginx.conf
 cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
+#
+# TLS (vps, PROXY_MODE=nginx, https:// AUTH_URL only): nginx's own ACME
+# module issues and renews the certificate for AUTH_URL's host -- no
+# certbot, no separate issuance step. listen.conf turns the main server
+# into the 443 one; acme.conf.template adds the issuer plus the port-80
+# server the module answers HTTP-01 challenges on (everything else there
+# redirects to https). It's a *template* on purpose: the gateway image's
+# stock entrypoint envsubsts /etc/nginx/templates/*.template into conf.d/,
+# filling ${NGINX_LOCAL_RESOLVERS} from the container's own resolv.conf
+# (NGINX_ENTRYPOINT_LOCAL_RESOLVERS in the compose file) -- the module
+# needs a `resolver` to reach the ACME server, and the right one is only
+# known on the host, not here. Always written, comment-only when TLS is
+# off, so the compose bind mount never points at a missing file.
+TLS=off
+if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
+  case "$AUTH_URL" in
+    https://*) TLS=on ;;
+  esac
+fi
+
 if [ "$TARGET" = "vps" ]; then
   cp upstreams.vps.conf.template "$OUT_DIR"/upstreams.conf
   if [ "$PROXY_MODE" = "external" ]; then
     printf 'listen 127.0.0.1:2821;\n' > "$OUT_DIR"/listen.conf
+  elif [ "$TLS" = "on" ]; then
+    # Host part of AUTH_URL: drop scheme, then any path, then any port.
+    DOMAIN="${AUTH_URL#*://}"
+    DOMAIN="${DOMAIN%%/*}"
+    DOMAIN="${DOMAIN%%:*}"
+    cat > "$OUT_DIR"/listen.conf <<EOF
+listen 443 ssl;
+listen [::]:443 ssl;
+http2 on;
+acme_certificate letsencrypt $DOMAIN;
+ssl_certificate \$acme_certificate;
+ssl_certificate_key \$acme_certificate_key;
+ssl_certificate_cache max=2;
+EOF
   else
     printf 'listen 80;\nlisten [::]:80;\n' > "$OUT_DIR"/listen.conf
   fi
@@ -164,4 +203,31 @@ else
   cp upstreams.conf.template "$OUT_DIR"/upstreams.conf
   printf 'listen 2821;\n' > "$OUT_DIR"/listen.conf
 fi
-echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, upstreams.conf, listen.conf, openbao.hcl to $OUT_DIR"
+
+if [ "$TLS" = "on" ]; then
+  cat > "$OUT_DIR"/acme.conf.template <<EOF
+resolver \${NGINX_LOCAL_RESOLVERS};
+
+acme_issuer letsencrypt {
+    uri $ACME_DIRECTORY;
+    # A docker volume (see compose.fragment.vps.yml.template): without a
+    # persistent state_path every container restart would request a brand
+    # new certificate and quickly run into Let's Encrypt's rate limits.
+    state_path /var/cache/nginx/acme-letsencrypt;
+    accept_terms_of_service;
+}
+
+server {
+    # Required by the ACME module to answer HTTP-01 challenges.
+    listen 80;
+    listen [::]:80;
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+EOF
+else
+  printf '# TLS is off for this deployment -- nothing to configure.\n' > "$OUT_DIR"/acme.conf.template
+fi
+echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, upstreams.conf, listen.conf, acme.conf.template, openbao.hcl to $OUT_DIR (TLS: $TLS)"
