@@ -21,9 +21,17 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
 
   /** Not private: [[versola.loadgen.provision.ProvisionerSpec]] loads role dispatch's input from
     * the same tree, and a second copy of it would drift the moment a field is added.
+    *
+    * It is also the repo's one worked example of a complete env.conf -- loadgen has no
+    * scripts/gen-env.scala the way auth, central and edge do -- so it carries the whole tree a
+    * pod reads, not only the part [[LoadgenConfig]] decodes. `env` below is what that costs: it
+    * belongs to `VersolaApp`, every role aborts without it, and no descriptor in this file would
+    * ever have noticed it missing.
     */
   val hocon: String =
-    """role = driver
+    """env = "loadgen-test"
+      |
+      |role = driver
       |shard { index = 0, count = 8 }
       |
       |targets {
@@ -167,6 +175,26 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
 
   def spec = suite("LoadgenConfig")(
     suite("parsing")(
+      // Not a LoadgenConfig field, and deliberately asserted before any of the
+      // decodes below: `env` is read straight off the same ConfigProvider by
+      // VersolaApp.envName and jsonLoggerLayer, before a single role-specific
+      // field is looked at. deriveConfig[LoadgenConfig] neither requires it nor
+      // rejects it, so `hocon` above -- the one worked example of a full file
+      // this repo has -- was for a while a config that parsed cleanly here and
+      // died in a pod with `Missing data at env`. This test is what keeps the
+      // example bootable; it fails the build rather than a deployment.
+      test("carries the top-level `env` key every VersolaApp role requires") {
+        for
+          driverEnv <- TypesafeConfigProvider
+            .fromHoconString(hocon)
+            .kebabCase
+            .load(Config.string("env"))
+          coordinatorEnv <- TypesafeConfigProvider
+            .fromHoconString(hoconWithoutProvision)
+            .kebabCase
+            .load(Config.string("env"))
+        yield assertTrue(driverEnv.nonEmpty, coordinatorEnv == driverEnv)
+      },
       test("decodes a full campaign config") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hocon)

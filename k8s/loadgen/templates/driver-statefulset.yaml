@@ -9,6 +9,9 @@
 {{- if not $driver.config.existingSecret }}
 {{- fail "driver.config.existingSecret is required when driver.enabled is true -- the image always runs with -Denv.path=/app/config/env.conf (docker/Dockerfile.loadgen's ENTRYPOINT), so with no Secret named here no config volume is rendered at all and `include required(file(...))` aborts startup on every pod" }}
 {{- end }}
+{{- if not $.Values.envName }}
+{{- fail "envName must not be empty -- it is the ENV_NAME a campaign's env.conf resolves `env = ${ENV_NAME}` against, and an empty one makes every pod's EnvName.Test(\"\") and every log line's `env` label blank. See values.yaml's `envName`" }}
+{{- end }}
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -74,6 +77,17 @@ spec:
               value: "0.0.0.0"
             - name: CONFIG_PATH
               value: /app/config/env.conf
+            # The top-level `env` key, as a substitution source rather than
+            # a setting: VersolaApp.envName reads `env` off the mounted HOCON and
+            # nowhere else, so this only reaches it if the file says
+            # `env = ${ENV_NAME}`. Injected for the same reason SHARD_COUNT is
+            # -- it is the release that knows the value, not the Secret -- and
+            # a file that writes the name literally simply ignores it. What no
+            # file may do is set `env` neither way: that is a MissingData abort
+            # in VersolaApp before any role-specific config is read. See
+            # values.yaml's `envName`.
+            - name: ENV_NAME
+              value: {{ $.Values.envName | quote }}
             # The shard identity (dev spec §5: "driver only; injected from
             # the StatefulSet ordinal"). `apps.kubernetes.io/pod-index` is
             # stamped on the pod by the StatefulSet controller, so the
