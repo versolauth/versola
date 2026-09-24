@@ -10,6 +10,10 @@ const alphaClient = {
   scope: ['openid'],
   permissions: ['alpha.read'],
   secretRotation: false,
+  // Required and NaN-checked by the Access Token TTL input - omitting it leaves the field's
+  // native "required" constraint failing on an empty value, which silently swallows every
+  // edit-and-submit test below without a JS error to point at.
+  accessTokenTtl: 3600,
   authFlow: {
     primary: {
       credentials: ['phone'],
@@ -34,6 +38,17 @@ const offlineClient = {
   ...alphaClient,
   scope: ['openid', 'offline_access'],
   refreshTokenTtl: 180 * 24 * 60 * 60,
+};
+
+const mtlsTerminatingSettings = {
+  tenantId: 'tenant-alpha',
+  allowedPrefixes: [],
+  passwordRegex: null,
+  submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+  otpLength: 6,
+  otpResendAfter: 60,
+  passkeySettings: null,
+  mtlsCertificateHeader: 'x-client-cert',
 };
 
 function clientCard(page: Page, text: string) {
@@ -146,7 +161,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await page.getByLabel('Client Name').fill('Dashboard Client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://dashboard.example/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByLabel('Access Token TTL').fill('30');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('30');
   await page.locator('versola-client-form select.ttl-unit-select').selectOption('minutes');
   await page.getByRole('checkbox', { name: 'openid', exact: true }).check();
   await page.getByRole('checkbox', { name: 'alpha.read', exact: true }).check();
@@ -192,6 +207,14 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     tosUri: null,
     consentFlow: null,
     clientType: 'web',
+    dpopBoundAccessTokens: false,
+    dpopSigningAlgs: [],
+    dpopMinRsaKeySize: null,
+    mtlsAuth: null,
+    certificateBoundAccessTokens: false,
+    jwks: null,
+    requireSignedRequestObject: false,
+    requirePushedAuthorizationRequests: false,
   });
 });
 
@@ -250,6 +273,141 @@ test('offers the client type only while the auth flow is on, and fixes it once c
   await expect(page.getByText('Client type', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
+});
+
+test('registers a client that authenticates with an mTLS certificate', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      challengeSettings: { 'tenant-alpha': mtlsTerminatingSettings },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('mtls-client');
+  await page.getByLabel('Client Name').fill('mTLS Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'mTLS certificate', exact: true }).click();
+
+  // The tenant terminates TLS, so no warning - and token binding is implied by the credential.
+  await expect(page.getByText('no mTLS certificate header configured')).toHaveCount(0);
+  await expect(page.getByRole('checkbox', { name: /Bind access tokens/ })).toBeDisabled();
+
+  await page.getByLabel('Subject type').selectOption('san_dns');
+  await page.getByLabel('Subject value').fill('client.example.com');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'mtls-client',
+    mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_dns', subjectValue: 'client.example.com' },
+    certificateBoundAccessTokens: false,
+    jwks: null,
+  });
+});
+
+test('blocks an mTLS client with no subject value, and one whose tenant terminates no TLS', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('mtls-client');
+  await page.getByLabel('Client Name').fill('mTLS Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'mTLS certificate', exact: true }).click();
+
+  await expect(page.getByText('no mTLS certificate header configured')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+  await expect(page.getByText('Subject value is required')).toBeVisible();
+  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+
+  // Central refuses the registration outright without a header to read the certificate from,
+  // so a complete form is no more submittable than an incomplete one.
+  await page.getByLabel('Subject value').fill('client.example.com');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+  await expect(page.getByText('Subject value is required')).toHaveCount(0);
+  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+});
+
+test('registers a self-signed mTLS client and keeps JAR off keys that cannot verify one', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      challengeSettings: { 'tenant-alpha': mtlsTerminatingSettings },
+    },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('self-signed-client');
+  await page.getByLabel('Client Name').fill('Self Signed Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://self-signed.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'mTLS self-signed', exact: true }).click();
+
+  // A certificate is matched over public key material, so a P-384 key registers fine - but
+  // nothing here can verify a request object with it.
+  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y' }] }));
+  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
+
+  const keySet = { keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] };
+  await page.getByLabel('JWK Set').fill(JSON.stringify(keySet));
+  await page.getByRole('checkbox', { name: /Require signed request objects/ }).check();
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'self-signed-client',
+    mtlsAuth: { type: 'self_signed_tls_client_auth' },
+    jwks: keySet,
+    requireSignedRequestObject: true,
+  });
+
+  // The backend still generates a secret for a web client, but token authentication refuses
+  // it once an mTLS credential is registered, so the banner must not offer it to copy.
+  await expect(page.getByRole('heading', { name: 'Client created: Self Signed Client', exact: true })).toBeVisible();
+  await expect(page.getByText('authenticates with its certificate')).toBeVisible();
+  await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
+});
+
+test('registers a private_key_jwt client with signed request objects and PAR', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByLabel('Client ID').fill('assertion-client');
+  await page.getByLabel('Client Name').fill('Assertion Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://assertion.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  // JAR has nothing to verify a request object against until a JWK Set is registered.
+  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
+
+  await page.getByRole('button', { name: 'private_key_jwt', exact: true }).click();
+  await page.getByLabel('JWK Set').fill('not json');
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+  await expect(page.getByText('Must be valid JSON')).toBeVisible();
+  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+
+  const keySet = { keys: [{ kty: 'EC', crv: 'P-256', x: 'x-coordinate', y: 'y-coordinate' }] };
+  await page.getByLabel('JWK Set').fill(JSON.stringify(keySet));
+  await page.getByRole('checkbox', { name: /Require signed request objects/ }).check();
+  await page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ }).check();
+  await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'assertion-client',
+    mtlsAuth: null,
+    jwks: keySet,
+    requireSignedRequestObject: true,
+    requirePushedAuthorizationRequests: true,
+  });
 });
 
 test('creates a client with localized consent name', async ({ page }) => {
@@ -704,7 +862,7 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
   await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
-  await page.getByLabel('Access Token TTL').fill('2');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
 
   await page.getByRole('button', { name: 'Update Client', exact: true }).click();
 
@@ -878,6 +1036,14 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     tosUri: null,
     consentFlow: null,
     clientType: 'web',
+    dpopBoundAccessTokens: false,
+    dpopSigningAlgs: [],
+    dpopMinRsaKeySize: null,
+    mtlsAuth: null,
+    certificateBoundAccessTokens: false,
+    jwks: null,
+    requireSignedRequestObject: false,
+    requirePushedAuthorizationRequests: false,
   });
 
   // The client should NOT be added to the list

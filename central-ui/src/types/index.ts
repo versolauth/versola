@@ -69,6 +69,15 @@ export interface ConsentFlow {
 // confidential and is issued one, a native client is public and never has one.
 export type ClientType = 'web' | 'native';
 
+// RFC 8705 section 2.1.2: which registered value a client's certificate is recognised by.
+export type MtlsSubjectType = 'subject_dn' | 'san_dns' | 'san_uri' | 'san_ip' | 'san_email';
+
+// RFC 8705: which of the two mutual-TLS client authentication methods a client registered.
+// The two are alternatives, not settings of one method - see OAuthClientRecord.mtlsAuth.
+export type MutualTlsAuth =
+  | { type: 'tls_client_auth'; subjectType: MtlsSubjectType; subjectValue: string }
+  | { type: 'self_signed_tls_client_auth' };
+
 // OAuth Client
 export interface OAuthClient {
   id: string;
@@ -100,6 +109,22 @@ export interface OAuthClient {
   /** The modulus an RSA proof key from this client must reach. Absent leaves the RFC 7518
    *  section 3.3 floor of 2048 bits, which applies to every client regardless. */
   dpopMinRsaKeySize?: number | null;
+  /** RFC 8705 section 2.1/2.2 mutual-TLS client authentication; absent when the client
+   *  authenticates with a secret or private_key_jwt instead. */
+  mtlsAuth?: MutualTlsAuth | null;
+  /** RFC 8705 section 3.4: bind this client's access tokens to the certificate it presents,
+   *  for a client that authenticates some other way. Implied - and redundant to set - when
+   *  mtlsAuth is registered. */
+  certificateBoundAccessTokens: boolean;
+  /** RFC 7523 section 2.2 private_key_jwt, or RFC 8705 section 2.2 self_signed_tls_client_auth:
+   *  the public keys this client registered, as the raw JWK Set document. Absent when the
+   *  client uses neither. */
+  jwks?: Record<string, unknown> | null;
+  /** RFC 9101 section 10.5: the client states its authorization request in a request object
+   *  it signed. Requires jwks - a request object is verified against no other keys. */
+  requireSignedRequestObject: boolean;
+  /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
+  requirePushedAuthorizationRequests: boolean;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

@@ -1,6 +1,7 @@
 /**
  * Validation utilities for Versola Central UI
  */
+import type { MutualTlsAuth, OAuthClient } from '../types';
 
 /**
  * Validates resource/action format: lowercase letters, numbers, underscore, starting with letter
@@ -279,6 +280,146 @@ export function validateAccessTokenTtl(seconds: number, dpopBoundAccessTokens: b
     return { valid: false, error: 'Must not exceed 24 hours' };
   }
   return { valid: true };
+}
+
+/** RFC 8705 section 2.1.2 subject types a client's certificate can be recognised by. */
+export const MTLS_SUBJECT_TYPES = ['subject_dn', 'san_dns', 'san_uri', 'san_ip', 'san_email'] as const;
+
+/** Kept in sync with `JsonWebKeySet.MaxKeys` on the backend. */
+export const MAX_JWKS_KEYS = 10;
+
+/**
+ * Parses and shallow-validates a pasted JWK Set document. Deeper checks the backend also
+ * applies - key type, usability with a supported algorithm, no private key material - are
+ * left to it; this only catches what's worth surfacing before a submit round-trip.
+ */
+export function validateJwksJson(raw: string): { valid: boolean; error?: string; keySet?: Record<string, unknown> } {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return { valid: false, error: 'A JWK Set is required' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { valid: false, error: 'Must be valid JSON' };
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return { valid: false, error: 'Must be a JWK Set object, e.g. {"keys": [...]}' };
+  }
+  const keys = (parsed as Record<string, unknown>).keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return { valid: false, error: 'Must contain at least one key under "keys"' };
+  }
+  if (keys.length > MAX_JWKS_KEYS) {
+    return { valid: false, error: `Must not contain more than ${MAX_JWKS_KEYS} keys` };
+  }
+  return { valid: true, keySet: parsed as Record<string, unknown> };
+}
+
+/**
+ * Kept in sync with `InvalidRegistrationConfiguration.validateClientAuthentication` - a client
+ * authenticates one way, so mtlsAuth and jwks combine in exactly one direction: tls_client_auth
+ * refuses jwks (two credentials for one client), self_signed_tls_client_auth requires it (the
+ * registered keys are what the certificate is matched against).
+ */
+export function validateClientCredential(
+  mtlsAuth: MutualTlsAuth | null | undefined,
+  hasJwks: boolean,
+): { valid: boolean; error?: string } {
+  if (mtlsAuth?.type === 'tls_client_auth' && hasJwks) {
+    return { valid: false, error: 'A client authenticates either with mtlsAuth or with jwks, not both' };
+  }
+  if (mtlsAuth?.type === 'self_signed_tls_client_auth' && !hasJwks) {
+    return { valid: false, error: 'self_signed_tls_client_auth needs a registered JWK Set to match the certificate against' };
+  }
+  return { valid: true };
+}
+
+/** Kept in sync with `InvalidRegistrationConfiguration.validateRequestObjectRequirement`. */
+export function validateRequestObjectRequirement(
+  requireSignedRequestObject: boolean,
+  hasJwks: boolean,
+): { valid: boolean; error?: string } {
+  if (requireSignedRequestObject && !hasJwks) {
+    return { valid: false, error: 'Requires a registered JWK Set - a request object is verified against no other keys' };
+  }
+  return { valid: true };
+}
+
+/**
+ * Kept in sync with `InvalidRegistrationConfiguration.validateMtlsTermination` - `auth` reads
+ * a certificate only from the header the client's own tenant names, so registering mtlsAuth
+ * under a tenant that names none is refused by the backend outright, not merely left unable
+ * to authenticate.
+ */
+export function validateMtlsTermination(
+  mtlsAuth: MutualTlsAuth | null | undefined,
+  mtlsCertificateHeader: string | null | undefined,
+): { valid: boolean; error?: string } {
+  if (mtlsAuth && !mtlsCertificateHeader) {
+    return {
+      valid: false,
+      error: 'This tenant has no mTLS certificate header configured under Challenges & Security - '
+        + 'Central refuses a client that registers an mTLS credential without one, '
+        + 'since no certificate would ever reach auth for it.',
+    };
+  }
+  return { valid: true };
+}
+
+/**
+ * Whether every key in a set could verify a signature, which is what a request object is
+ * checked against - kept in sync with `ClientAssertion.usableWith`: RS256 or PS256 for an RSA
+ * key, ES256 for an EC key, which names P-256 as its curve, and a key that pinned its own
+ * `alg` is usable only with that one.
+ *
+ * A `self_signed_tls_client_auth` set is held to nothing of the sort on the backend - §2.2
+ * matches encoded public key material, so a P-384 key registers perfectly well. Requiring
+ * signed request objects from such a client registers one whose every authorization request
+ * is refused, since no key in the set can verify the object.
+ */
+export function jwksVerifiesRequestObjects(keySet: Record<string, unknown> | null | undefined): boolean {
+  const keys = keySet?.keys;
+  if (!Array.isArray(keys) || keys.length === 0) {
+    return false;
+  }
+  return keys.every(key => {
+    if (typeof key !== 'object' || key === null) {
+      return false;
+    }
+    const { kty, crv, alg, use } = key as Record<string, unknown>;
+    if (use === 'enc') {
+      return false;
+    }
+    if (kty === 'RSA') {
+      return alg === undefined || alg === 'RS256' || alg === 'PS256';
+    }
+    if (kty === 'EC') {
+      return crv === 'P-256' && (alg === undefined || alg === 'ES256');
+    }
+    return false;
+  });
+}
+
+/** What a registered client actually authenticates with at the token endpoint. */
+export type ClientCredentialKind = 'secret' | 'public' | 'mtls' | 'private_key_jwt';
+
+/**
+ * Kept in sync with `ClientAuthentication`: a client that registered an mTLS credential or a
+ * key set authenticates with that and only that - the secret Central still generates for it
+ * is refused at the token endpoint, so nothing should present it as the client's credential.
+ */
+export function clientCredentialKind(
+  client: Pick<OAuthClient, 'mtlsAuth' | 'jwks' | 'clientType'>,
+): ClientCredentialKind {
+  if (client.mtlsAuth) {
+    return 'mtls';
+  }
+  if (client.jwks) {
+    return 'private_key_jwt';
+  }
+  return client.clientType === 'native' ? 'public' : 'secret';
 }
 
 /**
