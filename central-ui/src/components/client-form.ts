@@ -1309,7 +1309,10 @@ export class VersolaClientForm extends LitElement {
 
     const logoutEnabled = authFlow !== null;
     const clientType = authFlow ? this.clientType : 'web';
-    const authMethod = authMethodFor(clientType, this.clientCredentialMode);
+    // Derived from the client's own type, not from the line above: that one reads 'web' for
+    // anything without a sign-in flow, which would move a native client off `none` and onto
+    // a secret it was never issued the moment its flow is switched off.
+    const authMethod = authMethodFor(this.clientType, this.clientCredentialMode);
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
@@ -1347,17 +1350,8 @@ export class VersolaClientForm extends LitElement {
 
     this.backChannelLogoutUriError = '';
 
-    const consentUris = [
-      ['logoUri', (this.formData.logoUri || '').trim(), 'logoUriError'],
-      ['policyUri', (this.formData.policyUri || '').trim(), 'policyUriError'],
-      ['tosUri', (this.formData.tosUri || '').trim(), 'tosUriError'],
-    ] as const;
-    for (const [, value, errorKey] of consentUris) {
-      const validation = validateConsentUri(value);
-      if (!validation.valid) {
-        this[errorKey] = validation.error || 'Invalid consent URI';
-        return;
-      }
+    if (this.applyConsentUriErrors()) {
+      return;
     }
     this.logoUriError = '';
     this.policyUriError = '';
@@ -1958,7 +1952,9 @@ export class VersolaClientForm extends LitElement {
       certificateBoundAccessTokens: certificateBoundFor(mode),
       authFlow: signsUsersIn ? this.formData.authFlow ?? createDefaultAuthFlow() : null,
       // openid is what makes the request OIDC, so a client that signs users in always carries it.
-      scope: signsUsersIn ? ['openid', ...scope] : scope,
+      // A preset that names its own scopes keeps them: the service kind clears the list, and
+      // carrying the scopes picked for an earlier kind over would contradict the review screen.
+      scope: signsUsersIn ? ['openid', ...scope] : preset.patch.scope ?? scope,
     };
   }
 
@@ -2320,15 +2316,48 @@ export class VersolaClientForm extends LitElement {
       || this.logoutUriError !== '';
   }
 
+  /** The three consent URIs, each with the field its error renders under. */
+  private get consentUris() {
+    return [
+      [(this.formData.logoUri || '').trim(), 'logoUriError'],
+      [(this.formData.policyUri || '').trim(), 'policyUriError'],
+      [(this.formData.tosUri || '').trim(), 'tosUriError'],
+    ] as const;
+  }
+
+  /** Sets the error of the first invalid consent URI and answers whether there was one. */
+  private applyConsentUriErrors(): boolean {
+    this.logoUriError = '';
+    this.policyUriError = '';
+    this.tosUriError = '';
+    for (const [value, errorKey] of this.consentUris) {
+      const validation = validateConsentUri(value);
+      if (!validation.valid) {
+        this[errorKey] = validation.error || 'Invalid consent URI';
+        return true;
+      }
+    }
+    return false;
+  }
+
   private get signInIncomplete(): boolean {
     const authFlow = this.formData.authFlow;
-    return authFlow != null && this.getAuthFlowValidationError(authFlow) !== '';
+    if (authFlow != null && this.getAuthFlowValidationError(authFlow) !== '') {
+      return true;
+    }
+    // The consent URIs are edited on this step, so the step gates on them: submitting from
+    // the review step would otherwise return early with an error no visible field renders.
+    return this.consentUris.some(([value]) => !validateConsentUri(value).valid);
   }
 
   private leaveSignInStep() {
     const error = this.formData.authFlow ? this.getAuthFlowValidationError(this.formData.authFlow) : '';
     if (error) {
       this.authFlowError = error;
+      return;
+    }
+
+    if (this.applyConsentUriErrors()) {
       return;
     }
 

@@ -1260,6 +1260,51 @@ test('clears the auth flow on an existing client by sending an explicit null', a
   });
 });
 
+test('leaves a native client public when its sign-in flow is switched off', async ({ page }) => {
+  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [nativeClient] },
+      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
+    },
+  });
+
+  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
+
+  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
+  await authFlowRow.locator('label.toggle').click();
+
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  // A native client holds no secret, so moving it onto client_secret would leave it unable
+  // to authenticate at all - the method is the client's own, not one the flow toggle decides.
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).not.toHaveProperty('authMethod');
+});
+
+test('gates the sign-in step on the consent URIs it edits', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'consent-uri-client', 'Consent URI Client');
+  await page.getByPlaceholder('https://app.example.com/callback').fill('https://consenting.example/callback');
+  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await continueToThirdStep(page);
+
+  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await page.getByLabel('Logo URI').fill('http://logo.example/logo.png');
+
+  // The field lives on this step, so this step is where it has to be answered: submitting
+  // from the review step returns early on it and renders the error under no visible field.
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeDisabled();
+
+  await page.getByLabel('Logo URI').fill('https://logo.example/logo.png');
+  await expect(page.getByRole('button', { name: 'Continue to review' })).toBeEnabled();
+});
+
 test('rotates a client secret and deletes the previous secret', async ({ page }) => {
   const api = await loadAdminApp(page, { path: clientsPath });
 

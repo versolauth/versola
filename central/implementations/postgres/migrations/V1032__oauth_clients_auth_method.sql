@@ -13,12 +13,17 @@
 -- endpoint accepts is not one to keep encrypted at rest.
 ALTER TABLE oauth_clients ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'client_secret';
 
+-- The branch order is the order `ClientAuthentication` read these columns in: a registered
+-- certificate or key set was the credential, and the secret beside it was never consulted.
+-- Testing the secret first would derive 'none' for a secretless row that authenticated
+-- perfectly well by certificate or assertion -- and leave it in a combination registration
+-- now refuses, so every later update of it would be rejected.
 UPDATE oauth_clients
 SET auth_method = CASE
-  WHEN secret IS NULL                                        THEN 'none'
   WHEN mtls_auth ->> 'type' = 'tls_client_auth'              THEN 'tls_client_auth'
   WHEN mtls_auth ->> 'type' = 'self_signed_tls_client_auth'  THEN 'self_signed_tls_client_auth'
   WHEN jwks IS NOT NULL                                      THEN 'private_key_jwt'
+  WHEN secret IS NULL                                        THEN 'none'
   ELSE 'client_secret'
 END;
 
