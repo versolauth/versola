@@ -10,7 +10,7 @@ import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
-import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
 import javax.crypto.{Cipher, SecretKey}
 
 trait SecurityService:
@@ -19,6 +19,45 @@ trait SecurityService:
 
   def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]]
   def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]]
+
+  /** RSA-OAEP-SHA256 caps a single [[encryptRsa]] call at `keySizeBytes - 66` bytes -- 190 for
+    * the 2048-bit keys [[generateRsaKeyPair]] issues -- so anything registration lets grow
+    * past that (an edge signing key's full JWK document, say) throws
+    * `IllegalBlockSizeException` rather than a typed failure a caller could react to.
+    *
+    * Wraps a fresh AES-256 key with [[encryptRsa]] (32 bytes, always within the limit) and
+    * encrypts the actual payload under it with [[encryptAes256]], so the RSA bound never
+    * applies to the caller's data at all. Composed from the four abstract members above, not
+    * a fifth one of its own -- an implementer that already satisfies this trait needs no
+    * change to pick this up.
+    */
+  def encryptRsaHybrid(data: Array[Byte], key: PublicKey): Task[Array[Byte]] =
+    for
+      sessionKeyBytes <- ZIO.attemptBlocking:
+        val bytes = new Array[Byte](32)
+        new java.security.SecureRandom().nextBytes(bytes)
+        bytes
+      wrappedKey <- encryptRsa(sessionKeyBytes, key)
+      encryptedPayload <- encryptAes256(data, new SecretKeySpec(sessionKeyBytes, "AES"))
+    yield wrappedKey ++ encryptedPayload
+
+  /** The [[encryptRsaHybrid]] counterpart: splits at the RSA modulus size (deterministic from
+    * `key` alone, so no length has to be carried on the wire), unwraps the session key with
+    * [[decryptRsa]], then [[decryptAes256]]s the remainder under it.
+    */
+  def decryptRsaHybrid(data: Array[Byte], key: PrivateKey): Task[Array[Byte]] =
+    for
+      rsaKeySize <- ZIO.attempt(key.asInstanceOf[RSAPrivateKey].getModulus.bitLength / 8)
+      _ <- ZIO.attempt {
+        if data.length <= rsaKeySize then
+          throw new IllegalArgumentException(
+            s"hybrid ciphertext of ${data.length} bytes is no longer than the $rsaKeySize-byte wrapped key",
+          )
+      }
+      (wrappedKey, encryptedPayload) = data.splitAt(rsaKeySize)
+      sessionKeyBytes <- decryptRsa(wrappedKey, key)
+      payload <- decryptAes256(encryptedPayload, new SecretKeySpec(sessionKeyBytes, "AES"))
+    yield payload
 
   def mac(secret: Secret, key: Array[Byte]): Task[MAC]
 

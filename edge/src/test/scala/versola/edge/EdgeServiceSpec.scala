@@ -51,7 +51,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val orphanPreset = preset.copy(id = otherPresetId, clientId = missingClientId)
 
-    val client = OAuthClient(id = clientId, secret = Secret(Array.fill(48)(1.toByte)), permissions = Set.empty, accessTokenTtl = 15.minutes)
+    val client = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
     val stateBytes = Array.fill[Byte](16)(9)
@@ -252,6 +252,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env
       for
         _ <- env.withPresets(Fixtures.preset)
+        _ <- env.withClients(Fixtures.client)
         _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
           case 1 => ZIO.succeed(Fixtures.codeVerifierBytes)
           case _ => ZIO.succeed(Fixtures.stateBytes)
@@ -274,8 +275,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createCalls.head._2 == 10.minutes,
         authorizeCalls.size == 1,
         authorizeCalls.head._1 == Fixtures.preset,
-        authorizeCalls.head._3 == Fixtures.state,
-        authorizeCalls.head._4 == Map.empty[String, String],
+        authorizeCalls.head._2 == Fixtures.client,
+        authorizeCalls.head._4 == Fixtures.state,
+        authorizeCalls.head._5 == Map.empty[String, String],
       )
     },
     test("fails with PresetNotFound when preset is missing from cache") {

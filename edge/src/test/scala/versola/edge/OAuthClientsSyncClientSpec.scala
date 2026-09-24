@@ -1,13 +1,17 @@
 package versola.edge
 
-import versola.edge.model.{ClientId, EdgeId, PermissionId}
+import versola.edge.model.{ClientCredential, ClientId, EdgeId, PermissionId}
 import versola.util.{Base64, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
 import zio.test.*
 
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.jwk.RSAKey
+
 import java.security.KeyPairGenerator
+import java.security.interfaces.RSAPublicKey
 
 object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
   private val decryptedSecretA = Array.fill(32)(3.toByte)
@@ -37,7 +41,8 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.dieMessage("Unused in test")
       override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.dieMessage("Unused in test")
       override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) =
+      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+      override def decryptRsaHybrid(data: Array[Byte], key: java.security.PrivateKey) =
         ZIO.succeed(decryptedByCiphertext(Base64.urlEncode(data)))
       override def mac(macInput: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
       override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =
@@ -53,11 +58,103 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       secret: Option[String],
       accessTokenTtl: Duration,
       permissions: Set[String] = Set.empty,
+      requireSignedRequestObject: Boolean = false,
+      requirePushedAuthorizationRequests: Boolean = false,
+      edgeSigningKey: Option[String] = None,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
 
+
+  private val signingKeyPair =
+    val generator = KeyPairGenerator.getInstance("RSA")
+    generator.initialize(2048)
+    generator.generateKeyPair()
+
+  /** The private JWK central holds for a client an edge authenticates as by key. */
+  private val signingKeyDocument =
+    RSAKey.Builder(signingKeyPair.getPublic.nn.asInstanceOf[RSAPublicKey])
+      .privateKey(signingKeyPair.getPrivate.nn)
+      .keyID("client-key-1")
+      .algorithm(JWSAlgorithm.PS256)
+      .build().nn.toJSONString.nn
+
+  private val signingSuite = suite("edge signing key")(
+    test("decrypts the signing key and prefers it over a secret the same client also has") {
+      val secretCiphertext = Base64.urlEncode(Array.fill(32)(40.toByte))
+      val keyCiphertext = Base64.urlEncode(Array.fill(32)(41.toByte))
+      val body = SyncResponseMirror(
+        Vector(
+          SyncClientRecordMirror(
+            ClientId("both"),
+            Some(secretCiphertext),
+            15.minutes,
+            requireSignedRequestObject = true,
+            requirePushedAuthorizationRequests = true,
+            edgeSigningKey = Some(keyCiphertext),
+          ),
+        ),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(
+            secretCiphertext -> decryptedSecretA,
+            keyCiphertext -> signingKeyDocument.getBytes("UTF-8").nn,
+          )),
+          centralSyncTokenService,
+        )
+        clients <- service.getAll
+        synced = clients(ClientId("both"))
+      yield assertTrue(
+        // The key is the stronger credential and the only one that can sign a request
+        // object, so a client central sent both for must not fall back to the secret.
+        synced.credential.signingKey.map(_.keyId) == Some("client-key-1"),
+        synced.requireSignedRequestObject,
+        synced.requirePushedAuthorizationRequests,
+      )
+    },
+    test("keeps a client that has a signing key and no secret at all") {
+      val keyCiphertext = Base64.urlEncode(Array.fill(32)(42.toByte))
+      val body = SyncResponseMirror(
+        Vector(SyncClientRecordMirror(ClientId("key-only"), None, 15.minutes, edgeSigningKey = Some(keyCiphertext))),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(keyCiphertext -> signingKeyDocument.getBytes("UTF-8").nn)),
+          centralSyncTokenService,
+        )
+        clients <- service.getAll
+      yield assertTrue(clients.keySet == Set(ClientId("key-only")))
+    },
+    test("fails the whole sync on an unusable key rather than serving a doubtful snapshot") {
+      val keyCiphertext = Base64.urlEncode(Array.fill(32)(43.toByte))
+      val body = SyncResponseMirror(
+        Vector(SyncClientRecordMirror(ClientId("broken"), None, 15.minutes, edgeSigningKey = Some(keyCiphertext))),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(keyCiphertext -> "{\"kty\":\"oct\"}".getBytes("UTF-8").nn)),
+          centralSyncTokenService,
+        )
+        error <- service.getAll.flip
+      yield assertTrue(error.getMessage.nn.contains("edge signing key"))
+    },
+  ).provide(TestClient.layer) @@ TestAspect.silentLogging
+
   def spec = suite("OAuthClientsSyncClient")(
+    signingSuite,
     test("decrypts every client with a secret and drops clients missing one") {
       val secretACiphertext = Base64.urlEncode(Array.fill(32)(30.toByte))
       val body = SyncResponseMirror(
@@ -87,7 +184,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         request.url.path.encode.contains("configuration/clients/sync"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         clients.keySet == Set(ClientId("with-secret")),
-        clients(ClientId("with-secret")).secret.sameElements(decryptedSecretA),
+        clients(ClientId("with-secret")).credential == ClientCredential.ClientSecret(Secret(decryptedSecretA)),
         clients(ClientId("with-secret")).permissions == Set(PermissionId("oauth:read")),
         clients(ClientId("with-secret")).accessTokenTtl == 15.minutes,
       )

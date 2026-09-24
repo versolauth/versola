@@ -28,6 +28,9 @@ case class EdgeFixture(
     resourceUri: String,
     /** Endpoint ids by the name the spec gave them, so tests never spell out a UUID. */
     endpoints: Map[String, String],
+    /** The key pair backing `private_key_jwt`, for a fixture configured with it. The edge
+      * holds the private half; this is the same pair, so a spec can check what auth saw. */
+    signer: Option[AssertionSigner] = None,
 ):
   def endpoint(name: String): String =
     endpoints.getOrElse(name, throw java.util.NoSuchElementException(s"No endpoint registered under '$name'"))
@@ -73,6 +76,16 @@ object EdgeFixture:
       postLogoutRedirectUri: Option[String] = None,
       cookiePath: Option[String] = None,
       awaitProxyReady: Boolean = false,
+      /** Register the client for RFC 7523 `private_key_jwt` instead of a secret, and hand the
+        * private half to the edge as its `edgeSigningKey`. The fixture generates the pair and
+        * exposes it as [[EdgeFixture.signer]]. */
+      privateKeyJwt: Boolean = false,
+      /** RFC 9101 §10.5. Needs `privateKeyJwt`: a request object is verified against the
+        * client's registered keys, so there is nothing to sign one with otherwise. */
+      requireSignedRequestObject: Boolean = false,
+      /** RFC 9126 §6.2: the edge must push the authorization request to `/par` before
+        * redirecting the browser. */
+      requirePushedAuthorizationRequests: Boolean = false,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -96,12 +109,18 @@ object EdgeFixture:
       // holding this URI, and central resolves a token's audience by URI.
       _ <- central.delete("/configuration/resources", "resourceId" -> config.resourceId)
 
+      signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
+
       registered <- auth.registerClient(
         clientId,
         "Edge Test Client",
         redirectUris = Set(edge.completeUri),
         allowedScopes = config.scopes,
         authFlow = Some(Flows.loginPasswordAuthFlow),
+        jwks = signer.map(_.jwks),
+        edgeSigningKey = signer.map(_.privateJwk),
+        requireSignedRequestObject = config.requireSignedRequestObject,
+        requirePushedAuthorizationRequests = config.requirePushedAuthorizationRequests,
       ).success
 
       userId <- auth.registerUser(login = Some(login))
@@ -182,6 +201,7 @@ object EdgeFixture:
       resourceId = config.resourceId,
       resourceUri = config.resourceUri,
       endpoints = byName,
+      signer = signer,
     )
 
   /** Where a completed edge login sends the browser. Any absolute URI the client is allowed to

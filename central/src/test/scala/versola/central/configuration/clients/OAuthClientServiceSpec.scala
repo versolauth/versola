@@ -17,6 +17,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import versola.util.{Dpop, JsonWebKeySet, Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
@@ -69,6 +70,28 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     ),
   )
 
+  /** An edge signing key as the cache holds it: the private JWK's own bytes, decrypted, with
+    * its public half in [[edgeKeySet]] so the registration is one central would have accepted.
+    */
+  private val edgeKeyPair =
+    val generator = java.security.KeyPairGenerator.getInstance("EC")
+    generator.initialize(Curve.P_256.toECParameterSpec)
+    generator.generateKeyPair()
+
+  private val edgeKey = ECKey
+    .Builder(Curve.P_256, edgeKeyPair.getPublic.asInstanceOf[ECPublicKey])
+    .privateKey(edgeKeyPair.getPrivate)
+    .keyID("edge-1")
+    .algorithm(JWSAlgorithm.ES256)
+    .build()
+
+  private val storedEdgeSigningKey =
+    Secret(edgeKey.toJSONString.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+
+  private val edgeKeySet = JsonWebKeySet(
+    Json.Obj("keys" -> Json.Arr(edgeKey.toPublicJWK.toJSONString.fromJson[Json.Obj].toOption.get)),
+  )
+
   private val cachedClient = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,
@@ -99,6 +122,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -131,6 +155,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -296,6 +321,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         jwks = None,
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
+        edgeSigningKey = None,
       )
 
       for
@@ -1029,6 +1055,33 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => false,
         updateCalls == 0,
       )
+    },
+    // The patch names no signing key, so validating only what it carries would let this
+    // through and leave the edge holding a key auth can no longer verify anything against.
+    test("updateClient refuses a jwks patch that leaves the stored edge signing key unpublished") {
+      val env = new Env(Vector(cachedClient.copy(jwks = Some(edgeKeySet), edgeSigningKey = Some(storedEdgeSigningKey))))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        result <- env.service.updateClient(updateRequest.copy(jwks = Some(Patch.Deleted))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("edgeSigningKey needs jwks")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    // The complement, so the rule above cannot become "a client with a signing key can no
+    // longer be patched at all".
+    test("updateClient leaves a stored edge signing key alone when the patch does not touch jwks") {
+      val env = new Env(Vector(cachedClient.copy(jwks = Some(edgeKeySet), edgeSigningKey = Some(storedEdgeSigningKey))))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        result <- env.service.updateClient(updateRequest).either
+        patched = env.repository.updateClient.calls.head._2.edgeSigningKey
+      yield assertTrue(result.isRight, patched.isEmpty)
     },
     test("updateClient clears the registration flow when the patch carries an explicit None") {
       val role = RoleRecord(

@@ -1,7 +1,8 @@
 package versola.edge
 
-import versola.edge.model.{AccessToken, AuthorizationPreset, ClientId, Code, CodeVerifier, RefreshToken, State, TokenResponse}
-import versola.util.{Base64, EdgeAssertion, RedirectUri, Secret}
+import versola.edge.model.{AccessToken, AuthorizationPreset, ClientCredential, ClientId, Code, CodeVerifier, OAuthClient, RefreshToken, State, TokenResponse}
+import versola.util.{Base64, ClientAssertion, EdgeAssertion, RedirectUri, RequestObject, Secret}
+import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{JsonCodec, jsonField}
@@ -9,25 +10,34 @@ import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{IO, Task, UIO, URLayer, ZIO, ZLayer}
 
 trait SSOClient:
+  /** Where the browser is sent to start a login.
+    *
+    * Effectful, and not only because of the network: what the URL carries depends on what the
+    * client registered. A client that requires a signed request object (RFC 9101) gets its
+    * request signed with that client's key, and one that requires pushed authorization
+    * requests (RFC 9126) has the request POSTed to `/par` first, leaving the browser a
+    * `request_uri` to carry instead of the request itself.
+    */
   def authorizeUri(
       preset: AuthorizationPreset,
+      client: OAuthClient,
       codeChallenge: String,
       state: State,
       overrideParams: Map[String, String] = Map.empty,
-  ): UIO[URL]
+  ): Task[URL]
 
   def exchangeAuthorizationCode(
       code: Code,
       codeVerifier: CodeVerifier,
       redirectUri: RedirectUri,
       clientId: ClientId,
-      clientSecret: Secret,
+      credential: ClientCredential,
   ): Task[TokenResponse]
 
   def exchangeRefreshToken(
       refreshToken: RefreshToken,
       clientId: ClientId,
-      clientSecret: Secret,
+      credential: ClientCredential,
   ): IO[Throwable | SSOClient.InvalidGrant.type, TokenResponse]
 
   /** `dpopBound` names what the caller already knows about `accessToken` -- whether its
@@ -41,6 +51,22 @@ trait SSOClient:
 object SSOClient:
   case object InvalidGrant
   case object UserInfoUnauthorized
+
+  /** A client whose registration demands something the credential central sent cannot
+    * produce -- a signed request object from a client edge holds only a secret for. Raised
+    * rather than quietly sending the plain request auth is registered to refuse, which would
+    * surface as an `invalid_request` with nothing at either end naming the cause.
+    */
+  case class CredentialCannotSign(clientId: ClientId)
+    extends RuntimeException(
+      s"client '$clientId' requires a signed request object, but this edge holds no signing " +
+        "key for it -- central sent only a client secret",
+    )
+
+  /** RFC 9126 §2.2: what `/par` hands back in place of the request. */
+  private case class PushedAuthorizationResponse(
+      @jsonField("request_uri") requestUri: String,
+  ) derives JsonCodec
 
   private case class ErrorResponse(
       error: String,
@@ -61,14 +87,23 @@ object SSOClient:
     // aren't the same address everywhere.
     private val authorizeUrl: URL = config.versolaUrl / "authorize"
     private val tokenUrl: URL = config.internalUrl / "token"
+    private val pushedAuthorizationUrl: URL = config.internalUrl / "par"
     private val userInfoUrl = config.internalUrl / "userinfo"
+
+    /** What auth accepts as the `aud` of an assertion or a request object. Both take the
+      * issuer identifier (`ClientAssertionService`, `RequestObjectService`), and the issuer is
+      * the public address -- `internalUrl` is how this process reaches auth, not what auth
+      * calls itself, and the two differ wherever edge and auth sit on separate networks.
+      */
+    private val audience: String = config.versolaUrl.encode
 
     override def authorizeUri(
         preset: AuthorizationPreset,
+        client: OAuthClient,
         codeChallenge: String,
         state: State,
         overrideParams: Map[String, String] = Map.empty,
-    ): UIO[URL] = ZIO.succeed:
+    ): Task[URL] =
       val params = List(
         "client_id" -> preset.clientId,
         "redirect_uri" -> preset.redirectUri,
@@ -85,14 +120,129 @@ object SSOClient:
           .flatMap { case (key, values) => values.map(value => key -> value) }
         ++ overrideParams.toList
 
-      authorizeUrl.addQueryParams(params)
+      for
+        // Signing first: a pushed request carrying a request object is what RFC 9126 §3 asks
+        // of a client registered for both, and signing after pushing would leave the object
+        // stating a request auth has already stored under a different one.
+        signed <- signRequestObject(params, client)
+        url <-
+          if client.requirePushedAuthorizationRequests then push(signed, client)
+          else ZIO.succeed(authorizeUrl.addQueryParams(signed))
+      yield url
+
+    /** RFC 9101 §4: the request as a JWT the client signed, sent as the `request` parameter
+      * alongside the `client_id` §6.3 requires to match the object's own claim.
+      *
+      * Left alone for a client that did not register the requirement. A request object is not
+      * free -- it is verified against the client's key set on every authorization request --
+      * and sending one unasked would hold clients to a check they never registered for.
+      */
+    private def signRequestObject(
+        params: List[(String, String)],
+        client: OAuthClient,
+    ): Task[List[(String, String)]] =
+      if !client.requireSignedRequestObject then ZIO.succeed(params)
+      else
+        for
+          signing <- ZIO.fromOption(client.credential.signingKey)
+            .orElseFail(SSOClient.CredentialCannotSign(client.id))
+          token <- RequestObject.sign(
+            parameters = params.groupMap(_._1)(_._2).view.mapValues(Chunk.fromIterable).toMap,
+            clientId = client.id,
+            audience = audience,
+            algorithm = signing.algorithm,
+            keyId = signing.keyId,
+            privateKey = signing.privateKey,
+          )
+        yield List("client_id" -> client.id, RequestObject.Parameter -> token)
+
+    /** RFC 9126 §2: the request is POSTed to `/par` over an authenticated back channel, and
+      * the browser is sent to `/authorize` with only the `request_uri` it hands back.
+      *
+      * What reaches the user agent is then a single-use reference the client is bound to,
+      * rather than a request a user agent could have rewritten on the way -- which is the
+      * whole of what §6.2's requirement buys, and why the request itself must not also be
+      * appended to the redirect.
+      */
+    private def push(params: List[(String, String)], client: OAuthClient): Task[URL] =
+      for
+        authenticated <- authenticate(
+          Form(params.map(FormField.simpleField(_, _))*),
+          client.id,
+          client.credential,
+          pushedAuthorizationUrl,
+        )
+        request = Request
+          .post(pushedAuthorizationUrl, Body.fromURLEncodedForm(authenticated.form))
+          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          .addHeaders(authenticated.headers)
+        response <- ZIO.scoped(httpClient.request(request))
+        pushed <-
+          if response.status.isSuccess then response.bodyAs[SSOClient.PushedAuthorizationResponse]
+          else
+            response.bodyAs[ErrorResponse].flatMap: error =>
+              ZIO.fail(new RuntimeException(
+                s"Pushed authorization request failed: ${response.status.code} ${error.error}" +
+                  error.errorDescription.fold("")(d => s" - $d"),
+              ))
+      yield authorizeUrl.addQueryParams(List(
+        "client_id" -> client.id,
+        "request_uri" -> pushed.requestUri,
+      ))
+
+    /** A form and the headers that authenticate it as `clientId`.
+      *
+      * The two methods land in different places -- RFC 6749 §2.3.1 puts a secret in the
+      * `Authorization` header, RFC 7523 §2.2 puts an assertion in the body -- so this hands
+      * back both rather than one, and every authenticated call goes through it instead of
+      * each deciding for itself.
+      */
+    private def authenticate(
+        form: Form,
+        clientId: ClientId,
+        credential: ClientCredential,
+        endpoint: URL,
+    ): Task[Authenticated] =
+      credential match
+        case ClientCredential.ClientSecret(secret) =>
+          ZIO.succeed(Authenticated(
+            form,
+            Headers(Header.Authorization.Basic(clientId, Base64.urlEncode(secret))),
+          ))
+
+        case ClientCredential.PrivateKeyJwt(signing) =>
+          ClientAssertion.issue(
+            clientId = clientId,
+            audience = audience,
+            algorithm = signing.algorithm,
+            keyId = signing.keyId,
+            privateKey = signing.privateKey,
+          ).map: assertion =>
+            // RFC 7521 §4.2 lets the assertion stand for `client_id`, but auth reads the
+            // parameter too and a request that omits it is harder to trace at either end.
+            // Only where the caller has not already named the client, though: RFC 6749 §3.1
+            // allows a parameter once, and a pushed request carries the `client_id` RFC 9101
+            // §6.3 requires beside the request object -- a second copy decodes on the far
+            // side as one comma-joined value naming no client at all.
+            val identified =
+              if form.get("client_id").isDefined then form
+              else form.append(FormField.simpleField("client_id", clientId))
+
+            Authenticated(
+              identified
+                .append(FormField.simpleField("client_assertion_type", ClientAssertion.Type))
+                .append(FormField.simpleField("client_assertion", assertion)),
+              Headers.empty,
+            )
+
+    private case class Authenticated(form: Form, headers: Headers)
 
     override def exchangeAuthorizationCode(
         code: Code,
         codeVerifier: CodeVerifier,
         redirectUri: RedirectUri,
         clientId: ClientId,
-        clientSecret: Secret,
+        credential: ClientCredential,
     ): Task[TokenResponse] =
       val form = Form(
         FormField.simpleField("grant_type", "authorization_code"),
@@ -100,12 +250,13 @@ object SSOClient:
         FormField.simpleField("redirect_uri", redirectUri),
         FormField.simpleField("code_verifier", codeVerifier),
       )
-      val request = Request
-        .post(tokenUrl, Body.fromURLEncodedForm(form))
-        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-        .addHeader(Header.Authorization.Basic(clientId, Base64.urlEncode(clientSecret)))
 
       for
+        authenticated <- authenticate(form, clientId, credential, tokenUrl)
+        request = Request
+          .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
+          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          .addHeaders(authenticated.headers)
         response <- ZIO.scoped(httpClient.request(request))
         tokenResponse <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
@@ -117,18 +268,19 @@ object SSOClient:
     override def exchangeRefreshToken(
         refreshToken: RefreshToken,
         clientId: ClientId,
-        clientSecret: Secret,
+        credential: ClientCredential,
     ): IO[Throwable | InvalidGrant.type, TokenResponse] =
       val form = Form(
         FormField.simpleField("grant_type", "refresh_token"),
         FormField.simpleField("refresh_token", refreshToken),
       )
-      val request = Request
-        .post(tokenUrl, Body.fromURLEncodedForm(form))
-        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-        .addHeader(Header.Authorization.Basic(clientId, Base64.urlEncode(clientSecret)))
 
       for
+        authenticated <- authenticate(form, clientId, credential, tokenUrl)
+        request = Request
+          .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
+          .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+          .addHeaders(authenticated.headers)
         response <- ZIO.scoped(httpClient.request(request))
         result <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
