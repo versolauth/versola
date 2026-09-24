@@ -55,7 +55,7 @@ object EdgePrivateKeyJwtSpec extends EdgeSpec(
           .orElseFail(RuntimeException(s"/login did not redirect (status=${started.status})"))
         url <- ZIO.fromEither(URL.decode(location)).mapError(RuntimeException(_))
       yield assertTrue(
-        started.status == Status.Found,
+        started.status == Status.SeeOther,
         // RFC 9126 §6.2 buys nothing if the parameters ride along too: the reference has to
         // be the whole of what the user agent carries.
         url.queryParams.map.keySet == Set("client_id", "request_uri"),

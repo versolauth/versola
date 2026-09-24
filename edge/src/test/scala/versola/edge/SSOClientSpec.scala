@@ -270,6 +270,10 @@ object SSOClientSpec extends ZIOSpecDefault:
         // rather than after it.
         RequestObject.parameters(claims)("state") == Chunk(state.toString),
         form.get("client_assertion_type").flatMap(_.stringValue) == Some(ClientAssertion.Type),
+        // The request object and the assertion both name the client, and RFC 6749 §3.1 allows
+        // the parameter once: a second copy is decoded as the two joined by a comma, which
+        // identifies nothing and is refused before the assertion is ever verified.
+        form.get("client_id").flatMap(_.stringValue) == Some(keyClient.id.toString),
         queryParam(url, "request_uri") == Some(Chunk("urn:ietf:params:oauth:request_uri:def")),
       )
     },

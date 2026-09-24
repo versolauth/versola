@@ -220,9 +220,16 @@ object SSOClient:
           ).map: assertion =>
             // RFC 7521 §4.2 lets the assertion stand for `client_id`, but auth reads the
             // parameter too and a request that omits it is harder to trace at either end.
+            // Only where the caller has not already named the client, though: RFC 6749 §3.1
+            // allows a parameter once, and a pushed request carries the `client_id` RFC 9101
+            // §6.3 requires beside the request object -- a second copy decodes on the far
+            // side as one comma-joined value naming no client at all.
+            val identified =
+              if form.get("client_id").isDefined then form
+              else form.append(FormField.simpleField("client_id", clientId))
+
             Authenticated(
-              form
-                .append(FormField.simpleField("client_id", clientId))
+              identified
                 .append(FormField.simpleField("client_assertion_type", ClientAssertion.Type))
                 .append(FormField.simpleField("client_assertion", assertion)),
               Headers.empty,
