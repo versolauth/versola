@@ -20,6 +20,7 @@ spec:
   {{- end }}
   rules:
     {{- range $host := .Values.ingress.hosts }}
+    {{- include "versola.assertHostRoutes" (dict "host" $host) }}
     - host: {{ $host.host | quote }}
       http:
         paths:

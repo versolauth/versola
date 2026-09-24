@@ -11,6 +11,7 @@ keep Exact /logout while edge takes everything under it -- see
 {{- $groups := include "versola.routeGroups" . | fromYaml }}
 {{- $root := . }}
 {{- range $host := .Values.ingress.hosts }}
+{{- include "versola.assertHostRoutes" (dict "host" $host) }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

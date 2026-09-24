@@ -311,7 +311,8 @@ ingress:
   #                        are Prefix /service/ (central's ServiceController
   #                        and auth's), so one path would have two backends
   #                        and the controller picks -- ingress-nginx and an
-  #                        ALB need not pick the same one. Separate hostnames.
+  #                        ALB need not pick the same one. Separate hostnames;
+  #                        listing both on one host fails the render.
   hosts: []
   #  - host: id.example.com
   #    routes: [oidc, login]

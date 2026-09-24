@@ -328,8 +328,32 @@ settings:
 # That is unlike oidc/login's /logout, where the paths differ and Ingress
 # precedence settles it; here the paths are identical and which backend wins
 # is the controller's own business, so the same manifest can route one way on
-# ingress-nginx and another on an ALB. Split them across hostnames.
+# ingress-nginx and another on an ALB. versola.assertHostRoutes rejects the
+# pair at render time; split them across hostnames.
 central:
   - {path: /configuration/, pathType: Prefix, service: {{ $central }}, port: {{ $centralPort }}}
   - {path: /service/, pathType: Prefix, service: {{ $central }}, port: {{ $centralPort }}}
+{{- end -}}
+
+{{/*
+Rejects route-group combinations one host cannot serve. Expects a dict:
+{host: <ingress.hosts entry>}.
+
+The group names are already distinct; what collides is a path. `central` and
+`service` both claim Prefix /service/, for central and auth respectively, and
+no precedence rule separates two identical paths -- the controller picks, so
+the same manifest can route differently on ingress-nginx and on an ALB.
+
+A deployment that keeps central and auth on their own hostnames never trips
+this, which is the normal shape. It exists for the manifest that does trip
+it, and fails the render the same way an unknown group name already does:
+a route that silently goes to the wrong service is worse found in production
+than at `helm template`.
+*/}}
+{{- define "versola.assertHostRoutes" -}}
+{{- $host := .host -}}
+{{- $routes := $host.routes | default list -}}
+{{- if and (has "central" $routes) (has "service" $routes) -}}
+{{- fail (printf "ingress.hosts[%s]: route groups \"central\" and \"service\" both serve Prefix /service/ (central's ServiceController and auth's, respectively) -- a single host cannot route both. Put them on separate hostnames." $host.host) -}}
+{{- end -}}
 {{- end -}}
