@@ -793,7 +793,7 @@ jobs:
           # Same motivation as the other images: arm64 nodes should get a
           # native pull. No "Set up QEMU" step in this job, unlike the
           # others -- docker/Dockerfile.gateway is COPY-only on top of
-          # nginx:1.27-alpine (itself already multi-arch), so nothing is
+          # nginx:1.30-alpine (itself already multi-arch), so nothing is
           # ever executed at build time and there is no foreign binary for
           # binfmt to handle.
           platforms: linux/amd64,linux/arm64

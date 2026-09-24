@@ -1,0 +1,2 @@
+Placeholder so git keeps this directory -- Dockerfile.gateway COPYs it
+(with --chown) to pre-create the ACME state dir owned by nginx.
