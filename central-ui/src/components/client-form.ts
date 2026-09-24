@@ -2313,7 +2313,10 @@ export class VersolaClientForm extends LitElement {
       || this.mtlsSubjectValueError !== ''
       || !this.clientCredentialValidation.valid
       || !this.mtlsTerminationValidation.valid
-      || this.logoutUriError !== '';
+      // The logout block renders for every kind but service, which has no sign-in flow to log
+      // out of - gating on a stale error from an earlier kind would leave this button disabled
+      // with no field on screen to explain why.
+      || (this.kind !== 'service' && this.logoutUriError !== '');
   }
 
   /** The three consent URIs, each with the field its error renders under. */
@@ -3523,6 +3526,20 @@ export class VersolaClientForm extends LitElement {
   /** How the client authenticates, plus the request-integrity settings tied to it - decided
    *  by the kind x tier pair in step 1, still editable here. */
   private renderCredentialGroup() {
+    // A native client authenticates with nothing beyond its client_id - authMethodFor pins it
+    // to 'none' regardless of which mode is picked here, so the cards below would let an
+    // operator fill in a certificate or a key set that the update then silently drops.
+    if (this.clientType === 'native') {
+      return html`
+            <div class="form-group">
+              <label style="margin-bottom: 0;">Client credential</label>
+              <div class="plan">
+                ${this.renderPlanLine('fixed', 'Public client, no secret', 'A shipped binary cannot keep one.')}
+              </div>
+            </div>
+      `;
+    }
+
     return html`
             <div class="form-group">
               <div style="display: flex; align-items: center; gap: 0.4rem;">

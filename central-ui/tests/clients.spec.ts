@@ -1282,6 +1282,49 @@ test('leaves a native client public when its sign-in flow is switched off', asyn
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).not.toHaveProperty('authMethod');
 });
 
+test('does not carry a stale logout error into a kind that has no logout block', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath });
+
+  await startCreate(page);
+  await fillBasics(page, 'stale-logout-client', 'Stale Logout Client');
+  await addRedirectUri(page, 'https://app.example.com/callback');
+  await openLogout(page);
+  await page.getByRole('button', { name: 'Front-channel', exact: true }).click();
+  await page.getByLabel('Front-channel logout URI').fill('not-a-url');
+
+  // Sanity check: as a web client, the invalid URI does gate this step.
+  await expect(page.getByRole('button', { name: 'Continue to sign-in' })).toBeDisabled();
+
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Service app/ }).click();
+  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+
+  // A service client has no sign-in flow, so its logout block never renders - the stale error
+  // from the earlier kind must not keep gating a step with no field left to fix it on.
+  await expect(page.getByRole('button', { name: 'Continue to permissions' })).toBeEnabled();
+});
+
+test('hides the credential picker on a native client instead of accepting a credential it drops', async ({ page }) => {
+  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [nativeClient] },
+      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
+    },
+  });
+
+  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
+
+  // authMethodFor pins a native client to 'none' no matter which mode is picked, so the picker
+  // that lets an operator fill in a certificate or a key set that the update would then drop
+  // (and Central's validation would then reject) must not be offered at all.
+  await expect(page.getByRole('button', { name: 'mTLS certificate', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Public client, no secret')).toBeVisible();
+});
+
 test('gates the sign-in step on the consent URIs it edits', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
