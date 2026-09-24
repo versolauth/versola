@@ -155,8 +155,13 @@ if [ "$TARGET" = "vps" ]; then
     *://*) ;;
     *) auth_url_error "must be http(s)://<host>[:<port>], e.g. https://auth.example.com" ;;
   esac
-  AUTH_SCHEME=$(printf '%s' "${AUTH_URL%%://*}" | tr 'A-Z' 'a-z')
-  AUTH_HOSTPORT=$(printf '%s' "${AUTH_URL#*://}" | tr 'A-Z' 'a-z')
+  # Lowercased as a whole (it can't hold a path, so nothing case-sensitive
+  # is left in it): browsers serialize an origin in lowercase and the
+  # passkey origin check is an exact match, so "https://ID.example.com"
+  # written verbatim into auth.conf would never match.
+  AUTH_URL=$(printf '%s' "$AUTH_URL" | tr 'A-Z' 'a-z')
+  AUTH_SCHEME="${AUTH_URL%%://*}"
+  AUTH_HOSTPORT="${AUTH_URL#*://}"
   case "$AUTH_SCHEME" in
     http|https) ;;
     *) auth_url_error "scheme must be http or https" ;;
