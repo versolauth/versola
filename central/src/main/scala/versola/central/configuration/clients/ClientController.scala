@@ -83,8 +83,11 @@ object ClientController extends Controller:
         transportEncrypt <- edgeId match
           case Some(id) =>
             edgeService.find(id).someOrFail(Unauthorized).map { edge =>
+              // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
+              // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
+              // the one transport both go through.
               (secret: Secret) =>
-                securityService.encryptRsa(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
+                securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
             }
           case None =>
             ZIO.succeed: (secret: Secret) =>

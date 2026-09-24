@@ -80,7 +80,10 @@ object OAuthClientsSyncClient:
     private def decryptSecret(value: String): Task[Secret] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
-        decrypted <- securityService.decryptRsa(encrypted, config.privateKey)
+        // Hybrid, matching ClientController's transportEncrypt: a generated client secret
+        // fits in one RSA-OAEP block, but edgeSigningKey's stored JWK document does not, and
+        // this decrypts both.
+        decrypted <- securityService.decryptRsaHybrid(encrypted, config.privateKey)
       yield Secret(decrypted)
 
     private case class SyncOAuthClientRecord(

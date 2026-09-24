@@ -41,7 +41,8 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.dieMessage("Unused in test")
       override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.dieMessage("Unused in test")
       override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
-      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) =
+      override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
+      override def decryptRsaHybrid(data: Array[Byte], key: java.security.PrivateKey) =
         ZIO.succeed(decryptedByCiphertext(Base64.urlEncode(data)))
       override def mac(macInput: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
       override def hashPassword(pw: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) =

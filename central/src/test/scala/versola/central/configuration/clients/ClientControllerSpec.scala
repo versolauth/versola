@@ -430,13 +430,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     // encryption for edge-issued tokens) was never exercised; every other sync test uses a
     // central-signed token, which takes the `None` (AES) branch.
     test("return synced tenant clients encrypted via edge RSA key when request is signed by an edge") {
-      // Delegates to the real RSA implementation, so the emitted secret is genuine ciphertext
-      // that only the edge's private key can open, and records which public key was used.
-      // The AES path dies: for an edge-issued token it must not be taken at all.
+      // Delegates to the real implementation, so the emitted secret is genuine hybrid
+      // ciphertext that only the edge's private key can open, and records which RSA public
+      // key encryptRsaHybrid wrapped the session key with -- encryptAes256 is exercised too
+      // now (the hybrid scheme's own session-key wrapping), so it is no longer the signal
+      // that the wrong (central-internal, fixed-key) branch was taken; rsaKeysUsed is.
       def edgeSecurity(realSecurity: SecurityService, rsaKeys: Ref[Vector[java.security.PublicKey]]) = new SecurityService:
-        override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) =
-          ZIO.dieMessage("AES transport encryption must not be used for an edge-issued token")
-        override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = ZIO.succeed(data)
+        override def encryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = realSecurity.encryptAes256(data, key)
+        override def decryptAes256(data: Array[Byte], key: javax.crypto.SecretKey) = realSecurity.decryptAes256(data, key)
         override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) =
           rsaKeys.update(_ :+ key) *> realSecurity.encryptRsa(data, key)
         override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = realSecurity.decryptRsa(data, key)
@@ -476,7 +477,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         payload <- response.body.asJson[GetOAuthClientsSyncResponse]
         rsaKeysUsed <- rsaKeys.get
         wireSecret = payload.clients.head.secret
-        recovered <- ZIO.foreach(wireSecret)(s => realSecurity.decryptRsa(Base64.urlDecode(s), edgeKeyPair.privateKey))
+        recovered <- ZIO.foreach(wireSecret)(s => realSecurity.decryptRsaHybrid(Base64.urlDecode(s), edgeKeyPair.privateKey))
         plaintext = clients.head.secret
       yield assertTrue(
         response.status == Status.Ok,
@@ -487,6 +488,51 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         rsaKeysUsed == Vector(edgeRecord.activeRsaPublicKey),
         wireSecret.exists(_ != Base64Url.encode(plaintext.get)),
         recovered.map(_.toVector) == plaintext.map(_.toVector),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    // Regression test for the bug encryptRsaHybrid fixes: plain RSA-OAEP transport
+    // (encryptRsa, what the test above exercises for the 48-byte client secret) throws
+    // IllegalBlockSizeException past 190 bytes, and a real edge signing key's JWK document
+    // routinely exceeds that -- this endpoint 500'd for any client that had registered one,
+    // until it switched to encryptRsaHybrid.
+    test("return synced tenant clients with an edgeSigningKey too large for a single RSA block") {
+      val oversizedKey = Secret(Array.tabulate(220)(i => (i % 251).toByte))
+      val clientWithKey = clients.head.copy(edgeSigningKey = Some(oversizedKey))
+
+      for
+        httpClient <- ZIO.service[Client]
+        security <- (SecureRandom.live >>> SecurityService.live).build
+        realSecurity = security.get[SecurityService]
+        service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+          headers = Map("edge_id" -> edgeId.toString),
+        )
+        _ <- edgeService.find.succeedsWith(Some(edgeRecord))
+        _ <- service.getClientsForSync.succeedsWith(Vector(clientWithKey))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ClientController.routes.provideEnvironment(
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+                security ++ ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
+        )
+        response <- httpClient.batched(
+          Request.get((URL.empty / "configuration" / "clients" / "sync").addQueryParam("tenantId", tenantId.toString))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        wireKey = payload.clients.head.edgeSigningKey
+        recovered <- ZIO.foreach(wireKey)(k => realSecurity.decryptRsaHybrid(Base64.urlDecode(k), edgeKeyPair.privateKey))
+      yield assertTrue(
+        response.status == Status.Ok,
+        recovered.map(_.toVector) == Some(oversizedKey.toVector),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     controllerTestCase(

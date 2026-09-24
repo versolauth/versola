@@ -18,7 +18,12 @@ import zio.test.*
 object EdgePrivateKeyJwtSpec extends EdgeSpec(
       EdgeFixture.Config(
         resourceId = "e2e-edge-private-key-jwt",
-        resourceUri = "http://localhost:9007",
+        // Not UpstreamStub.uri (9104) or DpopBoundTokenSpec's 9105 -- EdgeFixture.Config's
+        // doc requires every spec to claim a distinct resource URI, since central resolves a
+        // token's audience by it. This one previously reused auth's own APORT (9007), which
+        // is claimed elsewhere and produced an intermittent "resource already exists" 500 on
+        // a full `e2e/test` run.
+        resourceUri = UpstreamStub.uriOn(9106),
         privateKeyJwt = true,
         requireSignedRequestObject = true,
         requirePushedAuthorizationRequests = true,

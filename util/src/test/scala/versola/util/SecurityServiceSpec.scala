@@ -83,6 +83,44 @@ object SecurityServiceSpec extends ZIOSpecDefault:
       )
     }.provide(SecurityService.live, SecureRandom.live),
 
+    // The regression this guards: a synced edgeSigningKey's JWK document routinely exceeds
+    // this, and did until encryptRsaHybrid existed -- `configuration/clients/sync` 500'd with
+    // an uncaught IllegalBlockSizeException for any client that registered one.
+    test("encryptRsa refuses data past the RSA-OAEP-SHA256 bound a 2048-bit key allows") {
+      val tooLong = Array.fill(191)(1.toByte)
+
+      for
+        service <- ZIO.service[SecurityService]
+        keyPair <- service.generateRsaKeyPair
+        result <- service.encryptRsa(tooLong, keyPair.publicKey).exit
+      yield assertTrue(result.isFailure)
+    }.provide(SecurityService.live, SecureRandom.live),
+
+    test("encryptRsaHybrid round-trips data past the plain encryptRsa bound via decryptRsaHybrid") {
+      val tooLong = Array.tabulate(191)(_.toByte)
+
+      for
+        service   <- ZIO.service[SecurityService]
+        keyPair   <- service.generateRsaKeyPair
+        encrypted <- service.encryptRsaHybrid(tooLong, keyPair.publicKey)
+        decrypted <- service.decryptRsaHybrid(encrypted, keyPair.privateKey)
+      yield assertTrue(
+        !encrypted.sameElements(tooLong),
+        decrypted.sameElements(tooLong),
+      )
+    }.provide(SecurityService.live, SecureRandom.live),
+
+    test("encryptRsaHybrid also round-trips data well within the plain encryptRsa bound") {
+      val secret = "short session secret".getBytes("UTF-8")
+
+      for
+        service   <- ZIO.service[SecurityService]
+        keyPair   <- service.generateRsaKeyPair
+        encrypted <- service.encryptRsaHybrid(secret, keyPair.publicKey)
+        decrypted <- service.decryptRsaHybrid(encrypted, keyPair.privateKey)
+      yield assertTrue(decrypted.sameElements(secret))
+    }.provide(SecurityService.live, SecureRandom.live),
+
     test("generateEcKeyPair produces a P-256 key pair published as ES256") {
       for
         service <- ZIO.service[SecurityService]
