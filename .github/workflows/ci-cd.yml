@@ -421,6 +421,21 @@ jobs:
           [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
           [ -f /tmp/edge.pid ]   && kill "$(cat /tmp/edge.pid)"   2>/dev/null || true
 
+  # versola-tools' entrypoint.sh config generation and validation (gateway
+  # listen/upstreams, TLS via the ACME module, AUTH_URL / ACME_DIRECTORY
+  # checks), each generated config also checked with a real `nginx -t`.
+  # Runs inside the gateway's own base image (keep this tag in step with
+  # docker/Dockerfile.gateway's FROM) -- see the header of
+  # docker/versola-tools/entrypoint_test.sh. Gates the two images whose
+  # behaviour it covers: docker-gateway and docker-tools.
+  tools-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Test entrypoint.sh config generation
+        run: docker run --rm -v "$PWD":/w -w /w nginx:1.30-alpine sh docker/versola-tools/entrypoint_test.sh
+
   docker-auth:
     needs: build
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
@@ -720,7 +735,7 @@ jobs:
   # (this repo is private, so a GitHub Release asset would need its own
   # auth story on top).
   docker-gateway:
-    needs: build
+    needs: [build, tools-test]
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
@@ -810,7 +825,7 @@ jobs:
   # copy to drift out of sync (confirmed by hand that this drift is a real
   # risk, not a hypothetical one).
   docker-tools:
-    needs: build
+    needs: [build, tools-test]
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
