@@ -1110,3 +1110,30 @@ jobs:
 
       - name: Check chart images exist in ghcr
         run: .github/scripts/check-chart-images.sh
+
+  # Separate from helm-images on purpose. That job installs only Helm and
+  # reports in seconds; this one runs gen-env.scala through scala-cli, which
+  # has to compile it first, so folding the two together would slow the fast
+  # check down to the slow one's pace for no gain -- they share no setup
+  # beyond the checkout.
+  #
+  # Same event guard as helm-images, for a different reason: nothing here
+  # races the docker-* jobs, but a drift between the chart and the generator
+  # is something to catch on the PR that introduces it, which is where this
+  # runs.
+  helm-secret-vars:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Set up Scala CLI
+        uses: VirtusLab/scala-cli-setup@v1
+
+      - name: Check chart secret vars match gen-env
+        run: .github/scripts/check-chart-secret-vars.sh
