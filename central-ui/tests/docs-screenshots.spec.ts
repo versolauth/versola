@@ -176,18 +176,24 @@ test('client create form', async ({ page }) => {
   await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
   await shot(page, 'client-form-kind-step', true);
 
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await shot(page, 'client-form-empty', true);
 
   await page.getByLabel('Client ID').fill('checkout-web');
   await page.getByLabel('Client Name').fill('Checkout Web');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await expect(page.getByText('https://checkout.example.com/callback')).toBeVisible();
+  await shot(page, 'client-form-basics', true);
+
+  await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
   await page.getByRole('checkbox', { name: 'openid', exact: true }).check();
   await page.getByRole('checkbox', { name: 'profile', exact: true }).check();
   await page.getByRole('checkbox', { name: 'orders.read', exact: true }).check();
-  await expect(page.getByText('https://checkout.example.com/callback')).toBeVisible();
   await shot(page, 'client-form-filled', true);
+
+  await page.getByRole('button', { name: 'Continue to review', exact: true }).click();
+  await shot(page, 'client-form-review', true);
 
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Client created: Checkout Web', exact: true })).toBeVisible();
@@ -202,11 +208,12 @@ test('client registration flow form', async ({ page }) => {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await page.getByRole('button', { name: /Web app/ }).click();
   await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
-  await page.getByRole('button', { name: 'Continue', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await page.getByLabel('Client ID').fill('checkout-web');
   await page.getByLabel('Client Name').fill('Checkout Web');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
