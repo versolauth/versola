@@ -122,12 +122,26 @@ object MigrateTool:
     * `info().pending()` -- standard OSS Flyway, not a Teams-only feature
     * (unlike `dryRunOutput`, which generates SQL and IS Teams-only) --
     * without ever calling `.migrate()`, so nothing here touches the schema.
+    *
+    * The validation is skipped when nothing has been applied yet. `validate()`
+    * compares the resolved migrations against the schema history table, so on a
+    * database this tool has never run against it fails with `Schema "x" doesn't
+    * exist yet` -- an error about the absence of the very thing a first run is
+    * supposed to create. That turned the preview mode off in exactly the case
+    * it is most wanted: inspecting what a brand-new environment is about to
+    * receive. Everywhere else the check is unchanged, and deliberately so: a
+    * dry run against an environment that HAS a history is worth failing when
+    * that history disagrees with the migrations on disk, which is the same
+    * thing `migrate` would refuse to do.
     */
   private def checkPending(target: Target): Unit =
     println(s"${target.serviceName}: checking pending migrations against ${target.configPath}")
     val flyway = buildFlyway(target)
-    flyway.validate()
-    val pending = flyway.info().pending()
+    val info = flyway.info()
+    if info.applied().isEmpty then
+      println(s"${target.serviceName}: no schema history yet, every migration below is a first-time apply")
+    else flyway.validate()
+    val pending = info.pending()
     if pending.isEmpty then println(s"${target.serviceName}: up to date, nothing to apply")
     else
       println(s"${target.serviceName}: ${pending.length} pending migration(s):")
