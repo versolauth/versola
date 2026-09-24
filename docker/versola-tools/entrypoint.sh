@@ -104,6 +104,25 @@ if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   exit 1
 fi
 
+# vps serves Versola from the root of AUTH_URL's host: gen-env.scala
+# builds every public URL as "$AUTH_URL/<endpoint>" (issuer, /authorize,
+# /token, ...), while auth/edge and the gateway's routing are all mounted
+# at "/" -- a path prefix would be advertised but never reachable, and the
+# admin console's cookie paths (/central) assume the root too, so it can't
+# be fixed by a prefix-stripping proxy in front either. A single trailing
+# slash is just trimmed (common typo; left in, it would produce
+# "https://host//authorize" and a passkey origin with a slash, which never
+# matches a real origin). Anything else after the host is refused.
+if [ "$TARGET" = "vps" ]; then
+  AUTH_URL="${AUTH_URL%/}"
+  case "${AUTH_URL#*://}" in
+    */*)
+      echo "versola-tools: AUTH_URL '$AUTH_URL' has a path -- Versola must be served from the root of its domain (e.g. https://auth.example.com)" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # TLS is on only for vps owning the host's ports (PROXY_MODE=nginx) with an
 # https:// AUTH_URL (scheme compared case-insensitively). Checked here, not
 # where the nginx files are written, so a bad AUTH_URL fails before any
