@@ -95,6 +95,24 @@ case "$LISTEN_IPV6" in
     ;;
 esac
 
+# ACME_DIRECTORY goes verbatim into the nginx config (acme_issuer's `uri`),
+# so the same allow-list approach as AUTH_URL below: an https:// URL made of
+# ordinary URL characters only -- a space, ';', quote or brace would
+# otherwise end up inside nginx.conf and restart-loop the gateway.
+case "$ACME_DIRECTORY" in
+  https://*) ;;
+  *)
+    echo "versola-tools: ACME_DIRECTORY '$ACME_DIRECTORY' must be an https:// URL" >&2
+    exit 1
+    ;;
+esac
+case "$ACME_DIRECTORY" in
+  *[!A-Za-z0-9._~:/%?=\&-]*)
+    echo "versola-tools: ACME_DIRECTORY '$ACME_DIRECTORY' contains characters not allowed in the nginx config" >&2
+    exit 1
+    ;;
+esac
+
 if [ "$TARGET" = "vps" ] && [ -z "$AUTH_URL" ]; then
   echo "versola-tools: AUTH_URL is required when TARGET=vps (e.g. https://auth.example.com)" >&2
   exit 1
@@ -104,56 +122,67 @@ if [ "$TARGET" = "vps" ] && [ -z "$POSTGRES_HOST" ]; then
   exit 1
 fi
 
-# vps serves Versola from the root of AUTH_URL's host: gen-env.scala
-# builds every public URL as "$AUTH_URL/<endpoint>" (issuer, /authorize,
-# /token, ...), while auth/edge and the gateway's routing are all mounted
-# at "/" -- a path prefix would be advertised but never reachable, and the
-# admin console's cookie paths (/central) assume the root too, so it can't
-# be fixed by a prefix-stripping proxy in front either. A single trailing
-# slash is just trimmed (common typo; left in, it would produce
-# "https://host//authorize" and a passkey origin with a slash, which never
-# matches a real origin). Anything else after the host is refused.
-if [ "$TARGET" = "vps" ]; then
-  AUTH_URL="${AUTH_URL%/}"
-  case "${AUTH_URL#*://}" in
-    */*)
-      echo "versola-tools: AUTH_URL '$AUTH_URL' has a path -- Versola must be served from the root of its domain (e.g. https://auth.example.com)" >&2
-      exit 1
-      ;;
-  esac
-fi
-
-# TLS is on only for vps owning the host's ports (PROXY_MODE=nginx) with an
-# https:// AUTH_URL (scheme compared case-insensitively). Checked here, not
-# where the nginx files are written, so a bad AUTH_URL fails before any
-# config is generated instead of leaving a half-written bundle behind.
+# AUTH_URL (vps) is validated here, before anything is generated, against
+# an allow-list of what actually works -- not a deny-list of known-bad
+# characters, which kept missing the next one. It must be exactly
+# http(s)://<host>[:<port>]:
+#   - gen-env.scala builds every public URL as "$AUTH_URL/<endpoint>"
+#     (issuer, /authorize, /token, redirect URIs, passkey origins), while
+#     auth/edge and the gateway's routing are mounted at "/". So a path,
+#     query or fragment would be advertised but never reachable (and the
+#     admin console's /central cookie paths assume the root too, so a
+#     prefix-stripping proxy in front can't fix it either).
+#   - host: letters, digits, dots, hyphens only; port: digits only. Nothing
+#     else (userinfo, spaces, ';', brackets) can then reach gen-env or the
+#     nginx config.
+# A single trailing slash is just trimmed (common typo; left in, it would
+# produce "https://host//authorize" and a passkey origin ending in "/").
+#
+# On top of that, TLS -- vps owning the host's ports (PROXY_MODE=nginx)
+# with an https:// AUTH_URL -- also needs a plain domain on 443: no port
+# (the certificate would be served on 443 while clients go elsewhere) and
+# no IP address (Let's Encrypt doesn't issue for IPs by default -- the ACME
+# module would just keep failing, burning the failed-validation limit).
 TLS=off
 DOMAIN=""
-if [ "$TARGET" = "vps" ] && [ "$PROXY_MODE" = "nginx" ]; then
+if [ "$TARGET" = "vps" ]; then
+  AUTH_URL="${AUTH_URL%/}"
+  auth_url_error() {
+    echo "versola-tools: AUTH_URL '$AUTH_URL' -- $1" >&2
+    exit 1
+  }
+  case "$AUTH_URL" in
+    *://*) ;;
+    *) auth_url_error "must be http(s)://<host>[:<port>], e.g. https://auth.example.com" ;;
+  esac
   AUTH_SCHEME=$(printf '%s' "${AUTH_URL%%://*}" | tr 'A-Z' 'a-z')
-  if [ "$AUTH_SCHEME" = "https" ] && [ "${AUTH_URL%%://*}" != "$AUTH_URL" ]; then
-    TLS=on
-    # Host part of AUTH_URL: drop scheme, then any path. Anything that
-    # isn't a plain domain is refused rather than silently misconfigured:
-    # a port (the certificate would be served on 443 while clients go
-    # elsewhere), userinfo/query/fragment, an empty host, or an IP address
-    # (Let's Encrypt doesn't issue for IPs by default -- the ACME module
-    # would just keep failing, burning the failed-validation rate limit).
-    DOMAIN="${AUTH_URL#*://}"
-    DOMAIN=$(printf '%s' "${DOMAIN%%/*}" | tr 'A-Z' 'a-z')
-    # Allow-list, not a deny-list: only letters, digits, dots and hyphens
-    # can reach listen.conf -- a stray ';' or space would otherwise end up
-    # inside the nginx config and restart-loop the gateway.
-    DOMAIN_OK=yes
-    case "$DOMAIN" in
-      ""|*[!a-z0-9.-]*) DOMAIN_OK=no ;;
-      *[!0-9.]*) ;;
-      *) DOMAIN_OK=no ;;
+  AUTH_HOSTPORT=$(printf '%s' "${AUTH_URL#*://}" | tr 'A-Z' 'a-z')
+  case "$AUTH_SCHEME" in
+    http|https) ;;
+    *) auth_url_error "scheme must be http or https" ;;
+  esac
+  AUTH_HOST="${AUTH_HOSTPORT%%:*}"
+  case "$AUTH_HOST" in
+    ""|*[!a-z0-9.-]*) auth_url_error "must be http(s)://<host>[:<port>] -- no path, query, fragment or user; host may only contain letters, digits, '.' and '-'" ;;
+  esac
+  AUTH_PORT=""
+  if [ "$AUTH_HOST" != "$AUTH_HOSTPORT" ]; then
+    AUTH_PORT="${AUTH_HOSTPORT#*:}"
+    case "$AUTH_PORT" in
+      ""|*[!0-9]*) auth_url_error "port must be digits only" ;;
     esac
-    if [ "$DOMAIN_OK" = "no" ]; then
-      echo "versola-tools: AUTH_URL '$AUTH_URL' -- with TLS on it must be https://<domain> (no port, IP address, user, query or fragment); Let's Encrypt issues the certificate for that domain on 443" >&2
-      exit 1
+  fi
+
+  if [ "$PROXY_MODE" = "nginx" ] && [ "$AUTH_SCHEME" = "https" ]; then
+    TLS=on
+    if [ -n "$AUTH_PORT" ]; then
+      auth_url_error "with TLS the certificate is served on 443 -- remove the port"
     fi
+    case "$AUTH_HOST" in
+      *[!0-9.]*) ;;
+      *) auth_url_error "Let's Encrypt doesn't issue certificates for IP addresses -- use a domain" ;;
+    esac
+    DOMAIN="$AUTH_HOST"
   fi
 fi
 
