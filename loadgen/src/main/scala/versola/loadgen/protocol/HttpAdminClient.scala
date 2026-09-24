@@ -81,6 +81,12 @@ final class HttpAdminClient(
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = spec.backChannelLogoutUri,
       authMethod = if spec.publicClient then publicAuthMethod else clientSecretAuthMethod,
+      // The campaign authenticates by secret over plain HTTP and proves DPoP per request, so it
+      // registers neither certificate binding nor an algorithm narrowing. Both are mandatory
+      // members of central's registration DTO, and a body that leaves them out is refused
+      // outright rather than defaulted.
+      certificateBoundAccessTokens = false,
+      dpopSigningAlgs = Set.empty,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -112,6 +118,11 @@ final class HttpAdminClient(
       // registration flow or a logout URI the campaign no longer wants would otherwise keep it.
       registrationFlow = spec.registrationFlow.getOrElse(Json.Null),
       backChannelLogoutUri = spec.backChannelLogoutUri.fold(Json.Null)(Json.Str(_)),
+      // Written on the update too, so a client a previous configuration left bound to a
+      // certificate or narrowed to one proof algorithm converges on the blueprint instead of
+      // keeping a setting the campaign cannot satisfy.
+      certificateBoundAccessTokens = false,
+      dpopSigningAlgs = Set.empty,
     )
     send(Method.PUT, central("configuration", "clients"), Some(body.toJson))
       .flatMap(expectSuccess("updateClient", _))
@@ -430,6 +441,8 @@ object HttpAdminClient:
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
       authMethod: String,
+      certificateBoundAccessTokens: Boolean,
+      dpopSigningAlgs: Set[String],
   ) derives JsonEncoder
 
   private case class UpdateClientBody(
@@ -445,6 +458,8 @@ object HttpAdminClient:
       authFlow: Json,
       registrationFlow: Json,
       backChannelLogoutUri: Json,
+      certificateBoundAccessTokens: Boolean,
+      dpopSigningAlgs: Set[String],
   ) derives JsonEncoder
 
   private case class CreateClientResponseBody(secret: Option[String]) derives JsonDecoder
