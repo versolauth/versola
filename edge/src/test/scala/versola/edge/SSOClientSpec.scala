@@ -3,7 +3,7 @@ package versola.edge
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
 import versola.edge.model.*
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, JWT, PrivateJsonWebKey, RedirectUri, RequestObject, Secret}
+import versola.util.{Base64, ClientAssertion, EdgeAssertion, JWT, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, RequestObject, Secret, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -58,12 +58,25 @@ object SSOClientSpec extends ZIOSpecDefault:
     accessTokenTtl = 15.minutes,
   )
 
+  /** Stands in for the directory the real one writes to. What a certificate is written to is
+    * `ClientCertificateFilesSpec`'s subject; here it only has to be somewhere the credential
+    * can be observed arriving. */
+  private val certificateFiles: ClientCertificateFiles = _ =>
+    ZIO.succeed(ClientSSLCertConfig.FromClientCertFile("client.crt", "client.key"))
+
+  private def recordingCertificateFiles(
+      presented: Ref[List[PrivateClientCertificate.Material]],
+  ): ClientCertificateFiles = certificate =>
+    presented.update(certificate :: _)
+      .as(ClientSSLCertConfig.FromClientCertFile("client.crt", "client.key"))
+
   private def queryParam(url: URL, key: String): Option[Chunk[String]] =
     url.queryParams.map.get(key)
 
   def spec = suite("SSOClient")(
     authorizeUriSuite,
     privateKeyJwtSuite,
+    mutualTlsSuite,
     requestObjectSuite,
     pushedAuthorizationSuite,
     exchangeSuite,
@@ -88,6 +101,16 @@ object SSOClientSpec extends ZIOSpecDefault:
 
   private val keyClient = secretClient.copy(credential = ClientCredential.PrivateKeyJwt(signing))
 
+  /** The certificate edge is provisioned with for a client that authenticates by mutual TLS,
+    * and the client as it arrives over sync. */
+  private val certificate = TestCertificates.generate(dnsName = Some("web-app.versola.test"))
+
+  private val certificateMaterial =
+    PrivateClientCertificate(certificate.bundle).material.toOption.get
+
+  private val certificateClient =
+    secretClient.copy(credential = ClientCredential.MutualTls(certificateMaterial))
+
   /** The issuer identifier, which is what auth checks an assertion's and a request object's
     * `aud` against. */
   private val issuer = config.versolaUrl.encode
@@ -98,7 +121,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.exchangeAuthorizationCode(
           Code("c-1"),
           CodeVerifier("v-1"),
@@ -140,7 +163,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           ).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         credential = ClientCredential.PrivateKeyJwt(signing)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
@@ -152,11 +175,106 @@ object SSOClientSpec extends ZIOSpecDefault:
     },
   ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging
 
+  /** RFC 8705 §2: the credential is the connection, not the request. What these assert is
+    * that nothing of it leaks into the request -- a certificate client that also sent a
+    * secret or an assertion would be presenting two credentials -- and that the one thing the
+    * request must still carry, `client_id`, is there.
+    */
+  private val mutualTlsSuite = suite("SSOClient mutual TLS")(
+    test("presents the certificate and puts no credential in the token request") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+        _ <- captureRequest(seen, Response.json(tokenJson))
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented))
+        _ <- sso.exchangeAuthorizationCode(
+          Code("c-1"),
+          CodeVerifier("v-1"),
+          redirectUri,
+          clientId,
+          ClientCredential.MutualTls(certificateMaterial),
+        )
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        form <- request.body.asURLEncodedForm
+        certificates <- presented.get
+      yield assertTrue(
+        request.header(Header.Authorization).isEmpty,
+        form.get("client_assertion").isEmpty,
+        // §2.1: the certificate is matched against what the named client registered, so the
+        // request still has to name one.
+        form.get("client_id").flatMap(_.stringValue) == Some(clientId.toString),
+        certificates.map(_.leaf.getSubjectX500Principal.getName) ==
+          List(certificate.certificate.getSubjectX500Principal.getName),
+      )
+    },
+    test("pushes to /par over the same certificate, with no credential in the body") {
+      for
+        seen <- Ref.make(Option.empty[Request])
+        presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+        _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:tls","expires_in":60}""").status(Status.Created))
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, recordingCertificateFiles(presented))
+        url <- sso.authorizeUri(
+          basePreset,
+          certificateClient.copy(requirePushedAuthorizationRequests = true),
+          "challenge",
+          state,
+        )
+        request <- seen.get.someOrFail(new RuntimeException("no request captured"))
+        form <- request.body.asURLEncodedForm
+        certificates <- presented.get
+      yield assertTrue(
+        request.header(Header.Authorization).isEmpty,
+        form.get("client_assertion").isEmpty,
+        form.get("client_id").flatMap(_.stringValue) == Some(certificateClient.id.toString),
+        certificates.size == 1,
+        queryParam(url, "request_uri") == Some(Chunk("urn:ietf:params:oauth:request_uri:tls")),
+      )
+    },
+    test("refuses a plaintext endpoint instead of calling it with no credential at all") {
+      // There is no handshake to present a certificate in, so the call would arrive
+      // unauthenticated and be answered `invalid_client` -- naming a certificate the request
+      // never carried, which says nothing about the address that is the actual mistake.
+      val plaintext = config.copy(
+        versolaInternalUrl = Some(URL.decode("http://auth.internal:9003").toOption.get),
+      )
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, plaintext, certificateFiles)
+        error <- sso.exchangeAuthorizationCode(
+          Code("c-1"),
+          CodeVerifier("v-1"),
+          redirectUri,
+          clientId,
+          ClientCredential.MutualTls(certificateMaterial),
+        ).flip
+      yield assertTrue(
+        error == SSOClient.CredentialNeedsTls(clientId, plaintext.internalUrl / "token"),
+      )
+    },
+    test("reports that it cannot sign a request object rather than sending an unsigned one") {
+      // A certificate carries a key auth holds, but names no `kid` for a signature header to
+      // select it by -- registration refuses the combination, and this is the guard for a
+      // registration that predates it.
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, config, certificateFiles)
+        error <- sso.authorizeUri(
+          basePreset,
+          certificateClient.copy(requireSignedRequestObject = true),
+          "challenge",
+          state,
+        ).flip
+      yield assertTrue(error == SSOClient.CredentialCannotSign(certificateClient.id))
+    },
+  ).provideLayer(TestClient.layer) @@ TestAspect.silentLogging
+
   private val requestObjectSuite = suite("SSOClient request objects")(
     test("signs the request and sends it as the `request` parameter") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(
           basePreset,
           keyClient.copy(requireSignedRequestObject = true),
@@ -189,7 +307,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("leaves the request plain for a client that did not register the requirement") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(basePreset, keyClient, "challenge", state)
       yield assertTrue(
         queryParam(url, RequestObject.Parameter).isEmpty,
@@ -199,7 +317,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("fails naming the client when it requires signing but edge holds only a secret") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requireSignedRequestObject = true),
@@ -218,7 +336,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:abc","expires_in":60}""").status(Status.Created))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requirePushedAuthorizationRequests = true),
@@ -246,7 +364,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json("""{"request_uri":"urn:ietf:params:oauth:request_uri:def","expires_in":60}""").status(Status.Created))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(
           basePreset,
           keyClient.copy(requireSignedRequestObject = true, requirePushedAuthorizationRequests = true),
@@ -284,7 +402,7 @@ object SSOClientSpec extends ZIOSpecDefault:
             .status(Status.BadRequest),
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.authorizeUri(
           basePreset,
           secretClient.copy(requirePushedAuthorizationRequests = true),
@@ -303,7 +421,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams replace a same-named key in customParameters") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         preset = basePreset.copy(customParameters = Map("prompt" -> List("none")))
         url <- sso.authorizeUri(preset, secretClient, "challenge", state, Map("prompt" -> "login"))
       yield assertTrue(
@@ -313,7 +431,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams replace ui_locales from preset.uiLocales") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         preset = basePreset.copy(uiLocales = Some(List("en", "fr")))
         url <- sso.authorizeUri(preset, secretClient, "challenge", state, Map("ui_locales" -> "de"))
       yield assertTrue(
@@ -323,7 +441,7 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("overrideParams are added when not present in preset") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(basePreset, secretClient, "challenge", state, Map("acr_values" -> "mfa"))
       yield assertTrue(
         queryParam(url, "acr_values") == Some(Chunk("mfa")),
@@ -332,14 +450,14 @@ object SSOClientSpec extends ZIOSpecDefault:
     test("omits scope when the preset does not specify one") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         url <- sso.authorizeUri(basePreset.copy(scope = Set.empty), secretClient, "challenge", state)
       yield assertTrue(queryParam(url, "scope").isEmpty)
     },
     test("empty overrideParams preserves customParameters and uiLocales") {
       for
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         preset = basePreset.copy(
           uiLocales = Some(List("en")),
           customParameters = Map("prompt" -> List("none")),
@@ -377,7 +495,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         result <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential)
       yield assertTrue(
         result.accessToken == AccessToken("at-1"),
@@ -393,7 +511,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         form <- request.body.asURLEncodedForm
@@ -415,7 +533,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Response.json("""{"error":"invalid_request","error_description":"code expired"}""").status(Status.BadRequest),
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential).flip
       yield assertTrue(
         error.getMessage.nn.contains("400"),
@@ -427,7 +545,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_client"}""").status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, credential).flip
       yield assertTrue(
         error.getMessage.nn.contains("invalid_client"),
@@ -441,7 +559,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         result <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
       yield assertTrue(result.accessToken == AccessToken("at-1"))
     },
@@ -450,7 +568,7 @@ object SSOClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- captureRequest(seen, Response.json(tokenJson))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         form <- request.body.asURLEncodedForm
@@ -463,7 +581,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_grant"}""").status(Status.BadRequest))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential).flip
       yield assertTrue(error == SSOClient.InvalidGrant)
     },
@@ -471,7 +589,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"error":"invalid_client"}""").status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.exchangeRefreshToken(RefreshToken("rt-0"), clientId, credential).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],
@@ -485,7 +603,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""{"sub":"user-1"}"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         claims <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
       yield assertTrue(claims.get("sub").flatMap(_.asString) == Some("user-1"))
     },
@@ -496,7 +614,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(
@@ -514,7 +632,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.userInfo(AccessToken("at-1"), dpopBound = true)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
         assertion <- ZIO.fromOption(request.rawHeader(EdgeAssertion.HeaderName))
@@ -546,7 +664,7 @@ object SSOClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request](r => seen.set(Some(r)).as(Response.json("""{"sub":"user-1"}"""))).toRoutes,
         )
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         _ <- sso.userInfo(AccessToken("at-1"), dpopBound = false)
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(request.rawHeader(EdgeAssertion.HeaderName).isEmpty)
@@ -556,7 +674,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error.isInstanceOf[RuntimeException])
     },
@@ -564,7 +682,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.status(Status.Unauthorized))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(error == SSOClient.UserInfoUnauthorized)
     },
@@ -572,7 +690,7 @@ object SSOClientSpec extends ZIOSpecDefault:
       for
         _ <- respondWith(Response.status(Status.InternalServerError))
         client <- ZIO.service[Client]
-        sso = SSOClient.Impl(client, config)
+        sso = SSOClient.Impl(client, config, certificateFiles)
         error <- sso.userInfo(AccessToken("at-1"), dpopBound = true).flip
       yield assertTrue(
         error.isInstanceOf[RuntimeException],

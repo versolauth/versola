@@ -9,7 +9,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, Patch, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Scheme, URL}
 
@@ -86,8 +86,8 @@ object OAuthClientService:
   private def clientSecretsKey(config: CentralConfig): SecretKey =
     SecretKeySpec(config.clientSecretsSecret, "AES")
 
-  /** Decrypts the at-rest encrypted `secret`, `previousSecret` and `edgeSigningKey` of a
-    * client record. */
+  /** Decrypts the at-rest encrypted `secret`, `previousSecret`, `edgeSigningKey` and
+    * `edgeClientCertificate` of a client record. */
   private def decryptSecrets(
       record: OAuthClientRecord,
       securityService: SecurityService,
@@ -97,7 +97,15 @@ object OAuthClientService:
       secret         <- ZIO.foreach(record.secret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
       previousSecret <- ZIO.foreach(record.previousSecret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
       edgeSigningKey <- ZIO.foreach(record.edgeSigningKey)(s => securityService.decryptAes256(s, key).map(Secret(_)))
-    yield record.copy(secret = secret, previousSecret = previousSecret, edgeSigningKey = edgeSigningKey)
+      edgeCertificate <- ZIO.foreach(record.edgeClientCertificate)(s =>
+        securityService.decryptAes256(s, key).map(Secret(_)),
+      )
+    yield record.copy(
+      secret = secret,
+      previousSecret = previousSecret,
+      edgeSigningKey = edgeSigningKey,
+      edgeClientCertificate = edgeCertificate,
+    )
 
   case class Impl(
       cache: ReloadingCache[Vector[OAuthClientRecord]],
@@ -169,6 +177,13 @@ object OAuthClientService:
           request.mtlsAuth,
           request.jwks,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeClientCertificate(
+          request.id,
+          request.edgeClientCertificate,
+          request.mtlsAuth.map(normaliseMtlsAuth),
+          request.jwks,
+          request.requireSignedRequestObject,
+        ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
           request.id,
           request.dpopMinRsaKeySize,
@@ -179,6 +194,7 @@ object OAuthClientService:
           case _                        => ZIO.none
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
+        encryptedEdgeCertificate <- ZIO.foreach(request.edgeClientCertificate)(encryptEdgeClientCertificate)
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
@@ -211,6 +227,7 @@ object OAuthClientService:
           requireSignedRequestObject = request.requireSignedRequestObject,
           requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
           edgeSigningKey = encryptedEdgeSigningKey,
+          edgeClientCertificate = encryptedEdgeCertificate,
         )
         _ <- clientRepository.createClient(client)
       yield secret
@@ -228,6 +245,7 @@ object OAuthClientService:
         _ <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri.flatMap(patchValue))
         current <- cache.get.map(_.find(_.id == request.clientId))
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
+        edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
           validateRegistration(
             clientId = request.clientId,
@@ -253,6 +271,13 @@ object OAuthClientService:
             edgeSigningKey = edgeSigningKey,
             mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
             jwks = request.jwks.applyTo(client.jwks),
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeClientCertificate(
+            clientId = request.clientId,
+            edgeClientCertificate = edgeCertificate,
+            mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth).map(normaliseMtlsAuth),
+            jwks = request.jwks.applyTo(client.jwks),
+            requireSignedRequestObject =
+              request.requireSignedRequestObject.getOrElse(client.requireSignedRequestObject),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
@@ -263,6 +288,9 @@ object OAuthClientService:
           )
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
+          case Patch.Deleted => ZIO.succeed(Patch.Deleted)
+        edgeCertificatePatch <- ZIO.foreach(request.edgeClientCertificate):
+          case Patch.Modified(certificate) => encryptEdgeClientCertificate(certificate).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)
         _ <- clientRepository.updateClient(
           request.clientId,
@@ -294,6 +322,7 @@ object OAuthClientService:
             requireSignedRequestObject = request.requireSignedRequestObject,
             requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKeyPatch,
+            edgeClientCertificate = edgeCertificatePatch,
           ),
         )
       yield ()
@@ -447,6 +476,33 @@ object OAuthClientService:
       * on — the same reason [[PrivateJsonWebKey]] keeps the document. */
     private def encryptEdgeSigningKey(key: PrivateJsonWebKey): Task[Secret] =
       encryptRawSecret(Secret(key.document.toJson.getBytes(StandardCharsets.UTF_8)))
+
+    /** The certificate as it is stored: the PEM text that was registered, under the same
+      * at-rest key. Kept verbatim for the same reason the signing key keeps its document —
+      * what an edge presents has to be the bytes the client registered, since RFC 8705 §3.1
+      * binds tokens to their hash. */
+    private def encryptEdgeClientCertificate(certificate: PrivateClientCertificate): Task[Secret] =
+      encryptRawSecret(Secret(certificate.pem.getBytes(StandardCharsets.UTF_8)))
+
+    /** The certificate the client will hold once this patch is applied, on the same terms as
+      * [[effectiveEdgeSigningKey]]: a patch that leaves it alone can still invalidate it, by
+      * clearing the `mtlsAuth` that decides what it is compared against or the `jwks` a
+      * self-signed registration matches it by.
+      *
+      * Needs no parsing to read back, PEM being how it was stored, so a stored certificate is
+      * always recovered — whether it still validates is what the caller is about to ask.
+      */
+    private def effectiveEdgeClientCertificate(
+        request: UpdateClientRequest,
+        client: OAuthClientRecord,
+    ): Option[PrivateClientCertificate] =
+      request.edgeClientCertificate match
+        case Some(Patch.Modified(certificate)) => Some(certificate)
+        case Some(Patch.Deleted) => None
+        case None =>
+          client.edgeClientCertificate.map(stored =>
+            PrivateClientCertificate(String(stored, StandardCharsets.UTF_8)),
+          )
 
     /** The signing key the client will hold once this patch is applied, which is the stored one
       * whenever the patch does not name it.

@@ -90,6 +90,19 @@ case class OAuthClientRecord(
       * Encrypted at rest under the same key as [[secret]], and read back decrypted — a record
       * that reaches a caller carries the key itself, never the ciphertext. */
     edgeSigningKey: Option[Secret],
+    /** The certificate and private key an edge fronting this client presents at the TLS
+      * handshake, so that what terminates TLS in front of auth recognises the connection as
+      * this client's (RFC 8705 §2). `None` when no edge authenticates as this client by
+      * certificate.
+      *
+      * Requires [[mtlsAuth]]: a certificate reaches auth only for a client registered to be
+      * recognised by one, so provisioning an edge with a certificate for any other client
+      * hands it a credential nothing will ever look at.
+      *
+      * The PEM as it was registered, both halves together, encrypted at rest under the same
+      * key as [[secret]] and read back decrypted — a record that reaches a caller carries the
+      * certificate itself, never the ciphertext. */
+    edgeClientCertificate: Option[Secret],
 ) derives Schema, CanEqual, Equal:
 
   /** Whether this client holds a secret at all, which only [[AuthMethod.client_secret]]

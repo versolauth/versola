@@ -7,7 +7,7 @@ import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateJsonWebKey, RedirectUri}
+import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -425,6 +425,10 @@ case class CreateClientRequest(
       * is every client registered before edges could authenticate by key. Must be the private
       * half of a key [[jwks]] publishes — registration refuses a pair that cannot verify. */
     edgeSigningKey: Option[PrivateJsonWebKey],
+    /** The certificate an edge fronting this client presents at the TLS handshake, private key
+      * included, as a single PEM. `None` when no edge does. Requires [[mtlsAuth]] — a
+      * certificate is looked for only where the registration says one authenticates. */
+    edgeClientCertificate: Option[PrivateClientCertificate],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -469,6 +473,7 @@ case class UpdateClientRequest(
     requireSignedRequestObject: Option[Boolean],
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
+    edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -670,6 +675,9 @@ case class SyncOAuthClientRecord(
       * as `secret` is — to the requesting edge's registered RSA public key. Absent for a
       * caller that is not an edge, which has no key to decrypt it with and no use for it. */
     edgeSigningKey: Option[String],
+    /** The PEM certificate and key an edge fronting this client presents, encrypted in transit
+      * on the same terms as `edgeSigningKey`. */
+    edgeClientCertificate: Option[String],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

@@ -3,7 +3,7 @@ package versola.central.configuration.clients
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.RSAKey
 import versola.central.configuration.roles.RoleId
-import versola.util.{JsonWebKeySet, PrivateJsonWebKey, UnitSpecBase}
+import versola.util.{JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, TestCertificates, UnitSpecBase}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -90,8 +90,123 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
     },
   )
 
+  private val clientCertificate =
+    TestCertificates.generate(subject = "CN=web-app,O=Versola,C=KZ", dnsName = Some("web-app.versola.test"))
+
+  private val edgeClientCertificate = PrivateClientCertificate(clientCertificate.bundle)
+
+  private val edgeClientCertificateSuite = suite("validateEdgeClientCertificate")(
+    test("accepts a certificate carrying the subject value the client is recognised by") {
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web-app.versola.test")),
+            None,
+            requireSignedRequestObject = false,
+          )
+          .isEmpty,
+      )
+    },
+    test("accepts a self-signed registration whose jwks publishes the certificate's key") {
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+            Some(clientCertificate.jwks),
+            requireSignedRequestObject = false,
+          )
+          .isEmpty,
+      )
+    },
+    test("leaves a client that registers no certificate alone") {
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(clientId, None, None, None, requireSignedRequestObject = false)
+          .isEmpty,
+      )
+    },
+    test("rejects a certificate for a client that registered no mtlsAuth") {
+      // Nothing would ever read it: auth looks for a forwarded certificate only where the
+      // registration says one authenticates.
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            None,
+            None,
+            requireSignedRequestObject = false,
+          )
+          .exists(_.reason.contains("needs mtlsAuth")),
+      )
+    },
+    test("rejects a certificate carrying a different subject value than the one registered") {
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "someone-else.versola.test")),
+            None,
+            requireSignedRequestObject = false,
+          )
+          .exists(_.reason.contains("carries no san_dns")),
+      )
+    },
+    test("rejects a self-signed registration whose jwks publishes some other key") {
+      val other = TestCertificates.generate(subject = "CN=other,O=Versola,C=KZ")
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+            Some(other.jwks),
+            requireSignedRequestObject = false,
+          )
+          .exists(_.reason.contains("does not publish")),
+      )
+    },
+    test("rejects a certificate registered beside a signed request object requirement") {
+      // The edge would hold a certificate and no key to sign the object with, and would fail
+      // at the first authorization request rather than here.
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(edgeClientCertificate),
+            Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+            Some(clientCertificate.jwks),
+            requireSignedRequestObject = true,
+          )
+          .exists(_.reason.contains("requireSignedRequestObject")),
+      )
+    },
+    test("rejects a certificate whose key does not belong to it") {
+      val mismatched = PrivateClientCertificate(
+        s"${clientCertificate.certificatePem}\n${TestCertificates.generate().privateKeyPem}",
+      )
+      assertTrue(
+        InvalidRegistrationConfiguration
+          .validateEdgeClientCertificate(
+            clientId,
+            Some(mismatched),
+            Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+            Some(clientCertificate.jwks),
+            requireSignedRequestObject = false,
+          )
+          .exists(_.reason.contains("does not belong to its certificate")),
+      )
+    },
+  )
+
   def spec = suite("InvalidRegistrationConfiguration")(
     edgeSigningKeySuite,
+    edgeClientCertificateSuite,
     test("accepts multiple assigned roles") {
       val flow = RegistrationFlow.default.copy(
         roleIds = Set(RoleId("user"), RoleId("member")),

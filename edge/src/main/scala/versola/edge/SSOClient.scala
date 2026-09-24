@@ -63,6 +63,17 @@ object SSOClient:
         "key for it -- central sent only a client secret",
     )
 
+  /** A certificate can only be presented in a handshake there is one of. Raised rather than
+    * calling anyway, which would send the request unauthenticated over plaintext and read back
+    * an `invalid_client` that names the certificate nothing asked for.
+    */
+  case class CredentialNeedsTls(clientId: ClientId, endpoint: URL)
+    extends RuntimeException(
+      s"client '$clientId' authenticates with a certificate, which cannot be presented to " +
+        s"'${endpoint.encode}' -- it is reached over plaintext, so nothing terminates TLS " +
+        "for auth to read a certificate from",
+    )
+
   /** RFC 9126 §2.2: what `/par` hands back in place of the request. */
   private case class PushedAuthorizationResponse(
       @jsonField("request_uri") requestUri: String,
@@ -73,12 +84,13 @@ object SSOClient:
       @jsonField("error_description") errorDescription: Option[String] = None,
   ) derives JsonCodec
 
-  val live: URLayer[Client & EdgeConfig, SSOClient] =
-    ZLayer.fromFunction(Impl(_, _))
+  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles, SSOClient] =
+    ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
+      certificateFiles: ClientCertificateFiles,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
     // versolaUrl (public-facing), never internalUrl. tokenUrl and
@@ -176,7 +188,7 @@ object SSOClient:
           .post(pushedAuthorizationUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         pushed <-
           if response.status.isSuccess then response.bodyAs[SSOClient.PushedAuthorizationResponse]
           else
@@ -190,12 +202,13 @@ object SSOClient:
         "request_uri" -> pushed.requestUri,
       ))
 
-    /** A form and the headers that authenticate it as `clientId`.
+    /** A form, the headers and the connection that authenticate a call as `clientId`.
       *
-      * The two methods land in different places -- RFC 6749 §2.3.1 puts a secret in the
-      * `Authorization` header, RFC 7523 §2.2 puts an assertion in the body -- so this hands
-      * back both rather than one, and every authenticated call goes through it instead of
-      * each deciding for itself.
+      * The three methods land in three different places -- RFC 6749 §2.3.1 puts a secret in
+      * the `Authorization` header, RFC 7523 §2.2 puts an assertion in the body, and RFC 8705
+      * §2 puts a certificate in the handshake, which is not in the request at all -- so this
+      * hands back all of them rather than one, and every authenticated call goes through it
+      * instead of each deciding for itself.
       */
     private def authenticate(
         form: Form,
@@ -235,7 +248,31 @@ object SSOClient:
               Headers.empty,
             )
 
-    private case class Authenticated(form: Form, headers: Headers)
+        case ClientCredential.MutualTls(certificate) =>
+          for
+            _ <- ZIO.fail(SSOClient.CredentialNeedsTls(clientId, endpoint))
+              .unless(endpoint.scheme.contains(Scheme.HTTPS))
+            certificateConfig <- certificateFiles.present(certificate)
+          yield
+            // RFC 8705 §2: the certificate is the whole credential and the request carries
+            // none of it. `client_id` still has to name the client -- §2.1 requires it, the
+            // certificate being matched against what that client registered -- unless the
+            // caller has already named it, on the same terms as the assertion above.
+            val identified =
+              if form.get("client_id").isDefined then form
+              else form.append(FormField.simpleField("client_id", clientId))
+
+            Authenticated(
+              identified,
+              Headers.empty,
+              Some(ClientSSLConfig.FromClientAndServerCert(ClientSSLConfig.Default, certificateConfig)),
+            )
+
+    /** @param ssl how the connection this is sent over authenticates, for the one method that
+      *            authenticates there rather than in the request. `None` leaves the client's
+      *            own configuration alone -- every other call this edge makes shares it. */
+    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig] = None):
+      def over(client: Client): Client = ssl.fold(client)(client.ssl)
 
     override def exchangeAuthorizationCode(
         code: Code,
@@ -257,7 +294,7 @@ object SSOClient:
           .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         tokenResponse <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
           else
@@ -281,7 +318,7 @@ object SSOClient:
           .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         result <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
           else

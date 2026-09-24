@@ -9,7 +9,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.util.http.Observability
-import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService}
+import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -90,6 +90,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -130,6 +131,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = None,
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val clients = Vector(
@@ -165,6 +167,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
+      edgeClientCertificate = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -198,6 +201,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
+      edgeClientCertificate = None,
     ),
   )
 
@@ -551,6 +555,50 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.status == Status.Ok,
         recovered.map(_.toVector) == Some(oversizedKey.toVector),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    // The PEM of a certificate and its key is larger again than a JWK document, so this shares
+    // the hybrid transport for the same reason -- and must reach an edge and nobody else.
+    test("hand an edge the edgeClientCertificate, encrypted to the key only it holds") {
+      val certificate = Secret(TestCertificates.generate().bundle.getBytes("UTF-8").nn)
+      val clientWithCertificate = clients.head.copy(edgeClientCertificate = Some(certificate))
+
+      for
+        httpClient <- ZIO.service[Client]
+        security <- (SecureRandom.live >>> SecurityService.live).build
+        realSecurity = security.get[SecurityService]
+        service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+          headers = Map("edge_id" -> edgeId.toString),
+        )
+        _ <- edgeService.find.succeedsWith(Some(edgeRecord))
+        _ <- service.getClientsForSync.succeedsWith(Vector(clientWithCertificate))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ClientController.routes.provideEnvironment(
+              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+                security ++ ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
+        )
+        response <- httpClient.batched(
+          Request.get((URL.empty / "configuration" / "clients" / "sync").addQueryParam("tenantId", tenantId.toString))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        wire = payload.clients.head.edgeClientCertificate
+        recovered <- ZIO.foreach(wire)(value =>
+          realSecurity.decryptRsaHybrid(Base64.urlDecode(value), edgeKeyPair.privateKey),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        recovered.map(_.toVector) == Some(certificate.toVector),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     controllerTestCase(

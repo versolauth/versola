@@ -19,7 +19,7 @@ import versola.central.configuration.{
 import versola.central.{CentralConfig, TestCentralConfig}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey}
-import versola.util.{Dpop, JsonWebKeySet, Patch, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -88,6 +88,13 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val storedEdgeSigningKey =
     Secret(edgeKey.toJSONString.getBytes(java.nio.charset.StandardCharsets.UTF_8))
 
+  /** The certificate an edge is provisioned with for a client recognised by RFC 8705 §2.2,
+    * and the client as it is stored: the registered PEM, encrypted at rest. */
+  private val edgeCertificate = TestCertificates.generate()
+
+  private val storedEdgeClientCertificate =
+    Secret(edgeCertificate.bundle.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+
   private val edgeKeySet = JsonWebKeySet(
     Json.Obj("keys" -> Json.Arr(edgeKey.toPublicJWK.toJSONString.fromJson[Json.Obj].toOption.get)),
   )
@@ -124,6 +131,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -158,6 +166,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val createRequest = CreateClientRequest(
@@ -190,6 +199,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -221,6 +231,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = None,
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   /** A tenant whose reverse proxy terminates mTLS and forwards the certificate, which RFC
@@ -343,6 +354,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
+        edgeClientCertificate = None,
       )
 
       for
@@ -1166,6 +1178,52 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.updateClient(updateRequest).either
         patched = env.repository.updateClient.calls.head._2.edgeSigningKey
       yield assertTrue(result.isRight, patched.isEmpty)
+    },
+    // The certificate half of the same rule: the patch names no certificate, and dropping the
+    // jwks a self-signed registration matches it against leaves an edge presenting one that
+    // authenticates nothing.
+    test("updateClient refuses a jwks patch that unpublishes the stored certificate's key") {
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.self_signed_tls_client_auth,
+        mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+        jwks = Some(edgeCertificate.jwks),
+        edgeClientCertificate = Some(storedEdgeClientCertificate),
+      )))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.terminatesMtls
+        result <- env.service.updateClient(updateRequest.copy(jwks = Some(Patch.Modified(p384KeySet)))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration =>
+            error.reason.contains("edgeClientCertificate") && error.reason.contains("does not publish")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient stores a new certificate encrypted rather than as the PEM it was given") {
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.self_signed_tls_client_auth,
+        mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
+        jwks = Some(edgeCertificate.jwks),
+      )))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.terminatesMtls
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(32)(9.toByte))
+        result <- env.service.updateClient(updateRequest.copy(
+          edgeClientCertificate = Some(Patch.Modified(PrivateClientCertificate(edgeCertificate.bundle))),
+        )).either
+        patched = env.repository.updateClient.calls.head._2.edgeClientCertificate
+      yield assertTrue(
+        result.isRight,
+        patched.exists:
+          case Patch.Modified(stored) => !stored.sameElements(storedEdgeClientCertificate)
+          case Patch.Deleted => false,
+      )
     },
     test("updateClient clears the registration flow when the patch carries an explicit None") {
       val role = RoleRecord(
