@@ -69,8 +69,26 @@ async function startCreate(page: Page, kind = 'Web app', tier = 'Compatibility')
 
 /** Step 2 gates on these two, so every creation has to fill them before it can go on. */
 async function fillBasics(page: Page, id: string, name: string) {
-  await page.getByLabel('Client ID').fill(id);
-  await page.getByLabel('Client Name').fill(name);
+  await page.locator('versola-client-form #client-id').fill(id);
+  await page.locator('versola-client-form input#client-name').fill(name);
+}
+
+async function addRedirectUri(page: Page, uri: string) {
+  await page.locator('versola-client-form #redirect-uri').fill(uri);
+  await page.locator('versola-client-form #redirect-uri').press('Enter');
+}
+
+/** A key set is what a high-assurance client authenticates with, so step 2 will not pass without one. */
+const SAMPLE_JWKS = JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', x: 'x-coordinate', y: 'y-coordinate' }] });
+
+/** The step-2 row that reveals the logout channel picker; closed until it is asked for. */
+async function openLogout(page: Page) {
+  await page.getByRole('button', { name: /Logout/ }).click();
+}
+
+/** A step-3 checkbox is a row carrying its own explanation, so it is matched on its label. */
+function checkRow(page: Page, label: string) {
+  return page.locator('versola-client-form .check-row').filter({ hasText: label }).first();
 }
 
 async function continueToThirdStep(page: Page) {
@@ -174,16 +192,22 @@ test('shows refresh token TTL only after selecting offline_access when creating 
   await startCreate(page);
   await fillBasics(page, 'offline-client', 'Offline Client');
   await continueToThirdStep(page);
-  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveCount(0);
-  await page.getByRole('checkbox', { name: 'offline_access', exact: true }).check();
-  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('90');
-  await page.getByLabel('Refresh Token TTL (days) *').fill('45');
+
+  // Creation asks for the scope, not the lifetime - a new client takes the 90-day default and
+  // the edit page is where that is changed.
+  await page.getByRole('button', { name: 'offline_access', exact: true }).click();
   await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Refresh token' }))
+    .toContainText('90 days');
   await submitCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
-    refreshTokenTtl: 45 * 24 * 60 * 60,
+    refreshTokenTtl: 90 * 24 * 60 * 60,
   });
+
+  await clientCard(page, 'Offline Client').getByRole('button', { name: 'Edit client offline-client' }).click();
+  await page.getByLabel('Refresh Token TTL (days) *').fill('45');
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
   await expect(clientCard(page, 'Offline Client')).toContainText('45d');
 });
 
@@ -196,13 +220,8 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await startCreate(page);
 
   await fillBasics(page, 'dashboard-client', 'Dashboard Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://dashboard.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('30');
-  await page.locator('versola-client-form select.ttl-unit-select').selectOption('minutes');
+  await addRedirectUri(page, 'https://dashboard.example/callback');
   await continueToThirdStep(page);
-  await page.getByRole('checkbox', { name: 'openid', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'alpha.read', exact: true }).check();
   await continueToReview(page);
   await submitCreate(page);
 
@@ -215,7 +234,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   expect((await secretValue.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
   await expect(created).toContainText('dashboard-client');
   await expect(created).toContainText('https://dashboard.example/callback');
-  await expect(created).toContainText('30m');
+  await expect(created).toContainText('1h');
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
@@ -223,8 +242,8 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     clientName: { en: 'Dashboard Client' },
     redirectUris: ['https://dashboard.example/callback'],
     allowedScopes: ['openid'],
-    permissions: ['alpha.read'],
-    accessTokenTtl: 1800,
+    permissions: [],
+    accessTokenTtl: 3600,
     authFlow: {
       primary: {
         credentials: ['phone'],
@@ -265,8 +284,7 @@ test('creates a native client without a secret and without rotation controls', a
 
   await startCreate(page, 'Mobile or desktop app');
   await fillBasics(page, 'mobile-app', 'Mobile App');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('com.example.app://callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await addRedirectUri(page, 'com.example.app://callback');
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
@@ -304,12 +322,175 @@ test('settles the client type from the kind step, and fixes it once created', as
 
   // An existing client keeps whatever it was registered as - a secret can neither be
   // added to a native client nor taken away from a web one.
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await expect(page.getByText('Client type', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
+});
+
+test('gates each step behind its own answer and marks the stepper as the wizard advances', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+
+  const stepper = page.locator('versola-client-form .wizard-step');
+  const kindStep = stepper.filter({ hasText: 'What you are building' });
+  const basicsStep = stepper.filter({ hasText: 'Basics' });
+  const signInStep = stepper.filter({ hasText: 'Sign-in' });
+  const reviewStep = stepper.filter({ hasText: 'Review' });
+
+  // Tier is its own choice, not tied to a kind - it already defaults to the safer one.
+  await expect(page.getByRole('button', { name: 'High assurance', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'false');
+  await expect(kindStep).toHaveAttribute('aria-current', 'step');
+  await expect(basicsStep).not.toHaveClass(/active|done/);
+
+  // No kind chosen yet - step 1 cannot be left.
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeDisabled();
+
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
+
+  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+
+  await expect(kindStep).toHaveClass(/done/);
+  await expect(kindStep.locator('.wizard-step-dot')).toHaveText('✓');
+  await expect(basicsStep).toHaveAttribute('aria-current', 'step');
+  await expect(signInStep).not.toHaveClass(/active|done/);
+
+  // Basics is missing a client name - step 2 cannot be left either.
+  await page.locator('versola-client-form #client-id').fill('gated-client');
+  const continueToSignIn = page.getByRole('button', { name: 'Continue to sign-in', exact: true });
+  await expect(continueToSignIn).toBeDisabled();
+  await page.locator('versola-client-form input#client-name').fill('Gated Client');
+  await expect(continueToSignIn).toBeEnabled();
+  await continueToSignIn.click();
+
+  await expect(basicsStep).toHaveClass(/done/);
+  await expect(signInStep).toHaveAttribute('aria-current', 'step');
+  await expect(reviewStep).not.toHaveClass(/active|done/);
+
+  await continueToReview(page);
+
+  await expect(signInStep).toHaveClass(/done/);
+  await expect(reviewStep).toHaveAttribute('aria-current', 'step');
+});
+
+test('keeps earlier answers when navigating back through the wizard', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: {
+        'tenant-alpha': [
+          { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+          { scope: 'profile', description: { en: 'Profile data' }, claims: [] },
+        ],
+      },
+    },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'back-nav-client', 'Back Nav Client');
+  await addRedirectUri(page, 'https://backnav.example/callback');
+  await continueToThirdStep(page);
+  await page.getByRole('button', { name: 'profile', exact: true }).click();
+
+  // Back to basics: the identity fields typed before advancing are still there.
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.locator('versola-client-form #client-id')).toHaveValue('back-nav-client');
+  await expect(page.locator('versola-client-form input#client-name')).toHaveValue('Back Nav Client');
+  await expect(page.getByText('https://backnav.example/callback')).toBeVisible();
+
+  // Forward again: the scope picked before going back is still picked.
+  await continueToThirdStep(page);
+  await expect(page.getByRole('button', { name: 'profile', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Scopes' }))
+    .toContainText('profile');
+
+  // All the way back to step 1: the kind and tier chosen at the very start survive three Backs.
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Compatibility', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  // And all the way forward again to submit - nothing was lost along the way.
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await expect(page.locator('versola-client-form #client-id')).toHaveValue('back-nav-client');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await submitCreate(page);
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'back-nav-client',
+    redirectUris: ['https://backnav.example/callback'],
+    allowedScopes: ['openid', 'profile'],
+  });
+});
+
+test('jumps to the right step from a review Change link, and returns with the edit applied', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'change-link-client', 'Change Link Client');
+  await addRedirectUri(page, 'https://changelink.example/callback');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+
+  // The Identity group's Change link is step 2's, not some other group's.
+  await page.locator('versola-client-form .review-group').filter({ hasText: 'Identity' })
+    .getByRole('button', { name: 'Change', exact: true }).click();
+  await expect(page.locator('versola-client-form #client-id')).toHaveValue('change-link-client');
+  await page.locator('versola-client-form input#client-name').fill('Renamed Client');
+
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Client name' }))
+    .toContainText('Renamed Client');
+
+  // The tier badge's Change link is step 1's - kind and tier both survive the round trip.
+  await page.locator('versola-client-form .review-tier').getByRole('button', { name: 'Change', exact: true }).click();
+  await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'Compatibility', exact: true })).toHaveAttribute('aria-pressed', 'true');
+
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await expect(page.locator('versola-client-form input#client-name')).toHaveValue('Renamed Client');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await submitCreate(page);
+
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'change-link-client',
+    clientName: { en: 'Renamed Client' },
+    redirectUris: ['https://changelink.example/callback'],
+  });
+});
+
+test('cancels out of creation from step 1 without registering a client', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await expect(page.getByRole('button', { name: '+ Create Client', exact: true })).toBeVisible();
+  await expect(clientCard(page, 'Alpha Web')).toBeVisible();
+  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
 });
 
 test('registers a client that authenticates with an mTLS certificate', async ({ page }) => {
@@ -321,19 +502,24 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     },
   });
 
-  await startCreate(page);
+  // A credential is only a choice in the high-assurance tier; compatibility means a secret.
+  await startCreate(page, 'Web app', 'High assurance');
   await fillBasics(page, 'mtls-client', 'mTLS Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('button', { name: 'mTLS certificate', exact: true }).click();
+  await addRedirectUri(page, 'https://mtls.example/callback');
+  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
 
-  // The tenant terminates TLS, so no warning - and token binding is implied by the credential.
+  // The tenant terminates TLS, so no warning.
   await expect(page.getByText('no mTLS certificate header configured')).toHaveCount(0);
-  await expect(page.getByRole('checkbox', { name: /Bind access tokens/ })).toBeDisabled();
 
-  await page.getByLabel('Subject type').selectOption('san_dns');
-  await page.getByLabel('Subject value').fill('client.example.com');
-  await finishCreate(page);
+  await page.getByLabel('Recognised by').selectOption('san_dns');
+  await page.getByLabel('Expected value').fill('client.example.com');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+
+  // Binding follows the credential rather than being asked for again.
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Token binding' }))
+    .toContainText('certificate-bound');
+  await submitCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'mtls-client',
@@ -349,11 +535,10 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await startCreate(page);
+  await startCreate(page, 'Web app', 'High assurance');
   await fillBasics(page, 'mtls-client', 'mTLS Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://mtls.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('button', { name: 'mTLS certificate', exact: true }).click();
+  await addRedirectUri(page, 'https://mtls.example/callback');
+  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
 
   await expect(page.getByText('no mTLS certificate header configured')).toBeVisible();
 
@@ -364,7 +549,7 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
 
   // Central refuses the registration outright without a header to read the certificate from,
   // so a complete form is no more submittable than an incomplete one.
-  await page.getByLabel('Subject value').fill('client.example.com');
+  await page.getByLabel('Expected value').fill('client.example.com');
   await expect(page.getByText('Subject value is required')).toHaveCount(0);
   await expect(continueButton).toBeDisabled();
   expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
@@ -379,20 +564,24 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
     },
   });
 
-  await startCreate(page);
+  await startCreate(page, 'Web app', 'High assurance');
   await fillBasics(page, 'self-signed-client', 'Self Signed Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://self-signed.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('button', { name: 'mTLS self-signed', exact: true }).click();
+  await addRedirectUri(page, 'https://self-signed.example/callback');
+  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
+  await page.getByRole('button', { name: 'Self-signed', exact: true }).click();
 
   // A certificate is matched over public key material, so a P-384 key registers fine - but
-  // nothing here can verify a request object with it.
-  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y' }] }));
-  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
+  // nothing here can verify a request object with it, so the tier's JAR requirement drops.
+  await page.getByLabel('Key set of the certificate').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y' }] }));
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Signed request objects' }))
+    .toContainText('unavailable');
 
   const keySet = { keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] };
-  await page.getByLabel('JWK Set').fill(JSON.stringify(keySet));
-  await page.getByRole('checkbox', { name: /Require signed request objects/ }).check();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByLabel('Key set of the certificate').fill(JSON.stringify(keySet));
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
@@ -417,19 +606,20 @@ test('applies the credential and request integrity a high-assurance web client i
 
   await startCreate(page, 'Web app', 'High assurance');
 
-  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveClass(/selected/);
-  await expect(page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ })).toBeChecked();
-
-  // The preset asks for signed request objects, but they are verified against the client's
-  // own keys - the requirement only takes effect once a key set that can verify one is in.
-  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   await fillBasics(page, 'high-web', 'High Web');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://high.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] }));
-  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeChecked();
-  await finishCreate(page);
+  await addRedirectUri(page, 'https://high.example/callback');
+  await page.getByLabel('Key set').fill(SAMPLE_JWKS);
+  await continueToThirdStep(page);
+  await continueToReview(page);
+
+  // The tier settles both, so review is where they are stated rather than asked for.
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
+    .toContainText('required');
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Signed request objects' }))
+    .toContainText('required');
+  await submitCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'high-web',
@@ -448,11 +638,12 @@ test('binds a high-assurance mobile client to a device key and leaves it public'
 
   await startCreate(page, 'Mobile or desktop app', 'High assurance');
 
-  await expect(page.getByRole('checkbox', { name: /Require DPoP-bound access tokens/ })).toBeChecked();
+  // A shipped binary has no credential to register, so step 2 states the pair instead of asking.
+  await expect(page.getByText('Public client, no secret', { exact: true })).toBeVisible();
+  await expect(page.getByText('DPoP proof key', { exact: true })).toBeVisible();
 
   await fillBasics(page, 'mobile-client', 'Mobile Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('com.example.app://callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await addRedirectUri(page, 'com.example.app://callback');
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
@@ -473,16 +664,17 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
   await startCreate(page, 'Service app', 'High assurance');
 
   await expect(page.getByPlaceholder('https://app.example.com/callback')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveClass(/selected/);
+  await expect(page.getByText('No redirect URIs', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   await fillBasics(page, 'batch-service', 'Batch Service');
-  await page.getByLabel('JWK Set').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] }));
+  await page.getByLabel('Key set').fill(SAMPLE_JWKS);
 
   // A service app has no user, so its third step asks what it may call instead of how anyone
-  // signs in - and there is no sign-in flow to turn off.
+  // signs in.
   await continueToThirdStep(page);
   await expect(page.getByText('What it is allowed to call', { exact: true })).toBeVisible();
-  await expect(page.getByText('Authorization Flow', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('First screen', { exact: true })).toHaveCount(0);
   await continueToReview(page);
   await submitCreate(page);
 
@@ -499,8 +691,9 @@ test('re-applies the preset when the tier changes before continuing', async ({ p
   await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
 
-  await expect(page.getByRole('button', { name: 'secret', exact: true })).toHaveClass(/selected/);
-  await expect(page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ })).not.toBeChecked();
+  // Compatibility leaves no credential to choose between - a secret is the only option.
+  await expect(page.getByText('Client secret.', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveCount(0);
 });
 
 test('registers a private_key_jwt client with signed request objects and PAR', async ({ page }) => {
@@ -509,30 +702,22 @@ test('registers a private_key_jwt client with signed request objects and PAR', a
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await startCreate(page);
+  await startCreate(page, 'Web app', 'High assurance');
   await fillBasics(page, 'assertion-client', 'Assertion Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://assertion.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await addRedirectUri(page, 'https://assertion.example/callback');
 
-  // JAR has nothing to verify a request object against until a JWK Set is registered.
-  await expect(page.getByRole('checkbox', { name: /Require signed request objects/ })).toBeDisabled();
-
-  await page.getByRole('button', { name: 'private_key_jwt', exact: true }).click();
-  await page.getByLabel('JWK Set').fill('not json');
+  await page.getByLabel('Key set').fill('not json');
   await expect(page.getByText('Must be valid JSON')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue to sign-in', exact: true })).toBeDisabled();
   expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
 
-  const keySet = { keys: [{ kty: 'EC', crv: 'P-256', x: 'x-coordinate', y: 'y-coordinate' }] };
-  await page.getByLabel('JWK Set').fill(JSON.stringify(keySet));
-  await page.getByRole('checkbox', { name: /Require signed request objects/ }).check();
-  await page.getByRole('checkbox', { name: /Require Pushed Authorization Requests/ }).check();
+  await page.getByLabel('Key set').fill(SAMPLE_JWKS);
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'assertion-client',
     mtlsAuth: null,
-    jwks: keySet,
+    jwks: JSON.parse(SAMPLE_JWKS),
     requireSignedRequestObject: true,
     requirePushedAuthorizationRequests: true,
   });
@@ -578,9 +763,9 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
     },
   });
 
-  await startCreate(page);
-  await fillBasics(page, 'otp-client', 'OTP Client');
-  await continueToThirdStep(page);
+  // OTP delivery is not asked for at creation - the credential picks the channel - so this is
+  // the edit page, where the template and the channel are both settable.
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
   await expect(page.getByLabel('OTP Template')).toBeVisible();
   await expect(page.getByLabel('OTP Template').locator('option')).toHaveCount(1);
@@ -628,27 +813,33 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-
-  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
-  await expect(page.getByText('New users prove ownership of their phone with an OTP.', { exact: true })).toBeVisible();
-  await expect(page.getByText('Granted once, when the account is created.', { exact: true })).toBeVisible();
-
-  const challenge = page.getByLabel('Challenge', { exact: true });
-  await expect(challenge).toHaveValue('none');
-  await challenge.selectOption('setPassword');
-
-  const roles = page.getByRole('group', { name: 'Assigned roles' });
-  await expect(roles.getByRole('checkbox', { name: 'user', exact: true })).toBeChecked();
-  await roles.getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+  // Creation asks only whether users may sign themselves up; the credential they verify follows
+  // from the first screen, and the steps and roles are refined on the edit page.
+  await expect(checkRow(page, 'Let users sign themselves up')).toHaveAttribute('aria-pressed', 'false');
+  await checkRow(page, 'Let users sign themselves up').click();
+  await expect(checkRow(page, 'Let users sign themselves up'))
+    .toContainText('The phone is the credential whose ownership is verified');
 
   await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Self-service sign-up' }))
+    .toContainText('on');
   await submitCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     registrationFlow: {
       credential: 'phone',
+      steps: [{ type: 'otp' }],
+      roleIds: ['user'],
+    },
+  });
+
+  await clientCard(page, 'Registering Client').getByRole('button', { name: 'Edit client registering-client' }).click();
+  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
+  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
+    registrationFlow: {
       steps: [{ type: 'otp' }, { type: 'setPassword' }],
       roleIds: ['user', 'alpha-admin'],
     },
@@ -667,22 +858,18 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  // Off by default: a client without a consent flow never prompts.
-  await expect(page.getByLabel('Remember', { exact: true })).toHaveCount(0);
+  // Off by default: a client without a consent flow never prompts, so nothing the screen would
+  // render is asked for either.
+  await expect(page.getByLabel('Reuse the grant for')).toHaveCount(0);
+  await expect(page.getByLabel('Logo URI')).toHaveCount(0);
 
-  const consentRow = page.getByText('Consent', { exact: true }).locator('..');
-  await consentRow.locator('label.toggle').click();
+  await page.getByRole('button', { name: 'Ask for consent', exact: true }).click();
+  await checkRow(page, 'Let the user grant part of it').click();
+  await page.getByLabel('Reuse the grant for').selectOption('30');
 
-  await page.getByRole('checkbox', { name: 'Let the user deselect optional scopes' }).check();
-
-  const remember = page.getByLabel('Remember', { exact: true });
-  await expect(remember).toHaveValue('days');
-  await expect(page.getByLabel('Remember duration in days')).toHaveValue('180');
-  await page.getByLabel('Remember duration in days').fill('14');
-
-  await page.getByRole('textbox', { name: 'Logo URI', exact: true }).fill('https://consenting.example/logo.png');
-  await page.getByRole('textbox', { name: 'Privacy policy', exact: true }).fill('https://consenting.example/privacy');
-  await page.getByRole('textbox', { name: 'Terms of service', exact: true }).fill('https://consenting.example/terms');
+  await page.getByLabel('Logo URI').fill('https://consenting.example/logo.png');
+  await page.getByLabel('Privacy policy URI').fill('https://consenting.example/privacy');
+  await page.getByLabel('Terms of service URI').fill('https://consenting.example/terms');
 
   await continueToReview(page);
   await submitCreate(page);
@@ -693,7 +880,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
   });
-  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 14 * 86400 });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
 });
 
 test('reads and updates a finite consent duration as seconds', async ({ page }) => {
@@ -726,9 +913,7 @@ test('explains consent settings with info buttons', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await startCreate(page);
-  await fillBasics(page, 'consent-info-client', 'Consent Info Client');
-  await continueToThirdStep(page);
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
 
   await page.getByRole('button', { name: 'Consent settings info' }).click();
   await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
@@ -756,12 +941,10 @@ test('explains which client fields are shown on the consent screen', async ({ pa
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await startCreate(page);
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
   await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
 
-  await fillBasics(page, 'consent-fields-client', 'Consent Fields Client');
-  await continueToThirdStep(page);
   await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
   await expect(page.getByText('Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.', { exact: true })).toBeVisible();
 });
@@ -772,9 +955,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await startCreate(page);
-  await fillBasics(page, 'consent-case-client', 'Consent Case Client');
-  await continueToThirdStep(page);
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   const consentRow = page.getByText('Consent', { exact: true }).locator('..');
   await consentRow.locator('label.toggle').click();
 
@@ -797,9 +978,10 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await expect(page.getByText('Consent', { exact: true })).toBeVisible();
 
   // Consent is an act by a user, so the kind with none never offers it.
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await startCreate(page, 'Service app');
-  await fillBasics(page, 'consentless-service', 'Consentless Service');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Service app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await continueToThirdStep(page);
 
   await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
@@ -811,11 +993,8 @@ test('hides registration settings when inline password is enabled', async ({ pag
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await startCreate(page);
-  await fillBasics(page, 'inline-password-client', 'Inline Password Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://inline-password.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await continueToThirdStep(page);
+  // Inline password is an edit-page refinement; turning it on leaves sign-up nothing to verify.
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
@@ -824,17 +1003,19 @@ test('hides registration settings when inline password is enabled', async ({ pag
   await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
   await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
 
-  await continueToReview(page);
-  await submitCreate(page);
+  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
 
-  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+  // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
+  // the key is omitted rather than sent as an explicit null.
+  const putBody = findRequest(api.requests, 'PUT', '/configuration/clients').body;
+  expect(putBody).toMatchObject({
     authFlow: {
       primary: {
         inlinePassword: true,
       },
     },
-    registrationFlow: null,
   });
+  expect(putBody.registrationFlow).toBeUndefined();
 });
 
 test('hides registration settings for a login+password flow', async ({ page }) => {
@@ -845,16 +1026,15 @@ test('hides registration settings for a login+password flow', async ({ page }) =
 
   await startCreate(page);
   await fillBasics(page, 'login-password-client', 'Login Password Client');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://login-password.example/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await addRedirectUri(page, 'https://login-password.example/callback');
   await continueToThirdStep(page);
 
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
+  await checkRow(page, 'Let users sign themselves up').click();
 
-  await page.getByRole('button', { name: 'login + password', exact: true }).click();
-  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
+  // A login is not a delivery address, so there is nothing for sign-up to prove ownership of.
+  await page.getByRole('button', { name: 'Login + password', exact: true }).click();
+  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toBeVisible();
+  await expect(checkRow(page, 'Let users sign themselves up')).toHaveCount(0);
 
   await continueToReview(page);
   await submitCreate(page);
@@ -880,9 +1060,9 @@ test('leaves out everything a sign-in flow owns when the client has none', async
   await expect(page.getByText('Logout Settings', { exact: true })).toHaveCount(0);
 
   await continueToThirdStep(page);
-  await expect(page.getByText('OTP Settings', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('checkbox', { name: 'openid', exact: true })).toHaveCount(0);
-  await expect(page.getByLabel('Forms Theme', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('First screen', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'openid', exact: true })).toHaveCount(0);
+  await expect(page.getByText('No OIDC scopes', { exact: true })).toBeVisible();
 
   await continueToReview(page);
   await submitCreate(page);
@@ -937,12 +1117,13 @@ test('rejects logout notification URIs with a non-http(s) scheme', async ({ page
 
   const continueButton = page.getByRole('button', { name: 'Continue to sign-in', exact: true });
 
-  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  await openLogout(page);
+  await page.getByRole('button', { name: 'Front-channel', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/logout/frontchannel').fill('javascript:alert(1)');
   await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
   await expect(continueButton).toBeDisabled();
 
-  await page.getByRole('button', { name: 'back-channel', exact: true }).click();
+  await page.getByRole('button', { name: 'Back-channel', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/logout/backchannel').fill('com.example.app://logout');
   await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
   await expect(continueButton).toBeDisabled();
@@ -957,12 +1138,13 @@ test('preserves the front-channel URI when switching logout modes', async ({ pag
   });
 
   await startCreate(page);
-  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  await openLogout(page);
+  await page.getByRole('button', { name: 'Front-channel', exact: true }).click();
   const frontUri = page.getByPlaceholder('https://app.example.com/logout/frontchannel');
   await frontUri.fill('https://good.example/logout/frontchannel');
 
-  await page.getByRole('button', { name: 'back-channel', exact: true }).click();
-  await page.getByRole('button', { name: 'front-channel', exact: true }).click();
+  await page.getByRole('button', { name: 'Back-channel', exact: true }).click();
+  await page.getByRole('button', { name: 'Front-channel', exact: true }).click();
   await expect(frontUri).toHaveValue('https://good.example/logout/frontchannel');
 });
 
@@ -1153,7 +1335,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     id: 'alpha-web',
     clientName: { en: 'Duplicate Client' },
     redirectUris: ['https://duplicate.example/callback'],
-    allowedScopes: [],
+    allowedScopes: ['openid'],
     permissions: [],
     accessTokenTtl: 3600,
     authFlow: {

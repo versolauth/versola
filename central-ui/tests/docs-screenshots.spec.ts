@@ -187,9 +187,7 @@ test('client create form', async ({ page }) => {
   await shot(page, 'client-form-basics', true);
 
   await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
-  await page.getByRole('checkbox', { name: 'openid', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'profile', exact: true }).check();
-  await page.getByRole('checkbox', { name: 'orders.read', exact: true }).check();
+  await page.getByRole('button', { name: 'profile', exact: true }).click();
   await shot(page, 'client-form-filled', true);
 
   await page.getByRole('button', { name: 'Continue to review', exact: true }).click();
@@ -203,17 +201,12 @@ test('client create form', async ({ page }) => {
 });
 
 test('client registration flow form', async ({ page }) => {
+  // Registration challenge and role assignment are edit-page refinements now - creation only
+  // asks whether sign-up is on at all - so this shot comes from editing an existing client.
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
-  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
-  await page.getByRole('button', { name: /Web app/ }).click();
-  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
-  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
-  await page.getByLabel('Client ID').fill('checkout-web');
-  await page.getByLabel('Client Name').fill('Checkout Web');
-  await page.getByPlaceholder('https://app.example.com/callback').fill('https://checkout.example.com/callback');
-  await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
-  await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
+  await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first()
+    .getByRole('button', { name: 'Edit client storefront-web' }).click();
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();

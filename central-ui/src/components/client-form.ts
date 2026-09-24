@@ -90,6 +90,7 @@ export class VersolaClientForm extends LitElement {
   @state() private refreshTokenTtlDays = 90;
   @state() private redirectUriError = '';
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
+  @state() private logoutOpen = false;
   @state() private frontChannelLogoutUriError = '';
   @state() private backChannelLogoutUriError = '';
   @state() private logoUriError = '';
@@ -825,7 +826,7 @@ export class VersolaClientForm extends LitElement {
         flex-wrap: wrap;
         padding-bottom: var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
-        border-bottom: 1px solid var(--border);
+        border-bottom: 1px solid var(--border-dark);
       }
       .wizard-step {
         display: inline-flex;
@@ -845,7 +846,7 @@ export class VersolaClientForm extends LitElement {
         width: 1.35rem;
         height: 1.35rem;
         border-radius: 50%;
-        border: 1px solid var(--border);
+        border: 1px solid var(--border-dark);
         font-size: 0.75rem;
       }
       .wizard-step.active .wizard-step-dot {
@@ -861,7 +862,7 @@ export class VersolaClientForm extends LitElement {
         flex: 1 1 1rem;
         min-width: 1rem;
         height: 1px;
-        background: var(--border);
+        background: var(--border-dark);
       }
 
       .wizard-head {
@@ -893,8 +894,8 @@ export class VersolaClientForm extends LitElement {
         margin-top: var(--spacing-lg);
       }
       .wizard-note {
-        background: var(--bg-subtle, rgba(127, 127, 127, 0.07));
-        border-left: 3px solid var(--border);
+        background: rgba(var(--accent-tint), 0.07);
+        border-left: 3px solid var(--border-dark);
       }
       .wizard-warn {
         background: rgba(var(--warning-tint, 180, 83, 9), 0.08);
@@ -938,7 +939,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .review-group {
-        border-top: 1px solid var(--border);
+        border-top: 1px solid var(--border-dark);
         padding: var(--spacing-md) 0;
       }
       .review-group-head {
@@ -968,6 +969,248 @@ export class VersolaClientForm extends LitElement {
       }
       .review-row.muted .review-value {
         color: var(--text-secondary);
+      }
+
+      /* Wizard steps 2 and 3: sentence-case fields in a two-column grid, grouped under a
+         heading that says why the group is there. */
+      .wizard-field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--spacing-lg);
+      }
+      .wizard-field label {
+        display: block;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 0.3rem;
+      }
+      .wizard-field .hint {
+        margin-top: 0.3rem;
+      }
+      .wizard-field input,
+      .wizard-field select,
+      .wizard-field textarea {
+        width: 100%;
+        max-width: none;
+      }
+      .wizard-field.inline-field input,
+      .wizard-field.inline-field select {
+        max-width: 20rem;
+      }
+      .wizard-span-2 {
+        grid-column: 1 / -1;
+      }
+      .wizard-group-head {
+        font-size: 0.9375rem;
+        font-weight: 600;
+        color: var(--text-primary);
+        margin-bottom: 0.15rem;
+      }
+      .wizard-group-sub {
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        margin-bottom: 0.9rem;
+      }
+      .wizard-rule {
+        border: none;
+        border-top: 1px solid var(--border-dark);
+        margin: var(--spacing-lg) 0 0;
+      }
+      .wizard-group {
+        margin-top: var(--spacing-lg);
+      }
+
+      .seg {
+        display: inline-flex;
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+      .seg button {
+        padding: 0.5rem 0.9rem;
+        background: var(--bg-dark);
+        border: none;
+        border-right: 1px solid var(--border-dark);
+        color: var(--text-secondary);
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        cursor: pointer;
+      }
+      .seg button:last-child {
+        border-right: none;
+      }
+      .seg button[aria-pressed='true'] {
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
+        font-weight: 600;
+      }
+
+      .chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+      .chip {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        padding: 0.28rem 0.6rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-dark);
+        background: none;
+        color: var(--text-secondary);
+        cursor: pointer;
+      }
+      .chip[aria-pressed='true'] {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: rgba(var(--accent-tint), 0.1);
+      }
+      .chip.fixed {
+        border-style: dashed;
+        cursor: default;
+      }
+
+      /* A checkbox whose explanation is part of the row, not a tooltip behind an icon. */
+      .check-row {
+        display: grid;
+        grid-template-columns: 1.1rem 1fr;
+        gap: 0.55rem;
+        align-items: start;
+        padding: 0.3rem 0;
+        font-size: 0.875rem;
+        background: none;
+        border: none;
+        text-align: left;
+        font-family: inherit;
+        color: inherit;
+        cursor: pointer;
+        width: 100%;
+      }
+      .check-row[disabled] {
+        opacity: 0.5;
+        cursor: default;
+      }
+      .check-row .box {
+        width: 1rem;
+        height: 1rem;
+        border-radius: var(--radius-sm);
+        margin-top: 0.15rem;
+        border: 1px solid var(--border-dark);
+        display: grid;
+        place-items: center;
+        font-size: 0.7rem;
+        color: #fff;
+      }
+      .check-row.on .box {
+        background: var(--accent);
+        border-color: var(--accent);
+      }
+      .check-row .hint {
+        margin-top: 0.15rem;
+      }
+
+      .paths {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--spacing-md);
+      }
+      .path {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-sm);
+        padding: 0.85rem 0.9rem;
+      }
+      .path.alt {
+        background: rgba(var(--accent-tint), 0.04);
+      }
+      .path-head {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-size: 0.875rem;
+        font-weight: 600;
+        margin-bottom: 0.5rem;
+      }
+      .path-tag {
+        font-size: 0.6875rem;
+        font-weight: 500;
+        padding: 0.1rem 0.4rem;
+        border-radius: var(--radius-sm);
+        background: rgba(var(--accent-tint), 0.12);
+        color: var(--accent);
+      }
+
+      /* Logout is the one thing on step 2 most clients never set, so it starts closed. */
+      .opt-head {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        width: 100%;
+        padding: 0.85rem 0;
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: inherit;
+        font-family: inherit;
+        text-align: left;
+      }
+      .opt-chevron {
+        color: var(--text-secondary);
+        font-size: 0.7rem;
+        width: 0.8rem;
+      }
+      .opt-title {
+        font-size: 0.9375rem;
+        font-weight: 600;
+        color: var(--text-primary);
+      }
+      .opt-summary {
+        margin-left: auto;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+      }
+
+      .plan {
+        display: grid;
+        gap: 0.6rem;
+      }
+      .plan-line {
+        display: grid;
+        grid-template-columns: 1.3rem 1fr;
+        gap: 0.5rem;
+      }
+      .plan-mark {
+        font-size: 0.8125rem;
+        line-height: 1.4;
+        color: var(--text-secondary);
+      }
+      .plan-mark.na {
+        opacity: 0.55;
+      }
+      .plan-text {
+        font-size: 0.875rem;
+        color: var(--text-primary);
+      }
+      .plan-line.na .plan-text {
+        color: var(--text-secondary);
+      }
+      .plan-why {
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        line-height: 1.45;
+        margin-top: 0.1rem;
+      }
+
+      .inline-field {
+        max-width: 20rem;
+      }
+      textarea.code {
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        resize: vertical;
       }
     `,
   ];
@@ -1695,12 +1938,16 @@ export class VersolaClientForm extends LitElement {
     const mode = defaultCredentialMode(this.kind, this.tier);
     const signsUsersIn = this.kind !== 'service';
 
+    const scope = (this.formData.scope || []).filter(s => s !== 'openid');
+
     this.clientCredentialMode = mode;
     this.formData = {
       ...this.formData,
       ...preset.patch,
       certificateBoundAccessTokens: certificateBoundFor(mode),
       authFlow: signsUsersIn ? this.formData.authFlow ?? createDefaultAuthFlow() : null,
+      // openid is what makes the request OIDC, so a client that signs users in always carries it.
+      scope: signsUsersIn ? ['openid', ...scope] : scope,
     };
   }
 
@@ -2130,33 +2377,348 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
+  /** A settled rule with its reason, in the notation step 1 uses: ⊙ server rule, — not applicable. */
+  private renderPlanLine(state: 'fixed' | 'na', text: string, why: string) {
+    return html`
+      <div class="plan-line ${state}">
+        <span class="plan-mark ${state}">${state === 'fixed' ? '⊙' : '—'}</span>
+        <span>
+          <span class="plan-text">${text}</span>
+          <div class="plan-why">${why}</div>
+        </span>
+      </div>
+    `;
+  }
+
+  private renderCheckRow(
+    checked: boolean,
+    label: string,
+    hint: unknown,
+    onToggle: () => void,
+    disabled = false,
+  ) {
+    return html`
+      <button
+        type="button"
+        class="check-row ${checked ? 'on' : ''}"
+        ?disabled=${disabled}
+        aria-pressed=${checked}
+        @click=${onToggle}
+      >
+        <span class="box">${checked ? '✓' : ''}</span>
+        <span>
+          ${label}
+          <div class="hint">${hint}</div>
+        </span>
+      </button>
+    `;
+  }
+
+  /** Step 1 narrows the credential to at most two methods, so step 2 offers only those. */
+  private renderWizardCredentialBlock() {
+    if (this.clientType === 'native') {
+      return html`
+        <div class="plan">
+          ${this.renderPlanLine('fixed', 'Public client, no secret', 'A shipped binary cannot keep one.')}
+          ${this.tier === 'high' ? this.renderPlanLine(
+            'fixed',
+            'DPoP proof key',
+            'The device generates it in its own keystore on first run and proves possession on every request. Nothing to register here.',
+          ) : ''}
+        </div>
+      `;
+    }
+
+    if (this.tier === 'compat') {
+      return html`
+        <div class="wizard-note" style="margin-top:0">
+          <strong>Client secret.</strong> Generated when you create the client and shown once, on the
+          next screen. Store it before you leave - auth keeps only a hash and cannot show it again.
+        </div>
+      `;
+    }
+
+    const mtls = this.clientCredentialMode === 'mtls' || this.clientCredentialMode === 'mtls-self-signed';
+    return html`
+      <div class="seg" style="margin-bottom:var(--spacing-md)">
+        <button
+          type="button"
+          aria-pressed=${!mtls}
+          @click=${() => this.setClientCredentialMode('private-key-jwt')}
+        >private_key_jwt</button>
+        <button
+          type="button"
+          aria-pressed=${mtls}
+          @click=${() => this.setClientCredentialMode('mtls')}
+        >mTLS</button>
+      </div>
+      ${mtls
+        ? this.renderWizardMtlsFields()
+        : this.renderWizardJwksField(
+            'Key set',
+            'The same keys verify signed request objects, so registering them here is what makes JAR possible.',
+          )}
+      ${this.mtlsTerminationValidation.valid ? '' : html`
+        <div class="error-message" style="margin-top:var(--spacing-md)">${this.mtlsTerminationValidation.error}</div>
+      `}
+    `;
+  }
+
+  private renderWizardJwksField(label: string, extraHint: string) {
+    return html`
+      <div class="wizard-field">
+        <label for="client-jwks">${label}</label>
+        <textarea
+          id="client-jwks"
+          class="compact-input code ${this.jwksValidation.valid ? '' : 'input-error'}"
+          rows="10"
+          .value=${this.jwksInput}
+          @input=${this.handleJwksInput}
+          placeholder='{"keys": [...]}'
+        ></textarea>
+        ${this.jwksValidation.valid
+          ? html`<div class="hint">An RFC 7517 JWK Set of up to ${MAX_JWKS_KEYS} public keys. ${extraHint}</div>`
+          : html`<div class="error-message">${this.jwksValidation.error}</div>`}
+      </div>
+    `;
+  }
+
+  /** RFC 8705 §2.1 and §2.2 are two different methods, not two settings of one. */
+  private renderWizardMtlsFields() {
+    const selfSigned = this.clientCredentialMode === 'mtls-self-signed';
+    return html`
+      <div style="margin-bottom:var(--spacing-md)">
+        <div class="wizard-group-sub" style="margin-bottom:.5rem">Which certificate does the client present?</div>
+        <div class="seg">
+          <button type="button" aria-pressed=${!selfSigned} @click=${() => this.setClientCredentialMode('mtls')}>
+            Issued by a CA
+          </button>
+          <button type="button" aria-pressed=${selfSigned} @click=${() => this.setClientCredentialMode('mtls-self-signed')}>
+            Self-signed
+          </button>
+        </div>
+      </div>
+
+      ${selfSigned ? html`
+        <div class="wizard-note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+          <strong>self_signed_tls_client_auth.</strong> There is no CA to trust, so auth compares the
+          certificate the client presents against keys you register here. No subject field is checked -
+          possession of the key is the whole proof.
+        </div>
+        ${this.renderWizardJwksField(
+          'Key set of the certificate',
+          'Rotating the certificate means adding its key to this set before the old one is withdrawn.',
+        )}
+      ` : html`
+        <div class="wizard-note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+          <strong>tls_client_auth.</strong> Auth trusts the chain and then checks that one registered
+          field of the certificate matches. You give it that field and its value.
+        </div>
+        <div class="wizard-field-grid">
+          <div class="wizard-field">
+            <label for="mtls-subject-type">Recognised by</label>
+            <select
+              id="mtls-subject-type"
+              class="compact-input"
+              .value=${this.mtlsSubjectType}
+              @change=${(e: Event) => (this.mtlsSubjectType = (e.target as HTMLSelectElement).value as MtlsSubjectType)}
+            >
+              ${MTLS_SUBJECT_TYPES.map(type => html`
+                <option value=${type} ?selected=${type === this.mtlsSubjectType}>${type}</option>
+              `)}
+            </select>
+            <div class="hint">RFC 8705 §2.1.2. Exactly one field is compared.</div>
+          </div>
+          <div class="wizard-field">
+            <label for="mtls-subject-value">Expected value</label>
+            <input
+              type="text"
+              id="mtls-subject-value"
+              class="compact-input ${this.mtlsSubjectValueError ? 'input-error' : ''}"
+              .value=${this.mtlsSubjectValue}
+              @input=${(e: Event) => (this.mtlsSubjectValue = (e.target as HTMLInputElement).value)}
+              placeholder="CN=checkout,O=Acme,C=KZ"
+            />
+            ${this.mtlsSubjectValueError
+              ? html`<div class="error-message">${this.mtlsSubjectValueError}</div>`
+              : html`<div class="hint">Copy it out of the certificate exactly, spacing included.</div>`}
+          </div>
+        </div>
+      `}
+    `;
+  }
+
+  /** One of the two logout channels, or neither - never both. */
+  private renderWizardLogoutBlock() {
+    const summary = this.logoutMode === 'front'
+      ? 'front-channel'
+      : this.logoutMode === 'back' ? 'back-channel' : 'optional · not set';
+    return html`
+      <button type="button" class="opt-head" @click=${() => (this.logoutOpen = !this.logoutOpen)}>
+        <span class="opt-chevron">${this.logoutOpen ? '▼' : '▶'}</span>
+        <span class="opt-title">Logout</span>
+        <span class="opt-summary">${summary}</span>
+      </button>
+      ${this.logoutOpen ? html`
+        <div style="padding-bottom:.5rem">
+          <div class="wizard-group-sub">
+            How auth tells this client a session ended elsewhere. One channel or neither - a client
+            cannot register both.
+          </div>
+          <div class="seg" style="margin-bottom:var(--spacing-md)">
+            <button type="button" aria-pressed=${this.logoutMode === 'none'} @click=${() => this.setLogoutMode('none')}>
+              Not notified
+            </button>
+            <button type="button" aria-pressed=${this.logoutMode === 'front'} @click=${() => this.setLogoutMode('front')}>
+              Front-channel
+            </button>
+            <button type="button" aria-pressed=${this.logoutMode === 'back'} @click=${() => this.setLogoutMode('back')}>
+              Back-channel
+            </button>
+          </div>
+          ${this.logoutMode === 'none' ? html`
+            <div class="hint">The client's own session simply expires on its own terms.</div>
+          ` : this.logoutMode === 'front' ? html`
+            <div class="wizard-field">
+              <label for="client-front-channel-logout-uri">Front-channel logout URI</label>
+              <input
+                type="text"
+                id="client-front-channel-logout-uri"
+                class="compact-input ${this.logoutUriError ? 'input-error' : ''}"
+                .value=${this.formData.frontChannelLogoutUri || ''}
+                @input=${this.handleFrontChannelLogoutUriInput}
+                placeholder="https://app.example.com/logout/frontchannel"
+              />
+              ${this.logoutUriError
+                ? html`<div class="error-message">${this.logoutUriError}</div>`
+                : html`<div class="hint">Loaded in a hidden iframe. Needs a browser to still be open.</div>`}
+            </div>
+            ${this.renderCheckRow(
+              !!this.formData.frontChannelLogoutSessionRequired,
+              'Include the session ID and issuer',
+              `Lets the client tell which of its sessions ended and confirm the notice came from this
+               auth server. Don't disable this if you don't know what it is.`,
+              () => this.toggleFrontChannelLogoutSessionRequired(),
+            )}
+          ` : html`
+            <div class="wizard-field">
+              <label for="client-back-channel-logout-uri">Back-channel logout URI</label>
+              <input
+                type="text"
+                id="client-back-channel-logout-uri"
+                class="compact-input ${this.logoutUriError ? 'input-error' : ''}"
+                .value=${this.formData.backChannelLogoutUri || ''}
+                @input=${this.handleBackChannelLogoutUriInput}
+                placeholder="https://app.example.com/logout/backchannel"
+              />
+              ${this.logoutUriError
+                ? html`<div class="error-message">${this.logoutUriError}</div>`
+                : html`<div class="hint">Server to server. Works with no browser involved.</div>`}
+            </div>
+          `}
+        </div>
+      ` : ''}
+    `;
+  }
+
   private renderBasicsStep() {
+    const service = this.kind === 'service';
     return html`
       ${this.renderWizardHead(
         'The basics',
-        'Identity, how the client authenticates, and how long the tokens it gets last.',
+        'Identity, and where auth is allowed to send users back.',
       )}
 
-      <div class="form-grid">
-        ${this.renderIdentityFields()}
-        ${this.renderRedirectUrisField()}
-        ${this.renderCredentialGroup()}
-        ${this.renderAccessTokenTtlField()}
-        ${this.renderDpopFieldsGroup()}
-        ${this.hasAuthFlow ? this.renderLogoutSettings() : ''}
+      <div class="wizard-field-grid">
+        <div class="wizard-field">
+          <label for="client-id">Client ID</label>
+          <input
+            type="text"
+            id="client-id"
+            class="compact-input ${this.isClientIdInvalid ? 'input-error' : ''}"
+            .value=${this.formData.id || ''}
+            @input=${this.handleClientIdInput}
+            placeholder="checkout-web"
+          />
+          ${this.isClientIdInvalid
+            ? html`<div class="error-message">Lowercase letters, numbers and hyphens, starting with a letter.</div>`
+            : html`<div class="hint">Chosen now, never changes. It appears in every request this client makes.</div>`}
+        </div>
+
+        <div class="wizard-field">
+          <label for="client-name">Client name</label>
+          <versola-localized-text-editor
+            .value=${this.formData.clientName || { en: '' }}
+            .locales=${this.locales}
+            fieldId="client-name"
+            label="Client Name"
+            .required=${true}
+            .showLabel=${false}
+            .showRequiredIndicator=${false}
+            .selectorBelowInput=${true}
+            @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
+              ...this.formData,
+              clientName: e.detail.value,
+            }}
+          ></versola-localized-text-editor>
+          <div class="hint">
+            ${service
+              ? 'Shown in Central only. No user ever sees a service app.'
+              : 'Shown to users on the sign-in and consent screens.'}
+          </div>
+        </div>
+
+        ${service ? '' : html`
+          <div class="wizard-field wizard-span-2">
+            <label for="redirect-uri">Redirect URIs</label>
+            <div class="inline-action-row">
+              <input
+                type="text"
+                id="redirect-uri"
+                class="compact-input ${this.isRedirectUriInvalid || this.redirectUriError ? 'input-error' : ''}"
+                .value=${this.redirectUriInput}
+                @input=${this.handleRedirectUriInput}
+                @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && (e.preventDefault(), this.addRedirectUri())}
+                placeholder="https://app.example.com/callback"
+              />
+              <button type="button" class="btn btn-secondary inline-action-button" @click=${this.addRedirectUri}>Add</button>
+            </div>
+            ${this.redirectUriError
+              ? html`<div class="error-message">${this.redirectUriError}</div>`
+              : html`<div class="hint">
+                  ${this.clientType === 'native'
+                    ? 'A custom scheme or an https app link the operating system hands back to the app.'
+                    : "Edge's callback, not the page the user ends up on."}
+                  Press Enter to add another.
+                </div>`}
+            ${this.renderRedirectUriList()}
+          </div>
+        `}
       </div>
 
-      ${this.kind === 'service' ? html`
-        <div class="wizard-note">
-          <strong>No redirect URIs.</strong> client_credentials never redirects, so there is nowhere
-          to send a user back to.
+      ${service ? html`
+        <div class="plan wizard-group">
+          ${this.renderPlanLine(
+            'fixed',
+            'No redirect URIs',
+            'client_credentials never redirects. There is nowhere to send a user back to.',
+          )}
         </div>
       ` : ''}
 
+      <hr class="wizard-rule" />
+
+      <div class="wizard-group">
+        <div class="wizard-group-head">How the client authenticates</div>
+        <div class="wizard-group-sub">Decided by step 1. Change the tier there to change this.</div>
+        ${this.renderWizardCredentialBlock()}
+      </div>
+
+      ${service ? '' : html`<hr class="wizard-rule" />${this.renderWizardLogoutBlock()}`}
+
       <div class="form-actions">
-        <span class="wizard-actions-note">Step 2 of 4 · the client ID is the one field you cannot change later</span>
+        <span class="wizard-actions-note">Step 2 of 4 · Client ID is the one field you cannot change later</span>
         <button type="button" class="btn btn-secondary" @click=${() => (this.wizardStep = 1)}>Back</button>
-        <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
         <button
           type="button"
           class="btn btn-primary"
@@ -2168,39 +2730,279 @@ export class VersolaClientForm extends LitElement {
   }
 
   private renderPermissionsStep() {
+    const selected = this.formData.permissions || [];
     return html`
       ${this.renderWizardHead(
         'What it is allowed to call',
-        'No user is present, so there is nothing to ask for and nothing to consent to.',
+        'No user is present, so there is nothing to ask and nothing to consent to.',
       )}
 
-      <div class="form-grid">
-        ${this.renderPermissionsField()}
+      <div class="wizard-group-head">Permissions</div>
+      <div class="wizard-group-sub">Checked by your APIs. Pick only what this worker actually calls.</div>
+      <div class="chips">
+        ${this.availablePermissions.map(permission => html`
+          <button
+            type="button"
+            class="chip"
+            aria-pressed=${selected.includes(permission.id)}
+            @click=${() => this.togglePermission(permission.id)}
+          >${permission.id}</button>
+        `)}
       </div>
 
-      <div class="wizard-note">
-        <strong>No OIDC scopes, no consent screen, no refresh token.</strong> All three describe a
-        user. This client can ask for a new access token with its own credential at any time.
+      <hr class="wizard-rule" />
+
+      <div class="plan wizard-group">
+        ${this.renderPlanLine('fixed', 'No OIDC scopes', 'openid, profile and email all describe a subject. There is none.')}
+        ${this.renderPlanLine('fixed', 'No consent screen', 'Consent is an act by a user. client_credentials has no user to perform it.')}
+        ${this.renderPlanLine('fixed', 'No refresh token', 'The client can ask for a new access token with its own credential at any time.')}
       </div>
     `;
   }
 
+  /** Email, phone or a login - the one thing the first sign-in screen asks for. */
+  private get firstScreenCredential(): 'email' | 'phone' | 'login' {
+    if (this.credentialMode === 'login-password') {
+      return 'login';
+    }
+
+    return this.authFlow.primaryCredentials.includes('email') ? 'email' : 'phone';
+  }
+
   private renderSignInStep() {
+    const primary = this.firstScreenCredential;
+    const passkeyOtpBlocked = primary === 'login' && !this.inlineOtpEnabled;
     return html`
       ${this.renderWizardHead(
         'How users sign in',
         'This client only. Two clients on one tenant can sign the same users in differently.',
       )}
 
-      <div class="form-grid">
-        ${this.renderAuthFlowSection()}
-        ${this.renderRegistrationSection()}
-        ${this.renderOtpSettingsSection()}
-        ${this.renderScopesField()}
-        ${this.renderRefreshTokenTtlField()}
-        ${this.renderPermissionsField()}
-        ${this.renderConsentSection()}
-        ${this.renderThemeField()}
+      <div class="wizard-group-head">First screen</div>
+      <div class="wizard-group-sub">What the user is asked for, and the one alternative to it.</div>
+      <div class="paths">
+        <div class="path">
+          <div class="path-head">Credential</div>
+          <div class="seg" style="margin-bottom:.7rem">
+            <button type="button" aria-pressed=${primary === 'email'} @click=${() => this.selectPhoneEmailMode('email')}>Email</button>
+            <button type="button" aria-pressed=${primary === 'phone'} @click=${() => this.selectPhoneEmailMode('phone')}>Phone</button>
+            <button type="button" aria-pressed=${primary === 'login'} @click=${() => this.selectLoginPasswordMode()}>Login + password</button>
+          </div>
+          ${primary === 'login' ? html`
+            <div class="plan">
+              ${this.renderPlanLine(
+                'na',
+                'Users cannot sign themselves up',
+                'Sign-up verifies ownership of an email or a phone. A login has neither, so accounts are created in Central.',
+              )}
+            </div>
+          ` : this.renderCheckRow(
+            this.hasRegistrationFlow,
+            'Let users sign themselves up',
+            `The ${primary} is the credential whose ownership is verified. Off means accounts are created in Central.`,
+            () => this.toggleRegistrationEnabled(),
+          )}
+        </div>
+
+        <div class="path alt">
+          <div class="path-head">Passkey <span class="path-tag">alternative</span></div>
+          ${this.renderCheckRow(
+            this.authFlow.passkey,
+            'Offer a passkey on this screen',
+            'Replaces the credential and its challenge, not just the challenge.',
+            () => this.togglePasskey(),
+          )}
+          ${this.renderCheckRow(
+            this.passkeyOtpEnabled,
+            'Ask for a one-time code after it',
+            passkeyOtpBlocked
+              ? "Needs the second-factor one-time code below turned on first - a passkey can't ask for a factor the password path itself skips."
+              : 'Off means the passkey alone ends the sign-in.',
+            () => this.setPasskeyOtpEnabled(!this.passkeyOtpEnabled),
+            passkeyOtpBlocked || !this.authFlow.passkey,
+          )}
+        </div>
+      </div>
+
+      <hr class="wizard-rule" />
+
+      <div class="wizard-group">
+        <div class="wizard-group-head">Then challenge with</div>
+        <div class="wizard-group-sub">Runs after the credential above. The passkey path skips all of it.</div>
+        ${primary === 'login' ? html`
+          ${this.renderCheckRow(
+            this.inlineOtpEnabled,
+            'Then ask for a one-time code',
+            `Optional second factor after the password. A login is not a delivery address, so turning
+             this on also picks the channel below.`,
+            () => this.setInlineOtpEnabled(!this.inlineOtpEnabled),
+          )}
+          ${this.inlineOtpEnabled ? html`
+            <div class="wizard-field inline-field" style="margin-top:.6rem">
+              <label for="otp-channel">Deliver the code by</label>
+              <select
+                id="otp-channel"
+                class="compact-input"
+                .value=${this.authFlow.otpType}
+                @change=${(e: Event) => this.setOtpType((e.target as HTMLSelectElement).value as 'sms' | 'email')}
+              >
+                <option value="sms" ?selected=${this.authFlow.otpType === 'sms'}>SMS</option>
+                <option value="email" ?selected=${this.authFlow.otpType === 'email'}>Email</option>
+              </select>
+              <div class="hint">Sent to the phone or email on the profile the login resolves to.</div>
+            </div>
+          ` : ''}
+        ` : html`
+          <div class="plan">
+            ${this.renderPlanLine(
+              'fixed',
+              primary === 'phone' ? 'One-time code by SMS' : 'One-time code by email',
+              `Follows the credential above - ${primary === 'phone' ? 'a phone gets SMS' : 'an email address gets email'}.`,
+            )}
+          </div>
+          ${this.renderCheckRow(
+            this.secondFactorType === 'password',
+            'Then ask for a password',
+            'A third screen after the code. Off is the usual choice.',
+            () => this.setSecondFactor(this.secondFactorType === 'password' ? '' : 'password'),
+          )}
+        `}
+      </div>
+
+      <hr class="wizard-rule" />
+
+      <div class="wizard-group">
+        <div class="wizard-group-head">Set up after sign-in</div>
+        <div class="wizard-group-sub">Offered once the user is through, not as a condition of getting in.</div>
+        ${this.renderCheckRow(
+          this.passkeyEnrollEnabled,
+          'Ask the user to add a passkey',
+          'Shown after the code path succeeds, so the next sign-in can take the passkey path.',
+          () => this.togglePasskeyEnroll(),
+        )}
+      </div>
+
+      <hr class="wizard-rule" />
+
+      <div class="wizard-group">
+        <div class="wizard-group-head">Scopes</div>
+        <div class="wizard-group-sub">What the token this client receives is allowed to describe and reach.</div>
+        <div class="chips">
+          ${this.availableScopes.map(scope => scope.id === 'openid'
+            ? html`<span class="chip fixed" aria-pressed="true">openid</span>`
+            : html`
+              <button
+                type="button"
+                class="chip"
+                aria-pressed=${(this.formData.scope || []).includes(scope.id)}
+                @click=${() => this.toggleScope(scope.id)}
+              >${scope.id}</button>
+            `)}
+        </div>
+        <div class="hint" style="margin-top:.45rem">openid is always present - it is what makes this an OIDC request.</div>
+      </div>
+
+      <hr class="wizard-rule" />
+
+      <div class="wizard-group">
+        <div class="wizard-group-head">Consent</div>
+        <div class="wizard-group-sub">No prompt is the normal choice for an app you own.</div>
+        <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
+          <button type="button" aria-pressed=${!this.hasConsentFlow} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
+            First party, no prompt
+          </button>
+          <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
+            Ask for consent
+          </button>
+        </div>
+        ${this.hasConsentFlow ? this.renderWizardConsentSettings() : ''}
+      </div>
+    `;
+  }
+
+  /** Everything here reaches the user on the consent screen and nowhere else. */
+  private renderWizardConsentSettings() {
+    const days = this.consentFlow.rememberDurationDays;
+    const remember = days == null ? 'forever' : String(days);
+    return html`
+      <div class="path alt" style="padding:1rem">
+        ${this.renderCheckRow(
+          this.consentFlow.allowPartial,
+          'Let the user grant part of it',
+          'Off is the default - all or nothing. On lets optional scopes be unticked.',
+          () => this.setConsentFlow({ allowPartial: !this.consentFlow.allowPartial }),
+        )}
+
+        <div class="wizard-field inline-field" style="margin-top:.7rem">
+          <label for="consent-remember">Reuse the grant for</label>
+          <select
+            id="consent-remember"
+            class="compact-input"
+            .value=${remember}
+            @change=${(e: Event) => {
+              const value = (e.target as HTMLSelectElement).value;
+              this.setConsentFlow({ rememberDurationDays: value === 'forever' ? null : Number(value) });
+            }}
+          >
+            <option value="30" ?selected=${remember === '30'}>30 days</option>
+            <option value="90" ?selected=${remember === '90'}>90 days</option>
+            <option value="forever" ?selected=${remember === 'forever'}>Until the user revokes it</option>
+            <option value="0" ?selected=${remember === '0'}>Ask every time</option>
+          </select>
+          <div class="hint">How long before the same scopes are asked for again.</div>
+        </div>
+
+        <hr class="wizard-rule" style="margin:var(--spacing-md) 0" />
+
+        <div class="wizard-group-head" style="font-size:.875rem">What the screen shows</div>
+        <div class="wizard-group-sub">
+          Auth renders these three on the consent screen and nowhere else, so they are only worth
+          filling in with consent on.
+        </div>
+        <div class="wizard-field-grid">
+          <div class="wizard-field">
+            <label for="consent-logo-uri">Logo URI</label>
+            <input
+              type="url"
+              id="consent-logo-uri"
+              class="compact-input ${this.logoUriError ? 'input-error' : ''}"
+              placeholder="https://example.com/logo.svg"
+              .value=${this.formData.logoUri || ''}
+              @input=${(e: Event) => { this.formData = { ...this.formData, logoUri: (e.target as HTMLInputElement).value }; this.logoUriError = ''; }}
+            />
+            ${this.logoUriError
+              ? html`<div class="error-message">${this.logoUriError}</div>`
+              : html`<div class="hint">Shown next to the client name.</div>`}
+          </div>
+          <div class="wizard-field">
+            <label for="consent-policy-uri">Privacy policy URI</label>
+            <input
+              type="url"
+              id="consent-policy-uri"
+              class="compact-input ${this.policyUriError ? 'input-error' : ''}"
+              placeholder="https://example.com/privacy"
+              .value=${this.formData.policyUri || ''}
+              @input=${(e: Event) => { this.formData = { ...this.formData, policyUri: (e.target as HTMLInputElement).value }; this.policyUriError = ''; }}
+            />
+            ${this.policyUriError
+              ? html`<div class="error-message">${this.policyUriError}</div>`
+              : html`<div class="hint">Linked under the scope list.</div>`}
+          </div>
+          <div class="wizard-field wizard-span-2">
+            <label for="consent-tos-uri">Terms of service URI</label>
+            <input
+              type="url"
+              id="consent-tos-uri"
+              class="compact-input ${this.tosUriError ? 'input-error' : ''}"
+              placeholder="https://example.com/terms"
+              .value=${this.formData.tosUri || ''}
+              @input=${(e: Event) => { this.formData = { ...this.formData, tosUri: (e.target as HTMLInputElement).value }; this.tosUriError = ''; }}
+            />
+            ${this.tosUriError
+              ? html`<div class="error-message">${this.tosUriError}</div>`
+              : html`<div class="hint">Linked next to the privacy policy.</div>`}
+          </div>
+        </div>
       </div>
     `;
   }
@@ -2210,9 +3012,10 @@ export class VersolaClientForm extends LitElement {
       ${this.kind === 'service' ? this.renderPermissionsStep() : this.renderSignInStep()}
 
       <div class="form-actions">
-        <span class="wizard-actions-note">Step 3 of 4</span>
+        <span class="wizard-actions-note">
+          ${this.kind === 'service' ? 'Step 3 of 4 · ⊙ marks a server rule, not a choice' : 'Step 3 of 4'}
+        </span>
         <button type="button" class="btn btn-secondary" @click=${() => (this.wizardStep = 2)}>Back</button>
-        <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
         <button
           type="button"
           class="btn btn-primary"
@@ -2378,7 +3181,6 @@ export class VersolaClientForm extends LitElement {
       <div class="form-actions">
         <span class="wizard-actions-note">Step 4 of 4</span>
         <button type="button" class="btn btn-secondary" @click=${() => (this.wizardStep = 3)}>Back</button>
-        <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
         <button type="button" class="btn btn-primary" @click=${this.handleSubmit}>Create Client</button>
       </div>
     `;
@@ -3434,18 +4236,23 @@ export class VersolaClientForm extends LitElement {
               ${this.redirectUriError ? html`
                 <div class="error-message" style="margin-top: 0.5rem;">${this.redirectUriError}</div>
               ` : ''}
-              ${(this.formData.redirectUris || []).length > 0 ? html`
-                <div class="tag-list">
-                  ${this.formData.redirectUris!.map(uri => html`
-                    <div class="tag">
-                      <span>${uri}</span>
-                      <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
-                    </div>
-                  `)}
-                </div>
-              ` : ''}
+              ${this.renderRedirectUriList()}
             </div>
             ` : ''}
     `;
+  }
+
+  private renderRedirectUriList() {
+    const uris = this.formData.redirectUris || [];
+    return uris.length > 0 ? html`
+      <div class="tag-list">
+        ${uris.map(uri => html`
+          <div class="tag">
+            <span>${uri}</span>
+            <button type="button" class="icon-action danger tag-remove" @click=${() => this.removeRedirectUri(uri)} title="Remove redirect URI" aria-label=${`Remove redirect URI ${uri}`}>✕</button>
+          </div>
+        `)}
+      </div>
+    ` : '';
   }
 }

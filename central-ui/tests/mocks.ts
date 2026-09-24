@@ -550,8 +550,13 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as UpdateClientRequest;
-        const tenantClients = state.clients[tenantId] ?? [];
-        const client = tenantClients.find(candidate => candidate.id === payload.clientId);
+        // Central's real update endpoint takes no tenantId - the client is looked up by ID alone,
+        // same as rotate-secret and previous-secret below.
+        let client: ClientDto | undefined;
+        for (const clients of Object.values(state.clients)) {
+          client = clients.find(candidate => candidate.id === payload.clientId);
+          if (client) break;
+        }
 
         if (!client) {
           await route.fulfill(json({ message: `Client ${payload.clientId} was not found` }, 404));
