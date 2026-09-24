@@ -840,6 +840,22 @@ jobs:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
 
+      # The admin console (central-ui) ships inside versola-tools: at
+      # `configure` time entrypoint.sh copies it into the deployment bundle,
+      # where the reverse proxy versola-cli sets up serves it as static
+      # files -- no separate gateway image for it. Same build as the
+      # docker-gateway job's, for as long as that job still exists.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Build central-ui
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build
+
       # See the identical comment in docker-auth's "Set up QEMU" step.
       # This job needs it more than the others: docker/Dockerfile.tools runs
       # jlink/jdeps once (against both genEnv's and migrate-tool's jars
