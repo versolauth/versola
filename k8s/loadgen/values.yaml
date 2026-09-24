@@ -68,6 +68,49 @@ terminationGracePeriodSeconds: 30
 secrets:
   existingSecret: ""
 
+# The top-level `env` key, injected as ENV_NAME on the two `loadgen` roles.
+#
+# Every VersolaApp service reads this before anything role-specific:
+# VersolaApp.envName is `Config.string("env")` ("prod" -> EnvName.Prod, any
+# other value -> EnvName.Test(value)), and jsonLoggerLayer loads it a second
+# time for the `env` label it stamps on every log line. A file that sets it
+# neither way fails both, and the pod dies on
+#
+#   zio.Config$Error$MissingData: (Missing data at env: Expected env to be set)
+#
+# before a single line of loadgen's own code runs -- coordinator and drivers
+# alike, since both inherit VersolaApp.
+#
+# It is a *config* key and not an environment variable. VersolaApp builds its
+# ConfigProvider from the mounted HOCON alone -- ConfigProvider.fromTypesafeConfigZIO
+# over the `include required(file(...))` that the entrypoint's -Denv.path names
+# -- so the process environment reaches it only through a `${VAR}` substitution
+# written inside env.conf, the same and only route SHARD_INDEX and SHARD_COUNT
+# take. Setting a bare `ENV`/`ENV_NAME` var without the matching line in the
+# file changes nothing.
+#
+# So this is a substitution source, not an override: write
+#
+#   env = ${ENV_NAME}
+#
+# in env.conf to let the release name the environment, and the same Secret
+# serves a dry run and a campaign. A file that writes the name literally is
+# equally valid and ignores this knob entirely.
+#
+# Not injected into mockapi, which is not a VersolaApp and reads no config file
+# at all (see the `mockapi` block below).
+#
+# The templates fail on an empty value here, which is as far as render-time
+# enforcement reaches: env.conf itself arrives as a Secret this chart never
+# reads (see `secrets` above), so unlike `driver.config.existingSecret` there is
+# nothing for a template guard to look at. The requirement is stated in both
+# `config` blocks below and in NOTES.txt, and the worked example every campaign
+# starts from -- `val hocon` in
+# loadgen/src/test/scala/versola/loadgen/config/LoadgenConfigSpec.scala, which
+# is the nearest thing loadgen has to gen-env.scala's output -- now carries it
+# under a test that fails if it stops.
+envName: loadgen
+
 # The driver fleet (dev spec §7). A StatefulSet, and not a Deployment,
 # because the pod ordinal *is* the shard index: `shard = id % shardCount`
 # (§7.1) is denormalised into vu_users.shard at seed time, so which slice of
@@ -125,9 +168,12 @@ driver:
   config:
     # REQUIRED (when driver.enabled is true): name of a Secret that already
     # contains an env.conf key (HOCON, dev spec §5), mounted at CONFIG_PATH.
-    # Must set `role = driver`, a `shard` block reading the injected ordinal,
-    # and a `clients` block naming the clients `loadgen provision` registered
-    # (a driver holds no provision block, so it cannot derive them):
+    # Must set `env` (required of every role by VersolaApp itself, long before
+    # LoadgenConfig is decoded -- see `envName` above), `role = driver`, a
+    # `shard` block reading the injected ordinal, and a `clients` block naming
+    # the clients `loadgen provision` registered (a driver holds no provision
+    # block, so it cannot derive them):
+    #   env = ${ENV_NAME}
     #   role = driver
     #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
     #   clients {
@@ -179,10 +225,11 @@ coordinator:
       memory: 1Gi
   config:
     # REQUIRED (when coordinator.enabled is true), same enforcement as
-    # `driver.config.existingSecret` above. As `driver.config` above, but the
-    # file must set `role = coordinator` and omit the `shard` block
-    # (LoadgenConfig.shard is an Option precisely so a coordinator's config
-    # decodes without one).
+    # `driver.config.existingSecret` above. As `driver.config` above -- `env`
+    # included, since VersolaApp demands it of every role and a coordinator is
+    # no exception -- but the file must set `role = coordinator` and omit the
+    # `shard` block (LoadgenConfig.shard is an Option precisely so a
+    # coordinator's config decodes without one).
     existingSecret: ""
     secretKey: env.conf
   extraEnv: []

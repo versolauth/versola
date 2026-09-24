@@ -3,6 +3,9 @@
 {{- if not $coordinator.config.existingSecret }}
 {{- fail "coordinator.config.existingSecret is required when coordinator.enabled is true -- see values.yaml's `coordinator.config` block and driver-statefulset.yaml's identical guard" }}
 {{- end }}
+{{- if not $.Values.envName }}
+{{- fail "envName must not be empty -- see values.yaml's `envName` and driver-statefulset.yaml's identical guard" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -74,6 +77,12 @@ spec:
               value: "0.0.0.0"
             - name: CONFIG_PATH
               value: /app/config/env.conf
+            # See the driver StatefulSet's comment on ENV_NAME. The
+            # coordinator needs it for the same reason and by the same route:
+            # `env` is VersolaApp's, not LoadgenConfig's, so the role that owns
+            # no `shard` block still owns this one.
+            - name: ENV_NAME
+              value: {{ $.Values.envName | quote }}
             {{- with $coordinator.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
