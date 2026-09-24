@@ -171,13 +171,32 @@ if [ "$TARGET" = "vps" ]; then
     case "$AUTH_PORT" in
       ""|*[!0-9]*) auth_url_error "port must be digits only" ;;
     esac
+    # The advertised URL has to be exactly what a browser will call its
+    # origin, or passkey origins and redirect checks never match: browsers
+    # drop a default port (":443" on https, ":80" on http) and normalize a
+    # leading zero away, so neither may be written out here.
+    case "$AUTH_PORT" in
+      0*) auth_url_error "port must not start with 0" ;;
+    esac
+    if [ "${#AUTH_PORT}" -gt 5 ] || [ "$AUTH_PORT" -gt 65535 ]; then
+      auth_url_error "port must be 1-65535"
+    fi
+    if { [ "$AUTH_SCHEME" = "https" ] && [ "$AUTH_PORT" = "443" ]; } ||
+       { [ "$AUTH_SCHEME" = "http" ] && [ "$AUTH_PORT" = "80" ]; }; then
+      auth_url_error "remove the default port -- browsers drop it from the origin, so it would never match"
+    fi
+  fi
+
+  # The gateway only ever listens where listen.conf puts it: 80/443 when it
+  # owns the host's ports (PROXY_MODE=nginx), so any port in AUTH_URL would
+  # be advertised in every OIDC URL but never answered. (In external mode a
+  # port is fine -- it's whatever the operator's own proxy listens on.)
+  if [ "$PROXY_MODE" = "nginx" ] && [ -n "$AUTH_PORT" ]; then
+    auth_url_error "the gateway serves on 80/443 -- remove the port (or use PROXY_MODE=external behind your own proxy)"
   fi
 
   if [ "$PROXY_MODE" = "nginx" ] && [ "$AUTH_SCHEME" = "https" ]; then
     TLS=on
-    if [ -n "$AUTH_PORT" ]; then
-      auth_url_error "with TLS the certificate is served on 443 -- remove the port"
-    fi
     case "$AUTH_HOST" in
       *[!0-9.]*) ;;
       *) auth_url_error "Let's Encrypt doesn't issue certificates for IP addresses -- use a domain" ;;
