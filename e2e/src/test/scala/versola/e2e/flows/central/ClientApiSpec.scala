@@ -314,13 +314,31 @@ object ClientApiSpec extends CentralApiSpec:
             path,
             Fixtures.clientUpdate(
               clientId,
+              "authMethod" -> Json.Str("tls_client_auth"),
               "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example"),
             ),
           ).zip(read(central, id, _.obj("mtlsAuth").isDefined))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&
-        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example"))
+        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example")) &&
+        assertTrue(record.flatMap(_.str("authMethod")).contains("tls_client_auth"))
+          .label("the credential and the method it is read under move in one call")
+    },
+    test("an update adding mtlsAuth without moving the method is refused") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(
+            path,
+            Fixtures.clientUpdate(clientId, "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example")),
+          ).zip(read(central, id))
+        }
+        (rejected, record) = outcome
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("a client_secret client keeps authenticating by secret, so nothing would ever match the certificate") &&
+        assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
     },
     test("an update clears mtlsAuth with an explicit null") {
       for
@@ -328,8 +346,12 @@ object ClientApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-client")
         body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
         outcome <- withClient(central, body) { clientId =>
-          central.put(path, Fixtures.clientUpdate(clientId, "mtlsAuth" -> Json.Null))
-            .zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
+          // The method goes back with the credential: a tls_client_auth client whose subject
+          // value is deleted has nothing left to be matched against.
+          central.put(
+            path,
+            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("client_secret"), "mtlsAuth" -> Json.Null),
+          ).zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&

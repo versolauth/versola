@@ -835,6 +835,23 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         updateCalls == 0,
       )
     },
+    test("updateClient refuses mtlsAuth added without moving the method that would read it") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.terminatesMtls
+        result <- env.service.updateClient(updateRequest.copy(
+          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        )).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("registers no certificate")
+          case _ => false,
+        updateCalls == 0,
+      )
+        .label("the stored client_secret still decides, so the certificate would never be looked at")
+    },
     test("updateClient leaves a stored mtlsAuth it does not mention alone when the tenant terminates mTLS") {
       val env = new Env(Vector(cachedClient.copy(
         authMethod = AuthMethod.tls_client_auth,
