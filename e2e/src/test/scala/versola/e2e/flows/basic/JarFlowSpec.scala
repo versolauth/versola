@@ -48,6 +48,7 @@ object JarFlowSpec extends E2ESpec:
         "JAR Test Client",
         Set(redirectUri),
         authFlow = Some(Flows.loginPasswordAuthFlow),
+        authMethod = "private_key_jwt",
         jwks = Some(signer.jwks),
       ).success
       userId <- auth.registerUser(login = Some(login))
@@ -70,6 +71,7 @@ object JarFlowSpec extends E2ESpec:
         "JAR Required Client",
         Set(redirectUri),
         authFlow = Some(Flows.loginPasswordAuthFlow),
+        authMethod = "private_key_jwt",
         jwks = Some(signer.jwks),
         requireSignedRequestObject = true,
       ).success

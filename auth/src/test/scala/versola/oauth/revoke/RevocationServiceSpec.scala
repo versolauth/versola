@@ -5,7 +5,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.logout.BackChannelDispatcher
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.oauth.client.model.{AuthMethodRef, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, AuthMethodRef, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
@@ -62,6 +62,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -108,6 +109,7 @@ object RevocationServiceSpec extends UnitSpecBase:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   val mtlsClient = testClient.copy(
     secret = None,
+    authMethod = AuthMethod.tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 

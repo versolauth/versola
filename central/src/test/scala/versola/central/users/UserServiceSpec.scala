@@ -1,6 +1,6 @@
 package versola.central.users
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, OAuthClientRecord, OAuthClientService}
+import versola.central.configuration.clients.{AuthMethod, AuthFlow, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone, RedirectUri, SecureRandom, UnitSpecBase}
@@ -96,6 +96,7 @@ object UserServiceSpec extends UnitSpecBase:
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
+        authMethod = AuthMethod.client_secret,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
@@ -155,6 +156,7 @@ object UserServiceSpec extends UnitSpecBase:
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
+        authMethod = AuthMethod.client_secret,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,

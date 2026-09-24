@@ -78,6 +78,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     backChannelLogoutUri = None,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -142,6 +143,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       dpopBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
       dpopMinRsaKeySize = None,
+      authMethod = AuthMethod.client_secret,
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
       jwks = None,
@@ -174,6 +176,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       dpopBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
       dpopMinRsaKeySize = None,
+      authMethod = AuthMethod.client_secret,
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
       jwks = None,
@@ -299,7 +302,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(readScope),
                 permissions = Set(readPermission),
                 secretRotation = false,
-                clientType = ClientType.web,
+                authMethod = AuthMethod.client_secret,
                 accessTokenTtl = 300L,
                 refreshTokenTtl = 7776000L,
                 theme = "",
@@ -331,7 +334,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 scope = Set(writeScope),
                 permissions = Set(writePermission),
                 secretRotation = true,
-                clientType = ClientType.web,
+                authMethod = AuthMethod.client_secret,
                 accessTokenTtl = 600L,
                 refreshTokenTtl = 7776000L,
                 theme = "",
@@ -554,11 +557,11 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "create native client and return no secret",
+      description = "create public client and return no secret",
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients",
-        body = Body.fromString(createRequest.copy(clientType = ClientType.native).toJson),
+        body = Body.fromString(createRequest.copy(authMethod = AuthMethod.none).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
@@ -568,7 +571,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest.copy(clientType = ClientType.native), None)),
+          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None)),
           body == CreateClientResponse(None),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
@@ -804,7 +807,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.rotateClientSecret.failsWith(ClientHasNoSecret(clientId)),
       verify = (response, _, _) =>
         for body <- response.body.asString
-        yield assertTrue(body == s"Client '$clientId' is a native (public) client and has no secret"),
+        yield assertTrue(body == s"Client '$clientId' has no secret"),
     ),
     controllerTestCase(
       description = "delete previous client secret returns 409 for a native client",

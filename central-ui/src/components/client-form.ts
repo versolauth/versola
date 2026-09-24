@@ -12,6 +12,7 @@ import {
   CLIENT_KINDS,
   ClientCredentialMode,
   ClientKind,
+  authMethodFor,
   certificateBoundFor,
   clientPreset,
   defaultCredentialMode,
@@ -1233,16 +1234,24 @@ export class VersolaClientForm extends LitElement {
         : this.client.backChannelLogoutUri
           ? 'back'
           : 'none';
-      if (this.client.mtlsAuth?.type === 'tls_client_auth') {
-        this.clientCredentialMode = 'mtls';
-        this.mtlsSubjectType = this.client.mtlsAuth.subjectType;
-        this.mtlsSubjectValue = this.client.mtlsAuth.subjectValue;
-      } else if (this.client.mtlsAuth?.type === 'self_signed_tls_client_auth') {
-        this.clientCredentialMode = 'mtls-self-signed';
-      } else if (this.client.jwks) {
-        this.clientCredentialMode = 'private-key-jwt';
-      } else {
-        this.clientCredentialMode = 'secret';
+      // Driven by the stored authMethod rather than by which of mtlsAuth/jwks happens to be
+      // set - the two are meant to agree, but the method is the one Central actually checks.
+      switch (this.client.authMethod) {
+        case 'tls_client_auth':
+          this.clientCredentialMode = 'mtls';
+          if (this.client.mtlsAuth?.type === 'tls_client_auth') {
+            this.mtlsSubjectType = this.client.mtlsAuth.subjectType;
+            this.mtlsSubjectValue = this.client.mtlsAuth.subjectValue;
+          }
+          break;
+        case 'self_signed_tls_client_auth':
+          this.clientCredentialMode = 'mtls-self-signed';
+          break;
+        case 'private_key_jwt':
+          this.clientCredentialMode = 'private-key-jwt';
+          break;
+        default:
+          this.clientCredentialMode = 'secret';
       }
       this.jwksInput = this.client.jwks ? JSON.stringify(this.client.jwks, null, 2) : '';
     } else {
@@ -1300,6 +1309,7 @@ export class VersolaClientForm extends LitElement {
 
     const logoutEnabled = authFlow !== null;
     const clientType = authFlow ? this.clientType : 'web';
+    const authMethod = authMethodFor(clientType, this.clientCredentialMode);
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
@@ -1359,6 +1369,7 @@ export class VersolaClientForm extends LitElement {
       redirectUris: authFlowRedirectUris,
       scope,
       clientType,
+      authMethod,
       hasPreviousSecret: false,
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       refreshTokenTtl: hasOfflineAccess
@@ -3247,7 +3258,7 @@ export class VersolaClientForm extends LitElement {
           </div>
 
           <div class="form-actions">
-            ${this.client && this.canManageSecrets && this.client.clientType !== 'native' ? html`
+            ${this.client && this.canManageSecrets && this.client.authMethod === 'client_secret' ? html`
               ${this.client.hasPreviousSecret ? html`
                 <button
                   type="button"

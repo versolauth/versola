@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{AuthMethod, Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
@@ -44,6 +44,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -74,6 +75,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -104,6 +106,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.none,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,

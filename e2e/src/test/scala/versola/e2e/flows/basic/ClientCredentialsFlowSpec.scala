@@ -158,7 +158,7 @@ object ClientCredentialsFlowSpec extends E2ESpec:
           clientId,
           "Client Credentials Native Client",
           Set("http://localhost:3000"),
-          clientType = "native",
+          authMethod = "none",
         ).success
         _ <- auth.syncConfiguration()
         // A public client has nothing to authenticate with, so naming itself is all it can

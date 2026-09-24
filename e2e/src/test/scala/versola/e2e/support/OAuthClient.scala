@@ -1083,7 +1083,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
-      clientType: String = "web",
+      authMethod: String = "client_secret",
       /** RFC 8705 §2.1: the certificate subject this client authenticates by, instead of a
         * secret. Build it with `Fixtures.mutualTlsAuth`. */
       mtlsAuth: Option[zio.json.ast.Json] = None,
@@ -1129,7 +1129,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = backChannelLogoutUri,
-      clientType = clientType,
+      authMethod = authMethod,
       mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = certificateBoundAccessTokens,
       jwks = jwks,
@@ -1730,7 +1730,7 @@ object OAuthClient:
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
-      clientType: String,
+      authMethod: String,
       mtlsAuth: Option[zio.json.ast.Json],
       certificateBoundAccessTokens: Boolean,
       jwks: Option[zio.json.ast.Json],

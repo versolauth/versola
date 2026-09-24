@@ -45,6 +45,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -148,6 +149,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     .build()
 
   private val clientWithJwks = clientRecord.copy(
+    authMethod = AuthMethod.private_key_jwt,
+    secret = None,
     jwks = JsonWebKeySet.validateForAssertions(
       com.nimbusds.jose.jwk.JWKSet(signingJwk).toString(true).fromJson[Json.Obj].toOption.get,
     ).toOption,
@@ -166,6 +169,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
   /** RFC 8705 §2.1: authenticates by certificate, so it holds no secret. */
   private val mtlsClientRecord = clientRecord.copy(
     secret = None,
+    authMethod = AuthMethod.tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, TestEnvConfig.clientCertificateDnsName)),
   )
 

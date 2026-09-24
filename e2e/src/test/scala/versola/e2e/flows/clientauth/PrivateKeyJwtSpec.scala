@@ -44,6 +44,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         "Private Key JWT Test Client",
         Set(redirectUri),
         allowedScopes = scopes,
+        authMethod = "private_key_jwt",
         jwks = Some(signer.jwks),
       ).success
       _ <- auth.syncConfiguration()
@@ -265,6 +266,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
           id,
           "Private Key JWT Test Client",
           Set(redirectUri),
+          authMethod = "private_key_jwt",
           jwks = Some(unusableJwks),
         )
       yield result match

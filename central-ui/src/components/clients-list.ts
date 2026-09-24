@@ -37,11 +37,10 @@ function secretlessText(credential: ClientCredentialKind | undefined): string | 
     case 'public':
       return 'This is a native (public) client, so no secret was issued and none can be added later.';
     case 'mtls':
-      return 'This client authenticates with its certificate, so the secret Central generated for it '
-        + 'is refused at the token endpoint and is not shown.';
+      return 'This client authenticates with its certificate, so no secret was generated for it.';
     case 'private_key_jwt':
-      return 'This client authenticates with an assertion signed by its registered keys, so the secret '
-        + 'Central generated for it is refused at the token endpoint and is not shown.';
+      return 'This client authenticates with an assertion signed by its registered keys, so no secret '
+        + 'was generated for it.';
     default:
       return null;
   }

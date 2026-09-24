@@ -1,4 +1,4 @@
-import { ClientType, OAuthClient } from '../types';
+import { AuthMethod, ClientType, OAuthClient } from '../types';
 
 /** What the client is, in the terms the person creating it already thinks in. */
 export type ClientKind = 'web' | 'device' | 'service';
@@ -318,4 +318,22 @@ export function certificateBoundFor(mode: ClientCredentialMode): boolean {
 
 export function clientTypeFor(kind: ClientKind): ClientType {
   return kind === 'device' ? 'native' : 'web';
+}
+
+/** The method a (clientType, credential mode) pair registers. A native client has nothing to
+ * authenticate with regardless of which mode a leftover selection names. */
+export function authMethodFor(clientType: ClientType, mode: ClientCredentialMode): AuthMethod {
+  if (clientType === 'native') {
+    return 'none';
+  }
+  switch (mode) {
+    case 'mtls':
+      return 'tls_client_auth';
+    case 'mtls-self-signed':
+      return 'self_signed_tls_client_auth';
+    case 'private-key-jwt':
+      return 'private_key_jwt';
+    default:
+      return 'client_secret';
+  }
 }

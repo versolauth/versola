@@ -117,6 +117,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -150,6 +151,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -176,6 +178,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     backChannelLogoutUri = None,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
@@ -198,6 +201,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     backChannelLogoutUri = None,
     dpopSigningAlgs = None,
     dpopMinRsaKeySize = None,
+    authMethod = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
     jwks = None,
@@ -316,6 +320,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
+        authMethod = AuthMethod.client_secret,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
@@ -342,7 +347,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.repository.createClient.succeedsWith(())
-        result <- env.service.registerClient(createRequest.copy(clientType = ClientType.native))
+        result <- env.service.registerClient(createRequest.copy(authMethod = AuthMethod.none))
         created = env.repository.createClient.calls.head
         generatedSecrets = env.secureRandom.nextBytes.times
         encryptions = env.securityService.encryptAes256.times
@@ -412,6 +417,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "  CN=client,O=Example  ")),
         ))
         created = env.repository.createClient.calls.head
@@ -454,6 +460,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.terminatesMtls
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(updateRequest.copy(
+          authMethod = Some(AuthMethod.tls_client_auth),
           mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, " client.example.com "))),
         ))
         _ <- env.service.updateClient(updateRequest.copy(mtlsAuth = Some(Patch.Deleted)))
@@ -470,36 +477,61 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
-        _ <- env.service.registerClient(createRequest.copy(jwks = Some(publicKeySet)))
+        _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
+          jwks = Some(publicKeySet),
+        ))
         created = env.repository.createClient.calls.head
       yield assertTrue(
         created.jwks == Some(publicKeySet),
-        // The secret every `web` client is issued is still issued; what registering keys
-        // changes is which credential auth accepts, not which ones exist.
-        created.secret.nonEmpty,
+        // The assertion is the whole credential, so there is no secret to store beside it -
+        // one would be a credential no endpoint accepts, kept encrypted at rest for nothing.
+        created.secret.isEmpty,
       )
     },
-    test("registerClient rejects a client registering both mtlsAuth and jwks") {
+    test("registerClient rejects a tls_client_auth client that also registers keys") {
       val env = new Env()
 
       for
+        _ <- env.terminatesMtls
         result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
           jwks = Some(publicKeySet),
         )).either
         createCalls = env.repository.createClient.times
       yield assertTrue(
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("not both")
+          case error: InvalidRegistrationConfiguration => error.reason.contains("registers no jwks")
           case _ => false,
         createCalls == 0,
       )
+        .label("a second credential for one client is the weaker of the two deciding")
+    },
+    test("registerClient rejects a credential the registered method would never read") {
+      val env = new Env()
+
+      for
+        withKeys <- env.service.registerClient(createRequest.copy(jwks = Some(publicKeySet))).either
+        withoutKeys <- env.service.registerClient(createRequest.copy(authMethod = AuthMethod.private_key_jwt)).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        withKeys.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("registers no keys")
+          case _ => false,
+        withoutKeys.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("needs jwks")
+          case _ => false,
+        createCalls == 0,
+      )
+        .label("a client_secret client with keys, and a private_key_jwt client without them")
     },
     test("registerClient rejects a key set that could never verify an assertion") {
       val env = new Env()
 
       for
         result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
           jwks = Some(JsonWebKeySet(Json.Obj("keys" -> Json.Arr()))),
         )).either
         createCalls = env.repository.createClient.times
@@ -518,6 +550,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
           jwks = Some(publicKeySet),
           requireSignedRequestObject = true,
           requirePushedAuthorizationRequests = true,
@@ -555,7 +588,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateClient passes the request form through to the repository") {
-      val env = new Env(Vector(cachedClient.copy(jwks = Some(publicKeySet))))
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.private_key_jwt,
+        secret = None,
+        jwks = Some(publicKeySet),
+      )))
 
       for
         _ <- env.repository.updateClient.succeedsWith(())
@@ -631,17 +668,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateClient rejects keys added to a client that already authenticates by certificate") {
       val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
         mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
       )))
 
       for
+        _ <- env.terminatesMtls
         result <- env.service.updateClient(updateRequest.copy(
           jwks = Some(Patch.Modified(publicKeySet)),
         )).either
         updateCalls = env.repository.updateClient.times
       yield assertTrue(
         result.left.toOption.exists:
-          case error: InvalidRegistrationConfiguration => error.reason.contains("not both")
+          case error: InvalidRegistrationConfiguration => error.reason.contains("registers no jwks")
           case _ => false,
         updateCalls == 0,
       )
@@ -655,6 +695,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.self_signed_tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
           jwks = Some(publicKeySet),
         ))
@@ -688,6 +729,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.self_signed_tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
           jwks = Some(p384KeySet),
         ))
@@ -698,7 +740,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        result <- env.service.registerClient(createRequest.copy(jwks = Some(p384KeySet))).either
+        result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
+          jwks = Some(p384KeySet),
+        )).either
         createCalls = env.repository.createClient.times
       yield assertTrue(
         result.left.toOption.exists:
@@ -713,6 +758,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.terminatesMtls
         result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.self_signed_tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
         )).either
         createCalls = env.repository.createClient.times
@@ -729,6 +775,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.terminatesNoMtls
         result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
         )).either
         createCalls = env.repository.createClient.times
@@ -746,6 +793,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
         result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.self_signed_tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
           jwks = Some(publicKeySet),
         )).either
@@ -776,6 +824,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       for
         _ <- env.terminatesNoMtls
         result <- env.service.updateClient(updateRequest.copy(
+          authMethod = Some(AuthMethod.tls_client_auth),
           mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
         )).either
         updateCalls = env.repository.updateClient.times
@@ -788,6 +837,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("updateClient leaves a stored mtlsAuth it does not mention alone when the tenant terminates mTLS") {
       val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
         mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com")),
       )))
 
@@ -1075,7 +1126,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // The complement, so the rule above cannot become "a client with a signing key can no
     // longer be patched at all".
     test("updateClient leaves a stored edge signing key alone when the patch does not touch jwks") {
-      val env = new Env(Vector(cachedClient.copy(jwks = Some(edgeKeySet), edgeSigningKey = Some(storedEdgeSigningKey))))
+      val env = new Env(Vector(cachedClient.copy(authMethod = AuthMethod.private_key_jwt, jwks = Some(edgeKeySet), edgeSigningKey = Some(storedEdgeSigningKey))))
 
       for
         _ <- env.repository.updateClient.succeedsWith(())
@@ -1135,11 +1186,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.deleteClient.calls === List(clientId),
       )
     },
-    test("rotateClientSecret is rejected for a native client") {
+    test("rotateClientSecret is rejected for a public client") {
       val env = new Env()
 
       for
-        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(secret = None)))
+        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(authMethod = AuthMethod.none, secret = None)))
         result <- env.service.rotateClientSecret(clientId).either
         rotations = env.repository.rotateClientSecret.times
       yield assertTrue(
@@ -1147,11 +1198,28 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         rotations == 0,
       )
     },
-    test("deletePreviousClientSecret is rejected for a native client") {
+    test("rotateClientSecret is rejected for a confidential client that authenticates some other way") {
       val env = new Env()
 
       for
-        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(secret = None)))
+        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(
+          authMethod = AuthMethod.private_key_jwt,
+          secret = None,
+          jwks = Some(publicKeySet),
+        )))
+        result <- env.service.rotateClientSecret(clientId).either
+        rotations = env.repository.rotateClientSecret.times
+      yield assertTrue(
+        result == Left(ClientHasNoSecret(clientId)),
+        rotations == 0,
+      )
+        .label("a rotated secret the token endpoint refuses reads exactly like one it accepts")
+    },
+    test("deletePreviousClientSecret is rejected for a public client") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient.copy(authMethod = AuthMethod.none, secret = None)))
         result <- env.service.deletePreviousClientSecret(clientId).either
         deletions = env.repository.deletePreviousClientSecret.times
       yield assertTrue(

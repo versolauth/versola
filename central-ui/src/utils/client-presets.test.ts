@@ -3,6 +3,7 @@ import {
   AssuranceTier,
   CLIENT_KINDS,
   ClientKind,
+  authMethodFor,
   certificateBoundFor,
   clientPreset,
   clientTypeFor,
@@ -106,6 +107,20 @@ describe('clientTypeFor', () => {
         expect(clientPreset(kind, tier).patch.clientType).toBe(clientTypeFor(kind));
       }
     }
+  });
+});
+
+describe('authMethodFor', () => {
+  it('is none for a native client regardless of which mode a leftover selection names', () => {
+    expect(authMethodFor('native', 'secret')).toBe('none');
+    expect(authMethodFor('native', 'private-key-jwt')).toBe('none');
+  });
+
+  it('names the RFC method behind each confidential credential mode', () => {
+    expect(authMethodFor('web', 'secret')).toBe('client_secret');
+    expect(authMethodFor('web', 'mtls')).toBe('tls_client_auth');
+    expect(authMethodFor('web', 'mtls-self-signed')).toBe('self_signed_tls_client_auth');
+    expect(authMethodFor('web', 'private-key-jwt')).toBe('private_key_jwt');
   });
 });
 

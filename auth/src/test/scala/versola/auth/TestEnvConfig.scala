@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{ClientId, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.model.AccessToken
 import versola.user.model.UserId
@@ -108,6 +108,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, clientCertificateDnsName)),
     certificateBoundAccessTokens = false,
     jwks = None,

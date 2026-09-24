@@ -406,20 +406,25 @@ export function jwksVerifiesRequestObjects(keySet: Record<string, unknown> | nul
 export type ClientCredentialKind = 'secret' | 'public' | 'mtls' | 'private_key_jwt';
 
 /**
- * Kept in sync with `ClientAuthentication`: a client that registered an mTLS credential or a
- * key set authenticates with that and only that - the secret Central still generates for it
- * is refused at the token endpoint, so nothing should present it as the client's credential.
+ * Reads the client's stored authMethod directly, rather than inferring it from which of
+ * mtlsAuth/jwks happens to be set - the two are meant to agree, but the method is the one
+ * `ClientAuthentication` actually checks, and is the only thing that says whether a secret
+ * exists at all.
  */
 export function clientCredentialKind(
-  client: Pick<OAuthClient, 'mtlsAuth' | 'jwks' | 'clientType'>,
+  client: Pick<OAuthClient, 'authMethod'>,
 ): ClientCredentialKind {
-  if (client.mtlsAuth) {
-    return 'mtls';
+  switch (client.authMethod) {
+    case 'tls_client_auth':
+    case 'self_signed_tls_client_auth':
+      return 'mtls';
+    case 'private_key_jwt':
+      return 'private_key_jwt';
+    case 'none':
+      return 'public';
+    case 'client_secret':
+      return 'secret';
   }
-  if (client.jwks) {
-    return 'private_key_jwt';
-  }
-  return client.clientType === 'native' ? 'public' : 'secret';
 }
 
 /**

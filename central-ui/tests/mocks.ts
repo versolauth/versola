@@ -23,7 +23,8 @@ type TenantDto = { id: string; description: string; edgeId?: string | null };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; clientType?: 'web' | 'native'; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
+type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -79,7 +80,7 @@ type CreateClientRequest = {
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
-  clientType?: 'web' | 'native';
+  authMethod?: AuthMethodDto;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -535,15 +536,16 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           scope: [...payload.allowedScopes],
           permissions: [...payload.permissions],
           secretRotation: false,
-          clientType: payload.clientType ?? 'web',
+          authMethod: payload.authMethod ?? 'client_secret',
           refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
-        // A native client is registered without a secret, so the response carries none.
-        const createResponse = createdClient.clientType === 'native' ? {} : { secret: `secret-${payload.id}` };
+        // Only a client that registers client_secret gets one back; every other method
+        // authenticates some other way, and a secret alongside it is one nothing would check.
+        const createResponse = createdClient.authMethod === 'client_secret' ? { secret: `secret-${payload.id}` } : {};
         await route.fulfill(json(createResponse, 201));
         return;
       }
@@ -606,8 +608,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
 
-      if (client.clientType === 'native') {
-        await route.fulfill(json({ message: `Client ${clientId} is a native (public) client and has no secret` }, 409));
+      if ((client.authMethod ?? 'client_secret') !== 'client_secret') {
+        await route.fulfill(json({ message: `Client ${clientId} has no secret` }, 409));
         return;
       }
 

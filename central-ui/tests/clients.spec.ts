@@ -264,7 +264,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     policyUri: null,
     tosUri: null,
     consentFlow: null,
-    clientType: 'web',
+    authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
     dpopMinRsaKeySize: null,
@@ -289,7 +289,7 @@ test('creates a native client without a secret and without rotation controls', a
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'mobile-app',
-    clientType: 'native',
+    authMethod: 'none',
   });
 
   // There is no secret to copy, so the banner says so instead of rendering an empty value.
@@ -523,6 +523,7 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'mtls-client',
+    authMethod: 'tls_client_auth',
     mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_dns', subjectValue: 'client.example.com' },
     certificateBoundAccessTokens: false,
     jwks: null,
@@ -586,13 +587,14 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'self-signed-client',
+    authMethod: 'self_signed_tls_client_auth',
     mtlsAuth: { type: 'self_signed_tls_client_auth' },
     jwks: keySet,
     requireSignedRequestObject: true,
   });
 
-  // The backend still generates a secret for a web client, but token authentication refuses
-  // it once an mTLS credential is registered, so the banner must not offer it to copy.
+  // No secret is generated for a client whose method is not client_secret, so the banner has
+  // none to offer.
   await expect(page.getByRole('heading', { name: 'Client created: Self Signed Client', exact: true })).toBeVisible();
   await expect(page.getByText('authenticates with its certificate')).toBeVisible();
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
@@ -623,7 +625,7 @@ test('applies the credential and request integrity a high-assurance web client i
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'high-web',
-    clientType: 'web',
+    authMethod: 'private_key_jwt',
     requirePushedAuthorizationRequests: true,
     requireSignedRequestObject: true,
     dpopBoundAccessTokens: false,
@@ -648,7 +650,7 @@ test('binds a high-assurance mobile client to a device key and leaves it public'
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'mobile-client',
-    clientType: 'native',
+    authMethod: 'none',
     dpopBoundAccessTokens: true,
     requirePushedAuthorizationRequests: true,
     requireSignedRequestObject: false,
@@ -679,7 +681,7 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
   await submitCreate(page);
 
   const body = findRequest(api.requests, 'POST', '/configuration/clients').body as Record<string, unknown>;
-  expect(body).toMatchObject({ id: 'batch-service', clientType: 'web', authFlow: null });
+  expect(body).toMatchObject({ id: 'batch-service', authMethod: 'private_key_jwt', authFlow: null });
   expect(body.redirectUris).toEqual([]);
 });
 
@@ -716,11 +718,18 @@ test('registers a private_key_jwt client with signed request objects and PAR', a
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'assertion-client',
+    authMethod: 'private_key_jwt',
     mtlsAuth: null,
     jwks: JSON.parse(SAMPLE_JWKS),
     requireSignedRequestObject: true,
     requirePushedAuthorizationRequests: true,
   });
+
+  // private_key_jwt is a confidential method, but not client_secret - Central issues no
+  // secret for it, so there is none to rotate or forget.
+  await clientCard(page, 'Assertion Client').getByRole('button', { name: 'Edit client assertion-client' }).click();
+  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
 });
 
 test('creates a client with localized consent name', async ({ page }) => {
@@ -1358,7 +1367,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     policyUri: null,
     tosUri: null,
     consentFlow: null,
-    clientType: 'web',
+    authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
     dpopMinRsaKeySize: null,

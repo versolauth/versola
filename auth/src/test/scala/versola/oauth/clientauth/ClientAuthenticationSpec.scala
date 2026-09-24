@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret}
 import zio.*
 import zio.json.*
@@ -47,6 +47,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
     * issued, which is what makes "the secret is no longer accepted" a rule to check rather
     * than a consequence of there being none. */
   private val assertionClient = TestEnvConfig.mtlsClient(clientId).copy(
+    authMethod = AuthMethod.private_key_jwt,
     mtlsAuth = None,
     secret = Some(Secret(Array.fill(32)(1.toByte))),
     jwks = Some(keySet),
@@ -96,6 +97,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
   /** A client that authenticates by RFC 8705 §2.2: its certificate's public key is one of the
     * keys it registered, and there is no subject value anywhere in its registration. */
   private val selfSignedClient = TestEnvConfig.mtlsClient(clientId).copy(
+    authMethod = AuthMethod.self_signed_tls_client_auth,
     mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
     jwks = Some(TestEnvConfig.clientCertificateKeySet),
   )
@@ -147,7 +149,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         now <- Clock.instant
         repository <- recording
         result <- authentication(
-          Some(assertionClient.copy(jwks = None)),
+          Some(assertionClient.copy(authMethod = AuthMethod.client_secret, jwks = None)),
           repository,
         ).authenticate(
           ClientIdWithAssertion(clientId, assertion(now)),

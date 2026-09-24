@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, OAuthClientRecord, RateLimit, ScopeToken, SubmissionLimits, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, RateLimit, ScopeToken, SubmissionLimits, TenantId}
 import versola.util.UnitSpecBase
 import zio.*
 import zio.prelude.NonEmptySet
@@ -40,6 +40,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
