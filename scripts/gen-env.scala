@@ -13,6 +13,7 @@ import java.io.{File, PrintWriter}
 import java.net.URI
 import java.security.{KeyPairGenerator, SecureRandom}
 import java.security.interfaces.{RSAPrivateCrtKey, RSAPublicKey}
+import scala.sys.process.Process
 import java.util.Base64
 
 def rand(rng: SecureRandom, n: Int): String =
@@ -109,6 +110,109 @@ def writeFile(dir: File, name: String, content: String): Unit =
   try pw.print(content)
   finally pw.close()
   println(s"  Written: ${f.getPath}")
+
+// ── nginx: the TLS terminator standing in front of auth for edge's RFC 8705 mutual-TLS
+// calls (SSOClient.scala) ───────────────────────────────────────────────────────────────
+// `versolaInternalTrustedCertificates` names a certificate edge is meant to validate the
+// server against -- for that to be exercisable at all in local dev / CI e2e, something has
+// to actually terminate TLS at `versola-internal-url` and be handed a matching certificate.
+// auth itself never does (see ClientAuthentication.scala's own comment: it reads the
+// certificate from a header, same as any tenant behind a proxy in production), so this
+// generates the same shape locally: an nginx that terminates TLS, forwards whatever
+// certificate it saw to auth's plain HTTP port, and otherwise gets out of the way.
+
+/** A fresh certificate for nginx to present, written to `dir/server.crt` and `dir/server.key`,
+  * signed by a CA written alongside it at `dir/ca.crt` / `dir/ca.key` -- self-signed would be
+  * simpler, but nginx's `ssl_client_certificate` (required below even for `optional_no_ca`)
+  * advertises that certificate's issuer as the one acceptable CA in its handshake's
+  * `CertificateRequest`, and the JDK's default `X509KeyManager` -- what a JDK-provider TLS
+  * client (edge, absent netty-tcnative) chooses a client certificate through -- filters its
+  * available aliases against exactly that list. A self-signed client certificate edge
+  * presents (RFC 8705 §2.2 has no CA at all) would never match a self-signed server
+  * certificate's own issuer, so the handshake would silently complete with no certificate
+  * sent rather than erroring -- confirmed by hand: that is exactly what happened before this
+  * generated a CA at all. Both server and client certificates in this dev/e2e stack (see
+  * `EdgeCertificate.scala`, which reads `ca.crt`/`ca.key` from this same directory) are
+  * signed by the one CA instead, so their issuer is always the DN nginx advertises.
+  *
+  * Generated on every run rather than committed: it is dev-only key material with nothing
+  * pinned to its value, unlike the fixed secrets above that e2e reads back out
+  * (`bootstrapResourceSecretLine` and friends) -- there is nothing here for a test to assert
+  * on beyond "edge trusts precisely this file".
+  */
+def genInternalTlsCertificate(dir: File): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  val serverKey = File(dir, "server.key").getPath
+  val serverCsr = File(dir, "server.csr").getPath
+  val serverCert = File(dir, "server.crt").getPath
+
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", caKey, "-out", caCert, "-days", "3650",
+    "-subj", "/CN=versola-internal-tls-ca")
+  run("req", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost")
+  run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
+    "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
+
+/** `dir` and its certificate must already exist (see [[genInternalTlsCertificate]]) -- this
+  * only renders the conf that points at them. Absolute paths throughout: nginx resolves a
+  * relative one against its own prefix, not this process's working directory, which would
+  * silently pick a different directory than the one just written to.
+  */
+def internalTlsNginxConf(dir: File, port: Int, upstream: String): String =
+  val absolute = dir.getAbsoluteFile
+  val upstreamUri = URI.create(upstream)
+  val upstreamPort = if upstreamUri.getPort > 0 then upstreamUri.getPort else 80
+  s"""daemon off;
+     |pid ${File(absolute, "nginx.pid").getPath};
+     |error_log ${File(absolute, "error.log").getPath};
+     |worker_processes 1;
+     |events {
+     |  worker_connections 64;
+     |}
+     |http {
+     |  access_log ${File(absolute, "access.log").getPath};
+     |  server {
+     |    listen $port ssl;
+     |    server_name localhost;
+     |    ssl_certificate ${File(absolute, "server.crt").getPath};
+     |    ssl_certificate_key ${File(absolute, "server.key").getPath};
+     |    # optional_no_ca: request a client certificate but do not validate it against a CA.
+     |    # RFC 8705's self-signed and registered-subject methods are both validated at the
+     |    # application layer (auth's OAuthClientService), not by the terminator -- nginx's
+     |    # only job is completing the handshake and forwarding what it saw. Naming the CA
+     |    # here (rather than skipping this file, which nginx does not allow even in this
+     |    # mode) is not for that validation, which optional_no_ca skips -- it is what nginx
+     |    # advertises as its one acceptable issuer in the handshake's CertificateRequest, and
+     |    # a JDK-provider TLS client's default key manager will offer no certificate at all
+     |    # if none of its own match an issuer on that list (see genInternalTlsCertificate's
+     |    # own comment). Every certificate this dev/e2e stack signs is signed by this CA for
+     |    # exactly that reason.
+     |    ssl_client_certificate ${File(absolute, "ca.crt").getPath};
+     |    ssl_verify_client optional_no_ca;
+     |    location / {
+     |      proxy_pass http://127.0.0.1:$upstreamPort;
+     |      proxy_set_header Host $$host;
+     |      # RFC 8705 §6.5: the header/encoding the default tenant is configured to read
+     |      # (OAuthClient.mtlsCertificateHeader in e2e's Flows.scala; MutualTlsSpec's
+     |      # `urlEncodedPem`). `$$ssl_client_escaped_cert` is empty when the connection
+     |      # presented no certificate, and proxy_set_header omits a header entirely rather
+     |      # than forwarding an empty value -- so a client_secret/private_key_jwt call
+     |      # through this same port arrives at auth exactly as if this terminator were not
+     |      # here at all.
+     |      proxy_set_header ssl-client-cert $$ssl_client_escaped_cert;
+     |    }
+     |  }
+     |}
+     |""".stripMargin
 
 // ── Secret placeholders (docker-local, vps and k8s) ──────────────────────
 // In docker-local, vps and k8s modes, every secret field this script
@@ -427,6 +531,26 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // service name.
   val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
   val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault, flag = "auth-internal-url")
+  // edgeInternalUrl / edgeInternalTrustPath -- versola-internal-url and
+  // versola-internal-trusted-certificates in edge's own config (EdgeConfig.scala), which
+  // SSOClient.scala uses only for the calls it makes as an RFC 8705 mutual-TLS client. Not
+  // authInternalUrl above: that variable is central's own S2S call to auth's admin API, an
+  // unrelated feature this must not start rerouting.
+  //
+  // isLocal alone gets a real TLS terminator (nginx, generated below) rather than reusing
+  // authInternalUrl's plain address: SSOClient.scala fails closed without a trust anchor for
+  // this credential (there is no secure default to fall back to -- see its own comment), so
+  // e2e's mTLS-fronted client can only be exercised against something that actually
+  // terminates TLS. docker-local/vps/interactive are left exactly as before -- absent here,
+  // same as every environment before this credential existed -- until whoever operates one
+  // decides what terminates TLS in front of their own auth.
+  val edgeInternalTlsDir = File("edge/dev/internal-tls")
+  val edgeInternalTlsPort = 9443
+  val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
+  val edgeInternalTrustPath: Option[String] =
+    if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
+  val edgeInternalTrustLine =
+    edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = "$path"\n""")
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
@@ -945,8 +1069,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}
        |
        |versola-url = "$authUrl"
-       |versola-internal-url = "$authInternalUrl"
-       |# The origin clients reach this edge on -- what a DPoP proof's htu is
+       |versola-internal-url = "$edgeInternalUrl"
+       |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
        |""".stripMargin
@@ -957,12 +1081,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     writeFile(File("auth/dev"),     "env.conf", authConf)
     writeFile(File("central/dev"),  "env.conf", centralConf)
     writeFile(File("edge/dev"),     "env.conf", edgeConf)
+    genInternalTlsCertificate(edgeInternalTlsDir)
+    writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     println(
       s"""
          |Done! Files written to service dev directories:
          |  - auth/dev/env.conf
          |  - central/dev/env.conf
          |  - edge/dev/env.conf
+         |  - edge/dev/internal-tls/{ca.*,server.*,nginx.conf} (the TLS terminator
+         |    edge's RFC 8705 mutual-TLS calls go through -- start with
+         |    `nginx -c $$(pwd)/edge/dev/internal-tls/nginx.conf` before edge)
          |""".stripMargin,
     )
   else
