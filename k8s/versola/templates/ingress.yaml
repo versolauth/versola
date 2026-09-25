@@ -1,4 +1,7 @@
 {{- if and .Values.ingress.enabled (not .Values.ingress.gatewayAPI.enabled) }}
+{{- if not .Values.ingress.className }}
+{{- fail "ingress.className is required when ingress.enabled is true and gatewayAPI isn't -- an empty value falls back to the cluster's default IngressClass, and a cluster whose only controller is a stock ingress-nginx install has none (that chart doesn't mark its own class as default). The Ingress would render, look correct, and be adopted by no controller: ADDRESS stays empty and every request gets a bare 404, which reads as a routing bug rather than an unclaimed resource. Name the class explicitly, e.g. \"nginx\"." }}
+{{- end }}
 {{- $groups := include "versola.routeGroups" . | fromYaml }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
