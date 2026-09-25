@@ -83,6 +83,35 @@ matter most:
 | Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL — append `?ssl=true&sslmode=require` if the database needs it |
 | Postgres password (×3) | a placeholder default (`1234`) | the password that database actually has — this tool never talks to a database, so a made-up value here just disagrees with it silently later |
 
+Every prompt above also accepts a `--flag=value` on the command line instead — give it and the
+prompt is skipped entirely, still reading any prompt you didn't give a flag for. Supply all of
+them and the whole run is non-interactive, which is what scripting this bootstrap (rather than
+typing it by hand) needs:
+
+```bash
+scala-cli run scripts/gen-env.scala -- \
+  --target=k8s \
+  --auth-url=https://auth.example.com \
+  --auth-internal-url=http://versola-auth:8080 \
+  --auth-additional-url=http://versola-auth:8082 \
+  --central-url=http://versola-central:8090 \
+  --edge-url=https://edge.example.com \
+  --auth-postgres-url='jdbc:postgresql://pg:5432/auth?currentSchema=auth' \
+  --auth-postgres-user=versola_app --auth-postgres-password='...' \
+  --central-postgres-url='jdbc:postgresql://pg:5432/auth?currentSchema=central' \
+  --central-postgres-user=versola_app --central-postgres-password='...' \
+  --edge-postgres-url='jdbc:postgresql://pg:5432/auth?currentSchema=edge' \
+  --edge-postgres-user=versola_app --edge-postgres-password='...' \
+  --admin-login=admin --admin-password='...' \
+  --central-redirect-uris=https://admin.example.com/complete \
+  --otp=false --smtp=false
+```
+
+`--otp`/`--smtp` (and their `--otp-*`/`--smtp-*` sub-flags, e.g. `--otp-url`, `--smtp-host`) work
+the same way — see `scripts/gen-env.scala`'s own `cliArgs` comment for the full flag-to-prompt
+mapping. A bare `--flag` with no `=value` is treated as `true`, so `--otp` alone answers that
+prompt's yes/no the same as `--otp=true`.
+
 Output lands in `.local/env/k8s/`:
 
 | File | Contents |

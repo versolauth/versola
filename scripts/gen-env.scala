@@ -46,7 +46,32 @@ def b64url(bi: java.math.BigInteger): String =
 // When false (local env), prompts are skipped and defaults are used as-is.
 var interactive = true
 
-def prompt(msg: String, default: String = ""): String =
+// Populated once, at the top of genEnv(), from this run's own `args`. Each
+// `prompt`/`promptYN` call below takes an optional `flag` name; when this run
+// was invoked with a matching `--flag=value` argument, that value is used
+// directly and the prompt (interactive or not) is never reached for it. This
+// is what lets `k8s` -- the only target that stays interactive (see
+// `isKubernetes` below) -- be scripted: supply every flag its prompts need
+// and the whole run completes without reading stdin at all, the same as
+// vps/docker-local already do via environment variables. A run can also mix
+// flags and typed answers freely -- anything without a matching flag just
+// falls back to its usual prompt (or non-interactive default).
+var cliArgs: Map[String, String] = Map.empty
+
+def parseCliArgs(args: Seq[String]): Map[String, String] =
+  args.flatMap { arg =>
+    if !arg.startsWith("--") then None
+    else
+      val body = arg.stripPrefix("--")
+      val eq   = body.indexOf('=')
+      // A bare `--flag` (no `=value`) is treated as `true`, so
+      // `promptYN`-backed flags (--otp, --smtp) can be given without a
+      // value, matching how a shell boolean flag usually reads.
+      if eq < 0 then Some(body -> "true") else Some(body.substring(0, eq) -> body.substring(eq + 1))
+  }.toMap
+
+def prompt(msg: String, default: String = "", flag: String = null): String =
+  if flag != null && cliArgs.contains(flag) then return cliArgs(flag)
   if !interactive then return default
   print(msg)
   val line = scala.io.StdIn.readLine()
@@ -64,7 +89,9 @@ def prompt(msg: String, default: String = ""): String =
 def requiredEnv(name: String): String =
   sys.env.getOrElse(name, throw RuntimeException(s"$name environment variable is required when TARGET=vps"))
 
-def promptYN(msg: String, defaultYes: Boolean = false): Boolean =
+def promptYN(msg: String, defaultYes: Boolean = false, flag: String = null): Boolean =
+  if flag != null && cliArgs.contains(flag) then
+    return Set("y", "yes", "true", "1").contains(cliArgs(flag).trim.toLowerCase)
   if !interactive then return defaultYes
   val hint = if defaultYes then "[Y/n]" else "[y/N]"
   print(s"$msg $hint: ")
@@ -144,7 +171,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val content = secrets.map((k, v) => s"$k=$v").mkString("\n") + "\n"
   writeFile(dir, name, content)
 
-@main def genEnv(): Unit =
+@main def genEnv(args: String*): Unit =
+  cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
 
   // ── Key pairs ─────────────────────────────────────────────────────────────────
@@ -241,7 +269,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // defaults, interactive vs non-interactive) -- see `env` below for why
   // this is deliberately a different question from "what environment name
   // gets written into the config".
-  val target  = prompt("  Target [local]: ", "local")
+  val target  = prompt("  Target [local]: ", "local", flag = "target")
   val isLocal = target == "local"
   // docker-local is for "versola bootstrap local": auth/central/edge each run
   // in their own container on one Docker Compose bridge network, instead of
@@ -389,7 +417,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
   val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then requiredEnv("AUTH_URL") else "http://localhost:9003"
-  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
+  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault, flag = "auth-url")
   val passkeyRpId         = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
   // to reach auth's admin API server-to-server. Defaulting this to authUrl
@@ -398,13 +426,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // container can't reach auth via "localhost", it needs auth's Compose
   // service name.
   val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
-  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
+  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault, flag = "auth-internal-url")
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
     else if isLocal then "http://localhost:9007"
     else "http://localhost:8082"
-  val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault)
+  val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault, flag = "auth-additional-url")
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
   // Reverted to 9001 (not 8090, which every other branch here uses) --
@@ -417,7 +445,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // discrepancy in general; this one specific value turned out to be
   // load-bearing for CI, not just a cosmetic mismatch.
   val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
-  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
+  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault, flag = "central-url")
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
   // entry point a browser can reach. edge's own port (8095) isn't
@@ -429,7 +457,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // and the browser got ERR_CONNECTION_REFUSED right after a real login
   // succeeded.
   val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then authUrl else "http://localhost:9005"
-  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
+  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault, flag = "edge-url")
   section("\n── Auth service ──────────────────────────────────────────────────────")
   // Postgres is its own container in docker-local (compose service name
   // "postgres"), and all three services share one database via
@@ -447,12 +475,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // different ?currentSchema=.
   val pgHostDefault = if isVps then requiredEnv("POSTGRES_HOST") else ""
   val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
-  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault)
-  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
+  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "auth-postgres-user")
+  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "auth-postgres-password")
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
-  val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin")
+  val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin", flag = "admin-login")
   // vps's default here is a freshly random value, not the fixed
   // "Admin1234!" the other envs use -- unlike Postgres's password (see
   // pgPassDefault above), nothing outside this script already owns this
@@ -460,7 +488,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // keeping the first one it sees is exactly right here, no manual
   // seeding needed.
   val bootstrapPasswordDefault = if isVps then rand(rng, 16) else "Admin1234!"
-  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", bootstrapPasswordDefault)
+  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", bootstrapPasswordDefault, flag = "admin-password")
 
   section("\n── Central service ───────────────────────────────────────────────────")
   // edgeCompleteUrl (edgeUrl + "/complete") is always appended to this list
@@ -475,11 +503,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // crash loop. Still not localhost:3000 -- nothing runs there in
   // docker-local.
   val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
-  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
+  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault, flag = "central-redirect-uris")
   val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
-  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
-  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault, flag = "central-postgres-url")
+  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "central-postgres-user")
+  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "central-postgres-password")
 
 
   // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is not a mirror of anything:
@@ -528,9 +556,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
   val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
-  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault)
-  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
+  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
+  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
   val edgeCompleteUrl        = s"$edgeUrl/complete"
@@ -548,13 +576,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   // ── OTP provider ──────────────────────────────────────────────────────────────
   section("\n── OTP Provider ──────────────────────────────────────────────────────")
-  val wantsOtp = promptYN("Configure OTP provider?")
+  val wantsOtp = promptYN("Configure OTP provider?", flag = "otp")
   val otpBlock =
     if wantsOtp then
-      val url    = prompt("  OTP provider URL: ", "http://localhost:9100/sms")
-      val method = prompt("  HTTP method [POST]: ", "POST")
-      val uname  = prompt("  Username (empty = none): ")
-      val pass   = prompt("  Password (empty = none): ")
+      val url    = prompt("  OTP provider URL: ", "http://localhost:9100/sms", flag = "otp-url")
+      val method = prompt("  HTTP method [POST]: ", "POST", flag = "otp-method")
+      val uname  = prompt("  Username (empty = none): ", flag = "otp-username")
+      val pass   = prompt("  Password (empty = none): ", flag = "otp-password")
       val uLine  = if uname.nonEmpty then s"""  username = "$uname"\n""" else ""
       val pLine  = if pass.nonEmpty  then s"""  password = "$pass"\n""" else ""
       s"""
@@ -585,17 +613,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   // ── SMTP ──────────────────────────────────────────────────────────────────────
   section("\n── SMTP ──────────────────────────────────────────────────────────────")
-  val wantsSmtp = promptYN("Configure SMTP?")
+  val wantsSmtp = promptYN("Configure SMTP?", flag = "smtp")
   val smtpBlock =
     if wantsSmtp then
-      val host    = prompt("  Host: ", "localhost")
-      val portStr = prompt("  Port [587]: ", "587")
+      val host    = prompt("  Host: ", "localhost", flag = "smtp-host")
+      val portStr = prompt("  Port [587]: ", "587", flag = "smtp-port")
       val port    = portStr.toIntOption.getOrElse(587)
-      val uname   = prompt("  Username: ", "dev")
-      val pass    = prompt("  Password: ", "dev")
-      val from    = prompt("  From email [noreply@example.com]: ", "noreply@example.com")
-      val subj    = prompt("  Subject [Your verification code]: ", "Your verification code")
-      val tls     = promptYN("  Use STARTTLS?", defaultYes = true)
+      val uname   = prompt("  Username: ", "dev", flag = "smtp-username")
+      val pass    = prompt("  Password: ", "dev", flag = "smtp-password")
+      val from    = prompt("  From email [noreply@example.com]: ", "noreply@example.com", flag = "smtp-from")
+      val subj    = prompt("  Subject [Your verification code]: ", "Your verification code", flag = "smtp-subject")
+      val tls     = promptYN("  Use STARTTLS?", defaultYes = true, flag = "smtp-starttls")
       s"""
          |smtp {
          |  host = "$host"
