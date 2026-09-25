@@ -155,7 +155,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               permissions = strings(spec, "permissions").toSet,
             )
             (response, s.copy(clients = s.clients.updated(clientId, stored)))
-        unknownRole(spec).someOrElseZIO(create)
+        invalidRegistration(spec).someOrElseZIO(create)
 
       case (Method.PUT, "/configuration/clients") =>
         val spec = parse(body)
@@ -165,7 +165,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             case None => (Response.status(Status.NoContent), s)
             case Some(stored) =>
               (Response.status(Status.NoContent), s.copy(clients = s.clients.updated(clientId, stored.updated(spec))))
-        unknownRole(spec).someOrElseZIO(update)
+        invalidRegistration(spec).someOrElseZIO(update)
 
       case (Method.POST, "/configuration/clients/rotate-secret") =>
         val clientId = request.url.queryParams.queryParam("clientId").getOrElse("")
@@ -282,6 +282,35 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
 
       case _ => ZIO.succeed(Response.status(Status.NotFound)))
 
+  /** Mirrors `versola.central.configuration.clients.InvalidRegistrationConfiguration.validate`'s
+    * `auth.primary.inlinePassword` branch: registration is only reachable from a credential card
+    * whose primary credential asks for a phone or an email, proving ownership of the entry
+    * credential -- never one that also asks for the password inline. Central refuses a client
+    * that combines a registration flow with such an auth flow outright (versolauth/versola,
+    * loadgen's `CampaignBlueprint` shipped exactly this combination for one client until it did).
+    */
+  private def inlinePasswordWithRegistration(spec: Json.Obj): Option[Response] =
+    // `.collect { case _: Json.Obj => }`, not `.flatMap(_ => ...)` on the bare field: an update
+    // body states an absent registration flow as an explicit JSON `null`, not a missing key (see
+    // `HttpAdminClient.updateClient`'s `registrationFlow.getOrElse(Json.Null)`), and `field` alone
+    // cannot tell that apart from "genuinely present" -- the same reason `unknownRole` below
+    // collects it the same way rather than testing for mere presence.
+    // `field(flow, "primary").collect { case p: Json.Obj => p }`, not `obj(flow, "primary")`:
+    // `obj` throws when the shape doesn't match, and `ProvisionFixtures`' own auth-flow fixtures
+    // are deliberately flat placeholders (`Json.Obj("primary" -> Json.Str("phone-otp"))`) that
+    // specs comparing them by identity never needed to look inside -- this check has to tolerate
+    // that shape rather than fail every spec that builds a client from one.
+    field(spec, "registrationFlow").collect { case _: Json.Obj => () }
+      .flatMap(_ => field(spec, "authFlow").collect { case flow: Json.Obj => flow })
+      .flatMap(flow => field(flow, "primary").collect { case p: Json.Obj => p })
+      .flatMap(primary => bool(primary, "inlinePassword"))
+      .filter(identity)
+      .map(_ =>
+        Response
+          .text("Invalid registration configuration: registration is not available when the credential card asks for a password inline")
+          .status(Status.BadRequest),
+      )
+
   /** Central validates the roles a client's registration flow grants while saving the client and
     * answers a `400` for one that does not exist yet -- the reason roles are provisioned before
     * any client that names them.
@@ -293,6 +322,15 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       granted.find(!s.roles.contains(_)).map: roleId =>
         Response.text(s"Invalid registration configuration: role '$roleId' does not exist")
           .status(Status.BadRequest)
+
+  /** Every registration-shape rejection a client write can hit, checked in the same order central
+    * itself would reach them: the auth-flow/registration-flow combination is a property of the
+    * request body alone, so it is checked before the role lookup that needs the current state.
+    */
+  private def invalidRegistration(spec: Json.Obj): UIO[Option[Response]] =
+    inlinePasswordWithRegistration(spec) match
+      case some @ Some(_) => ZIO.succeed(some)
+      case None => unknownRole(spec)
 
 object FakeCentral:
 
