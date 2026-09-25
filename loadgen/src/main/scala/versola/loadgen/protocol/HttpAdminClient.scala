@@ -155,7 +155,7 @@ final class HttpAdminClient(
     listResources.flatMap: existing =>
       existing.get(spec.resourceId) match
         case None => createResource(spec)
-        case Some(endpointIds) => updateResource(spec, endpointIds)
+        case Some(state) => updateResource(spec, state)
 
   private def createResource(spec: ResourceSpec): Task[Unit] =
     val body = CreateResourceBody(
@@ -170,32 +170,41 @@ final class HttpAdminClient(
       internal = false,
     )
     send(Method.POST, central("configuration", "resources"), Some(body.toJson)).flatMap: response =>
-      convergeAfterFailedCreate("registerResource", response, listResources.map(_.get(spec.resourceId))): endpointIds =>
-        updateResource(spec, endpointIds)
+      convergeAfterFailedCreate("registerResource", response, listResources.map(_.get(spec.resourceId))): state =>
+        updateResource(spec, state)
 
   /** Endpoints are replaced by id, and central's update deletes every id it is about to create
     * before creating it, so sending the full desired set is a single atomic desired-state apply:
     * an endpoint whose ACR or CEL rule changed is rewritten, and one the blueprint dropped is
     * deleted rather than left granting access nothing names any more.
+    *
+    * Audience is patched like a client's scope or a role's permissions -- central stores it as a
+    * list, not a set, and replays `add` after `remove` on top of what it already has (see
+    * `PatchAudience.patch`), so sending the full desired list back as `add` would duplicate every
+    * client already in it instead of leaving the list untouched.
     */
-  private def updateResource(spec: ResourceSpec, existingEndpointIds: Set[UUID]): Task[Unit] =
+  private def updateResource(spec: ResourceSpec, existing: ResourceState): Task[Unit] =
     val desired = spec.endpoints.map(_.id).toSet
+    val desiredAudience = spec.audience.toSet
     val body = UpdateResourceBody(
       resourceId = spec.resourceId,
       resource = Some(spec.resourceUri),
-      audience = Some(spec.audience),
-      deleteEndpoints = existingEndpointIds -- desired,
+      audience = PatchAudience(
+        add = desiredAudience -- existing.audience,
+        remove = existing.audience -- desiredAudience,
+      ),
+      deleteEndpoints = existing.endpointIds -- desired,
       createEndpoints = spec.endpoints.map(endpointBody),
     )
     send(Method.PUT, central("configuration", "resources"), Some(body.toJson))
       .flatMap(expectSuccess("updateResource", _))
 
-  private def listResources: Task[Map[String, Set[UUID]]] =
+  private def listResources: Task[Map[String, ResourceState]] =
     val url = central("configuration", "resources").addQueryParam("tenantId", tenantId)
     send(Method.GET, url, None).flatMap: response =>
       expectSuccess("listResources", response)
         *> decode[ResourceListBody]("listResources", response)
-          .map(_.resources.map(entry => entry.resourceId -> entry.endpoints.map(_.id).toSet).toMap)
+          .map(_.resources.map(entry => entry.resourceId -> ResourceState(entry.audience.toSet, entry.endpoints.map(_.id).toSet)).toMap)
 
   override def upsertPermissions(specs: List[PermissionSpec]): Task[Unit] =
     listPermissions.flatMap: existing =>
@@ -592,19 +601,31 @@ object HttpAdminClient:
       internal: Boolean,
   ) derives JsonEncoder
 
+  private case class PatchAudience(add: Set[String], remove: Set[String]) derives JsonEncoder
+
   private case class UpdateResourceBody(
       resourceId: String,
       resource: Option[String],
-      audience: Option[List[String]],
+      audience: PatchAudience,
       deleteEndpoints: Set[UUID],
       createEndpoints: List[ResourceEndpointBody],
   ) derives JsonEncoder
 
   private case class ResourceListEndpoint(id: UUID) derives JsonDecoder
 
-  private case class ResourceListEntry(resourceId: String, endpoints: List[ResourceListEndpoint]) derives JsonDecoder
+  private case class ResourceListEntry(
+      resourceId: String,
+      audience: List[String],
+      endpoints: List[ResourceListEndpoint],
+  ) derives JsonDecoder
 
   private case class ResourceListBody(resources: List[ResourceListEntry]) derives JsonDecoder
+
+  /** A resource's patched, multi-value state as central's listing reports it -- what a
+    * desired-state update has to diff the blueprint against to know what to add and remove,
+    * the same role [[ClientState]] plays for a client.
+    */
+  private case class ResourceState(audience: Set[String], endpointIds: Set[UUID])
 
   private case class CreatePermissionBody(
       tenantId: String,
