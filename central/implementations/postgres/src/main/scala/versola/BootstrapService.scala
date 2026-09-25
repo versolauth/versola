@@ -941,7 +941,7 @@ object BootstrapService:
         val request = CreateClientRequest(
           tenantId = CentralConfig.defaultTenantId,
           id = seed.clientId,
-          clientName = localized("Loadgen Provisioner", "Loadgen Provisioner"),
+          clientName = localized("Utilities", "Утилиты"),
           redirectUris = Set.empty,
           allowedScopes = Set.empty,
           permissions = provisionerPermissions,
