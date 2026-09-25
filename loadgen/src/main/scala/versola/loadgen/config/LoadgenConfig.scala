@@ -427,12 +427,13 @@ case class AcceptanceMeasurementsConfig(
   */
 case class ProvisionConfig(
     tenantId: String,
-    /** Presented as the HTTP Basic password on central's configuration API -- the same base64url
-      * value e2e's `RESOURCE_SECRET` carries.
+    /** The `client_credentials` client every admin call is made as. Central seeds it from its own
+      * `bootstrap.provisioner` block, which is where this secret is configured to match; loadgen
+      * holds no internal secret of central's or edge's, and reaches the admin API only through
+      * edge's proxy, with the permissions that client was granted.
       */
-    centralSecret: Config.Secret,
-    /** Presented as the HTTP Basic password on edge's service API. */
-    edgeSecret: Config.Secret,
+    provisionerClientId: String,
+    provisionerSecret: Config.Secret,
     /** Where the three mobile clients' authorization codes are redirected -- an app scheme, which
       * central accepts for a native client but not over plain HTTP on a non-loopback host.
       */

@@ -14,7 +14,6 @@ import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, Secret}
 import zio.json.*
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
 import zio.{Task, UIO, ZIO}
 
 import java.security.KeyPairGenerator
@@ -88,7 +87,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     id = id,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Mutual TLS Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
     previousSecret = None,

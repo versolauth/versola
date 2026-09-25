@@ -21,7 +21,7 @@ import zio.*
 import zio.http.URL
 import zio.json.*
 import zio.json.ast.Json
-import zio.prelude.{EqualOps, NonEmptySet}
+import zio.prelude.EqualOps
 import zio.test.*
 
 import java.time.Instant
@@ -67,7 +67,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = clientId1,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = scope1,
     secret = Some(clientSecret1),
     previousSecret = None,
@@ -100,7 +100,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     id = publicClientId,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Public Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = scope2,
     secret = None,
     previousSecret = None,

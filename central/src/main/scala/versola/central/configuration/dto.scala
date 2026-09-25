@@ -84,6 +84,19 @@ case class PatchPermissions(
     remove: Set[Permission],
 ) derives JsonCodec, Schema
 
+case class PatchAudience(
+    add: Set[ClientId],
+    remove: Set[ClientId],
+) derives Schema, JsonCodec:
+  /** Order-preserving and idempotent: a client already in the audience is not duplicated,
+    * so concurrent writers adding themselves cannot drop each other the way submitting a
+    * whole list does. */
+  def patch(existing: List[ClientId]): List[ClientId] =
+    existing.filterNot(remove.contains) ++ add.filterNot(existing.contains)
+
+object PatchAudience:
+  val empty: PatchAudience = PatchAudience(Set.empty, Set.empty)
+
 case class PatchScope(
     add: List[CreateClaim],
     update: List[PatchClaim],
@@ -160,7 +173,7 @@ case class CreateResourceRequest(
 case class UpdateResourceRequest(
     resourceId: ResourceId,
     resource: Option[ResourceUri],
-    audience: Option[List[ClientId]],
+    audience: PatchAudience,
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec

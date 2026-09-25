@@ -39,7 +39,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     id = clientId,
     tenantId = tenantId,
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("openid"), ScopeToken("profile"), ScopeToken("email")),
     secret = None,
     previousSecret = None,
@@ -210,6 +210,16 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("redirect_uri" -> "https://attacker.com")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.BadRequest))
+      },
+      // A `client_credentials` client registers no redirect URI at all, which leaves it with
+      // nothing an authorization request could match rather than with a wildcard.
+      test("fails for a client that registered no redirect URI") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(redirectUris = Set.empty)))
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.BadRequest))
       },

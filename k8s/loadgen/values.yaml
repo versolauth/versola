@@ -47,7 +47,9 @@ terminationGracePeriodSeconds: 30
 
 # The Secret carrying the `${VAR}` values the mounted env.conf files
 # reference -- the emulator store's POSTGRES_PASSWORD, and for a one-shot
-# `role = provision`/`role = seed` run its central/edge secrets and auth's
+# `role = provision`/`role = seed` run its provisioner client secret (the
+# same value central is bootstrapped with, since it reaches central's admin
+# API through edge's proxy rather than with an internal secret) and auth's
 # Argon2 pepper.
 #
 # Delivered with `envFrom: secretRef`, i.e. every key in the Secret becomes a

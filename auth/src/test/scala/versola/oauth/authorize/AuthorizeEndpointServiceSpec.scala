@@ -64,7 +64,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     id = clientId,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = None,
     previousSecret = None,

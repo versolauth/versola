@@ -4,7 +4,6 @@ import versola.oauth.client.model.{AuthFlow, AuthMethod, ClientId, ConsentFlow, 
 import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
-import zio.prelude.NonEmptySet
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Duration, Task, URLayer, ZIO, ZLayer, durationInt}
 
@@ -70,14 +69,11 @@ object OAuthClientSyncClient:
         decrypted <- securityService.decryptAes256(encrypted, config.central.secretKey)
       yield Secret(decrypted)
 
-    private given JsonCodec[NonEmptySet[String]] =
-      JsonCodec.nonEmptyChunk[String].transform(NonEmptySet.fromNonEmptyChunk, _.toNonEmptyChunk)
-
     private case class OAuthClientRecordWithEncryptedSecrets(
         id: ClientId,
         tenantId: TenantId,
         clientName: Map[String, String],
-        redirectUris: NonEmptySet[String],
+        redirectUris: Set[String],
         scope: Set[ScopeToken],
         secret: Option[String],
         previousSecret: Option[String],
