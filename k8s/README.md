@@ -62,44 +62,52 @@ matters, because several values must agree across services (`CENTRAL_SECRET_KEY`
 `CLIENT_SECRETS_SECRET` are shared between auth and central, and central holds the public half
 of edge's key).
 
-**There is no Kubernetes mode yet** — see
-[#372](https://github.com/versolauth/versola/issues/372). The closest is `vps`, which is the
-only non-interactive mode that emits placeholders rather than literal values:
+Run it and answer `k8s` (or `kubernetes`) at the first prompt:
 
 ```bash
-ENV_NAME=<your-env-name> \
-AUTH_URL=https://<public-host> \
-POSTGRES_HOST=<host>:<port> \
-  scala-cli run scripts/gen-env.scala     # answer: vps
+scala-cli run scripts/gen-env.scala
 ```
 
-`ENV_NAME` is not optional in practice. Without it `vps` resolves `env` to **`prod`**, and `env`
-is not merely a label: `OtpGenerationService` issues a random OTP when `env.isProd` and a
-predictable one otherwise, so a campaign whose environment is accidentally named `prod` fails
-every login at the challenge step with nothing pointing at the cause.
+Unlike `docker-local`/`vps`, this mode stays **interactive** — it asks for each value in turn,
+one prompt at a time, rather than deriving everything from a couple of environment variables.
+That is deliberate: a k8s deployment is a manual, occasional bootstrap (there is no pipeline
+driving it, unlike `vps`'s `Deploy` workflow), and the campaign topology genuinely needs a
+human's input at several of these prompts — three independent Postgres instances, not one host
+split by `?currentSchema=`, and auth's internal address, which under an Ingress is never the
+same as its public one. Read every default the tool shows before accepting it; the ones that
+matter most:
 
-`AUTH_URL`'s host also becomes the WebAuthn `rp-id`, which must be a domain — an IP address
-there breaks passkey flows. Give it a hostname even if traffic actually reaches the cluster by
-address, and correct the URL afterwards.
+| Prompt | Don't accept the default as-is | Answer instead |
+|---|---|---|
+| Auth internal URL | defaults to the public URL you just typed | central's cluster-DNS address, e.g. `http://versola-auth:8080` |
+| Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL — append `?ssl=true&sslmode=require` if the database needs it |
+| Postgres password (×3) | a placeholder default (`1234`) | the password that database actually has — this tool never talks to a database, so a made-up value here just disagrees with it silently later |
 
-Output lands in `.local/env/vps/`:
+Output lands in `.local/env/k8s/`:
 
 | File | Contents |
 |---|---|
 | `auth.conf`, `central.conf`, `edge.conf` | configuration with `${VAR}` placeholders |
 | `auth.generated-secrets.env`, … | the values behind those placeholders, as `KEY=value` |
 
-### What `vps` mode gets wrong for a cluster
+Two of central's generated values need a matching home outside these files entirely:
+`bootstrap.utility-client`'s secret must equal whatever configures `loadgen`'s own
+`provision.provisioner-secret` (`loadgen provision` authenticates as this client to reach
+central's admin API — see [§8](#8-the-load-emulator)), the same kind of out-of-band match a
+Postgres password is. `bootstrap.resource-secret` has no such counterpart to match — central is
+the only reader — but it still has to be present at central's *first* boot: central seeds each
+of the two exactly once, the first time it finds neither configured, and a value added to the
+config later has no effect on one already seeded (versolauth/versola#380).
 
-It is a VPS mode, and assumes a VPS. Fix these by hand until #372 lands:
+### `vps` mode
 
-| Generated | Why it is wrong here | Replace with |
-|---|---|---|
-| `auth`'s internal URL = its public URL | central calls auth's `/users` over cluster DNS, and that route group is usually not exposed through the ingress | `http://<release>-auth:8080` |
-| `auth-additional-url = http://127.0.0.1:8082` | in a pod that is the pod itself | `http://<release>-auth:8082` |
-| One Postgres host for all three, split by `?currentSchema=` | the campaign topology is one instance per service | three JDBC URLs, one per service |
-| No TLS parameters on the JDBC URLs | managed Postgres usually requires it | append `?ssl=true&sslmode=require` |
-| A freshly generated Postgres password | there is no secret backend here to capture it, so it silently disagrees with an existing database | the password the database actually has, or apply the generated one to the database |
+`vps` is the other placeholder-emitting mode, kept non-interactive for the `Deploy` workflow's
+sake and driven entirely by `AUTH_URL`/`POSTGRES_HOST`/`ENV_NAME` (see `deploy.md`). It assumes
+one VPS behind everything — one Postgres host shared by all three services via
+`?currentSchema=`, auth's internal address equal to its public one — which is correct for that
+one machine and wrong for a cluster. Use `k8s` instead unless you're specifically scripting a
+non-interactive run against values a cluster doesn't have (a CI job that only checks the chart
+and the generator still agree, for instance — see `.github/scripts/check-chart-secret-vars.sh`).
 
 ---
 
@@ -334,7 +342,6 @@ All of these have open issues; none of them has a fix in the chart yet.
 
 | | |
 |---|---|
-| [#372](https://github.com/versolauth/versola/issues/372) | `gen-env.scala` has no Kubernetes mode — see [§3](#3-generating-configuration) |
 | [#375](https://github.com/versolauth/versola/issues/375) | no ingress route group for central |
 | [#378](https://github.com/versolauth/versola/issues/378) | auth restarts once on a first install |
 | [#379](https://github.com/versolauth/versola/issues/379) | an Ingress with no class is silently ignored |
