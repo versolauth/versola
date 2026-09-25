@@ -25,7 +25,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
   private def settingsFor(tenantId: TenantId) = ChallengeSettingsRecord(
     tenantId = tenantId,
     allowedPrefixes = List("+1", "+44"),
-    submissionLimits = SubmissionLimits(),
+    submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 30,
     passkeySettings = passkeySettings,

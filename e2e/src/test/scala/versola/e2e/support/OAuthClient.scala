@@ -1104,6 +1104,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * client so it can authenticate and sign as it. Build it with
         * `AssertionSigner.privateJwk`. */
       edgeSigningKey: Option[zio.json.ast.Json] = None,
+      /** RFC 9449 §5.2: every token issued to this client is bound to a proof key, rather than
+        * DPoP staying opt-in per request. Mandatory at decode time, like the other two
+        * protections here, since it isn't an `Option` on `CreateClientRequest`. */
+      dpopBoundAccessTokens: Boolean = false,
       /** RFC 9449 §5.1: the signing algorithms this client's proofs may use, narrowing what
         * the metadata document advertises. Empty registers no narrowing. */
       dpopSigningAlgs: Set[String] = Set.empty,
@@ -1136,6 +1140,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
       edgeSigningKey = edgeSigningKey,
+      dpopBoundAccessTokens = dpopBoundAccessTokens,
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
     ).toJson)
@@ -1736,6 +1741,7 @@ object OAuthClient:
       jwks: Option[zio.json.ast.Json],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
+      dpopBoundAccessTokens: Boolean,
       dpopSigningAlgs: Set[String],
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],

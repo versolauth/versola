@@ -2328,9 +2328,12 @@ components:
         - theme
         - otpTemplateId
         - frontChannelLogoutSessionRequired
+        - dpopBoundAccessTokens
         - dpopSigningAlgs
         - authMethod
         - certificateBoundAccessTokens
+        - requireSignedRequestObject
+        - requirePushedAuthorizationRequests
     UpdateClientRequest:
       type: object
       description: |
@@ -2524,11 +2527,30 @@ components:
         An RFC 7517 JWK carrying its private material -- the exact document registered, not a
         narrowed model of it. Only ever submitted, never listed back: a stored one leaves
         central encrypted to the requesting edge's public key.
+
+        Registration refuses a document that is not an RSA or EC key, that is marked
+        `"use": "enc"`, or that carries no private material -- a signer that cannot sign is
+        rejected here rather than at the first authorization request, where it would read as
+        an outage.
       additionalProperties: true
-      required: [kid]
+      required: [kty, kid, alg]
       properties:
+        kty:
+          type: string
+          description: RFC 7517 §4.1. Only `RSA` and `EC` can sign here.
+          enum: [RSA, EC]
         kid:
           type: string
+          description: |
+            RFC 7517 §4.5. Required: it is what a signature made with this key names, and what
+            the matching public half in the client's `jwks` is found by.
+        alg:
+          type: string
+          description: |
+            RFC 7517 §4.4. Required rather than inferred from `kty`, which does not determine
+            it -- an RSA key signs `RS256` or `PS256`, and guessing would pin a deployment to
+            the one it excluded.
+          enum: [ES256, PS256, RS256]
     AuthorizationPresetInput:
       type: object
       properties:
@@ -3390,6 +3412,12 @@ components:
             $ref: '#/components/schemas/RateLimit'
         banDurationSeconds:
           type: integer
+      required:
+        - otpRequest
+        - otpSubmit
+        - passwordSubmit
+        - passkeyAssertion
+        - banDurationSeconds
     PasskeySettings:
       type: object
       properties:

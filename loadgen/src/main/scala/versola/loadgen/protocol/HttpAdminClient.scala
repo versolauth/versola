@@ -87,6 +87,13 @@ final class HttpAdminClient(
       // outright rather than defaulted.
       certificateBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
+      // Off for the same reason, and mandatory for the same reason: a driver fleet configured
+      // without a `dpop` block sends no proof, a plain parameter set rather than a request
+      // object, and goes to `/authorize` directly -- each of these switched on would refuse
+      // every authorization the campaign makes.
+      dpopBoundAccessTokens = false,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -123,6 +130,9 @@ final class HttpAdminClient(
       // keeping a setting the campaign cannot satisfy.
       certificateBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
+      dpopBoundAccessTokens = false,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
     )
     send(Method.PUT, central("configuration", "clients"), Some(body.toJson))
       .flatMap(expectSuccess("updateClient", _))
@@ -443,6 +453,9 @@ object HttpAdminClient:
       authMethod: String,
       certificateBoundAccessTokens: Boolean,
       dpopSigningAlgs: Set[String],
+      dpopBoundAccessTokens: Boolean,
+      requireSignedRequestObject: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
   ) derives JsonEncoder
 
   private case class UpdateClientBody(
@@ -460,6 +473,9 @@ object HttpAdminClient:
       backChannelLogoutUri: Json,
       certificateBoundAccessTokens: Boolean,
       dpopSigningAlgs: Set[String],
+      dpopBoundAccessTokens: Boolean,
+      requireSignedRequestObject: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
   ) derives JsonEncoder
 
   private case class CreateClientResponseBody(secret: Option[String]) derives JsonDecoder

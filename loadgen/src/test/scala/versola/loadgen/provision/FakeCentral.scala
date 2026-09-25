@@ -64,11 +64,22 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
     */
   private def missingMember(method: Method, path: String, body: String): Option[Response] =
     requiredMembers.get((method, path)).flatMap: required =>
-      val present = Json.decoder.decodeJson(body).toOption
-        .collect { case obj: Json.Obj => obj.fields.map(_._1).toSet }
-        .getOrElse(Set.empty)
-      required.toList.sorted.find(!present.contains(_)).map: member =>
-        Response.text(s"Failed to decode JSON: .$member(missing)").status(Status.BadRequest)
+      val document = Json.decoder.decodeJson(body).toOption.collect { case obj: Json.Obj => obj }
+      required.toList.sorted.find(member => !document.exists(present(_, member.split('.').toList))).map: member =>
+        val trace = member.split('.').mkString(".", ".", "")
+        Response.text(s"Failed to decode JSON: $trace(missing)").status(Status.BadRequest)
+
+  /** A member named by its path from the document root, so that a nested DTO's own mandatory
+    * members are checked too -- `submissionLimits` being present says nothing about the
+    * categories inside it, each of which central requires in its own right.
+    */
+  private def present(document: Json.Obj, path: List[String]): Boolean =
+    path match
+      case Nil => true
+      case member :: rest =>
+        document.get(member).exists:
+          case nested: Json.Obj => present(nested, rest)
+          case _ => rest.isEmpty
 
   private def accepted(request: Request, path: String, body: String, record: UIO[Unit]): UIO[Response] =
     val fromEdge = request.header(Header.Authorization).exists {
@@ -265,8 +276,9 @@ object FakeCentral:
     "/configuration/roles",
   )
 
-  /** The top-level members central's DTO for each write declares mandatory -- neither optional
-    * nor carrying a default, so zio-json refuses a body without them.
+  /** The members central's DTO for each write declares mandatory -- neither optional nor
+    * carrying a default, so zio-json refuses a body without them. A dotted name is a member of
+    * a nested DTO, which central requires just as strictly as one at the root.
     *
     * Kept in step with `versola.central.configuration.dto` by hand, as the payloads themselves
     * are: this stand-in is the only thing between a member added to a registration DTO and a
@@ -287,6 +299,9 @@ object FakeCentral:
       "authMethod",
       "certificateBoundAccessTokens",
       "dpopSigningAlgs",
+      "dpopBoundAccessTokens",
+      "requireSignedRequestObject",
+      "requirePushedAuthorizationRequests",
     ),
     (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
     (Method.POST, "/configuration/resources") -> Set(
@@ -307,9 +322,18 @@ object FakeCentral:
       "tenantId",
       "allowedPrefixes",
       "submissionLimits",
+      "submissionLimits.otpRequest",
+      "submissionLimits.otpSubmit",
+      "submissionLimits.passwordSubmit",
+      "submissionLimits.passkeyAssertion",
+      "submissionLimits.banDurationSeconds",
       "otpLength",
       "otpResendAfter",
       "passkeySettings",
+      "passkeySettings.rpId",
+      "passkeySettings.rpName",
+      "passkeySettings.origins",
+      "passkeySettings.userVerification",
       "ipHeader",
     ),
   )
