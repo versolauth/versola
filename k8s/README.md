@@ -387,3 +387,11 @@ not installed: `dashboards.configMap.enabled` is off by default, and turning it 
 Grafana's sidecar watches that label. Nothing here deploys Prometheus, and neither chart creates
 `ServiceMonitor` or `PodMonitor` objects — `loadgen` carries `prometheus.io/scrape` annotations,
 `versola` carries none, so how scraping happens is the cluster's business.
+
+`sut-red.json`, `driver-red.json` and `db-pools.json` are hand-authored, each built around a
+specific set of pass criteria (design doc §6.7, #267's definition of done, the report's pool
+section) rather than one panel per metric. `auth-funnel.json` and `security-dpop-revocation.json`
+are the other kind: a mechanical board over a metric family with no curated narrative yet, built by
+`loadgen/dashboards/generate.py`. Re-run it after adding a `Metric.*` registration anywhere in the
+codebase that its `CATALOG` does not cover — it will not touch the three hand-authored boards, and
+it will not invent a threshold for a metric with no documented SLA rather than guess one.
