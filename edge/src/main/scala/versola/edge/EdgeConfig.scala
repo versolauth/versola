@@ -30,6 +30,20 @@ case class EdgeConfig(
     // (correct wherever edge/auth/the browser all share one network, as
     // in prod and plain local dev).
     versolaInternalUrl: Option[URL] = None,
+    // Path to the PEM trust anchors the certificate auth's internal endpoint
+    // presents is validated against. Required to authenticate a client by
+    // RFC 8705 mutual TLS and used for nothing else: that is the one call edge
+    // makes over a connection it must trust in both directions, since the
+    // credential is the handshake itself.
+    //
+    // Absent refuses that call rather than defaulting, because the default
+    // available is not a stricter one -- zio-http's ClientSSLConfig.Default is
+    // Netty's InsecureTrustManagerFactory, which authenticates no server at
+    // all. An internal endpoint rarely carries a publicly-trusted certificate,
+    // so this names the private CA (or the self-signed certificate itself)
+    // that vouches for it; exactly those anchors are trusted, not these on top
+    // of the public ones.
+    versolaInternalTrustedCertificates: Option[String] = None,
     // The origin clients reach this edge on. Used to build the `htu` a DPoP proof is checked
     // against (DpopVerifier) -- taken from configuration rather than from the request's own
     // `Host` or `X-Forwarded-*`, since those are set by whatever last handled the request and
