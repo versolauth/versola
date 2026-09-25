@@ -30,6 +30,10 @@ object SSOClientSpec extends ZIOSpecDefault:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
+    // Named for the same reason a certificate client would name it in production: without
+    // anchors to authenticate auth with, a certificate is refused rather than presented. The
+    // path is never opened here -- these tests stub the `Client`, so no handshake happens.
+    versolaInternalTrustedCertificates = Some("auth-ca.pem"),
     edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
   )
@@ -251,6 +255,25 @@ object SSOClientSpec extends ZIOSpecDefault:
         ).flip
       yield assertTrue(
         error == SSOClient.CredentialNeedsTls(clientId, plaintext.internalUrl / "token"),
+      )
+    },
+    test("refuses an endpoint with no trust anchors instead of trusting whatever answers") {
+      // zio-http's fallback authenticates no server at all, so presenting the certificate
+      // without anchors would carry the session it opens over a connection to any host able
+      // to intercept the route. Refused on the same terms as the plaintext case above.
+      val untrusted = config.copy(versolaInternalTrustedCertificates = None)
+      for
+        client <- ZIO.service[Client]
+        sso = SSOClient.Impl(client, untrusted, certificateFiles)
+        error <- sso.exchangeAuthorizationCode(
+          Code("c-1"),
+          CodeVerifier("v-1"),
+          redirectUri,
+          clientId,
+          ClientCredential.MutualTls(certificateMaterial),
+        ).flip
+      yield assertTrue(
+        error == SSOClient.CredentialNeedsTrustedServer(clientId, untrusted.internalUrl / "token"),
       )
     },
     test("reports that it cannot sign a request object rather than sending an unsigned one") {
