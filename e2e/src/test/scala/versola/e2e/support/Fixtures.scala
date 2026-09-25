@@ -71,6 +71,9 @@ object Fixtures:
       authMethod: String = "client_secret",
       mtlsAuth: Option[Json] = None,
       certificateBoundAccessTokens: Boolean = false,
+      dpopBoundAccessTokens: Boolean = false,
+      requireSignedRequestObject: Boolean = false,
+      requirePushedAuthorizationRequests: Boolean = false,
       dpopSigningAlgs: Set[String] = Set.empty,
       jwks: Option[Json] = None,
   ): Json.Obj =
@@ -88,6 +91,9 @@ object Fixtures:
         "authMethod" -> Json.Str(authMethod),
         "frontChannelLogoutSessionRequired" -> Json.Bool(frontChannelLogoutSessionRequired),
         "certificateBoundAccessTokens" -> Json.Bool(certificateBoundAccessTokens),
+        "dpopBoundAccessTokens" -> Json.Bool(dpopBoundAccessTokens),
+        "requireSignedRequestObject" -> Json.Bool(requireSignedRequestObject),
+        "requirePushedAuthorizationRequests" -> Json.Bool(requirePushedAuthorizationRequests),
         "dpopSigningAlgs" -> strings(dpopSigningAlgs),
       ) ++ Chunk.fromIterable(
         List(
