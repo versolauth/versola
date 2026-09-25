@@ -92,15 +92,23 @@ object DelaySampler:
   private val CoreLowMillis: Double = 40.0
   private val CoreHighMillis: Double = 50.0
 
-  /** From the design doc §3 composite (p50 ≈ 6 ms, p95 ≈ 30 ms, p99 ≈ 46 ms). */
-  val readTargets: QuantileTargets = QuantileTargets(6.0, 30.0, 46.0)
-
-  /** The doc publishes no composite for the 40/50/10 write mixture, so these are the analytic
-    * quantiles of that mixture under the same floor and clamp. p99 sits exactly on the 50 ms
-    * clamp because the write weights put 1.6% of the mass past it -- a property of the
-    * configured weights, not of this implementation.
+  /** Table quantiles of the 70/28/2 read mixture, computed from the branch parameters below with
+    * the floor rule fixed (see `toMicros`'s own comment) -- not the design doc §3 composite
+    * (p50 ≈ 6 ms, p95 ≈ 30 ms, p99 ≈ 46 ms), which is a hand-rounded summary that no floor
+    * interpretation reproduces and that nothing downstream depends on literally (versolauth/versola#376).
+    * The branch parameters carry physical names -- cache hit, one DB read -- and are the
+    * committed source of truth; the composite is corrected to match them, not the other way
+    * round. These are written-down constants, not derived from the table at run time: deriving
+    * them would make the self-check compare the table against itself and pass for any table,
+    * including a broken one.
     */
-  val writeTargets: QuantileTargets = QuantileTargets(13.5, 47.0, 50.0)
+  val readTargets: QuantileTargets = QuantileTargets(6.298, 32.478, 47.456)
+
+  /** Same derivation as `readTargets`, for the 40/50/10 write mixture. p99 no longer sits on the
+    * 50 ms clamp now that the floor shift excludes the core branch (49.676, not 50.000) -- a
+    * target sitting exactly on the clamp could previously only ever be missed upward.
+    */
+  val writeTargets: QuantileTargets = QuantileTargets(13.504, 46.038, 49.676)
 
   def targetsFor(profile: DelayProfile): QuantileTargets =
     profile match
@@ -120,19 +128,21 @@ object DelaySampler:
     val micros = new Array[Int](TableSize)
     var slot = 0
 
-    def fill(count: Int, quantileMillis: Double => Double): Unit =
+    // `toMicrosOf` defaults to the floor-shifted conversion; the core branch below passes the
+    // unshifted one instead (see `toMicros`'s and `toMicrosUnshifted`'s own comments for why).
+    def fill(count: Int, quantileMillis: Double => Double, toMicrosOf: Double => Int = toMicros): Unit =
       var i = 0
       while i < count do
         // Midpoint of the i-th of `count` equal probability strata: never 0 or 1, so the
         // lognormal branches stay finite at the ends.
         val p = (i + 0.5) / count
-        micros(slot) = toMicros(quantileMillis(p))
+        micros(slot) = toMicrosOf(quantileMillis(p))
         slot += 1
         i += 1
 
     fill(cacheSlots, p => logNormalQuantile(CacheMedianMillis, CacheSigma, p))
     fill(dbSlots, p => logNormalQuantile(DbMedianMillis, DbSigma, p))
-    fill(coreSlots, p => CoreLowMillis + (CoreHighMillis - CoreLowMillis) * p)
+    fill(coreSlots, p => CoreLowMillis + (CoreHighMillis - CoreLowMillis) * p, toMicrosUnshifted)
 
     val durations = Array.tabulate(TableSize)(i => Duration.fromNanos(micros(i).toLong * 1000L))
     new DelaySampler(micros, durations)
@@ -179,12 +189,26 @@ object DelaySampler:
       case (name, got, target) if math.abs(got - target) > tolerance * target =>
         f"$name%s achieved ${got}%.2f ms, target ${target}%.2f ms (±${tolerance * 100}%.0f%%)"
 
-  /** The 1 ms floor is a shift, not a `max`: the design doc §3 phrases it as "shifted by a 1 ms
-    * floor", and only the shift reproduces the composite quantiles it publishes (a `max` leaves
-    * p50 at 5.3 ms against a stated 6 ms, which the self-check's ±10% would then reject).
+  /** The 1 ms floor is a shift, not a `max`, and applies to the two lognormal branches only
+    * (cache, db) -- design doc §3 phrases it as "shifted by a 1 ms floor" for a distribution that
+    * can approach zero, and only the shift reproduces `readTargets`' p50 by way of the cache
+    * branch (a `max` leaves p50 at 5.3 ms against a target of 6.298 ms, which the self-check's
+    * ±10% would then reject). The core-banking branch has its own floor of `CoreLowMillis` (40 ms)
+    * and never approaches zero, so it is built with `toMicrosUnshifted` instead: applying this
+    * shift there as well used to move its stated 40-50 ms range to 41-51 ms and pin ~10% of its
+    * mass at the clamp -- a defect fixed alongside `readTargets`/`writeTargets`
+    * (versolauth/versola#376).
     */
   private def toMicros(branchMillis: Double): Int =
     val millis = math.min(FloorMillis + branchMillis, ClampMillis)
+    math.max(1, math.round(millis * 1000.0).toInt)
+
+  /** Same clamp as `toMicros`, without the 1 ms floor shift -- see that method's comment. Used
+    * only for the core-banking branch, whose own quantile function already returns values in its
+    * stated `[CoreLowMillis, CoreHighMillis]` range.
+    */
+  private def toMicrosUnshifted(branchMillis: Double): Int =
+    val millis = math.min(branchMillis, ClampMillis)
     math.max(1, math.round(millis * 1000.0).toInt)
 
   private def logNormalQuantile(medianMillis: Double, sigma: Double, p: Double): Double =
@@ -203,7 +227,10 @@ object DelaySampler:
     -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00,
   )
   private val probitD = Array(
-    7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00, 3.754408661907416e+00,
+    7.784695709041462e-03,
+    3.224671290700398e-01,
+    2.445134137142996e+00,
+    3.754408661907416e+00,
   )
 
   /** Acklam's rational approximation of the standard normal inverse CDF (relative error
