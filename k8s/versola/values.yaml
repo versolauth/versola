@@ -19,6 +19,20 @@ global:
   imageRepository: versolauth
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Pod placement, applied to every pod this chart renders. A component's own
+  # `nodeSelector` / `tolerations` / `affinity`, when non-empty, REPLACES the
+  # value here -- it is not merged with it, key by key or entry by entry. An
+  # empty one inherits this. The one consequence worth knowing: a component
+  # cannot opt out of a global value by setting its own to empty; give it a
+  # different value instead.
+  #
+  # What this is for: sharing a cluster with other workloads on separate node
+  # groups -- above all, keeping the load emulator (k8s/loadgen) and the
+  # system under test off each other's nodes. A pod that ignores its placement
+  # still schedules, just somewhere else, and nothing reports it.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # terminationGracePeriodSeconds / preStopSleepSeconds for the JVM services
 # (auth, central, edge) below.
@@ -118,6 +132,10 @@ services:
     #     - secretRef:
     #         name: auth-secrets
     extraEnvFrom: []
+    # Placement for auth alone; overrides, never merges with, `global`'s.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
   central:
     enabled: true
     image:
@@ -137,6 +155,10 @@ services:
       secretKey: env.conf
     extraEnv: []
     extraEnvFrom: []
+    # Placement for central alone; overrides, never merges with, `global`'s.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
   edge:
     enabled: true
     image:
@@ -156,6 +178,10 @@ services:
       secretKey: env.conf
     extraEnv: []
     extraEnvFrom: []
+    # Placement for edge alone; overrides, never merges with, `global`'s.
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
 
 # console: nginx with central-ui's static build baked in (see
 # docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
@@ -174,6 +200,10 @@ console:
     repository: versola-gateway
     tag: ""
   replicaCount: 1
+  # Placement for the console alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   port: 2821
   # Where the console answers on its host. "/" suits a dedicated hostname
   # (console.example.com); the image bakes dist/ at /central/admin/, but

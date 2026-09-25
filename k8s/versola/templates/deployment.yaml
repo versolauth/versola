@@ -25,6 +25,20 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Placement: the service's own value if set, otherwise global's -- a
+      # replacement, not a merge. See values.yaml's `global.nodeSelector`.
+      {{- with ($svc.nodeSelector | default $.Values.global.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($svc.tolerations | default $.Values.global.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($svc.affinity | default $.Values.global.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # See values.yaml's top-level comment on preStopSleepSeconds /
       # terminationGracePeriodSeconds for why this has to cover both the
       # preStop sleep below and VersolaApp's own gracefulShutdownTimeout.

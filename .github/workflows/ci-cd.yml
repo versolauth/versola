@@ -1153,3 +1153,26 @@ jobs:
 
       - name: Check chart secret vars match gen-env
         run: .github/scripts/check-chart-secret-vars.sh
+
+  # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
+  # global values reach every pod, that a component's own value replaces them
+  # rather than merging, and that the loadgen coordinator's standby spread
+  # survives a user's nodeAffinity. A pod that ignores its placement still
+  # schedules -- on the wrong node -- so nothing else would catch a regression.
+  #
+  # Its own job rather than a step in helm-images, which checks something
+  # unrelated, so a failure names what broke. Needs only Helm and the runner's
+  # system python3 with PyYAML; the script exits 2, not 0, if PyYAML is absent.
+  helm-placement:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart pod placement
+        run: .github/scripts/check-chart-placement.sh

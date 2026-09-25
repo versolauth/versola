@@ -51,6 +51,20 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Placement: the driver's own value if set, otherwise global's -- a
+      # replacement, not a merge. See values.yaml's `global.nodeSelector`.
+      {{- with ($driver.nodeSelector | default $.Values.global.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($driver.tolerations | default $.Values.global.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($driver.affinity | default $.Values.global.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # See values.yaml's top-level comment on preStopSleepSeconds /
       # terminationGracePeriodSeconds: this has to cover the preStop sleep
       # below and VersolaApp's own gracefulShutdownTimeout.
