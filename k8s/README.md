@@ -257,11 +257,16 @@ helm upgrade --install versola k8s/versola --namespace versola --create-namespac
   --set 'ingress.hosts[0].routes={oidc,login,api}'
 ```
 
-On a first install **auth restarts once**. It initialises the edge-registry cache at boot, gives
-up after about 22 seconds if central is not answering yet, and is restarted by Kubernetes — by
-which time central is up. Nothing orders the two; see
-[#378](https://github.com/versolauth/versola/issues/378). It self-heals, but it does mean
-`restartCount` is not a clean health signal immediately after a rollout.
+On a first install **auth and edge come up before central is answering**, and wait for it. Both
+sync their configuration from central while building their own dependencies, and nothing orders
+the three — a Helm install schedules them at once. A service in that state is `Running` and
+`0/1` Ready, logging `Still waiting for the source of cache ...`, and becomes ready by itself
+once central binds its port; `restartCount` stays 0 throughout, so it remains usable as a health
+signal after a rollout ([#378](https://github.com/versolauth/versola/issues/378)).
+
+The wait is two minutes, and only for a central that cannot be *reached*. A central that answers
+and rejects the request — wrong URL, wrong sync key — still fails startup within seconds rather
+than spending the whole budget on something waiting cannot fix.
 
 ---
 
@@ -371,7 +376,6 @@ All of these have open issues; none of them has a fix in the chart yet.
 
 | | |
 |---|---|
-| [#378](https://github.com/versolauth/versola/issues/378) | auth restarts once on a first install |
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
 | [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 

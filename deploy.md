@@ -52,9 +52,10 @@ Nothing binds to `0.0.0.0`. Public access is exclusively through nginx.
 - **`edge`** — authorising reverse proxy in front of `central`'s admin API, and the login entry
   point for the admin console.
 
-**Startup ordering matters:** `auth` cannot finish starting if `central` is unreachable — it
-blocks on its initial config sync. If you restart both, bring `central` up first, or you will get
-a 502 on `id.versola.kz` until `auth` succeeds. The [`Deploy`](#4-deploying-a-new-version)
+**Startup ordering matters:** `auth` cannot finish starting until `central` answers — it blocks
+on its initial config sync, waiting up to two minutes for a `central` that is not up yet. It no
+longer dies if you start them together, but it is not serving while it waits, so `id.versola.kz`
+returns 502 until `central` is up either way. Bringing `central` up first shortens that window. The [`Deploy`](#4-deploying-a-new-version)
 workflow enforces this ordering automatically; see [9.5](#95-authedge-never-become-ready-after-restarting-the-whole-stack-together)
 for what happens if you don't.
 
@@ -719,9 +720,25 @@ Both `auth` and `edge` read configuration from `central` once, synchronously, du
 startup — `auth` syncs OAuth clients, `edge` syncs OAuth clients *and* authorization presets. If
 `central` isn't listening yet at that exact moment (a real risk when all three come up together —
 observed in production: `central` became ready roughly 0.4s **after** `auth` had already given
-up), the initial cache load fails. It is now retried (7 attempts, 500ms doubling, jittered), which
-covers this window; only if `central` is still unreachable after that does startup fail and log
-`Could not start application`.
+up), the initial cache load fails. It is now retried, on a schedule that depends on what the
+failure was:
+
+| Failure | Retried |
+|---|---|
+| `central` cannot be reached at all — connection refused, host not resolving, connect timeout | up to **2 minutes**, in steps of at most 5s |
+| anything else — a rejected request, an undecodable body, an error this cannot classify | 7 attempts, 500ms doubling, jittered (unchanged) |
+
+The split is the difference between a dependency that is merely *not up yet* and one that is
+*wrong*: two minutes covers a cold start of the whole stack, and no amount of waiting fixes a bad
+URL or a bad sync key, so those still fail startup within seconds and log
+`Could not start application`. The first failure is logged with its cause; the attempts after it
+log `Still waiting for the source of cache ...` without repeating the stack trace.
+
+While a service is waiting like this it answers `/liveness` with 200 and `/readiness` with 503:
+the diagnostics server is started *before* the dependencies it is waiting on are built, so "still
+coming up" and "dead" are distinguishable from the outside. Under Kubernetes that distinction is
+what keeps a waiting pod from being killed by its own liveness probe (see `k8s/README.md`); under
+Compose it is what `/readiness` polling during a deploy is reading.
 
 When startup does fail, the container must exit so `restart: unless-stopped` fires. It did not
 originally: each service's diagnostics server (`auth`: 8081, `edge`: 8096) starts *before* the
@@ -747,10 +764,13 @@ zombie described above. Recovery is the same either way: confirm `central` is re
 docker compose -f docker-compose.prod.yml restart auth   # and/or edge
 ```
 
-**Practical rule, still worth following:** never bring up all three services in one
-`docker compose -f docker-compose.prod.yml up -d`. Start `central` alone, wait for `curl 127.0.0.1:8091/readiness` to return
-200, *then* bring up `auth` and `edge`. The automated pipeline already does this for you by
-deploying `central` first and gating `auth`/`edge` on it.
+**Practical rule, still worth following:** start `central` alone, wait for
+`curl 127.0.0.1:8091/readiness` to return 200, *then* bring up `auth` and `edge`. Bringing all
+three up in one `docker compose -f docker-compose.prod.yml up -d` is now survivable — `auth` and
+`edge` wait two minutes for `central`, which is longer than a healthy `central` takes to start —
+but it puts the whole deploy on that budget: a `central` that is slow for any reason (a long
+migration, a cold database) spends it, and then all three are down instead of one. The automated
+pipeline deploys `central` first and gates `auth`/`edge` on it for that reason.
 
 ### 9.6 `docker pull` says the tag is not found
 
