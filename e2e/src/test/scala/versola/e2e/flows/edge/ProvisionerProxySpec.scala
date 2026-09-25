@@ -3,6 +3,7 @@ package versola.e2e.flows.edge
 import versola.e2e.support.*
 import zio.*
 import zio.http.{Client, Method, Status}
+import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
 
@@ -76,7 +77,12 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
         token <- provisionerToken
         edgeApi <- ZIO.service[EdgeApi]
         auth = EdgeAuth.Bearer(token)
+        // Retried on a 5xx for the reason EdgeApi.syncConfiguration is: the sync makes central
+        // call auth over a pooled connection, and one auth closed while it sat idle surfaces
+        // here as a 500 on the first attempt.
         synced <- edgeApi.proxy(Method.POST, "central", "/service/configuration/sync", auth)
+          .filterOrFail(_.status.isSuccess)(RuntimeException("sync did not succeed"))
+          .retry(Schedule.recurs(3) && Schedule.spaced(1.second))
         flushed <- edgeApi.proxy(Method.POST, "central", "/service/users/outbox/flush", auth)
       yield assertTrue(synced.status.isSuccess, flushed.status.isSuccess)
     },
@@ -89,22 +95,32 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
         denied <- edgeApi.proxy(Method.GET, "central", "/users", EdgeAuth.Bearer(token), query = List("tenantId" -> "default"))
       yield assertTrue(denied.status == Status.Forbidden)
     },
-    test("a token for a different audience is refused by the proxy") {
+    // The audience is enforced where it is decided: `resource://central` is issuable only
+    // because the bootstrap put the provisioner in that resource's audience, and a resource it
+    // was not added to is refused outright rather than answered with a token that would then be
+    // someone else's to check. Edge, downstream of this, authorizes by the client's
+    // permissions.
+    test("a resource the provisioner is not in the audience of is not issuable") {
       for
         auth <- ZIO.service[OAuthClient]
         c <- config
-        edgeApi <- ZIO.service[EdgeApi]
-        issued <- auth.clientCredentials(clientId = c.provisionerClientId, clientSecret = c.provisionerSecret).success
-        refused <- edgeApi.proxy(
-          Method.GET,
-          "central",
-          "/configuration/clients",
-          EdgeAuth.Bearer(issued.accessToken),
-          query = List("tenantId" -> "default"),
+        refused <- auth.clientCredentials(
+          clientId = c.provisionerClientId,
+          clientSecret = c.provisionerSecret,
+          resources = Some(List("resource://auth")),
         )
-      yield assertTrue(refused.status == Status.Forbidden)
+      yield assertTrue(refused.response.status == Status.BadRequest) &&
+        assertTrue(errorCode(refused).contains("invalid_target"))
+          .label("RFC 8707 §2: an audience the client has no access to is invalid_target")
     },
   )
+
+  /** The `error` code of a rejected token request; `None` when the request succeeded. */
+  private def errorCode(result: TokenResult): Option[String] =
+    result match
+      case TokenResult.Failure(_, body) =>
+        body.fromJson[Json.Obj].toOption.flatMap(_.get("error")).collect { case Json.Str(code) => code }
+      case _: TokenResult.Success => None
 
   private def resources(body: Json.Obj): List[String] =
     body.get("resources").toList.flatMap:
