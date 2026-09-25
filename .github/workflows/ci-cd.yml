@@ -410,6 +410,15 @@ jobs:
             sleep 2
           done
 
+      # Runs loadgen's own Provisioner/HttpAdminClient, unmodified, against this real central --
+      # not FakeCentral, loadgen's hand-maintained stand-in, which has twice let a wire-shape
+      # mismatch between the two pass its own suite (see LoadgenProvisionSpec's own doc comment).
+      # A separate step, ahead of the general e2e run below, so a decode mismatch here is
+      # reported as "provisioning broke", not lost among the rest of e2e's failures.
+      - name: Run loadgen provision against a real central
+        if: github.event_name != 'release'
+        run: sbt "e2e/testOnly versola.e2e.flows.provision.LoadgenProvisionSpec"
+
       - name: Run e2e tests
         if: github.event_name != 'release'
         run: sbt e2e/test
