@@ -276,6 +276,37 @@ same two-Secret shape, with two differences:
 `driver.replicaCount` is also `SHARD_COUNT`, and it must equal the `seed.shard-count` the
 population was seeded with. Changing it after seeding leaves the new shards' rows unowned.
 
+### Keeping the emulator and the system apart
+
+A campaign's numbers are only as good as the isolation of whatever produces them: a driver
+sharing a node with auth adds its own CPU contention to the latencies it reports. Both charts take
+`nodeSelector`, `tolerations` and `affinity`, chart-wide under `global` and per component, so the
+two can share one cluster on separate node groups:
+
+```yaml
+# loadgen values
+global:
+  nodeSelector: { yandex.cloud/node-group-id: <loadgen node group> }
+
+# versola values
+global:
+  nodeSelector: { yandex.cloud/node-group-id: <system node group> }
+```
+
+- **A component's own value replaces the global one**; it is not merged with it. An empty one
+  inherits. So a component cannot opt out of a global value by leaving its own empty — give it a
+  different value instead.
+- **The coordinator keeps its standby spread.** It defaults to a preferred `podAntiAffinity` that
+  keeps its standby off the active replica's node, and that default survives a `nodeAffinity` you
+  add to pin the chart. An explicit `podAntiAffinity` of your own replaces it.
+- **A selector keeps a chart's pods on its group; it does not keep other workloads off it.** For a
+  dedicated loadgen group, taint the group and give loadgen the matching toleration, so nothing
+  else schedules there.
+
+A pod whose selector matches no node stays `Pending`, with `didn't match Pod's node
+affinity/selector` in its events — it does not quietly schedule somewhere else. Check placement
+with `kubectl get pods -o wide` before a run, not after.
+
 ### Reaching the system under test, and being reached by it
 
 Traffic goes both ways, which is easy to miss:
@@ -284,10 +315,9 @@ Traffic goes both ways, which is easy to miss:
 - **edge calls `mockapi`**, because it proxies `/resources/` to whatever URI `loadgen provision`
   registered in central.
 
-So if the emulator and the system under test are in different clusters — which they must be
-today, since neither chart exposes `nodeSelector`, `tolerations` or `affinity`
-([#381](https://github.com/versolauth/versola/issues/381)) — then `mockapi` needs to be
-reachable *from* the system's cluster, not only the other way round.
+In one cluster both directions work over cluster DNS. If the emulator and the system under test
+are in different clusters, `mockapi` needs to be reachable *from* the system's cluster, not only
+the other way round.
 
 The `mockapi` Service names each resource separately, and an nginx sidecar makes each one look
 like its own origin: `proxy_pass http://127.0.0.1:8100/resources/core/` means a `GET /accounts`
@@ -309,7 +339,6 @@ All of these have open issues; none of them has a fix in the chart yet.
 | [#378](https://github.com/versolauth/versola/issues/378) | auth restarts once on a first install |
 | [#379](https://github.com/versolauth/versola/issues/379) | an Ingress with no class is silently ignored |
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
-| [#381](https://github.com/versolauth/versola/issues/381) | no pod placement controls, so loadgen and the system under test cannot share a cluster |
 | [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
 Observability is external by design. The dashboards in `loadgen/dashboards/` are checked in but
