@@ -47,9 +47,16 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
           flows(CampaignBlueprint.webOtpClientId) == ProvisionFixtures.flows.phoneOtpAuthFlow,
         )
       },
-      test("withholds a registration flow from the passkey client only") {
+      // Both withheld for the same reason central's InvalidRegistrationConfiguration.validate
+      // enforces: registration is only reachable from a credential card whose primary credential
+      // asks for a phone or an email. The passkey cohort's primary credential is a passkey the new
+      // account does not have yet; the OTP+password cohort's auth flow asks for the password
+      // inline, which the same rule forbids alongside registration outright.
+      test("withholds a registration flow from the OTP+password and passkey clients") {
         val without = blueprint.clients.filter(_.registrationFlow.isEmpty).map(_.clientId)
-        assertTrue(without == List(CampaignBlueprint.mobilePasskeyClientId))
+        assertTrue(
+          without == List(CampaignBlueprint.mobileOtpPasswordClientId, CampaignBlueprint.mobilePasskeyClientId),
+        )
       },
       // Without offline_access there is no refresh token, and §2.3's 96.7% refresh path -- most
       // of the campaign's traffic -- cannot be exercised at all.

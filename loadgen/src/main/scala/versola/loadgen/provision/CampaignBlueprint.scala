@@ -248,11 +248,17 @@ object CampaignBlueprint:
 
     val mobileClients = List(
       (mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow, Some(flows.registrationFlow)),
+      // No registration flow: registration is only reachable from a credential card whose primary
+      // credential asks for a phone or an email (InvalidRegistrationConfiguration.validate), and
+      // this auth flow's primary credential asks for the password inline alongside it -- central
+      // rejects the combination outright. The OTP+password cohort registers through the plain OTP
+      // credential card (mobileOtpClientId's flow) and only adds a password afterwards, the same
+      // way the passkey cohort below enrols from an already-registered session.
       (
         mobileOtpPasswordClientId,
         "Loadgen mobile OTP + password",
         flows.phoneOtpPasswordAuthFlow,
-        Some(flows.registrationFlow),
+        None,
       ),
       // No registration flow: an account is registered from a credential card, and this client's
       // primary credential is the passkey the new account does not have yet. The passkey cohort
