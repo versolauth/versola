@@ -159,6 +159,11 @@ lazy val migrateTool = project
 
 lazy val e2e = project
   .in(file("e2e"))
+  // `test->test`: reuses loadgen's own flow-JSON classpath resources and provisioning
+  // fixtures (`FlowResources`, `CampaignBlueprint`) rather than a second copy of them here --
+  // the whole point of `LoadgenProvisionSpec` is that loadgen's real admin client and central's
+  // real decoder agree, which a reimplementation on either side could not prove.
+  .dependsOn(loadgen % "test->test;compile->compile")
   .settings(
     name := "e2e",
     commonSettings,

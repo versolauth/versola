@@ -185,6 +185,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
           json(Json.Obj("resources" -> array(visible.map { (resourceId, stored) =>
             Json.Obj(
               "resourceId" -> Json.Str(resourceId),
+              "audience" -> array(stored.audience.toList.sorted.map(Json.Str(_))),
               "endpoints" -> array(stored.endpointIds.toList.sortBy(_.toString).map(idObject)),
             )
           })))
@@ -195,7 +196,11 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         state.modify: s =>
           if s.resources.contains(resourceId) then (uniqueViolation, s)
           else
-            val stored = StoredResource(spec, objects(spec, "endpoints").map(endpointIdOf).toSet)
+            val stored = StoredResource(
+              spec,
+              objects(spec, "endpoints").map(endpointIdOf).toSet,
+              audience = strings(spec, "audience").toSet,
+            )
             (Response.status(Status.Created), s.copy(resources = s.resources.updated(resourceId, stored)))
 
       case (Method.PUT, "/configuration/resources") =>
@@ -208,10 +213,8 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               val deleted = strings(spec, "deleteEndpoints").map(UUID.fromString).toSet
               val created = objects(spec, "createEndpoints").map(endpointIdOf).toSet
               val endpoints = (stored.endpointIds -- deleted -- created) ++ created
-              (
-                Response.status(Status.NoContent),
-                s.copy(resources = s.resources.updated(resourceId, StoredResource(spec, endpoints))),
-              )
+              val updated = StoredResource(spec, endpoints, audience = stored.patchedAudience(spec))
+              (Response.status(Status.NoContent), s.copy(resources = s.resources.updated(resourceId, updated)))
 
       case (Method.GET, "/configuration/permissions") =>
         cold(path).zip(state.get).map: (stale, s) =>
@@ -383,7 +386,14 @@ object FakeCentral:
       "endpoints",
       "internal",
     ),
-    (Method.PUT, "/configuration/resources") -> Set("resourceId", "deleteEndpoints", "createEndpoints"),
+    (Method.PUT, "/configuration/resources") -> Set(
+      "resourceId",
+      "audience",
+      "audience.add",
+      "audience.remove",
+      "deleteEndpoints",
+      "createEndpoints",
+    ),
     (Method.POST, "/configuration/permissions") -> Set("tenantId", "permission", "description", "endpointIds"),
     (Method.PUT, "/configuration/permissions") -> Set("tenantId", "permission", "description"),
     (Method.POST, "/configuration/roles") -> Set("tenantId", "id", "description", "permissions"),
@@ -434,7 +444,13 @@ object FakeCentral:
     private def patched(current: Set[String], patch: Json.Obj): Set[String] =
       current -- strings(patch, "remove") ++ strings(patch, "add")
 
-  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID])
+  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String] = Set.empty):
+    /** Applies the audience patch the way central's `PatchAudience.patch` does: remove before
+      * add, so a client moved from one resource's audience to another in the same run is not
+      * dropped by whichever write central happens to apply first.
+      */
+    def patchedAudience(spec: Json.Obj): Set[String] =
+      audience -- strings(obj(spec, "audience"), "remove") ++ strings(obj(spec, "audience"), "add")
 
   /** The listings [[FakeCentral.staleListings]] serves cold. Clients are not among them: their
     * listing has its own flag, because the provisioner's 409 fallback needs it stale throughout.

@@ -269,6 +269,24 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state.resources(coreResource.resourceId).endpointIds == coreResource.endpoints.map(_.id).toSet,
         )
       },
+      // Central stores a resource's audience as an ordered list and patches it in place (see
+      // `PatchAudience.patch`); sending the full desired list back as `add` would duplicate every
+      // client already in it instead of leaving the list untouched, so the update names only what
+      // changed.
+      test("patches a resource's audience by add and remove rather than resending it whole") {
+        val narrowed = coreResource.copy(audience = List(CampaignBlueprint.mobileOtpClientId, "stale-client"))
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerResource(narrowed)
+          _ <- admin.registerResource(coreResource)
+          state <- fake.snapshot
+          update = parse(state.callsTo(Method.PUT, "/configuration/resources").head.body)
+        yield assertTrue(
+          strings(obj(update, "audience"), "remove") == List("stale-client"),
+          strings(obj(update, "audience"), "add").toSet == coreResource.audience.toSet - CampaignBlueprint.mobileOtpClientId,
+          state.resources(coreResource.resourceId).audience == coreResource.audience.toSet,
+        )
+      },
       // The listing the create-or-update choice is made on is cached, so a retry after a partial
       // run can be told the resource is absent and have the create rejected as a duplicate.
       test("converges on a resource a concurrent run committed behind a stale listing") {
