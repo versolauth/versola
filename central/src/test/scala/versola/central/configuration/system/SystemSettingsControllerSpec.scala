@@ -25,6 +25,7 @@ object SystemSettingsControllerSpec extends ZIOSpecDefault, ZIOStubs:
     passwordRegex         = "^(?=.*[A-Z]).{8,}$",
     passwordHistorySize   = 10,
     passwordNumDifferent  = 5,
+    identityProviderLogo  = None,
   )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>

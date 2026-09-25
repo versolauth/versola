@@ -388,13 +388,13 @@ case class CreateClientRequest(
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
-    logoUri: Option[String] = None,
-    policyUri: Option[String] = None,
-    tosUri: Option[String] = None,
-    consentFlow: Option[ConsentFlowDto] = None,
-    /** RFC 9449 §5.2: defaults to `false`, leaving DPoP opt-in per request for a caller that
-      * does not ask for it. */
-    dpopBoundAccessTokens: Boolean = false,
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlowDto],
+    /** RFC 9449 §5.2: whether every token issued to this client is bound to a proof key,
+      * rather than DPoP staying opt-in per request. */
+    dpopBoundAccessTokens: Boolean,
     /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
       * what the metadata document advertises. Empty means no narrowing. */
     dpopSigningAlgs: Set[Dpop.Algorithm],
@@ -415,16 +415,16 @@ case class CreateClientRequest(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
-    /** RFC 9101 §10.5: defaults to `false`, leaving a plain parameter set acceptable for a
-      * caller that does not ask for signed request objects. */
-    requireSignedRequestObject: Boolean = false,
-    /** RFC 9126 §6.2: defaults to `false`, leaving `/par` optional for a caller that does not
-      * ask for it. */
-    requirePushedAuthorizationRequests: Boolean = false,
+    /** RFC 9101 §10.5: whether this client states its authorization request in a signed
+      * request object, rather than a plain parameter set staying acceptable from it. */
+    requireSignedRequestObject: Boolean,
+    /** RFC 9126 §6.2: whether this client must push its authorization request to `/par`
+      * first, rather than `/authorize` staying reachable directly. */
+    requirePushedAuthorizationRequests: Boolean,
     /** The private key an edge fronting this client signs with; `None` when no edge does, which
       * is every client registered before edges could authenticate by key. Must be the private
       * half of a key [[jwks]] publishes — registration refuses a pair that cannot verify. */
-    edgeSigningKey: Option[PrivateJsonWebKey] = None,
+    edgeSigningKey: Option[PrivateJsonWebKey],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -451,24 +451,24 @@ case class UpdateClientRequest(
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
     backChannelLogoutUri: Option[Patch[String]],
-    logoUri: Option[Patch[String]] = None,
-    policyUri: Option[Patch[String]] = None,
-    tosUri: Option[Patch[String]] = None,
-    consentFlow: Option[Patch[ConsentFlowDto]] = None,
-    dpopBoundAccessTokens: Option[Boolean] = None,
+    logoUri: Option[Patch[String]],
+    policyUri: Option[Patch[String]],
+    tosUri: Option[Patch[String]],
+    consentFlow: Option[Patch[ConsentFlowDto]],
+    dpopBoundAccessTokens: Option[Boolean],
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
     /** Moving a client to another method is a change of credential, not of transport, so it
       * is validated against the resulting [[mtlsAuth]] and [[jwks]] exactly as a registration
       * is. Leaving `client_secret` drops the stored secret: a credential the client no longer
       * authenticates with is one nobody can be told has stopped working. */
-    authMethod: Option[AuthMethod] = None,
+    authMethod: Option[AuthMethod],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
-    requireSignedRequestObject: Option[Boolean] = None,
-    requirePushedAuthorizationRequests: Option[Boolean] = None,
-    edgeSigningKey: Option[Patch[PrivateJsonWebKey]] = None,
+    requireSignedRequestObject: Option[Boolean],
+    requirePushedAuthorizationRequests: Option[Boolean],
+    edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -476,7 +476,7 @@ case class AuthorizationPresetInput(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -496,7 +496,7 @@ case class AuthorizationPresetResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -515,7 +515,7 @@ case class AuthorizationPresetSyncResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -661,15 +661,15 @@ case class SyncOAuthClientRecord(
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
     /** RFC 9101 §10.5: the client states its authorization request in a request object it
-      * signed. Defaults to `false` so that an auth node reading a central that predates the
-      * field keeps the behaviour it already had. */
-    requireSignedRequestObject: Boolean = false,
+      * signed. Always written, so an auth node reading a central that predates the field is
+      * the only reader that has to supply its own default. */
+    requireSignedRequestObject: Boolean,
     /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
-    requirePushedAuthorizationRequests: Boolean = false,
+    requirePushedAuthorizationRequests: Boolean,
     /** The private JWK an edge fronting this client signs with, encrypted in transit exactly
       * as `secret` is — to the requesting edge's registered RSA public key. Absent for a
       * caller that is not an edge, which has no key to decrypt it with and no use for it. */
-    edgeSigningKey: Option[String] = None,
+    edgeSigningKey: Option[String],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

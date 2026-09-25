@@ -124,6 +124,11 @@ COPY docker/versola-tools/proxy_params.conf.template .
 COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/entrypoint.sh .
+# Built admin console (central-ui's `npm run build` output -- a CI step in
+# the docker-tools job, not done here, same as for the gateway image).
+# entrypoint.sh copies it into every deployment bundle; see the comment
+# there. .dockerignore already re-includes central-ui/dist for this.
+COPY central-ui/dist central-ui
 # 1777 (sticky bit), not just +x: gen-env.scala's writeFile does
 # `File(".local/env/$TARGET").mkdirs()` at runtime, relative to this
 # WORKDIR -- and this directory, like everything else COPYed above, is
@@ -188,5 +193,12 @@ RUN OUTPUT=$(java -cp 'migrate-lib/*' versola.migrate.MigrateTool 2>&1); \
       echo "migrate-tool smoke test failed: expected exit 1 with 'Config file not found', got exit $STATUS" >&2; \
       exit 1; \
     fi
+
+# Smoke test: a full entrypoint.sh run for vps must put the admin console
+# into the bundle -- fails the image build (and so the release) if the
+# central-ui build didn't make it into the image or the copy step breaks.
+RUN OUT_DIR=/tmp/smoke-out TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 ./entrypoint.sh \
+ && test -f /tmp/smoke-out/central-ui/index.html \
+ && rm -rf /tmp/smoke-out .local
 
 ENTRYPOINT ["./entrypoint.sh"]

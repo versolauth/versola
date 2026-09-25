@@ -82,6 +82,31 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-0")),
         )
       },
+      // Central declares every one of these mandatory, so omitting them is not "the campaign
+      // wants the default" but a 400 that stops provisioning on its first client.
+      test("names the client protections central requires, all switched off") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerClient(webClient)
+          _ <- admin.registerClient(webClient)
+          state <- fake.snapshot
+          create = state.clients(webClient.clientId).spec
+          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+        yield assertTrue(
+          bool(create, "certificateBoundAccessTokens").contains(false),
+          field(create, "dpopSigningAlgs").contains(Json.Arr()),
+          bool(create, "dpopBoundAccessTokens").contains(false),
+          bool(create, "requireSignedRequestObject").contains(false),
+          bool(create, "requirePushedAuthorizationRequests").contains(false),
+          // Written on the update too, so a client left bound by a previous configuration is
+          // converged rather than left holding a setting the campaign cannot satisfy.
+          bool(update, "certificateBoundAccessTokens").contains(false),
+          field(update, "dpopSigningAlgs").contains(Json.Arr()),
+          bool(update, "dpopBoundAccessTokens").contains(false),
+          bool(update, "requireSignedRequestObject").contains(false),
+          bool(update, "requirePushedAuthorizationRequests").contains(false),
+        )
+      },
       test("marks a mobile client public and carries no secret back") {
         for
           (admin, fake) <- fakeAdmin()

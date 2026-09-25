@@ -76,6 +76,11 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
     authMethod = AuthMethod.client_secret,
@@ -84,6 +89,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -110,11 +116,20 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = None,
     dpopSigningAlgs = None,
     dpopMinRsaKeySize = None,
+    authMethod = None,
     mtlsAuth = None,
     certificateBoundAccessTokens = None,
     jwks = None,
+    requireSignedRequestObject = None,
+    requirePushedAuthorizationRequests = None,
+    edgeSigningKey = None,
   )
 
   private val clients = Vector(

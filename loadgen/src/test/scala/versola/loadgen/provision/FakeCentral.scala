@@ -66,7 +66,35 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       case _ => false
     }
     if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
-    else record *> ((request.method, path) match
+    else missingMember(request.method, path, body) match
+      case Some(refusal) => record.as(refusal)
+      case None => dispatch(request, path, body, record)
+
+  /** Central decodes the body before any handler runs, so a payload that leaves out a member
+    * its DTO declares mandatory is refused there and never reaches the behaviour these specs
+    * describe -- the shape of the bug that kept `provision` from registering a client at all.
+    */
+  private def missingMember(method: Method, path: String, body: String): Option[Response] =
+    requiredMembers.get((method, path)).flatMap: required =>
+      val document = Json.decoder.decodeJson(body).toOption.collect { case obj: Json.Obj => obj }
+      required.toList.sorted.find(member => !document.exists(present(_, member.split('.').toList))).map: member =>
+        val trace = member.split('.').mkString(".", ".", "")
+        Response.text(s"Failed to decode JSON: $trace(missing)").status(Status.BadRequest)
+
+  /** A member named by its path from the document root, so that a nested DTO's own mandatory
+    * members are checked too -- `submissionLimits` being present says nothing about the
+    * categories inside it, each of which central requires in its own right.
+    */
+  private def present(document: Json.Obj, path: List[String]): Boolean =
+    path match
+      case Nil => true
+      case member :: rest =>
+        document.get(member).exists:
+          case nested: Json.Obj => present(nested, rest)
+          case _ => rest.isEmpty
+
+  private def dispatch(request: Request, path: String, body: String, record: UIO[Unit]): UIO[Response] =
+    record *> ((request.method, path) match
       // auth's token endpoint. Only `client_credentials` for `resource://central` is modelled,
       // since that is the one grant an admin client ever asks for.
       case (Method.POST, "/token") =>
@@ -279,6 +307,68 @@ object FakeCentral:
     "/configuration/resources",
     "/configuration/permissions",
     "/configuration/roles",
+  )
+
+  /** The members central's DTO for each write declares mandatory -- neither optional nor
+    * carrying a default, so zio-json refuses a body without them. A dotted name is a member of
+    * a nested DTO, which central requires just as strictly as one at the root.
+    *
+    * Kept in step with `versola.central.configuration.dto` by hand, as the payloads themselves
+    * are: this stand-in is the only thing between a member added to a registration DTO and a
+    * `provision` run that fails against a real central.
+    */
+  val requiredMembers: Map[(Method, String), Set[String]] = Map(
+    (Method.POST, "/configuration/clients") -> Set(
+      "tenantId",
+      "id",
+      "clientName",
+      "redirectUris",
+      "allowedScopes",
+      "permissions",
+      "accessTokenTtl",
+      "theme",
+      "otpTemplateId",
+      "frontChannelLogoutSessionRequired",
+      "authMethod",
+      "certificateBoundAccessTokens",
+      "dpopSigningAlgs",
+      "dpopBoundAccessTokens",
+      "requireSignedRequestObject",
+      "requirePushedAuthorizationRequests",
+    ),
+    (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
+    (Method.POST, "/configuration/resources") -> Set(
+      "tenantId",
+      "resourceId",
+      "resource",
+      "audience",
+      "endpoints",
+      "internal",
+    ),
+    (Method.PUT, "/configuration/resources") -> Set("resourceId", "deleteEndpoints", "createEndpoints"),
+    (Method.POST, "/configuration/permissions") -> Set("tenantId", "permission", "description", "endpointIds"),
+    (Method.PUT, "/configuration/permissions") -> Set("tenantId", "permission", "description"),
+    (Method.POST, "/configuration/roles") -> Set("tenantId", "id", "description", "permissions"),
+    (Method.PUT, "/configuration/roles") -> Set("tenantId", "id", "description", "permissions"),
+    (Method.POST, "/configuration/auth-request-presets") -> Set("clientId", "presets"),
+    (Method.PUT, "/configuration/challenges/challenge-settings") -> Set(
+      "tenantId",
+      "allowedPrefixes",
+      "submissionLimits",
+      "submissionLimits.otpRequest",
+      "submissionLimits.otpSubmit",
+      "submissionLimits.passwordSubmit",
+      "submissionLimits.passkeyAssertion",
+      "submissionLimits.banDurationSeconds",
+      "otpLength",
+      "otpResendAfter",
+      "passkeySettings",
+      "passkeySettings.rpId",
+      "passkeySettings.rpName",
+      "passkeySettings.origins",
+      "passkeySettings.userVerification",
+      "ipHeader",
+    ),
   )
 
   case class StoredClient(
