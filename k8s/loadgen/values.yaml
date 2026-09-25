@@ -51,6 +51,10 @@ global:
   # merged with whatever affinity applies per top-level key, that key winning.
   # So `nodeAffinity` here pins the coordinator AND keeps the spread; an
   # explicit `podAntiAffinity` replaces the spread.
+  #
+  # These three keys are read here and on a component, nowhere else. Setting
+  # one at the TOP level of values instead fails the template, rather than
+  # installing a release that reports success and places nothing.
   nodeSelector: {}
   tolerations: []
   affinity: {}

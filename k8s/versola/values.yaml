@@ -30,6 +30,10 @@ global:
   # groups -- above all, keeping the load emulator (k8s/loadgen) and the
   # system under test off each other's nodes. A pod that ignores its placement
   # still schedules, just somewhere else, and nothing reports it.
+  #
+  # These three keys are read here and on a component, nowhere else. Setting
+  # one at the TOP level of values instead fails the template, rather than
+  # installing a release that reports success and places nothing.
   nodeSelector: {}
   tolerations: []
   affinity: {}

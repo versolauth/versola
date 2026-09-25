@@ -344,6 +344,9 @@ global:
 - **A selector keeps a chart's pods on its group; it does not keep other workloads off it.** For a
   dedicated loadgen group, taint the group and give loadgen the matching toleration, so nothing
   else schedules there.
+- **The three fields live under `global` or a component, never at the top level.** `--set
+  nodeSelector.workload=loadgen` sets a path no template reads; Helm would install it happily and
+  place nothing. Both charts refuse to render instead, naming the path they do read.
 
 A pod whose selector matches no node stays `Pending`, with `didn't match Pod's node
 affinity/selector` in its events — it does not quietly schedule somewhere else. Check placement
