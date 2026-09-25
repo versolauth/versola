@@ -327,7 +327,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val bootstrapProvisionerLines =
     if isLocal then
       "  provisioner {\n" +
-        "    client-id = \"loadgen-provisioner\"\n" +
+        "    client-id = \"utils\"\n" +
         "    secret = \"ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI\"\n" +
         "  }\n"
     else ""

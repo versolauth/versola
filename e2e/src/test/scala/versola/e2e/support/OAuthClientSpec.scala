@@ -20,7 +20,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     resourceSecret = resourceSecret,
     accountResourceSecret = "account-resource-secret-for-test",
     edgeInternalSecret = "edge-internal-secret-for-test",
-    provisionerClientId = "loadgen-provisioner",
+    provisionerClientId = "utils",
     provisionerSecret = "provisioner-secret-for-test",
     redirectUri = "http://edge.test/complete",
   )

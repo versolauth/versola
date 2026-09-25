@@ -49,7 +49,7 @@ object E2EConfig:
       // Default matches the pinned local edge internal secret (see gen-env.scala).
       edgeInternalSecret <- env("E2E_EDGE_INTERNAL_SECRET", "ZGV2LWVkZ2UtaW50ZXJuYWwtc2VjcmV0LTMyYnl0ZSE")
       // Defaults match the pinned local provisioner seed (see gen-env.scala).
-      provisionerClientId <- env("E2E_PROVISIONER_CLIENT_ID", "loadgen-provisioner")
+      provisionerClientId <- env("E2E_PROVISIONER_CLIENT_ID", "utils")
       provisionerSecret <- env("E2E_PROVISIONER_SECRET", "ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI")
       redirectUri      <- env("E2E_REDIRECT_URI",   "http://localhost:3000")
     yield E2EConfig(

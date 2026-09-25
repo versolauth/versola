@@ -506,7 +506,7 @@ object ProvisionFixtures:
 
   val provision: ProvisionConfig = ProvisionConfig(
     tenantId = "default",
-    provisionerClientId = "loadgen-provisioner",
+    provisionerClientId = "utils",
     provisionerSecret = Config.Secret("provisioner-secret"),
     mobileRedirectUri = "versola://callback",
     resources = ProvisionResourcesConfig(

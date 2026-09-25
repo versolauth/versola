@@ -123,7 +123,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |
       |provision {
       |  tenant-id = default
-      |  provisioner-client-id = loadgen-provisioner
+      |  provisioner-client-id = utils
       |  provisioner-secret = "cHJvdmlzaW9uZXItc2VjcmV0"
       |  mobile-redirect-uri = "versola://callback"
       |  resources {
