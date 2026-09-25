@@ -123,7 +123,6 @@ case class ShardConfig(index: Int, count: Int)
 case class TargetsConfig(
     authUrl: String,
     edgeUrl: String,
-    centralUrl: String,
     mockUrl: String,
     /** WebAuthn `rp.origin` the software authenticator signs against (§4, §8.3). */
     origin: String,

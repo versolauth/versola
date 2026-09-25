@@ -499,7 +499,6 @@ object ProvisionFixtures:
   val targets: TargetsConfig = TargetsConfig(
     authUrl = "http://auth:8080",
     edgeUrl = "http://edge:8095",
-    centralUrl = "http://central:8090",
     mockUrl = "http://mockapi:8100",
     origin = "https://bank.example.test",
   )

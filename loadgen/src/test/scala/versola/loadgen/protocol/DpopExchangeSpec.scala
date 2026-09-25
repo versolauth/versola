@@ -17,7 +17,7 @@ import zio.{Ref, UIO, ZIO}
   */
 object DpopExchangeSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val tokenHtu = StubSut.authUrl + "/token"
   private val leeway = zio.Duration.fromSeconds(30)
   private val issuedNonce = "nonce-from-auth"
