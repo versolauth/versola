@@ -275,11 +275,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // already asks for all of these one at a time; the one thing "k8s" changes
   // is `useOpenBao`, so every secret becomes a `${VAR}` placeholder instead of
   // a literal value -- which is what the chart's Secret-based wiring requires
-  // (see versola.secretEnv in k8s/versola/templates/_helpers.tpl). Accepts
-  // "kubernetes" too; nothing downstream cares which spelling was typed
-  // beyond the directory name it's written under (see `target`'s own use as
-  // a directory key below).
-  val isKubernetes = target == "k8s" || target == "kubernetes"
+  // (see versola.secretEnv in k8s/versola/templates/_helpers.tpl).
+  val isKubernetes = target == "k8s"
   // The literal string written into the generated config's own `env`
   // field below -- deliberately a different variable from `target` above,
   // which only picks which of THIS script's own branches to run (network

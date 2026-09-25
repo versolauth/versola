@@ -62,7 +62,7 @@ matters, because several values must agree across services (`CENTRAL_SECRET_KEY`
 `CLIENT_SECRETS_SECRET` are shared between auth and central, and central holds the public half
 of edge's key).
 
-Run it and answer `k8s` (or `kubernetes`) at the first prompt:
+Run it and answer `k8s` at the first prompt:
 
 ```bash
 scala-cli run scripts/gen-env.scala
@@ -144,7 +144,7 @@ Build both kinds from the generated files without the values passing through a t
 
 ```bash
 kubectl create secret generic auth-config -n versola \
-  --from-file=env.conf=.local/env/vps/auth.conf \
+  --from-file=env.conf=.local/env/k8s/auth.conf \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
 
