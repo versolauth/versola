@@ -1176,3 +1176,25 @@ jobs:
 
       - name: Check chart pod placement
         run: .github/scripts/check-chart-placement.sh
+
+  # The plain-Ingress path's className contract: the chart must refuse to
+  # render an Ingress with no class rather than fall back to a cluster default
+  # that may not exist, while the Gateway API path keeps rendering without one.
+  # Every other chart check renders the defaults, where `ingress.enabled` is
+  # false, so dropping the guard would leave CI green.
+  #
+  # Its own job, like helm-placement, so a failure names what broke. Needs only
+  # Helm -- the script asserts on `helm template` output and its exit status.
+  helm-ingress:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart ingress class contract
+        run: .github/scripts/check-chart-ingress.sh
