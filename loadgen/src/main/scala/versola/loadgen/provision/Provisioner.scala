@@ -39,8 +39,11 @@ object Provisioner:
       _ <- admin.flushUserOutbox()
       _ <- admin.syncConfiguration()
       // Any of the campaign's resources proves the cache turned over, since one sync loads them
-      // all; the first is used so the wait is over a resource this run actually wrote.
-      _ <- ZIO.foreachDiscard(blueprint.resources.headOption)(spec => admin.awaitEdgeConfiguration(spec.resourceId))
+      // all; the first with a registered endpoint is used so the wait is over a resource this
+      // run actually wrote, probed at that endpoint rather than the resource's bare root -- edge
+      // never recognizes a loaded resource there, since no campaign resource registers `/`.
+      _ <- ZIO.foreachDiscard(blueprint.resources.flatMap(r => r.endpoints.headOption.map(r.resourceId -> _)).headOption):
+        case (resourceId, endpoint) => admin.awaitEdgeConfiguration(resourceId, endpoint.method, endpoint.path)
       _ <- ZIO.logInfo(s"Provisioned ${blueprint.clients.size} clients, ${blueprint.resources.size} resources, " +
         s"${blueprint.permissions.size} permissions, ${blueprint.roles.size} roles")
     yield creds.toMap

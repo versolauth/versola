@@ -314,15 +314,22 @@ final class HttpAdminClient(
 
   /** Edge has no sync a caller outside the cluster can reach, and publishing one would mean
     * giving loadgen an internal secret again. What it does instead is wait for edge's own
-    * `configuration-cache-refresh-interval` to come round, and prove it has by reading the
-    * campaign's own resource back through the proxy -- a 404 from edge means the resource is
-    * still absent from the cache the campaign's traffic will be authorized against.
+    * `configuration-cache-refresh-interval` to come round, and prove it has by reading one of
+    * the campaign's own endpoints back through the proxy -- a 404 from edge means the resource
+    * is still absent from the cache the campaign's traffic will be authorized against.
+    *
+    * Probed at `method`/`path`, not at the resource's bare root: edge's proxy only recognizes a
+    * loaded resource once the rest-of-path also matches a registered endpoint, and no campaign
+    * resource registers one at `/`, so a root probe 404s identically cached or not and this
+    * would otherwise never observe the resource landing. The provisioner's own token has no
+    * permission on the endpoint it probes, so a resource that has landed answers 403 rather than
+    * 200 -- either is proof enough, since only "still missing" answers 404.
     *
     * Bounded rather than open-ended: a deployment whose interval is longer than this fails the
     * run with the step named, which is a better answer than a campaign measuring 403s.
     */
-  override def awaitEdgeConfiguration(resourceId: String): Task[Unit] =
-    val probe = send(Method.GET, edgeUrl.addPath(Path.root / "resources" / resourceId), None)
+  override def awaitEdgeConfiguration(resourceId: String, method: String, path: String): Task[Unit] =
+    val probe = send(Method.fromString(method), edgeUrl.addPath(Path(s"/resources/$resourceId$path")), None)
     probe
       .repeat(Schedule.spaced(2.seconds) *> Schedule.recurUntil[AdminResponse](_.status != Status.NotFound))
       .timeout(edgeCacheTimeout)

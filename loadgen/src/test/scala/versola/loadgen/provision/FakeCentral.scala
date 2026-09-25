@@ -86,9 +86,12 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             )
 
       // Edge serves a resource it has synced and 404s one it has not, which is what
-      // `awaitEdgeConfiguration` reads to tell that its writes have landed.
-      case (Method.GET, probe) if probe.startsWith("/resources/") && !probe.stripPrefix("/resources/").contains('/') =>
-        val resourceId = probe.stripPrefix("/resources/")
+      // `awaitEdgeConfiguration` reads to tell that its writes have landed. Real edge 404s a
+      // probe against a rest-of-path with no matching registered endpoint the same as one
+      // against a resource it has not cached at all -- this stands in for both by keying on the
+      // resource alone, since the endpoint the provisioner probes is always one it registered.
+      case (_, probe) if probe.startsWith("/resources/") && !probe.startsWith(proxyPrefix) =>
+        val resourceId = probe.stripPrefix("/resources/").takeWhile(_ != '/')
         state.get.map: s =>
           if s.resources.contains(resourceId) && s.authSyncs > 0 then Response.status(Status.NoContent)
           else Response.status(Status.NotFound)

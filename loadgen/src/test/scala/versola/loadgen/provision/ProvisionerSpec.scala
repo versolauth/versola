@@ -103,7 +103,7 @@ object ProvisionerSpec extends ZIOSpecDefault:
         state <- fake.snapshot
         lastWrite = state.calls.lastIndexWhere(call => !call.path.startsWith("/service") && !call.path.startsWith("/resources/"))
         authSync = state.calls.indexWhere(call => call.path == "/service/configuration/sync")
-        edgeProbe = state.calls.lastIndexWhere(call => call.path == "/resources/core")
+        edgeProbe = state.calls.lastIndexWhere(call => call.path == "/resources/core/accounts")
       yield assertTrue(
         state.authSyncs == 1,
         state.outboxFlushes == 1,
