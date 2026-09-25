@@ -6,8 +6,8 @@ description: >-
   -- see https://github.com/versolauth/versola/issues/206 for the ground
   rules and deploy.md for the equivalent docker-compose deployment.
 type: application
-version: 0.2.1
-appVersion: "0.6.0"
+version: 0.2.2
+appVersion: "0.6.1"
 home: https://github.com/versolauth/versola
 sources:
   - https://github.com/versolauth/versola
