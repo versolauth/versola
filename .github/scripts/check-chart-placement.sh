@@ -13,7 +13,10 @@
 #   - `global.<field>` applies to every pod;
 #   - a non-empty `<component>.<field>` REPLACES the global value -- it is not
 #     merged with it, key by key or entry by entry;
-#   - an empty `<component>.<field>` inherits the global one.
+#   - an empty `<component>.<field>` inherits the global one;
+#   - the same field at the TOP level of values is read by nobody, so the
+#     chart refuses to render rather than deploy without the placement the
+#     operator asked for (versolauth/versola#404).
 #
 # One workload has placement of its own. The loadgen coordinator spreads its
 # standby off the active replica's node with a PREFERRED podAntiAffinity when
@@ -100,17 +103,21 @@ def deep_merge(base, extra):
     return out
 
 
-def render(chart, release, base, values):
+def helm(chart, release, base, values, check=True):
     with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as f:
         yaml.safe_dump(deep_merge(base, values), f)
         path = f.name
     try:
-        out = subprocess.run(
+        return subprocess.run(
             ["helm", "template", release, f"k8s/{chart}", "--namespace", release, "-f", path],
-            check=True, capture_output=True, text=True,
-        ).stdout
+            check=check, capture_output=True, text=True,
+        )
     finally:
         os.unlink(path)
+
+
+def render(chart, release, base, values):
+    out = helm(chart, release, base, values).stdout
     pods = {}
     for doc in yaml.safe_load_all(out):
         if doc and doc.get("kind") in POD_KINDS:
@@ -132,6 +139,12 @@ def loadgen(values=None):
     return pods
 
 
+def render_error(chart, base, values):
+    proc = helm(chart, chart, base, values, check=False)
+    assert proc.returncode != 0, f"{chart}: rendered with top-level {sorted(values)} instead of failing"
+    return proc.stderr
+
+
 failures = []
 checks = 0
 
@@ -149,6 +162,27 @@ def check(name, fn):
 
 def eq(pod, field, got, want):
     assert got == want, f"{pod}: {field} = {got!r}, want {want!r}"
+
+
+# Break caught: a chart that takes placement only from `global` but accepts it
+# at the top level without a word -- `--set nodeSelector.workload=loadgen`
+# installs, reports success and places nothing, because Helm does not reject a
+# values path no template reads. The pods land wherever the scheduler puts
+# them, which is the failure every other check here exists to prevent.
+#
+# The message is asserted on, not just the exit status: the whole point is to
+# name the path that IS read, so the fix is the next thing the operator types.
+def top_level_placement_is_rejected():
+    misplaced = {
+        "nodeSelector": {"pool": "shared"},
+        "tolerations": [SHARED_TOLERATION],
+        "affinity": {"nodeAffinity": SHARED_NODE_AFFINITY},
+    }
+    for chart, base in (("versola", VERSOLA_BASE), ("loadgen", LOADGEN_BASE)):
+        for field, value in misplaced.items():
+            err = render_error(chart, base, {field: value})
+            for want in (f"top-level `{field}`", f"global.{field}"):
+                assert want in err, f"{chart}: top-level {field} failed without naming {want}:\n{err}"
 
 
 # Break caught: a template that never renders one of the three fields, or a
@@ -279,6 +313,7 @@ def coordinator_does_not_mutate_global_affinity():
        {"nodeAffinity": SHARED_NODE_AFFINITY})
 
 
+check("a top-level placement field fails the render in both charts", top_level_placement_is_rejected)
 check("global placement reaches every pod in both charts", global_reaches_every_pod)
 check("a component's value replaces the global one, never merges", component_replaces_global)
 check("defaults add no placement beyond the coordinator's standby spread", defaults_add_nothing_but_the_coordinator_spread)
