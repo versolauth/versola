@@ -273,7 +273,13 @@ console:
 # preset still has to name the same hostname.
 ingress:
   enabled: false
-  # Left empty to use the cluster's default IngressClass.
+  # Required when `enabled` is true and `gatewayAPI` isn't: the template fails
+  # rather than fall back to the cluster's default IngressClass. A cluster
+  # whose only controller is a stock ingress-nginx install has no default --
+  # that chart doesn't mark its own class as default -- so an empty value
+  # would render an Ingress that looks correct and is adopted by nobody,
+  # answering every request with a bare 404 that reads as a routing bug
+  # rather than an unclaimed resource. Name the actual class, e.g. "nginx".
   className: ""
   # Free-form passthrough, e.g. cert-manager.io/cluster-issuer. The chart
   # itself needs no annotations -- everything above is core-spec, so it
