@@ -132,8 +132,14 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
       client <- ZIO.service[Client]
-      appDependencies <- dependencies.build
 
+      // Before `dependencies.build`, deliberately. Building them is what waits on everything
+      // this service syncs from another one, and until the diagnostics server is listening
+      // neither /liveness nor /readiness answers at all - so a service waiting for central
+      // looks, to a liveness probe, exactly like a dead one, and the kubelet kills it a few
+      // failures in (#378). Started first, the process says what is true of it: alive, and not
+      // ready until `setReady` below. Nothing here needs `Dependencies`; the diagnostics
+      // surface is metrics and the two probes.
       fibers <-
         for
           ready <- Promise.make[Throwable, Int]
@@ -157,6 +163,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         yield fibers
 
       _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
+
+      appDependencies <- dependencies.build
 
       additionalFiber <- ZIO.foreach(additionalRoutes): routes =>
         for
