@@ -245,19 +245,19 @@ nothing is exposed that is not listed — there is no catch-all group.
 
 `/logout` is the one overlap: auth owns it exactly, edge owns the `/logout/` prefix.
 
-**Set `ingress.className` explicitly.** It defaults to empty, which means "use the cluster's
-default IngressClass" — and a cluster whose only controller is a stock `ingress-nginx` install
-has no default, because that chart does not mark its class as default. The Ingress is then
-created, looks entirely correct, and is silently adopted by nobody: `ADDRESS` stays empty and
-requests get a bare `404` from the controller. See
-[#379](https://github.com/versolauth/versola/issues/379). Annotating the class as default
-afterwards does not fix an existing Ingress — the default is applied at admission, so the object
-has to be recreated or patched.
+**`ingress.className` is required.** The template fails rather than fall back to the cluster's
+default IngressClass — a cluster whose only controller is a stock `ingress-nginx` install has no
+default, because that chart does not mark its own class as default. Left to the fallback, the
+Ingress would render, look entirely correct, and be adopted by nobody: `ADDRESS` stays empty and
+requests get a bare `404` from the controller, which reads as a routing bug rather than an
+unclaimed resource. Annotating the class as default *afterwards* does not fix an Ingress already
+created without one either — the default is applied at admission, so the object has to be
+recreated or patched with an explicit `spec.ingressClassName`. Name the class up front instead.
 
-There is **no group for central**, so central's admin API cannot be published this way
-([#375](https://github.com/versolauth/versola/issues/375)). Anything that drives it — including
-`loadgen provision` — has to reach it over cluster DNS, which means running inside the same
-cluster.
+There is no route group for central, but nothing needs one: `loadgen provision` reaches central
+through `auth` (a `client_credentials` token, the `oidc` group's `/token`) and then `edge`'s
+generic resource proxy (the `api` group's `/resources/`), both already exposed. central's admin
+API is otherwise reached over cluster DNS, by callers that are already inside the cluster.
 
 ---
 
@@ -335,10 +335,7 @@ All of these have open issues; none of them has a fix in the chart yet.
 | | |
 |---|---|
 | [#372](https://github.com/versolauth/versola/issues/372) | `gen-env.scala` has no Kubernetes mode — see [§3](#3-generating-configuration) |
-| [#375](https://github.com/versolauth/versola/issues/375) | no ingress route group for central |
 | [#378](https://github.com/versolauth/versola/issues/378) | auth restarts once on a first install |
-| [#379](https://github.com/versolauth/versola/issues/379) | an Ingress with no class is silently ignored |
-| [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
 | [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
 Observability is external by design. The dashboards in `loadgen/dashboards/` are checked in but
