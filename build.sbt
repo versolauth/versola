@@ -223,7 +223,9 @@ lazy val tools = project
     Compile / unmanagedSourceDirectories := Seq(baseDirectory.value),
     Compile / unmanagedSources := Seq(baseDirectory.value / "gen-env.scala"),
     // Matches the synthetic object Scala 3 generates for gen-env.scala's
-    // top-level `@main def genEnv(): Unit`.
+    // top-level `@main def genEnv(args: String*): Unit` -- the generated
+    // object is still named `genEnv` regardless of the vararg parameter,
+    // which the generated `main(args: Array[String])` just forwards along.
     Compile / mainClass := Some("genEnv"),
   )
 
