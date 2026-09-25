@@ -26,7 +26,7 @@ import java.time.Instant
   */
 object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
 
-  private val targets = TargetsConfig(ScenarioSut.authUrl, ScenarioSut.edgeUrl, "http://central.test", "http://mock.test", ScenarioSut.origin)
+  private val targets = TargetsConfig(ScenarioSut.authUrl, ScenarioSut.edgeUrl, "http://mock.test", ScenarioSut.origin)
   private val shard = ShardConfig(0, 1)
 
   private val accounts = BusinessActionConfig("accounts", 30.0, "GET", "/resources/core/accounts", None)

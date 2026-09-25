@@ -37,7 +37,6 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |targets {
       |  auth-url    = "http://auth:8080"
       |  edge-url    = "http://edge:8095"
-      |  central-url = "http://central:8090"
       |  mock-url    = "http://mockapi:8100"
       |  origin      = "https://bank.example.test"
       |}

@@ -28,7 +28,7 @@ import java.time.Instant
   */
 object WebSessionPersistenceSpec extends LoadgenPostgresSpec:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val request = WebLoginRequest(PresetId(StubSut.preset), None, None)
   private val credentials = Credentials.PhoneOtp("+70000000201")
   private val accounts = ActionCall(Method.GET, "/resources/core/accounts", None)

@@ -7,7 +7,7 @@ import zio.{Ref, ZIO}
 
 object EdgeActionClientSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val accounts = ActionCall(Method.GET, "/resources/core/accounts", None)
 
   private def clientFor(response: Response, seen: Ref[Option[Request]]): ZIO[TestClient & Client, ProtocolError, ActionClient] =

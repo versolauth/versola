@@ -7,7 +7,7 @@ import zio.test.*
 
 object HttpAuthClientSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
 
   private def clientFor(routes: Routes[Any, Nothing]): ZIO[TestClient & Client, ProtocolError, AuthClient] =
     for
