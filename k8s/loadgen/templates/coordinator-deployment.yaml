@@ -36,21 +36,34 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if gt (int $coordinator.replicaCount) 1 }}
-      # Preferred, not required: a standby on the same node as the active
-      # replica still survives the process dying, which is the failure §12
-      # describes, and a hard constraint would leave the standby Pending on a
-      # single-node cluster -- a campaign that cannot start at all instead of
-      # one that is merely less redundant than intended.
+      # Placement: the coordinator's own value if set, otherwise global's -- a
+      # replacement, not a merge. See values.yaml's `global.nodeSelector`.
+      {{- with ($coordinator.nodeSelector | default $.Values.global.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($coordinator.tolerations | default $.Values.global.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # affinity is the one field with a default of its own, the standby
+      # spread: merged with the affinity given per top-level key, the given
+      # key winning. So nodeAffinity keeps the spread; podAntiAffinity replaces it.
+      {{- /*
+      deepCopy because `set` mutates: without it the spread would be written
+      into global.affinity itself, and every template Helm evaluates after this
+      one would render it with the coordinator's labels. Latent today only
+      because Helm evaluates same-directory templates in reverse alphabetical
+      order, so mockapi and driver read global.affinity first --
+      .github/scripts/check-chart-placement.sh probes for it directly.
+      */}}
+      {{- $affinity := deepCopy ($coordinator.affinity | default $.Values.global.affinity | default (dict)) }}
+      {{- if and (gt (int $coordinator.replicaCount) 1) (not (hasKey $affinity "podAntiAffinity")) }}
+      {{- $_ := set $affinity "podAntiAffinity" (include "loadgen.coordinatorStandbySpread" $ | fromYaml) }}
+      {{- end }}
+      {{- with $affinity }}
       affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-                labelSelector:
-                  matchLabels:
-                    {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" $) | nindent 20 }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       # See values.yaml's top-level comment on preStopSleepSeconds /
       # terminationGracePeriodSeconds.

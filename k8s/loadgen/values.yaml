@@ -34,6 +34,26 @@ global:
   imageRepository: versolauth
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Pod placement, applied to every pod this chart renders. A component's own
+  # `nodeSelector` / `tolerations` / `affinity`, when non-empty, REPLACES the
+  # value here -- it is not merged with it, key by key or entry by entry. An
+  # empty one inherits this. The one consequence worth knowing: a component
+  # cannot opt out of a global value by setting its own to empty; give it a
+  # different value instead.
+  #
+  # What this is for: sharing a cluster with other workloads on separate node
+  # groups -- above all, keeping the load emulator (k8s/loadgen) and the
+  # system under test off each other's nodes. A pod that ignores its placement
+  # still schedules, just somewhere else, and nothing reports it.
+  #
+  # The coordinator is the one exception to "replaces": its affinity has a
+  # default of its own, the standby spread (see `coordinator.replicaCount`),
+  # merged with whatever affinity applies per top-level key, that key winning.
+  # So `nodeAffinity` here pins the coordinator AND keeps the spread; an
+  # explicit `podAntiAffinity` replaces the spread.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # terminationGracePeriodSeconds / preStopSleepSeconds for the two `loadgen`
 # roles. Copied from k8s/versola for the same reason: both run VersolaApp,
@@ -136,6 +156,10 @@ driver:
   # Design doc §6.5 sizes the fleet at ~30% CPU per driver precisely so the
   # client's own queueing stays out of the latencies it reports.
   replicaCount: 8
+  # Placement for the driver fleet alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   port: 8080 # PORT -- VersolaApp's application port
   diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
   # How SHARD_INDEX is derived. Only one mechanism, `podIndexLabel`: the
@@ -213,6 +237,10 @@ coordinator:
   # and no election to configure, and a driver that polls the other replica
   # mid-failover gets the same answer.
   replicaCount: 2
+  # Placement for the coordinator alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   # 8100, the port dev spec §5's `coordinator { url =
   # "http://loadgen-coordinator:8100" }` names, not VersolaApp's default
   # 8080. Both, and 8081 below, are in docker/Dockerfile.loadgen's EXPOSE
@@ -254,6 +282,10 @@ mockapi:
   # latency number in the campaign is measured against, so it is scaled to
   # have headroom rather than to be efficient.
   replicaCount: 3
+  # Placement for mockapi alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   # 8100/8101, matching docker/Dockerfile.mockapi's EXPOSE and the
   # `targets.mock-url` of dev spec §5.
   port: 8100

@@ -55,6 +55,26 @@ app.kubernetes.io/component: {{ .component }}
 {{- end -}}
 
 {{/*
+The coordinator's standby spread: the podAntiAffinity it defaults to when
+replicaCount > 1, as YAML for `fromYaml`. Expects the root context.
+
+Preferred, not required: a standby on the same node as the active replica
+still survives the process dying, which is the failure §12 describes, and a
+hard constraint would leave the standby Pending on a single-node cluster -- a
+campaign that cannot start at all instead of one that is merely less
+redundant than intended.
+*/}}
+{{- define "loadgen.coordinatorStandbySpread" -}}
+preferredDuringSchedulingIgnoredDuringExecution:
+  - weight: 100
+    podAffinityTerm:
+      topologyKey: kubernetes.io/hostname
+      labelSelector:
+        matchLabels:
+          {{- include "loadgen.componentSelectorLabels" (dict "component" "coordinator" "context" .) | nindent 10 }}
+{{- end -}}
+
+{{/*
 Image reference for a component. Expects a dict: {global: .Values.global, svc: <component values>, chart: .Chart}.
 */}}
 {{- define "loadgen.image" -}}

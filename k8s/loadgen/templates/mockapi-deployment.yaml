@@ -24,6 +24,20 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      # Placement: mockapi's own value if set, otherwise global's -- a
+      # replacement, not a merge. See values.yaml's `global.nodeSelector`.
+      {{- with ($mockapi.nodeSelector | default $.Values.global.nodeSelector) }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($mockapi.tolerations | default $.Values.global.tolerations) }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with ($mockapi.affinity | default $.Values.global.affinity) }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       # mockapi's own pair, not the chart-wide one: it does not run
       # VersolaApp and has no gracefulShutdownTimeout to cover. See
       # values.yaml's `mockapi` block.
