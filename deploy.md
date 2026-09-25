@@ -7,6 +7,9 @@ How Versola is deployed to the shared production host. For local development see
 > marketing site, blog and docs. It is a runbook, not a product installation guide — commands
 > here assume you have `sudo` on that host, and the automated steps assume you have access to run
 > the `Deploy` GitHub Actions workflow.
+>
+> For Kubernetes, see [`k8s/README.md`](k8s/README.md). The two paths share the configuration
+> *format* and nothing else: no compose file, no `env-config` repository, no host nginx.
 
 ---
 
@@ -480,6 +483,10 @@ Runtime configuration for `auth`, `central` and `edge` — RSA private keys, the
 secret, the Postgres password, bootstrap data — lives in the private repository
 [`versolauth/env-config`](https://github.com/versolauth/env-config), not in `versola` and not only
 on the server.
+
+This repository belongs to the Compose deployment only: the `Deploy` workflow checks it out and
+copies the files onto the host. A Kubernetes deployment carries the same configuration in
+Secrets instead and never reads `env-config` — see [`k8s/README.md`](k8s/README.md).
 
 ```
 env-config/
