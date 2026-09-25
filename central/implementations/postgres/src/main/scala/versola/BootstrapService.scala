@@ -646,7 +646,7 @@ object BootstrapService:
     * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
     * secret this client replaces could read every one of them.
     */
-  private[versola] val provisionerPermissions: Set[Permission] = Set(
+  private[versola] val utilityClientPermissions: Set[Permission] = Set(
     Permission("oauth:read"),
     Permission("oauth:manage"),
     Permission("oauth:secrets"),
@@ -718,7 +718,7 @@ object BootstrapService:
           _ <- seedForms()
           _ <- seedAdminUser(config)
           _ <- seedClient(config)
-          _ <- seedProvisioner(config)
+          _ <- seedUtilityClient(config)
           _ <- seedPresets(config)
           _ <- seedEdges(config)
           _ <- linkTenantEdge(tenantId, config)
@@ -931,20 +931,22 @@ object BootstrapService:
         _ => ZIO.unit,
       )
 
-    /** Seeds the `client_credentials` client `loadgen provision` authenticates as. Its secret is
-      * configured rather than generated, since central returns a generated one once and loadgen
-      * is configured separately; its permissions are the campaign's writes and nothing else,
-      * which is what makes it a narrower credential than the resource secret it replaces.
+    /** Seeds the `client_credentials` utility client tooling such as `loadgen provision`
+      * authenticates as. Its secret is configured rather than generated, since central returns a
+      * generated one once and a caller has to be configured separately; its permissions are the
+      * campaign's writes and nothing else, which is what makes it a narrower credential than the
+      * resource secret it replaces. Seeded in every environment, production included, since an
+      * admin API with no obtainable credential is the failure this client exists to avoid.
       */
-    private def seedProvisioner(config: CentralConfig.BootstrapConfig): Task[Unit] =
-      ZIO.foreachDiscard(config.provisioner.filter(_ => !envName.isProd)): seed =>
+    private def seedUtilityClient(config: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(config.utilityClient): seed =>
         val request = CreateClientRequest(
           tenantId = CentralConfig.defaultTenantId,
           id = seed.clientId,
-          clientName = localized("Loadgen Provisioner", "Loadgen Provisioner"),
+          clientName = localized("Utilities", "Утилиты"),
           redirectUris = Set.empty,
           allowedScopes = Set.empty,
-          permissions = provisionerPermissions,
+          permissions = utilityClientPermissions,
           accessTokenTtl = 3600,
           refreshTokenTtl = None,
           theme = "default",
@@ -981,7 +983,7 @@ object BootstrapService:
                   clientName = None,
                   redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
                   scope = PatchClientScope(Set.empty, Set.empty),
-                  permissions = PatchPermissions(add = provisionerPermissions, remove = Set.empty),
+                  permissions = PatchPermissions(add = utilityClientPermissions, remove = Set.empty),
                   accessTokenTtl = None,
                   refreshTokenTtl = None,
                   theme = None,
@@ -1087,9 +1089,9 @@ object BootstrapService:
     private def seedCentralResource(bootstrapConfig: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(bootstrapConfig.centralUrl): url =>
         val tenantId = CentralConfig.defaultTenantId
-        // The provisioner has to be in the audience for auth to issue it a `resource://central`
+        // The utility client has to be in the audience for auth to issue it a `resource://central`
         // token at all, which is what edge's proxy checks before forwarding.
-        val provisioner = bootstrapConfig.provisioner.filter(_ => !envName.isProd).map(_.clientId)
+        val utilityClientId = bootstrapConfig.utilityClient.map(_.clientId)
         val allEndpoints = centralEndpoints(envName).map: (method, path) =>
           ResourceEndpointRecord(
             id = endpointId(method, path),
@@ -1113,7 +1115,7 @@ object BootstrapService:
                   tenantId,
                   centralResourceId,
                   ResourceUri(url),
-                  CentralConfig.centralClientId :: provisioner.toList,
+                  CentralConfig.centralClientId :: utilityClientId.toList,
                   allEndpoints.toVector,
                   Some(encryptedSecret),
                 )
@@ -1125,10 +1127,10 @@ object BootstrapService:
               // becomes prod: every other registration, including any an operator added, stays.
               val stale = existingIds.intersect(serviceEndpointIds).diff(allEndpoints.map(_.id).toSet)
               val audience = PatchAudience(
-                add = provisioner.toSet,
-                // Dropped from the configuration, or the environment became prod: the client may
-                // still exist, but nothing should be issuing it tokens for this resource.
-                remove = existing.audience.filterNot(id => id == CentralConfig.centralClientId || provisioner.contains(id)).toSet,
+                add = utilityClientId.toSet,
+                // Dropped from the configuration: the client may still exist, but nothing should
+                // be issuing it tokens for this resource.
+                remove = existing.audience.filterNot(id => id == CentralConfig.centralClientId || utilityClientId.contains(id)).toSet,
               )
               val audienceUnchanged = audience.patch(existing.audience) == existing.audience
               if missing.isEmpty && stale.isEmpty && audienceUnchanged then

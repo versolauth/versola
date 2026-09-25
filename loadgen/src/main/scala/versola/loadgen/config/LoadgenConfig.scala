@@ -428,9 +428,9 @@ case class AcceptanceMeasurementsConfig(
 case class ProvisionConfig(
     tenantId: String,
     /** The `client_credentials` client every admin call is made as. Central seeds it from its own
-      * `bootstrap.provisioner` block, which is where this secret is configured to match; loadgen
-      * holds no internal secret of central's or edge's, and reaches the admin API only through
-      * edge's proxy, with the permissions that client was granted.
+      * `bootstrap.utility-client` block, which is where this secret is configured to match;
+      * loadgen holds no internal secret of central's or edge's, and reaches the admin API only
+      * through edge's proxy, with the permissions that client was granted.
       */
     provisionerClientId: String,
     provisionerSecret: Config.Secret,
