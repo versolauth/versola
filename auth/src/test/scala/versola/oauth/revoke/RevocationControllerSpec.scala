@@ -14,7 +14,6 @@ import versola.util.{Base64, Secret, UnitSpecBase}
 import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
-import zio.prelude.NonEmptySet
 import zio.test.*
 import zio.test.TestAspect
 
@@ -35,7 +34,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = Some(clientSecret1),
     previousSecret = None,

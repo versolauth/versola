@@ -6,7 +6,7 @@ import versola.central.configuration.clients.ClientId
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.{TenantId, TenantRecord, TenantRepository}
 import versola.central.configuration.sync.SyncEvent
-import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, InjectRule, InjectTarget, ResourceUri, UpdateResourceRequest}
+import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, InjectRule, InjectTarget, PatchAudience, ResourceUri, UpdateResourceRequest}
 import versola.util.{ReloadingCache, SecureRandom, Secret, SecurityService}
 import versola.util.cel.CelEvaluator
 import zio.*
@@ -64,7 +64,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val updateRequest = UpdateResourceRequest(
     resourceId = resourceId,
     resource = Some(updatedUri),
-    audience = Some(List(ClientId("updated-client"))),
+    audience = PatchAudience(add = Set(ClientId("updated-client")), remove = Set.empty),
     deleteEndpoints = Set(removedEndpointId),
     createEndpoints = Vector(
       CreateResourceEndpointRequest(existingEndpointId, "/users/me", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
@@ -516,7 +516,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.repository.updateResource.calls == List((
           resourceId,
           Some(updatedUri),
-          Some(List(ClientId("updated-client"))),
+          PatchAudience(add = Set(ClientId("updated-client")), remove = Set.empty),
           Vector(updatedEndpoint, createdEndpoint),
           Set(removedEndpointId),
         )),
@@ -547,7 +547,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
-        audience = None,
+        audience = PatchAudience.empty,
         deleteEndpoints = Set.empty,
         createEndpoints = Vector(
           CreateResourceEndpointRequest(createdEndpointId, "/users", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
@@ -570,7 +570,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
-        audience = None,
+        audience = PatchAudience.empty,
         deleteEndpoints = Set.empty,
         createEndpoints = Vector(
           CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
@@ -593,7 +593,7 @@ object ResourceServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val request = UpdateResourceRequest(
         resourceId = resourceId,
         resource = None,
-        audience = None,
+        audience = PatchAudience.empty,
         deleteEndpoints = Set(existingEndpointId),
         createEndpoints = Vector(
           CreateResourceEndpointRequest(createdEndpointId, "/users/{userId}", "GET", false, None, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),

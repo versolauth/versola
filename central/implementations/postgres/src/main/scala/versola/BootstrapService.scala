@@ -14,7 +14,7 @@ import versola.central.configuration.roles.{RoleId, RoleRepository}
 import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
-import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
+import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchAudience, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.{EnvName, Patch, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
@@ -75,6 +75,18 @@ object BootstrapService:
 
   private def endpointId(method: String, path: String): ResourceEndpointId =
     ResourceEndpointId(UUID.nameUUIDFromBytes(s"$method $path".getBytes(StandardCharsets.UTF_8)))
+
+  /** central's own `/service` tooling (`users.ServiceController`), proxied so a caller
+    * outside the cluster reaches it the way it reaches the rest of the admin API. Registered
+    * only outside production, where the endpoints themselves answer 404 regardless.
+    */
+  private[versola] val serviceEndpointCatalog: List[(String, String)] = List(
+    "POST" -> "/service/configuration/sync",
+    "POST" -> "/service/users/outbox/flush",
+  )
+
+  private[versola] val serviceEndpointIds: Set[ResourceEndpointId] =
+    serviceEndpointCatalog.map((method, path) => endpointId(method, path)).toSet
 
   private[versola] val resourceManagementEndpointIds: Set[ResourceEndpointId] = Set(
     endpointId("POST", "/configuration/resources"),
@@ -262,6 +274,7 @@ object BootstrapService:
       endpointId("DELETE", "/configuration/jwks"),
       endpointId("POST", "/configuration/server-metadata"),
     )),
+    (Permission("service:operate"), localized("Run configuration sync and outbox flush", "Запуск синхронизации конфигурации и сброса очереди"), serviceEndpointIds),
     (accountPermission, localized("Manage own account", "Управление своим аккаунтом"), accountEndpointIds),
   )
 
@@ -625,6 +638,27 @@ object BootstrapService:
     "POST"   -> "/users/password/reset",
   )
 
+  private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
+    if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
+
+  /** What a campaign's provisioning writes, and only that: clients, resources, roles,
+    * permissions, presets and challenge settings, plus the syncs. Deliberately without
+    * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
+    * secret this client replaces could read every one of them.
+    */
+  private[versola] val provisionerPermissions: Set[Permission] = Set(
+    Permission("oauth:read"),
+    Permission("oauth:manage"),
+    Permission("oauth:secrets"),
+    Permission("access:read"),
+    Permission("access:manage"),
+    Permission("resources:read"),
+    Permission("resources:manage"),
+    Permission("security:read"),
+    Permission("security:manage"),
+    Permission("service:operate"),
+  )
+
   private def readResource(path: String): Task[String] =
     ZIO.blocking:
       ZIO.attemptBlocking:
@@ -684,6 +718,7 @@ object BootstrapService:
           _ <- seedForms()
           _ <- seedAdminUser(config)
           _ <- seedClient(config)
+          _ <- seedProvisioner(config)
           _ <- seedPresets(config)
           _ <- seedEdges(config)
           _ <- linkTenantEdge(tenantId, config)
@@ -896,6 +931,88 @@ object BootstrapService:
         _ => ZIO.unit,
       )
 
+    /** Seeds the `client_credentials` client `loadgen provision` authenticates as. Its secret is
+      * configured rather than generated, since central returns a generated one once and loadgen
+      * is configured separately; its permissions are the campaign's writes and nothing else,
+      * which is what makes it a narrower credential than the resource secret it replaces.
+      */
+    private def seedProvisioner(config: CentralConfig.BootstrapConfig): Task[Unit] =
+      ZIO.foreachDiscard(config.provisioner.filter(_ => !envName.isProd)): seed =>
+        val request = CreateClientRequest(
+          tenantId = CentralConfig.defaultTenantId,
+          id = seed.clientId,
+          clientName = localized("Loadgen Provisioner", "Loadgen Provisioner"),
+          redirectUris = Set.empty,
+          allowedScopes = Set.empty,
+          permissions = provisionerPermissions,
+          accessTokenTtl = 3600,
+          refreshTokenTtl = None,
+          theme = "default",
+          authFlow = None,
+          registrationFlow = None,
+          otpTemplateId = "default",
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = false,
+          backChannelLogoutUri = None,
+          logoUri = None,
+          policyUri = None,
+          tosUri = None,
+          consentFlow = None,
+          dpopBoundAccessTokens = false,
+          dpopSigningAlgs = Set.empty,
+          dpopMinRsaKeySize = None,
+          authMethod = AuthMethod.client_secret,
+          mtlsAuth = None,
+          certificateBoundAccessTokens = false,
+          jwks = None,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = false,
+          edgeSigningKey = None,
+        )
+        clientService.registerClient(request, presetSecret = Some(seed.secret)).foldZIO(
+          {
+            // Already seeded by an earlier boot: the secret stays whatever central holds, since
+            // rotating it here would break a loadgen configured with the previous value, but the
+            // permission set is reasserted so a catalog change reaches an existing deployment.
+            case _: ClientAlreadyExists =>
+              clientService.updateClient(
+                UpdateClientRequest(
+                  clientId = seed.clientId,
+                  clientName = None,
+                  redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
+                  scope = PatchClientScope(Set.empty, Set.empty),
+                  permissions = PatchPermissions(add = provisionerPermissions, remove = Set.empty),
+                  accessTokenTtl = None,
+                  refreshTokenTtl = None,
+                  theme = None,
+                  authFlow = None,
+                  registrationFlow = None,
+                  otpTemplateId = None,
+                  frontChannelLogoutUri = None,
+                  frontChannelLogoutSessionRequired = None,
+                  backChannelLogoutUri = None,
+                  logoUri = None,
+                  policyUri = None,
+                  tosUri = None,
+                  consentFlow = None,
+                  dpopBoundAccessTokens = None,
+                  dpopSigningAlgs = None,
+                  dpopMinRsaKeySize = None,
+                  authMethod = None,
+                  mtlsAuth = None,
+                  certificateBoundAccessTokens = None,
+                  jwks = None,
+                  requireSignedRequestObject = None,
+                  requirePushedAuthorizationRequests = None,
+                  edgeSigningKey = None,
+                ),
+              ).mapError(registrationConfigurationError)
+            case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
+            case e: Throwable => ZIO.fail(e)
+          },
+          _ => ZIO.unit,
+        )
+
     private def registrationConfigurationError(error: InvalidRegistrationConfiguration | Throwable): Throwable =
       error match
         case e: InvalidRegistrationConfiguration =>
@@ -970,7 +1087,10 @@ object BootstrapService:
     private def seedCentralResource(bootstrapConfig: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(bootstrapConfig.centralUrl): url =>
         val tenantId = CentralConfig.defaultTenantId
-        val allEndpoints = centralEndpointCatalog.map: (method, path) =>
+        // The provisioner has to be in the audience for auth to issue it a `resource://central`
+        // token at all, which is what edge's proxy checks before forwarding.
+        val provisioner = bootstrapConfig.provisioner.filter(_ => !envName.isProd).map(_.clientId)
+        val allEndpoints = centralEndpoints(envName).map: (method, path) =>
           ResourceEndpointRecord(
             id = endpointId(method, path),
             path = path,
@@ -993,7 +1113,7 @@ object BootstrapService:
                   tenantId,
                   centralResourceId,
                   ResourceUri(url),
-                  List(CentralConfig.centralClientId),
+                  CentralConfig.centralClientId :: provisioner.toList,
                   allEndpoints.toVector,
                   Some(encryptedSecret),
                 )
@@ -1001,11 +1121,23 @@ object BootstrapService:
             case Some(existing) =>
               val existingIds = existing.endpoints.map(_.id).toSet
               val missing = allEndpoints.filterNot(e => existingIds.contains(e.id))
-              if missing.isEmpty then
+              // Only ever the `/service/*` ids, and only once an environment that had them
+              // becomes prod: every other registration, including any an operator added, stays.
+              val stale = existingIds.intersect(serviceEndpointIds).diff(allEndpoints.map(_.id).toSet)
+              val audience = PatchAudience(
+                add = provisioner.toSet,
+                // Dropped from the configuration, or the environment became prod: the client may
+                // still exist, but nothing should be issuing it tokens for this resource.
+                remove = existing.audience.filterNot(id => id == CentralConfig.centralClientId || provisioner.contains(id)).toSet,
+              )
+              val audienceUnchanged = audience.patch(existing.audience) == existing.audience
+              if missing.isEmpty && stale.isEmpty && audienceUnchanged then
                 ZIO.logInfo(s"Central resource '$centralResourceId' endpoints are up to date, skipping")
               else
-                ZIO.logInfo(s"Adding ${missing.size} missing endpoint(s) to central resource '$centralResourceId'") *>
-                  resourceRepo.updateResource(centralResourceId, None, None, missing.toVector, Set.empty)
+                ZIO.logInfo(
+                  s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s) on central resource '$centralResourceId'",
+                ) *>
+                  resourceRepo.updateResource(centralResourceId, None, audience, missing.toVector, stale)
 
         yield ()
 
@@ -1047,7 +1179,7 @@ object BootstrapService:
             val needsUpdate = existing.resource != desiredUrl || existing.endpoints != mergedEndpoints
             ZIO.when(existing.secret.isEmpty)(resourceRepo.initializeSecret(authResourceId, encryptedSecret).unit) *>
               ZIO.when(needsUpdate)(
-                resourceRepo.updateResource(authResourceId, Some(desiredUrl), None, mergedEndpoints.toVector, staleEndpoints),
+                resourceRepo.updateResource(authResourceId, Some(desiredUrl), PatchAudience.empty, mergedEndpoints.toVector, staleEndpoints),
               ).unit
       yield ()
 

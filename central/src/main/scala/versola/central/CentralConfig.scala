@@ -61,10 +61,22 @@ object CentralConfig:
         * needs to be configured with the same value out of band.
         */
       authResourceSecret: Secret,
+      /** Optional confidential client for `loadgen provision`, seeded with the permissions a
+        * campaign's writes need and added to the central resource's audience. It reaches this
+        * admin API through edge's proxy with a `client_credentials` token, so nothing outside
+        * the cluster needs the central resource secret. Absent seeds no such client, and a
+        * production bootstrap ignores it.
+        */
+      provisioner: Option[CentralConfig.BootstrapConfig.ProvisionerSeed] = None,
   )
 
   object BootstrapConfig:
     case class EdgeSeed(id: EdgeId, publicKeyJwk: Json.Obj)
+
+    /** The secret is operator-supplied rather than generated, for the reason `authResourceSecret`
+      * is: central hands a client secret back once, at registration, and loadgen has to be
+      * configured with the same value out of band. */
+    case class ProvisionerSeed(clientId: ClientId, secret: Secret)
 
     /** Seed data for an authorization preset.
       *

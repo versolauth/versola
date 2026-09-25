@@ -1,6 +1,6 @@
 package versola.central.configuration.resources
 
-import versola.central.configuration.ResourceUri
+import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.util.CacheSource
@@ -26,7 +26,7 @@ trait ResourceRepository extends CacheSource[Vector[ResourceRecord]]:
   def updateResource(
       resourceId: ResourceId,
       resourcePatch: Option[ResourceUri],
-      audiencePatch: Option[List[ClientId]],
+      audiencePatch: PatchAudience,
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit]

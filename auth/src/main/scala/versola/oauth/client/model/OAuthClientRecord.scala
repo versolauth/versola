@@ -4,7 +4,7 @@ import versola.util.{Dpop, JsonWebKeySet, Secret}
 import zio.Duration
 import zio.http.URL
 import zio.json.{JsonCodec, JsonEncoder}
-import zio.prelude.{Equal, NonEmptySet}
+import zio.prelude.Equal
 import zio.schema.*
 
 given Equal[URL] = (a, b) => a == b
@@ -13,7 +13,10 @@ case class OAuthClientRecord(
     id: ClientId,
     tenantId: TenantId,
     clientName: Map[String, String],
-    redirectUris: NonEmptySet[String],
+    /** The redirect URIs an authorization request from this client may name. Empty for a
+      * client that runs no redirect-based flow at all -- a `client_credentials` one -- which
+      * `/authorize` then refuses for the same reason it refuses an unregistered URI. */
+    redirectUris: Set[String],
     scope: Set[ScopeToken],
     secret: Option[Secret],
     previousSecret: Option[Secret],

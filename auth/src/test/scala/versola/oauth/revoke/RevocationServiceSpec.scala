@@ -15,7 +15,6 @@ import versola.util.{CoreConfig, MAC, Secret, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.time.Instant
@@ -42,7 +41,7 @@ object RevocationServiceSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = scope1,
     secret = Some(clientSecret1),
     previousSecret = None,

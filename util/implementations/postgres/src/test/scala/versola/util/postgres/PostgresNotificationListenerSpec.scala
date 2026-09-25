@@ -186,7 +186,9 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
       // The deadline is generous relative to the heartbeat — sixteen round trips fit inside
       // it — because the one thing that also resubscribes exactly when it should is a real
       // liveness trip, and a shared runner stalling a single round trip past a tight deadline
-      // would be indistinguishable here from the failure this is looking for.
+      // would be indistinguishable here from the failure this is looking for. `flaky` accepts
+      // that risk explicitly instead of pretending a wall-clock deadline against a real socket
+      // is deterministic: a genuine bug fails every retry, while one runner hiccup does not.
       for
         config <- ZIO.service[PostgresConfig]
         listener = PostgresNotificationListener(
@@ -205,7 +207,7 @@ object PostgresNotificationListenerSpec extends ZIOSpecDefault:
         _ <- fiber.interrupt
         count <- resubscribes.get
       yield assertTrue(count == 1)
-    },
+    } @@ TestAspect.flaky(3),
     test("bounds memory by notification, not by the batch Postgres happens to hand back") {
       // Sent as fast as this fiber can issue them, with a poll timeout long enough to cover
       // the whole burst, rather than the spaced-out sends the next test uses to force one

@@ -25,7 +25,6 @@ import versola.util.{Base64, CoreConfig, JWT, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -114,7 +113,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Payments Client"),
-    redirectUris = NonEmptySet(redirectUri),
+    redirectUris = Set(redirectUri),
     scope = scope1,
     secret = Some(clientSecret1),
     previousSecret = None,

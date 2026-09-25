@@ -61,7 +61,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val updateRequestBody = UpdateResourceRequest(
     resourceId = resourceId,
     resource = Some(ResourceUri("https://api.internal.example.com")),
-    audience = Some(audience),
+    audience = PatchAudience(add = audience.toSet, remove = Set.empty),
     deleteEndpoints = Set(usersCreateEndpointId),
     createEndpoints = Vector(
       CreateResourceEndpointRequest(usersMeEndpointId, "/users/me", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None)
