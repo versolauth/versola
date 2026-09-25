@@ -23,10 +23,10 @@ import zio.test.*
   * production writes -- there is exactly one of these per e2e run (a fresh Postgres per CI job),
   * so nothing else in the suite creates or reads them.
   */
-object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient]:
+object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuthClient & CentralApi]:
 
-  override val bootstrap: ZLayer[Any, Any, Client & E2EConfig & EdgeApi & OAuthClient] =
-    (E2EConfig.live ++ Client.default) >+> (EdgeApi.live ++ OAuthClient.live)
+  override val bootstrap: ZLayer[Any, Any, Client & E2EConfig & EdgeApi & OAuthClient & CentralApi] =
+    (E2EConfig.live ++ Client.default) >+> (EdgeApi.live ++ OAuthClient.live ++ CentralApi.live)
 
   override val aspects: Chunk[TestAspectAtLeastR[TestEnvironment]] =
     Chunk(TestAspect.withLiveClock)
@@ -69,10 +69,31 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
         client <- ZIO.service[Client]
         auth <- ZIO.service[OAuthClient]
         edgeApi <- ZIO.service[EdgeApi]
+        centralApi <- ZIO.service[CentralApi]
+        // Central seeds the `utils` client into its own store at bootstrap, but a token for it
+        // is not reliably issuable until auth's own client cache has turned over. Forcing a
+        // sync here (which does make auth re-fetch `configuration/clients/sync` from central --
+        // confirmed in its own log) is not sufficient by itself: empirically, the very next
+        // token request can still 401 for a further ~20-60s even after this call answers 200
+        // (versolauth/versola#412 -- filed separately; root cause not yet pinned down beyond
+        // "auth's own periodic configuration-cache-refresh-interval eventually resolves it, an
+        // explicit sync does not reliably do so sooner"). Retried on a 5xx for the reason
+        // `HttpAdminClient.syncConfiguration` is: this makes central call auth over a pooled
+        // connection, and one auth closed while it sat idle surfaces here as a 500 on the first
+        // attempt.
+        _ <- centralApi.postEmpty("/service/configuration/sync")
+          .filterOrFail(_.response.status.isSuccess)(RuntimeException("initial sync did not succeed"))
+          .retry(Schedule.recurs(5) && Schedule.spaced(1.second))
         flows <- FlowResources.load
         blueprint = CampaignBlueprint(targets(c), provision(c), flows)
         admin <- HttpAdminClient.make(client, targets(c), provision(c))
+        // Bounded to comfortably clear a full `configuration-cache-refresh-interval` (dev
+        // default: 1 minute) rather than the sync race above -- `provision` is re-runnable by
+        // construction (see `Provisioner`'s own doc comment), so retrying the whole first pass
+        // is exactly as safe as the "finishes a run that died halfway" case its own suite
+        // already covers.
         firstPass <- Provisioner.run(admin, blueprint)
+          .retry(Schedule.recurs(40) && Schedule.spaced(2.seconds))
         secondPass <- Provisioner.run(admin, blueprint)
         token <- auth.clientCredentials(
           clientId = c.provisionerClientId,
