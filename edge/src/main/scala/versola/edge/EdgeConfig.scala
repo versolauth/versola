@@ -2,10 +2,13 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
-import zio.Duration
+import zio.{Duration, Task, ZIO, ZLayer}
 import zio.http.URL
 
+import java.io.FileInputStream
 import java.security.PrivateKey
+import java.security.cert.{CertificateFactory, X509Certificate}
+import scala.util.Using
 
 case class EdgeConfig(
     id: EdgeId,
@@ -40,9 +43,12 @@ case class EdgeConfig(
     // available is not a stricter one -- zio-http's ClientSSLConfig.Default is
     // Netty's InsecureTrustManagerFactory, which authenticates no server at
     // all. An internal endpoint rarely carries a publicly-trusted certificate,
-    // so this names the private CA (or the self-signed certificate itself)
-    // that vouches for it; exactly those anchors are trusted, not these on top
-    // of the public ones.
+    // so this names the one it presents -- a pin, not a CA: zio-http's client
+    // performs no hostname verification (see SSOClient's own comment on
+    // `internalTrust`), so a CA anchor would trust any certificate it has ever
+    // issued, for any host, to stand in for this one. `EdgeConfig.validated`
+    // refuses to start with anything this file's `BasicConstraints` mark as a
+    // CA, so the file is a leaf certificate or nothing runs.
     versolaInternalTrustedCertificates: Option[String] = None,
     // The origin clients reach this edge on. Used to build the `htu` a DPoP proof is checked
     // against (DpopVerifier) -- taken from configuration rather than from the request's own
@@ -61,6 +67,36 @@ case class EdgeConfig(
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
 object EdgeConfig:
+
+  /** Fails startup rather than serving traffic that trusts more than the operator meant to
+    * name. See `versolaInternalTrustedCertificates`'s own comment for why a CA there is a
+    * hole zio-http gives this code no way to close afterwards -- so it is refused instead of
+    * accepted and left for RFC 8705's own certificate-bound check to narrow later, which
+    * applies to the *client* certificate, not to this one.
+    */
+  val validated: ZLayer[EdgeConfig, Throwable, EdgeConfig] =
+    ZLayer.fromZIO(
+      for
+        config <- ZIO.service[EdgeConfig]
+        _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(refuseCertificateAuthority)
+      yield config,
+    )
+
+  private def refuseCertificateAuthority(path: String): Task[Unit] =
+    ZIO.attemptBlocking {
+      val factory = CertificateFactory.getInstance("X.509").nn
+      val certificate = Using.resource(FileInputStream(path).nn): stream =>
+        factory.generateCertificate(stream).nn.asInstanceOf[X509Certificate]
+      // -1 means "not a CA" (see X509Certificate#getBasicConstraints); anything else,
+      // including Int.MaxValue for an unconstrained path length, means it is one.
+      if certificate.getBasicConstraints != -1 then
+        throw IllegalArgumentException(
+          s"versola-internal-trusted-certificates ($path) is a certificate authority, not a leaf. " +
+            "zio-http's client performs no hostname verification on this connection, so trusting a " +
+            "CA would accept any certificate it has issued -- for any host -- as this internal " +
+            "endpoint. Point this at the specific certificate the endpoint presents instead.",
+        )
+    }
 
   case class Security(
       tokenEncryption: EdgeConfig.Security.TokenEncryption,
