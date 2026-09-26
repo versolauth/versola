@@ -46,6 +46,9 @@ case class OAuthClientPatch(
     /** The plaintext private JWK, already re-encrypted for storage by the caller — the
       * repository writes what it is given, as it does for the secret. */
     edgeSigningKey: Option[Patch[Secret]],
+    /** The PEM certificate and key, already re-encrypted for storage by the caller, on the
+      * same terms as [[edgeSigningKey]]. */
+    edgeClientCertificate: Option[Patch[Secret]],
 )
 
 object OAuthClientPatch:
@@ -77,4 +80,5 @@ object OAuthClientPatch:
     requireSignedRequestObject = None,
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )

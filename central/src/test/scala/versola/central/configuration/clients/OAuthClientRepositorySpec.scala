@@ -59,6 +59,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   /** Applies a registration-flow patch, leaving every other field of the client alone. */

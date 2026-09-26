@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{ClientCredential, ClientId, EdgeId, PermissionId}
-import versola.util.{Base64, Secret, SecurityService}
+import versola.util.{Base64, Secret, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -61,6 +61,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       requireSignedRequestObject: Boolean = false,
       requirePushedAuthorizationRequests: Boolean = false,
       edgeSigningKey: Option[String] = None,
+      edgeClientCertificate: Option[String] = None,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -153,8 +154,82 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging
 
+  /** The certificate central holds for a client an edge authenticates as by mutual TLS. */
+  private val clientCertificate = TestCertificates.generate()
+
+  private val certificateSuite = suite("edge client certificate")(
+    test("decrypts the certificate and prefers it over every other credential") {
+      val secretCiphertext = Base64.urlEncode(Array.fill(32)(50.toByte))
+      val keyCiphertext = Base64.urlEncode(Array.fill(32)(51.toByte))
+      val certificateCiphertext = Base64.urlEncode(Array.fill(32)(52.toByte))
+      val body = SyncResponseMirror(
+        Vector(
+          SyncClientRecordMirror(
+            ClientId("mtls"),
+            Some(secretCiphertext),
+            15.minutes,
+            edgeSigningKey = Some(keyCiphertext),
+            edgeClientCertificate = Some(certificateCiphertext),
+          ),
+        ),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(
+            secretCiphertext -> decryptedSecretA,
+            keyCiphertext -> signingKeyDocument.getBytes("UTF-8").nn,
+            certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn,
+          )),
+          centralSyncTokenService,
+        )
+        clients <- service.getAll
+        synced = clients(ClientId("mtls")).credential
+      yield assertTrue(
+        // A certificate registration makes mutual TLS the client's method, and auth refuses
+        // an assertion or a secret from such a client -- so a fallback to either would
+        // authenticate nothing.
+        synced match
+          case ClientCredential.MutualTls(material) =>
+            material.leaf.getSubjectX500Principal.getName ==
+              clientCertificate.certificate.getSubjectX500Principal.getName
+          case _ => false,
+      )
+    },
+    test("fails the whole sync on an unusable certificate rather than dropping the client") {
+      val certificateCiphertext = Base64.urlEncode(Array.fill(32)(53.toByte))
+      val body = SyncResponseMirror(
+        Vector(
+          SyncClientRecordMirror(
+            ClientId("broken-certificate"),
+            None,
+            15.minutes,
+            edgeClientCertificate = Some(certificateCiphertext),
+          ),
+        ),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(
+            certificateCiphertext -> clientCertificate.certificatePem.getBytes("UTF-8").nn,
+          )),
+          centralSyncTokenService,
+        )
+        error <- service.getAll.flip
+      yield assertTrue(error.getMessage.nn.contains("edge client certificate"))
+    },
+  ).provide(TestClient.layer) @@ TestAspect.silentLogging
+
   def spec = suite("OAuthClientsSyncClient")(
     signingSuite,
+    certificateSuite,
     test("decrypts every client with a secret and drops clients missing one") {
       val secretACiphertext = Base64.urlEncode(Array.fill(32)(30.toByte))
       val body = SyncResponseMirror(

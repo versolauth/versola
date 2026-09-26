@@ -889,6 +889,7 @@ object BootstrapService:
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
+        edgeClientCertificate = None,
       )
       clientService.registerClient(request).foldZIO(
         {
@@ -923,6 +924,7 @@ object BootstrapService:
                 requireSignedRequestObject = None,
                 requirePushedAuthorizationRequests = None,
                 edgeSigningKey = None,
+                edgeClientCertificate = None,
               ),
             ).mapError(registrationConfigurationError)
           case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
@@ -970,6 +972,7 @@ object BootstrapService:
           requireSignedRequestObject = false,
           requirePushedAuthorizationRequests = false,
           edgeSigningKey = None,
+          edgeClientCertificate = None,
         )
         clientService.registerClient(request, presetSecret = Some(seed.secret)).foldZIO(
           {
@@ -1007,6 +1010,7 @@ object BootstrapService:
                   requireSignedRequestObject = None,
                   requirePushedAuthorizationRequests = None,
                   edgeSigningKey = None,
+                  edgeClientCertificate = None,
                 ),
               ).mapError(registrationConfigurationError)
             case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))

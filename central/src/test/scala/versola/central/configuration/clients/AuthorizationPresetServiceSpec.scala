@@ -56,6 +56,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(
