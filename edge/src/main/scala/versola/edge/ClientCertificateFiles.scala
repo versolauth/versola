@@ -9,6 +9,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.{Files, Path}
 import java.security.MessageDigest
 import scala.jdk.CollectionConverters.*
+import scala.util.Using
 
 /** Where a client certificate this edge presents is put so that the TLS stack can read it.
   *
@@ -46,9 +47,15 @@ object ClientCertificateFiles:
       ),
     )
 
+  /** The walk is closed before anything is deleted, not merely at the end: it holds an open
+    * handle on the directory it is walking, which on some filesystems is enough to make
+    * removing that directory fail -- and this failure is logged rather than raised, so the
+    * private key would be left behind with nothing but a log line saying so. */
   private def remove(directory: Path): UIO[Unit] =
     ZIO.attemptBlocking(
-      Files.walk(directory).iterator.asScala.toList.reverse.foreach(Files.deleteIfExists),
+      Using.resource(Files.walk(directory))(_.iterator.asScala.toList)
+        .reverse
+        .foreach(Files.deleteIfExists),
     ).ignoreLogged
 
   class Impl(
