@@ -157,6 +157,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
       authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient],
       jwksRepository = stub[JwksSyncClient],
+      mutualTlsExternalUrl = None,
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -457,6 +458,46 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(
         served.get("authorization_signing_alg_values_supported").contains(Json.Arr()),
       )
+    },
+    // RFC 8705 §5. `mutualTlsExternalUrl` is `PostgresOAuthApp`'s listener config, not a stored
+    // document field, so -- same reasoning as the JARM algorithms above -- `derive` is
+    // exercised directly with it rather than through `makeEnv`.
+    test("getMetadata aliases every endpoint the mTLS listener also serves, at its own address") {
+      val stored = Json.Obj(
+        "token_endpoint" -> Json.Str("https://auth.example.com/token"),
+        "introspection_endpoint" -> Json.Str("https://auth.example.com/introspect"),
+        "revocation_endpoint" -> Json.Str("https://auth.example.com/revoke"),
+        "pushed_authorization_request_endpoint" -> Json.Str("https://auth.example.com/par"),
+        "userinfo_endpoint" -> Json.Str("https://auth.example.com/userinfo"),
+        // Not one of the five: a certificate is never relevant to authorization, which is a
+        // browser redirect and never reaches the mTLS listener at all.
+        "authorization_endpoint" -> Json.Str("https://auth.example.com/authorize"),
+      )
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(ServedMetadata.derive(stored, mutualTlsExternalUrl = Some("https://mtls.example.com:8443")))
+        served <- env.getMetadata
+        aliases = served.get("mtls_endpoint_aliases").flatMap(_.as[Json.Obj].toOption)
+      yield assertTrue(
+        aliases.contains(
+          Json.Obj(
+            "token_endpoint" -> Json.Str("https://mtls.example.com:8443/token"),
+            "introspection_endpoint" -> Json.Str("https://mtls.example.com:8443/introspect"),
+            "revocation_endpoint" -> Json.Str("https://mtls.example.com:8443/revoke"),
+            "pushed_authorization_request_endpoint" -> Json.Str("https://mtls.example.com:8443/par"),
+            "userinfo_endpoint" -> Json.Str("https://mtls.example.com:8443/userinfo"),
+          ),
+        ),
+      ).label(s"expected exactly the five aliases at the mTLS origin, got $aliases")
+    },
+    test("getMetadata advertises no mtls_endpoint_aliases when no mutual-TLS listener is configured") {
+      val stored = Json.Obj("token_endpoint" -> Json.Str("https://auth.example.com/token"))
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(ServedMetadata.derive(stored, mutualTlsExternalUrl = None))
+        served <- env.getMetadata
+      yield assertTrue(served.get("mtls_endpoint_aliases").isEmpty)
+        .label("absent config must not advertise an address nothing listens on")
     },
     // RFC 9449 §5.1. The set is served and enforced off the same field, so a document that
     // never mentioned it still has to advertise what a proof will actually be held to --
@@ -900,6 +941,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
             authorizationDetailTypeCache = ReloadingCache(authDetailTypeRef),
             authorizationDetailTypeRepository = authorizationDetailTypeRepository,
             jwksRepository = jwksRepository,
+            mutualTlsExternalUrl = None,
           )
           _ <- jwksRepository.getPublicKeys.succeedsWith(JWT.PublicKeys.fromJson(Json.Obj("keys" -> Json.Arr())))
           _ <- clientRepository.getAll.succeedsWith(newClients)

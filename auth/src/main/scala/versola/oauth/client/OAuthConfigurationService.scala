@@ -187,12 +187,12 @@ object OAuthConfigurationService:
     // source also reads the JWKS, through the public-only half of `JwksSyncClient`: what a
     // JARM response can be signed with is a fact about this deployment's published keys, not
     // about which of them auth can itself sign with.
-    val metadataCacheSource: URLayer[MetadataSyncClient & JwksSyncClient, CacheSource[ServedMetadata]] =
-      ZLayer.fromFunction((client: MetadataSyncClient, jwksClient: JwksSyncClient) =>
+    val metadataCacheSource: URLayer[MetadataSyncClient & JwksSyncClient & CoreConfig, CacheSource[ServedMetadata]] =
+      ZLayer.fromFunction((client: MetadataSyncClient, jwksClient: JwksSyncClient, config: CoreConfig) =>
         new CacheSource[ServedMetadata]:
           override def getAll: Task[ServedMetadata] =
             client.getAll.zip(jwksClient.getPublicKeys)
-              .map((stored, keys) => ServedMetadata.derive(stored, keys.algorithms)),
+              .map((stored, keys) => ServedMetadata.derive(stored, keys.algorithms, config.mutualTls.map(_.externalUrl))),
       )
     val syncClients =
       CentralSyncTokenService.live >+>
@@ -235,6 +235,7 @@ object OAuthConfigurationService:
         authorizationDetailTypeCache <- ZIO.service[ReloadingCache[Vector[AuthorizationDetailTypeRecord]]]
         authorizationDetailTypeRepository <- ZIO.service[AuthorizationDetailTypeSyncClient]
         jwksRepository <- ZIO.service[JwksSyncClient]
+        coreConfig <- ZIO.service[CoreConfig]
       yield Impl(
         clientCache,
         clientRepository,
@@ -259,6 +260,7 @@ object OAuthConfigurationService:
         authorizationDetailTypeCache,
         authorizationDetailTypeRepository,
         jwksRepository,
+        coreConfig.mutualTls.map(_.externalUrl),
       ),
     )
   }
@@ -291,6 +293,11 @@ object OAuthConfigurationService:
       // only so `syncConfiguration`'s immediate resync can recompute the same derivation
       // instead of waiting for `metadataCache`'s own timer to notice the JWKS moved.
       jwksRepository: JwksSyncClient,
+      // Same reason as `jwksRepository` just above: `metadataCacheSource` already reads this
+      // off `CoreConfig` on its own schedule, and it is kept here only so `syncConfiguration`'s
+      // immediate resync recomputes `mtls_endpoint_aliases` with the rest rather than waiting
+      // on `metadataCache`'s timer.
+      mutualTlsExternalUrl: Option[String],
   ) extends OAuthConfigurationService:
 
     def find(id: ClientId): UIO[Option[OAuthClientRecord]] =
@@ -608,7 +615,7 @@ object OAuthConfigurationService:
         _ <- systemSettingsCache.set(systemSettings)
         metadata <- metadataRepository.getAll
         jwks <- jwksRepository.getPublicKeys
-        _ <- metadataCache.set(ServedMetadata.derive(metadata, jwks.algorithms))
+        _ <- metadataCache.set(ServedMetadata.derive(metadata, jwks.algorithms, mutualTlsExternalUrl))
         resources <- resourceRepository.getAll
         _ <- resourceCache.set(resources)
         authorizationDetailTypes <- authorizationDetailTypeRepository.getAll

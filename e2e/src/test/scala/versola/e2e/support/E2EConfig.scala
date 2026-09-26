@@ -26,6 +26,17 @@ final case class E2EConfig(
     provisionerClientId: String,
     provisionerSecret: String,
     redirectUri: String,
+    /** RFC 8705 §5: `auth`'s own mutual-TLS listener (`MPORT`), terminating TLS itself rather
+      * than reading a header a proxy forwarded -- the header path is `Fixtures.ClientCertificates`
+      * and `MutualTlsSpec`; this is the separate, unrelated listener `MutualTlsListenerSpec`
+      * reaches directly. Defaults match `scripts/gen-env.scala`'s `local` target. */
+    authMutualTlsUrl: String,
+    /** PEM paths `scripts/gen-env.scala` writes alongside the listener's own certificate --
+      * see its `genAuthMutualTlsCertificate`. All three signed by the same CA, so the client
+      * certificate chains to the one anchor the listener trusts. */
+    authMutualTlsClientCertificate: String,
+    authMutualTlsClientKey: String,
+    authMutualTlsTrustedCertificates: String,
 )
 
 object E2EConfig:
@@ -52,6 +63,13 @@ object E2EConfig:
       provisionerClientId <- env("E2E_PROVISIONER_CLIENT_ID", "utils")
       provisionerSecret <- env("E2E_PROVISIONER_SECRET", "ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI")
       redirectUri      <- env("E2E_REDIRECT_URI",   "http://localhost:3000")
+      authMutualTlsUrl <- env("AUTH_MTLS_URL", "https://localhost:9008")
+      // Relative to this module's own directory, not the repo root: `Test / fork := true`
+      // (see build.sbt) runs specs in a JVM whose working directory is `e2e/`, not wherever
+      // `sbt` itself was launched from.
+      authMutualTlsClientCertificate <- env("AUTH_MTLS_CLIENT_CERT", "../auth/dev/mtls/client.crt")
+      authMutualTlsClientKey <- env("AUTH_MTLS_CLIENT_KEY", "../auth/dev/mtls/client.key")
+      authMutualTlsTrustedCertificates <- env("AUTH_MTLS_CA", "../auth/dev/mtls/ca.crt")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -67,6 +85,10 @@ object E2EConfig:
       provisionerClientId,
       provisionerSecret,
       redirectUri,
+      authMutualTlsUrl,
+      authMutualTlsClientCertificate,
+      authMutualTlsClientKey,
+      authMutualTlsTrustedCertificates,
     )
 
   private def env(name: String, default: String): Task[String] =

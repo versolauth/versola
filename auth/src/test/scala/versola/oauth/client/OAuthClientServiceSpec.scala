@@ -180,6 +180,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         authorizationDetailTypeCache,
         authorizationDetailTypeSync,
         jwksSync,
+        None,
       )
 
   private def makeEnv(

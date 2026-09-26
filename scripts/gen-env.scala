@@ -162,6 +162,51 @@ def genInternalTlsCertificate(dir: File): Unit =
   run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
     "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
 
+/** The listener `PostgresOAuthApp.mutualTlsServerConfig` terminates itself (RFC 8705 §5),
+  * plus a client certificate e2e presents to it -- the counterpart, on this side, of
+  * `SSOClientMutualTlsHandshakeSpec`'s `TestCertificates.generate`, except these three have to
+  * exist as files: a real TLS handshake reads them off disk, not from an in-process fixture.
+  *
+  * All three signed by the same CA, the same relationship [[genInternalTlsCertificate]]'s
+  * server certificate has to itself: this CA is the one anchor `trusted-certificates` names,
+  * so the client certificate has to chain to it or the handshake `MutualTlsListenerSpec`
+  * depends on never completes.
+  *
+  * The client's `dNSName` (`e2e-native-mtls-client.versola.test`) is registered against it by
+  * that same spec -- a literal duplicated there rather than read from a file this script
+  * writes, since nothing on the auth/central/e2e side is running yet for either to hand the
+  * other a value.
+  */
+def genAuthMutualTlsCertificate(dir: File): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  val serverKey = File(dir, "server.key").getPath
+  val serverCsr = File(dir, "server.csr").getPath
+  val serverCert = File(dir, "server.crt").getPath
+  val clientKey = File(dir, "client.key").getPath
+  val clientCsr = File(dir, "client.csr").getPath
+  val clientCert = File(dir, "client.crt").getPath
+
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", caKey, "-out", caCert, "-days", "3650",
+    "-subj", "/CN=versola-auth-mtls-ca")
+  run("req", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost")
+  run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
+    "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
+  run("req", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", clientKey, "-out", clientCsr, "-subj", "/CN=e2e-native-mtls-client",
+    "-addext", "subjectAltName=DNS:e2e-native-mtls-client.versola.test")
+  run("x509", "-req", "-in", clientCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
+    "-out", clientCert, "-days", "3650", "-copy_extensions", "copy")
+
 /** `dir` and its certificate must already exist (see [[genInternalTlsCertificate]]) -- this
   * only renders the conf that points at them. Absolute paths throughout: nginx resolves a
   * relative one against its own prefix, not this process's working directory, which would
@@ -557,6 +602,28 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     else if isLocal then "http://localhost:9007"
     else "http://localhost:8082"
   val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault, flag = "auth-additional-url")
+
+  // RFC 8705 §5: `auth`'s own mutual-TLS listener, terminating TLS itself rather than
+  // reading a header a proxy forwarded (contrast `edgeInternalTlsDir` above, which is that
+  // header path's terminator). `isLocal`-only for the same reason `edgeInternalTlsDir` is:
+  // docker-local/vps/interactive are left exactly as before -- absent, no listener -- until
+  // whoever operates one decides what certificate it should present. e2e's own client
+  // certificate is signed by the same CA and generated alongside it below.
+  val authMutualTlsDir = File("auth/dev/mtls")
+  val authMutualTlsPort = 9008
+  val authMutualTlsUrl = s"https://localhost:$authMutualTlsPort"
+  val authMutualTlsBlock =
+    if isLocal then
+      s"""
+         |mutual-tls {
+         |  certificate            = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  private-key            = "${File(authMutualTlsDir, "server.key").getAbsolutePath}"
+         |  trusted-certificates   = "${File(authMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |  external-url           = "$authMutualTlsUrl"
+         |}
+         |""".stripMargin
+    else ""
+
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
   // Reverted to 9001 (not 8090, which every other branch here uses) --
@@ -805,7 +872,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  request-uri-ttl  = "60 seconds"
        |  max-request-size = 8192
        |}
-       |
+       |$authMutualTlsBlock
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
@@ -1083,6 +1150,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     writeFile(File("edge/dev"),     "env.conf", edgeConf)
     genInternalTlsCertificate(edgeInternalTlsDir)
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
+    genAuthMutualTlsCertificate(authMutualTlsDir)
     println(
       s"""
          |Done! Files written to service dev directories:
@@ -1092,6 +1160,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  - edge/dev/internal-tls/{ca.*,server.*,nginx.conf} (the TLS terminator
          |    edge's RFC 8705 mutual-TLS calls go through -- start with
          |    `nginx -c $$(pwd)/edge/dev/internal-tls/nginx.conf` before edge)
+         |  - auth/dev/mtls/{ca.*,server.*,client.*} (auth's own RFC 8705 §5 listener --
+         |    no terminator to start, auth serves it itself on MPORT=$authMutualTlsPort;
+         |    client.crt/client.key are the certificate e2e's MutualTlsListenerSpec presents)
          |""".stripMargin,
     )
   else

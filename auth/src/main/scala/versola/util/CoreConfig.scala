@@ -134,9 +134,15 @@ object CoreConfig:
     *   Required rather than optional, and deliberately so: left unset, Netty falls back to the
     *   JDK's default trust store, and every publicly-trusted CA on earth would then vouch for
     *   clients of this endpoint. There is no safe default to fall back to, so there is none.
+    * @param externalUrl the address a client is told to reach this listener at -- `mtls_endpoint_aliases`
+    *   (RFC 8705 §5) names it, not [[certificate]]/[[privateKey]]/[[trustedCertificates]],
+    *   because a deployment behind a NAT or a TCP-passthrough load balancer binds this
+    *   listener on one address and publishes another, the same relationship [[JwtConfig.issuer]]
+    *   already has to `PORT`.
     */
   case class MutualTlsConfig(
       certificate: String,
       privateKey: String,
       trustedCertificates: String,
+      externalUrl: String,
   )

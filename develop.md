@@ -77,7 +77,8 @@ The script first asks for the environment **Name** (default `local`):
       applying migrations to it (deliberate for real deployments, see deploy.md's
       own RUN_MIGRATIONS section), which fails immediately with no schema yet.
     - `PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
-    - `PORT=9003 DPORT=9004 APORT=9007 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
+    - `PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
+      (`MPORT` only does anything when `auth/dev/env.conf` carries a `mutual-tls` block -- see below)
     - `nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf"` - the TLS terminator in
       front of auth. Edge reaches auth through it (`versola-internal-url`), because
       an RFC 8705 client certificate is presented in a handshake and auth reads one
@@ -391,5 +392,13 @@ Metrics, liveness, and readiness probes are served on the diagnostics port (`dpo
 
 The application API is served on the main port (`PORT`, default 8080). Services may expose a
 separate internal application surface on `APORT` (default 8082); auth uses it for Account Settings.
+Auth alone may also expose a third surface on `MPORT` (default 8083): RFC 8705 §5's mutual-TLS
+listener, terminating TLS itself and demanding a client certificate on the handshake, rather
+than reading one from a header a proxy forwarded. It is served only when `auth/dev/env.conf`
+carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
+`local` target writes that block, plus the certificate it presents and a client certificate
+signed by the same CA (`auth/dev/mtls/{ca,server,client}.{crt,key}`) for e2e's own use --
+see `MutualTlsListenerSpec`. `docker-local`/`vps`/interactive get no such block, and no listener,
+until whoever operates one decides what certificate it should present.
 
-The ports are configured via `PORT`, `DPORT`, and `APORT` environment variables.
+The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
