@@ -1,6 +1,6 @@
 package versola.util
 
-import org.bouncycastle.asn1.x509.{Extension, GeneralName, GeneralNames}
+import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames}
 import org.bouncycastle.x509.X509V3CertificateGenerator
 
 import java.math.BigInteger
@@ -46,11 +46,15 @@ object TestCertificates:
     * @param algorithm `RSA` or `EC`; both are accepted wherever a certificate is read, and a
     *                  spec that only ever generated one would not notice a path that assumes
     *                  it.
+    * @param ca marks the certificate a certificate authority (`BasicConstraints`, critical) --
+    *           for the one spec asserting something refuses to trust one, not for a client's
+    *           own certificate, which is always an end entity.
     */
   def generate(
       subject: String = "CN=edge-mtls-client,O=Versola,C=KZ",
       dnsName: Option[String] = None,
       algorithm: String = "RSA",
+      ca: Boolean = false,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -68,6 +72,7 @@ object TestCertificates:
         false,
         GeneralNames(GeneralName(GeneralName.dNSName, name)),
       )
+    if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
     Generated(generator.generate(keyPair.getPrivate.nn).nn, keyPair.getPrivate.nn)
 
   private def keys(algorithm: String): KeyPair =
