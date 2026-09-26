@@ -1104,6 +1104,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * client so it can authenticate and sign as it. Build it with
         * `AssertionSigner.privateJwk`. */
       edgeSigningKey: Option[zio.json.ast.Json] = None,
+      /** RFC 8705 §2: the certificate an edge fronting this client presents at the TLS
+        * handshake, private key included, as a single PEM. Build it with
+        * `EdgeCertificate.edgeClientCertificate`. */
+      edgeClientCertificate: Option[String] = None,
       /** RFC 9449 §5.2: every token issued to this client is bound to a proof key, rather than
         * DPoP staying opt-in per request. Mandatory at decode time, like the other two
         * protections here, since it isn't an `Option` on `CreateClientRequest`. */
@@ -1140,6 +1144,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
       edgeSigningKey = edgeSigningKey,
+      edgeClientCertificate = edgeClientCertificate,
       dpopBoundAccessTokens = dpopBoundAccessTokens,
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
@@ -1745,4 +1750,5 @@ object OAuthClient:
       dpopSigningAlgs: Set[String],
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
+      edgeClientCertificate: Option[String],
   ) derives JsonEncoder

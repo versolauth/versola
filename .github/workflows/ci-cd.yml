@@ -383,6 +383,35 @@ jobs:
             sleep 2
           done
 
+      # gen-env.scala points edge's `versola-internal-url` at this terminator rather than at
+      # auth's plain port, because auth reads an RFC 8705 client certificate from a header and
+      # never terminates TLS itself -- so a certificate edge presents needs something in front
+      # of auth to turn a handshake into that header. Every other edge -> auth call goes over
+      # the same address, so it has to be listening before edge serves anything at all.
+      - name: Start the internal TLS terminator in front of auth
+        if: github.event_name != 'release'
+        run: |
+          # Preinstalled on the GitHub-hosted Ubuntu images; installed here so a runner image
+          # that drops it fails with a message naming nginx rather than with every edge call
+          # refusing a connection.
+          command -v nginx >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y nginx; }
+          sudo nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf" > /tmp/nginx.log 2>&1 &
+          echo $! > /tmp/nginx.pid
+          echo "Waiting for the terminator on port 9443..."
+          for i in $(seq 1 30); do
+            if curl -sk -o /dev/null "https://localhost:9443/.well-known/openid-configuration"; then
+              echo "terminator is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "the terminator did not answer in 60s"
+              cat /tmp/nginx.log
+              cat edge/dev/internal-tls/error.log 2>/dev/null
+              exit 1
+            fi
+            sleep 2
+          done
+
       # The account-settings e2e specs reach auth's Security page the way a
       # browser does -- through edge -- so edge has to be up alongside auth.
       - name: Start edge service
@@ -429,6 +458,7 @@ jobs:
           [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
           [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
           [ -f /tmp/edge.pid ]   && kill "$(cat /tmp/edge.pid)"   2>/dev/null || true
+          [ -f /tmp/nginx.pid ]  && sudo kill "$(cat /tmp/nginx.pid)" 2>/dev/null || true
 
   docker-auth:
     needs: build
