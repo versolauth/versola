@@ -8,6 +8,8 @@ import versola.util.http.Observability
 import zio.*
 import zio.http.Request
 
+import java.security.cert.X509Certificate
+
 /** How a client proves who it is, shared by every endpoint that authenticates one: `/token`,
   * `/introspect`, `/revoke` and `/par`.
   *
@@ -163,20 +165,37 @@ object ClientAuthentication:
     ): IO[String, Option[ClientCertificate]] =
       readCertificate(request, clientId)
 
+    /** Two sources, and the TLS session wins.
+      *
+      * A certificate on the session came off a handshake this process performed, against
+      * anchors it was configured with. A certificate in a header is an assertion by whatever
+      * spoke HTTP to us, believable exactly insofar as nothing but the tenant's proxy can
+      * reach this port -- so where both exist, preferring the header would let a request that
+      * arrived over the mutual-TLS listener talk its way out of the certificate it actually
+      * presented.
+      *
+      * The header is not consulted at all on such a request, rather than consulted and
+      * compared: a mismatch has no honest reading, and "they must agree" is a rule whose
+      * failure mode is a puzzling rejection of a client doing nothing wrong.
+      */
     private def readCertificate(
         request: Request,
         clientId: ClientId,
     ): IO[String, Option[ClientCertificate]] =
-      oauthClientService.getMtlsCertificateSource(clientId).flatMap: source =>
-        source.flatMap(s => request.headers.get(s.header).map(_ -> s.encoding)) match
-          case None =>
-            ZIO.none
-          case Some((headerValue, encoding)) =>
-            ZIO.fromEither(ClientCertificate.parse(headerValue, encoding))
-              .tapError(reason =>
-                ZIO.logWarning(s"Couldn't parse the client certificate of $clientId: $reason"),
-              )
-              .asSome
+      request.remoteCertificate match
+        case Some(x509: X509Certificate) =>
+          ZIO.some(ClientCertificate.of(x509))
+        case _ =>
+          oauthClientService.getMtlsCertificateSource(clientId).flatMap: source =>
+            source.flatMap(s => request.headers.get(s.header).map(_ -> s.encoding)) match
+              case None =>
+                ZIO.none
+              case Some((headerValue, encoding)) =>
+                ZIO.fromEither(ClientCertificate.parse(headerValue, encoding))
+                  .tapError(reason =>
+                    ZIO.logWarning(s"Couldn't parse the client certificate of $clientId: $reason"),
+                  )
+                  .asSome
 
     override def authenticate(
         credentials: ClientCredentials,

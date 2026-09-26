@@ -233,4 +233,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     par = None,
     dpop = None,
     argon2 = None,
+    // No listener of `auth`'s own: the specs that exercise RFC 8705 reach the authenticator
+    // directly, and a certificate on the request is what stands in for a handshake.
+    mutualTls = None,
   )

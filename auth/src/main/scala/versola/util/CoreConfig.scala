@@ -17,6 +17,7 @@ case class CoreConfig(
     par: Option[CoreConfig.ParConfig],
     dpop: Option[CoreConfig.DpopConfig],
     argon2: Option[Argon2Config],
+    mutualTls: Option[CoreConfig.MutualTlsConfig],
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
@@ -112,3 +113,30 @@ object CoreConfig:
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(300),
     )
+
+  /** RFC 8705 §5: the listener `auth` terminates mutual TLS on itself, separate from the one
+    * serving everything else.
+    *
+    * Separate because client authentication is negotiated in the TLS handshake, before any
+    * path is known -- a certificate cannot be demanded for `/token` alone. Demanded on the
+    * main listener it would be demanded of the browser at `/authorize` too, which is the
+    * prompt §5 exists to avoid. So the endpoints a certificate is relevant to are served a
+    * second time here, and advertised as `mtls_endpoint_aliases`.
+    *
+    * Absent leaves the deployment as it was before this existed: no such listener, and a
+    * certificate reaches `auth` only as the header a tenant's proxy is configured to forward
+    * (§6.5).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8 -- the only form the TLS stack
+    *                   here reads back.
+    * @param trustedCertificates PEM path to the anchors a client's chain is validated against.
+    *   Required rather than optional, and deliberately so: left unset, Netty falls back to the
+    *   JDK's default trust store, and every publicly-trusted CA on earth would then vouch for
+    *   clients of this endpoint. There is no safe default to fall back to, so there is none.
+    */
+  case class MutualTlsConfig(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+  )
