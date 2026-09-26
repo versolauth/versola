@@ -63,11 +63,13 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       tenantId: Option[String] = None,
       roles: Option[List[String]] = None,
       cnfJkt: Option[String] = None,
+      cnfX5t: Option[String] = None,
   ): Task[AccessToken] =
     val fields =
       Chunk(Some("client_id" -> Json.Str(clientId))) ++
         Chunk(tenantId.map(tid => "tenant_id" -> Json.Str(tid))) ++
         Chunk(cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt)))) ++
+        Chunk(cnfX5t.map(thumbprint => "cnf" -> Json.Obj("x5t#S256" -> Json.Str(thumbprint)))) ++
         Chunk(roles.map(rs => "roles" -> Json.Arr(rs.map(Json.Str(_))*))
           .orElse(Some("roles" -> Json.Arr())))
     JWT.serialize(
@@ -145,6 +147,34 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("returns 401 when a DPoP-bound token is presented under the Bearer scheme") {
       for
         accessToken <- token(cnfJkt = Some("some-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Authorization.Bearer(accessToken)),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    // RFC 8705 §3, the same argument for the other binding: the certificate such a token is
+    // bound to is edge's own, so the session cookie -- edge's own sealed copy of the token --
+    // is the one place the binding still holds, and a header is not.
+    test("honours a certificate-bound token out of the session cookie") {
+      for
+        accessToken <- token(clientId = "web-app", tenantId = Some("default"), roles = Some(List("member")), cnfX5t = Some("certificate-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken")),
+          (s, _) => s.getMyPermissions.succeedsWith(sampleResponse),
+        )
+      yield assertTrue(
+        response.status == Status.Ok,
+        service.getMyPermissions.calls.nonEmpty,
+      )
+    },
+    test("returns 401 when a certificate-bound token is presented in a header") {
+      for
+        accessToken <- token(cnfX5t = Some("certificate-thumbprint"))
         (response, service, _) <- run(
           Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
             .addHeader(Header.Authorization.Bearer(accessToken)),

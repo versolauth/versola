@@ -1,6 +1,8 @@
 package versola.e2e.flows.edge
 
 import versola.e2e.support.*
+import zio.*
+import zio.http.{Client, Method, Status}
 import zio.test.*
 
 /** An edge fronting a client that authenticates by certificate rather than by secret -- the
@@ -25,20 +27,56 @@ import zio.test.*
   * certificate it hands edge is the one nginx actually presents, and that auth's own
   * `self_signed_tls_client_auth` matching accepts the header nginx forwards.
   *
-  * Where it stops: a session, not a proxied request. The token auth issues this client is
-  * bound to the certificate (RFC 8705 §3, `cnf.x5t#S256`), and edge cannot use such a
-  * session -- see the PR description and the follow-up issue. Proxying is therefore not
-  * asserted here rather than asserted broken.
+  * And what only a proxied request shows, beyond the session: the token auth issues this
+  * client is bound to the certificate (RFC 8705 §3, `cnf.x5t#S256`), so every later hop has
+  * to keep holding that binding up -- edge reading the claim at all, and edge presenting the
+  * same certificate again on `/userinfo`, which auth refuses to a connection without it.
   */
-object EdgeMutualTlsSpec extends EdgeSpec(
-      EdgeFixture.Config(
-        resourceId = "e2e-edge-mutual-tls",
-        // Distinct from every other edge spec's resource URI -- see EdgePrivateKeyJwtSpec's
-        // comment on why that collision 500s instead of merely conflicting.
-        resourceUri = UpstreamStub.uriOn(9107),
-        mutualTls = true,
+object EdgeMutualTlsSpec
+  extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
+
+  /** Its own upstream origin -- see EdgePrivateKeyJwtSpec's comment on why sharing one 500s
+    * instead of merely conflicting. */
+  private val UpstreamPort = 9107
+
+  private val config = EdgeFixture.Config(
+    resourceId = "e2e-edge-mutual-tls",
+    resourceUri = UpstreamStub.uriOn(UpstreamPort),
+    endpoints = List(
+      EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      // The endpoint that makes edge call `/userinfo` with the token it was issued, and the
+      // injected header that proves the call came back with claims rather than a refusal.
+      EdgeFixture.Endpoint(
+        name = "profile",
+        method = "GET",
+        path = "/profile",
+        fetchUserInfo = true,
+        inject = List(Fixtures.inject("header", "X-User-Sub", "user.sub")),
       ),
-    ):
+    ),
+    mutualTls = true,
+    awaitProxyReady = true,
+  )
+
+  override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
+    val clients = (E2EConfig.live ++ Client.default) >>> (OAuthClient.live ++ CentralApi.live ++ EdgeApi.live)
+    (clients ++ UpstreamStub.liveOn(UpstreamPort)) >+> EdgeFixture.layer(config)
+
+  override val aspects: Chunk[TestAspectAtLeastR[TestEnvironment]] =
+    Chunk(TestAspect.withLiveClock)
+
+  private val edge = ZIO.service[EdgeApi]
+  private val auth = ZIO.service[OAuthClient]
+  private val fixture = ZIO.service[EdgeFixture]
+  private val upstream = ZIO.service[UpstreamStub]
+
+  private val signIn: ZIO[EdgeApi & OAuthClient & EdgeFixture, Throwable, EdgeSession] =
+    for
+      edgeApi <- edge
+      authApi <- auth
+      f <- fixture
+      session <- edgeApi.browserLogin(authApi, f.presetId, f.login, f.password)
+    yield session
 
   def spec = suite("edge fronting a self-signed mutual-TLS client")(
     test("signs in with no secret anywhere, over a real TLS handshake through nginx") {
@@ -52,6 +90,38 @@ object EdgeMutualTlsSpec extends EdgeSpec(
         // The fixture generated a certificate rather than a secret being usable: confirms
         // this test is actually exercising the credential it claims to.
         f.certificate.isDefined,
+      )
+    },
+    // The session this client opens is worth nothing if edge cannot spend it. Nothing about
+    // this endpoint is mutual-TLS-specific -- it is the plainest proxied call there is --
+    // which is the point: the only thing that can fail it here is the binding the token
+    // carries because of how the session was opened.
+    test("proxies a request made with the certificate-bound token it was issued") {
+      for
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        edgeApi <- edge
+        session <- signIn
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", session.auth)
+        seen <- stub.lastRequest
+      yield assertTrue(response.status == Status.Ok, seen.isDefined)
+    },
+    // RFC 8705 §3 again, one hop further out: auth refuses this token on `/userinfo` unless
+    // the connection asking presents the certificate it is bound to. Only the injected header
+    // proves the call came back with claims -- a refusal is a 401 the upstream never sees.
+    test("reaches an endpoint whose authorization needs userinfo") {
+      for
+        f <- fixture
+        stub <- upstream
+        _ <- stub.reset
+        edgeApi <- edge
+        session <- signIn
+        response <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth)
+        seen <- stub.lastRequest
+      yield assertTrue(
+        response.status == Status.Ok,
+        seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
       )
     },
   )

@@ -11,7 +11,7 @@ import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
-import versola.util.{DpopNonce, EnvName, JWT, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{DpopNonce, EnvName, JWT, PrivateClientCertificate, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -52,6 +52,15 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   private val oauthClient = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
   private val svcClient = OAuthClient(id = ClientId("svc-1"), credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+
+  /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
+    * auth issues it certificate-bound (§3). */
+  private val certificateClient = oauthClient.copy(
+    id = ClientId("mtls-1"),
+    credential = ClientCredential.MutualTls(
+      PrivateClientCertificate(TestCertificates.generate().bundle).material.toOption.get,
+    ),
+  )
 
   /** What central currently says about this edge -- the only thing DpopVerifier reads it for.
     * Nonce required, algorithms as the metadata document defaults to. */
@@ -120,6 +129,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         sid: String = "sso-session-1",
         audience: List[String] = List(backendUrl.encode),
         cnfJkt: Option[String] = None,
+        cnfX5t: Option[String] = None,
     ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
@@ -139,6 +149,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("sid", sid)
             .claim("tenant_id", tenantId)
           cnfJkt.foreach(v => builder.claim("cnf", java.util.Map.of("jkt", v)))
+          cnfX5t.foreach(v => builder.claim("cnf", java.util.Map.of("x5t#S256", v)))
           acr.foreach(v => builder.claim("acr", v))
           authTime.foreach(v => builder.claim("auth_time", v))
           val javaRoles = new java.util.ArrayList[String]()
@@ -1847,9 +1858,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         env.ssoClient.userInfo.calls.nonEmpty,
       )
     },
-    // ssoClient decides whether to mint an edge assertion off this flag, so it has to reach
-    // it truthfully: a plain bearer token has no cnf claim to read it from.
-    test("tells ssoClient a plain bearer token is not DPoP-bound") {
+    // ssoClient decides what to bring to /userinfo off this, so it has to reach it
+    // truthfully: a plain bearer token has no cnf claim to read a binding from.
+    test("tells ssoClient a plain bearer token is bound to nothing") {
       val env = new Env
       val endpoint = usersEndpoint(fetchUserInfo = true)
       for
@@ -1865,10 +1876,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
       yield assertTrue(
         response.status == Status.Ok,
-        env.ssoClient.userInfo.calls.map(_._2) == List(false),
+        env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.Unbound),
       )
     },
-    test("tells ssoClient a DPoP-bound token is bound") {
+    test("tells ssoClient a DPoP-bound token is bound to a key") {
       val env = new Env
       val endpoint = usersEndpoint(fetchUserInfo = true)
       for
@@ -1884,7 +1895,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
       yield assertTrue(
         response.status == Status.Ok,
-        env.ssoClient.userInfo.calls.map(_._2) == List(true),
+        env.ssoClient.userInfo.calls.map(_._2) == List(SSOClient.TokenBinding.Key),
       )
     },
     test("returns 401 when userInfo is unauthorized") {
@@ -2294,6 +2305,70 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
         upstream <- capture.get
       yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+    },
+    // RFC 8705 §3. The certificate such a token is bound to is this edge's own -- edge is the
+    // client that obtained the token -- so the session cookie, which is edge's own sealed copy
+    // of it, is the one place the binding still holds.
+    test("accepts a certificate-bound token out of the session cookie") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfX5t = Some("certificate-thumbprint"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Ok, upstream.isDefined)
+    },
+    test("refuses a certificate-bound token presented in a header") {
+      // Edge terminates no TLS of its own, so it cannot tell the client the token was bound to
+      // from anyone else who came by it -- and §3 is explicit that it must not be honoured for
+      // anyone else.
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfX5t = Some("certificate-thumbprint"))
+        request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    // Auth refuses `/userinfo` for a certificate-bound token to a connection that does not
+    // present the certificate, so the call has to be told which binding it is proving.
+    test("asks for userinfo over the client's certificate for a certificate-bound token") {
+      val env = new Env
+      val endpoint = usersEndpoint(
+        inject = Vector(InjectRule(InjectTarget.header, "x-user-email", "user.email")),
+        fetchUserInfo = true,
+      )
+      for
+        _ <- env.setupDefaults()
+        _ <- env.withClients(certificateClient)
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj("email" -> Json.Str("john@example.com")))
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(endpoint))
+        token <- env.signToken(clientId = certificateClient.id.toString, cnfX5t = Some("certificate-thumbprint"))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        calls <- ZIO.succeed(env.ssoClient.userInfo.calls)
+      yield assertTrue(
+        response.status == Status.Ok,
+        calls.map(_._2) == List(
+          SSOClient.TokenBinding.Certificate(certificateClient.id, certificateClient.credential),
+        ),
+      )
     },
     // Turning the feature off must not turn the binding off with it.
     test("refuses a DPoP request when this edge has no dpop block configured") {

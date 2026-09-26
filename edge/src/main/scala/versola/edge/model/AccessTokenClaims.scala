@@ -18,10 +18,21 @@ case class AccessTokenClaims(
     /** The refresh-token family this token was issued from, absent when none stands behind it
       * (a `client_credentials` token). Revoking that family revokes this token. */
     @jsonField("fam") family: Option[RefreshTokenFamilyId] = None,
-    /** RFC 9449 §6.1: present only on a sender-constrained token. Its `jkt` is the thumbprint
-      * of the key the accompanying DPoP proof must be signed with, and its mere presence is
-      * what makes the `Bearer` scheme inadmissible for this token (§7.2). */
+    /** Present only on a sender-constrained token, naming what its holder has to prove. */
     @jsonField("cnf") confirmation: Option[Confirmation],
 ) derives JsonCodec
 
-case class Confirmation(jkt: String) derives JsonCodec
+/** What a sender-constrained token is bound to: a key under RFC 9449 §6.1, a client
+  * certificate under RFC 8705 §3.1. A token carries one or the other, never both, and which
+  * one decides what the holder must produce -- a DPoP proof signed with that key, or that
+  * certificate on the connection.
+  *
+  * Both halves optional, and neither is a field a decoder may insist on: auth issues
+  * `cnf: {"x5t#S256": ...}` to a mutual-TLS client, and requiring `jkt` made the whole claim
+  * set undecodable for those tokens -- so every request carrying one was refused as
+  * unreadable, before anything about its binding was ever looked at.
+  */
+case class Confirmation(
+    jkt: Option[String] = None,
+    @jsonField("x5t#S256") certificateThumbprint: Option[String] = None,
+) derives JsonCodec
