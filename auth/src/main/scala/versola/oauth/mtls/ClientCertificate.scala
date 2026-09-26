@@ -125,6 +125,15 @@ object ClientCertificate:
         Try(java.util.Base64.getMimeDecoder.decode(value)).toEither.left
           .map(error => s"not valid base64: ${error.getMessage}")
 
+  /** The same three values, from a certificate already in hand rather than from a header.
+    *
+    * This is the RFC 8705 §5 path: the certificate came off the TLS session of a listener
+    * this process terminated itself, so it has been through a handshake that validated its
+    * chain against configured anchors. Nothing is decoded and nothing can fail -- which is
+    * the difference from [[parse]], where the bytes are whatever a proxy put in a header.
+    */
+  def of(certificate: X509Certificate): ClientCertificate = from(certificate)
+
   private def from(certificate: X509Certificate): ClientCertificate =
     ClientCertificate(
       thumbprint = Base64.urlEncode(
