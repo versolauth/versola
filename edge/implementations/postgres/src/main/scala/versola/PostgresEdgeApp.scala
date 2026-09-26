@@ -63,7 +63,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     ).reduce(_ ++ _)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    parseConfig[EdgeConfig] >+>
+    // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
+    // rather than the leaf it is documented to require -- see that field's own comment.
+    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >+>
       // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>

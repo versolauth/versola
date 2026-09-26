@@ -74,6 +74,19 @@ object SSOClient:
         "for auth to read a certificate from",
     )
 
+  /** A handshake whose far side is not authenticated is one any host that can intercept the
+    * route may complete. Raised rather than presenting the certificate to it: zio-http's
+    * `ClientSSLConfig.Default` is Netty's `InsecureTrustManagerFactory`, which accepts every
+    * server certificate, so falling back to it would carry an authenticated session -- and
+    * the tokens it returns -- over a connection to whatever answered.
+    */
+  case class CredentialNeedsTrustedServer(clientId: ClientId, endpoint: URL)
+    extends RuntimeException(
+      s"client '$clientId' authenticates with a certificate, which cannot be presented to " +
+        s"'${endpoint.encode}' -- no trust anchors are configured for it, so the server at " +
+        "that address would not be authenticated. Set `versola-internal-trusted-certificates`",
+    )
+
   /** RFC 9126 §2.2: what `/par` hands back in place of the request. */
   private case class PushedAuthorizationResponse(
       @jsonField("request_uri") requestUri: String,
@@ -108,6 +121,16 @@ object SSOClient:
       * calls itself, and the two differ wherever edge and auth sit on separate networks.
       */
     private val audience: String = config.versolaUrl.encode
+
+    /** How the certificate auth's internal endpoint presents is validated, for the calls that
+      * authenticate in the handshake. Only those: every other call goes over the client's own
+      * configuration, which this never touches.
+      *
+      * Absent is not a default to fall back on but a refusal (`CredentialNeedsTrustedServer`):
+      * the only untrusted option zio-http offers is one that authenticates no server at all.
+      */
+    private val internalTrust: Option[ClientSSLConfig] =
+      config.versolaInternalTrustedCertificates.map(ClientSSLConfig.FromCertFile.apply)
 
     override def authorizeUri(
         preset: AuthorizationPreset,
@@ -252,6 +275,8 @@ object SSOClient:
           for
             _ <- ZIO.fail(SSOClient.CredentialNeedsTls(clientId, endpoint))
               .unless(endpoint.scheme.contains(Scheme.HTTPS))
+            trust <- ZIO.fromOption(internalTrust)
+              .orElseFail(SSOClient.CredentialNeedsTrustedServer(clientId, endpoint))
             certificateConfig <- certificateFiles.present(certificate)
           yield
             // RFC 8705 §2: the certificate is the whole credential and the request carries
@@ -265,7 +290,7 @@ object SSOClient:
             Authenticated(
               identified,
               Headers.empty,
-              Some(ClientSSLConfig.FromClientAndServerCert(ClientSSLConfig.Default, certificateConfig)),
+              Some(ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)),
             )
 
     /** @param ssl how the connection this is sent over authenticates, for the one method that
