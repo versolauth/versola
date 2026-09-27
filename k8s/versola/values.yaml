@@ -187,6 +187,30 @@ services:
     tolerations: []
     affinity: {}
 
+# Pod annotations for annotation-based Prometheus/VictoriaMetrics discovery,
+# pointing scrapes at each pod's diagnostics port directly.
+#
+# Why this chart carries this at all, unlike its ClusterIP-only Service
+# (templates/service.yaml): a scrape target set to
+# <fullname>-<component>.<namespace>.svc.cluster.local resolves to a single
+# pod IP per connection, so with replicaCount > 1 every scrape lands on an
+# effectively random replica behind that one instance label. rate()/increase()
+# over the resulting counters (http_server_requests_total,
+# auth_authorize_total, ...) undercounts and jitters, because no single
+# series ever accumulates one replica's full count across scrapes -- see the
+# 1M-run loadgen campaign that first surfaced this.
+#
+# prometheus.io/scrape+port+path (the same annotations k8s/loadgen's
+# `metrics.prometheusAnnotations` sets) let a kubernetes_sd_configs-based
+# scraper (vmagent, Prometheus) discover pods individually via the pod/
+# Endpoints role instead of a static or Service-DNS target, so each replica
+# gets its own stable target and instance label. Set to false only if your
+# scrape config already selects these pods some other way (an explicit
+# PodMonitor/VMPodScrape, for instance) and the annotations would just be
+# redundant.
+metrics:
+  prometheusAnnotations: true
+
 # console: nginx with central-ui's static build baked in (see
 # docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
 # PORT/DPORT and no /liveness or /readiness to probe (see

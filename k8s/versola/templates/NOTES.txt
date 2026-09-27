@@ -32,6 +32,23 @@ match the redirect_uri of the preset the console logs in through -- the chart
 routes /complete, but the preset config still has to name the same host.
 {{- end }}
 
+{{ if .Values.metrics.prometheusAnnotations -}}
+Every pod carries prometheus.io/scrape annotations on its diagnostics port,
+so a kubernetes_sd_configs-based scraper (vmagent, Prometheus) can discover
+each replica individually. If your scrape config instead targets this
+chart's Service DNS name directly, every scrape still lands on a random
+pod behind that ClusterIP and per-replica rate()/increase() stays wrong
+regardless of these annotations -- point the scrape config at the pod/
+Endpoints role, not the Service.
+{{- else -}}
+metrics.prometheusAnnotations is false, so no pod here is discoverable by
+an annotation-based scraper. Make sure your scrape config selects these
+pods some other way (PodMonitor/VMPodScrape, or an explicit kubernetes_sd
+config keyed on pod/Endpoints) -- a scrape config pointed at this chart's
+Service DNS name will alias every replica onto one instance label and
+undercount rate()/increase() when replicaCount > 1.
+{{- end }}
+
 Each service's config must be supplied via its own `services.<name>.config.existingSecret`,
 and the `${VAR}` values that config references via `secrets.existingSecret` (one shared
 Secret across auth/central/edge -- see values.yaml's `secrets` block for its required keys
