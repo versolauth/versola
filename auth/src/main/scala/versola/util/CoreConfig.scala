@@ -17,12 +17,35 @@ case class CoreConfig(
     par: Option[CoreConfig.ParConfig],
     dpop: Option[CoreConfig.DpopConfig],
     argon2: Option[Argon2Config],
+    mutualTls: Option[CoreConfig.MutualTlsConfig],
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 
   def dpopOrDefault: CoreConfig.DpopConfig = dpop.getOrElse(CoreConfig.DpopConfig.default)
 
   def argon2OrDefault: Argon2Config = argon2.getOrElse(Argon2Config.default)
+
+  /** The address this deployment answers `path` on, for whichever of its two listeners a
+    * request arrived at -- RFC 9449 §4.3's `htu` is the one thing that has to know the
+    * difference.
+    *
+    * `/token` and `/userinfo` are served twice: once at the issuer, once at
+    * [[CoreConfig.MutualTlsConfig.externalUrl]], which RFC 8705 §5 has the metadata advertise
+    * as `mtls_endpoint_aliases`. A client that follows an alias calls a different authority,
+    * so §4.3 obliges it to stamp that authority into `htu` -- and holding both listeners to
+    * the issuer's address, as this did before the alias existed, would reject a proof that is
+    * correct.
+    *
+    * Both sides of the choice are configured values, never the inbound request's own `Host`:
+    * the point of deriving `htu`'s expectation rather than reading it is that a forwarded
+    * host header cannot be used to make a proof minted for some other origin validate here.
+    * What the request decides is only *which* of the two configured addresses applies.
+    */
+  def endpointUri(overMutualTls: Boolean, path: String): String =
+    val origin =
+      if overMutualTls then mutualTls.map(_.externalUrl).getOrElse(jwt.issuer)
+      else jwt.issuer
+    s"${origin.stripSuffix("/")}$path"
 
 object CoreConfig:
   case class BootstrapConfig(
@@ -112,3 +135,36 @@ object CoreConfig:
       iatLeeway = Duration.fromSeconds(60),
       nonceTtl = Duration.fromSeconds(300),
     )
+
+  /** RFC 8705 §5: the listener `auth` terminates mutual TLS on itself, separate from the one
+    * serving everything else.
+    *
+    * Separate because client authentication is negotiated in the TLS handshake, before any
+    * path is known -- a certificate cannot be demanded for `/token` alone. Demanded on the
+    * main listener it would be demanded of the browser at `/authorize` too, which is the
+    * prompt §5 exists to avoid. So the endpoints a certificate is relevant to are served a
+    * second time here, and advertised as `mtls_endpoint_aliases`.
+    *
+    * Absent leaves the deployment as it was before this existed: no such listener, and a
+    * certificate reaches `auth` only as the header a tenant's proxy is configured to forward
+    * (§6.5).
+    *
+    * @param certificate PEM path to the certificate this listener presents.
+    * @param privateKey PEM path to its key, unencrypted PKCS#8 -- the only form the TLS stack
+    *                   here reads back.
+    * @param trustedCertificates PEM path to the anchors a client's chain is validated against.
+    *   Required rather than optional, and deliberately so: left unset, Netty falls back to the
+    *   JDK's default trust store, and every publicly-trusted CA on earth would then vouch for
+    *   clients of this endpoint. There is no safe default to fall back to, so there is none.
+    * @param externalUrl the address a client is told to reach this listener at -- `mtls_endpoint_aliases`
+    *   (RFC 8705 §5) names it, not [[certificate]]/[[privateKey]]/[[trustedCertificates]],
+    *   because a deployment behind a NAT or a TCP-passthrough load balancer binds this
+    *   listener on one address and publishes another, the same relationship [[JwtConfig.issuer]]
+    *   already has to `PORT`.
+    */
+  case class MutualTlsConfig(
+      certificate: String,
+      privateKey: String,
+      trustedCertificates: String,
+      externalUrl: String,
+  )

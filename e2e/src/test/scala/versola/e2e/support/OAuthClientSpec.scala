@@ -23,6 +23,10 @@ object OAuthClientSpec extends ZIOSpecDefault:
     provisionerClientId = "utils",
     provisionerSecret = "provisioner-secret-for-test",
     redirectUri = "http://edge.test/complete",
+    authMutualTlsUrl = "https://auth-mtls.test",
+    authMutualTlsClientCertificate = "client.crt",
+    authMutualTlsClientKey = "client.key",
+    authMutualTlsTrustedCertificates = "ca.crt",
   )
   private val userId = UUID.fromString("018f0f2a-1c7b-7000-9000-000000000901")
 

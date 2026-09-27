@@ -49,23 +49,32 @@ object TestCertificates:
     * @param ca marks the certificate a certificate authority (`BasicConstraints`, critical) --
     *           for the one spec asserting something refuses to trust one, not for a client's
     *           own certificate, which is always an end entity.
+    * @param issuer signs the certificate with that authority's key instead of the subject's
+    *               own, which is what a TLS stack validating a chain needs -- a self-signed
+    *               leaf is trusted by nothing, so a handshake spec cannot be written with one.
     */
   def generate(
       subject: String = "CN=edge-mtls-client,O=Versola,C=KZ",
       dnsName: Option[String] = None,
       algorithm: String = "RSA",
       ca: Boolean = false,
+      issuer: Option[Generated] = None,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
     val principal = X500Principal(subject)
     generator.setSerialNumber(BigInteger.valueOf(System.nanoTime()))
-    generator.setIssuerDN(principal)
+    generator.setIssuerDN(issuer.fold(principal)(_.certificate.getSubjectX500Principal.nn))
     generator.setSubjectDN(principal)
     generator.setNotBefore(Date(System.currentTimeMillis() - 3600_000))
     generator.setNotAfter(Date(System.currentTimeMillis() + 86_400_000))
     generator.setPublicKey(keyPair.getPublic.nn)
-    generator.setSignatureAlgorithm(if algorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA")
+    // The signature is made with the issuer's key, so it is the issuer's algorithm that names
+    // it -- a CA of one kind may perfectly well issue to a leaf of another.
+    val signingKey = issuer.fold(keyPair.getPrivate.nn)(_.privateKey)
+    generator.setSignatureAlgorithm(
+      if signingKey.getAlgorithm == "EC" then "SHA256withECDSA" else "SHA256withRSA",
+    )
     dnsName.foreach: name =>
       generator.addExtension(
         Extension.subjectAlternativeName.nn,
@@ -73,7 +82,7 @@ object TestCertificates:
         GeneralNames(GeneralName(GeneralName.dNSName, name)),
       )
     if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
-    Generated(generator.generate(keyPair.getPrivate.nn).nn, keyPair.getPrivate.nn)
+    Generated(generator.generate(signingKey).nn, keyPair.getPrivate.nn)
 
   private def keys(algorithm: String): KeyPair =
     val generator = KeyPairGenerator.getInstance(algorithm).nn

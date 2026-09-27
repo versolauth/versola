@@ -1,6 +1,7 @@
 package versola.oauth.metadata
 
 import versola.util.{ClientAssertion, Dpop, JWT, RequestObject}
+import zio.http.URL
 import zio.json.ast.Json
 
 /** The authorization server metadata document as `auth` actually serves it, paired with what
@@ -70,35 +71,81 @@ object ServedMetadata:
     */
   private val AuthorizationSigningAlgField = "authorization_signing_alg_values_supported"
 
-  def derive(stored: Json.Obj, publishedSigningAlgorithms: Set[JWT.Algorithm] = Set.empty): ServedMetadata =
+  /** RFC 8705 §5: the field naming, for each endpoint a certificate is relevant to, the
+    * second address that demands one. Its value is an object rather than a flat field like
+    * the ones above, so it is built and spliced in separately by [[withMutualTlsAliases]].
+    */
+  private val MtlsAliasesField = "mtls_endpoint_aliases"
+
+  /** Exactly the endpoints `PostgresOAuthApp.mutualTlsRoutes` serves a second time -- an
+    * alias for a field this document does not also carry would name an address for an
+    * endpoint the mTLS listener never answers on.
+    */
+  private val MtlsRelevantFields =
+    List("token_endpoint", "introspection_endpoint", "revocation_endpoint", "pushed_authorization_request_endpoint", "userinfo_endpoint")
+
+  /** Reads each of [[MtlsRelevantFields]] off the *already-served* address -- the one the
+    * main listener answers on -- and republishes only the path under `externalUrl`, rather
+    * than hold a second copy of every path this document names. The two can then never drift
+    * apart on the path alone; only the origin differs, which is the whole of what this
+    * listener changes.
+    *
+    * Absent [[CoreConfig.MutualTlsConfig]] (the common case -- see its own doc comment) this
+    * is the identity: no field is added, and a client discovers nothing to reach that does
+    * not exist.
+    */
+  private def withMutualTlsAliases(document: Json.Obj, mutualTlsExternalUrl: Option[String]): Json.Obj =
+    mutualTlsExternalUrl.fold(document): externalUrl =>
+      // Stripped the same way CoreConfig.endpointUri strips it: the natural way to write this
+      // setting is with a trailing slash, and `path` below already starts with one, so an
+      // unstripped externalUrl would advertise "https://mtls.example//token" -- a path DPoP
+      // validation (which builds `htu` from endpointUri) never expects and that may not route.
+      val origin = externalUrl.stripSuffix("/")
+      val aliases = MtlsRelevantFields.flatMap: field =>
+        for
+          value <- document.get(field)
+          endpoint <- value.as[String].toOption
+          path <- URL.decode(endpoint).toOption.map(_.path)
+        yield field -> Json.Str(s"$origin$path")
+      if aliases.isEmpty then document
+      else Json.Obj((document.fields.filterNot(_._1 == MtlsAliasesField) :+ (MtlsAliasesField -> Json.Obj(aliases*)))*)
+
+  def derive(
+    stored: Json.Obj,
+    publishedSigningAlgorithms: Set[JWT.Algorithm] = Set.empty,
+    mutualTlsExternalUrl: Option[String] = None,
+  ): ServedMetadata =
     val dpopAlgorithms = Dpop.Algorithm.fromMetadata(stored)
     val assertionAlgorithms = ClientAssertion.Algorithm.fromMetadata(stored)
     val requestObjectAlgorithms = RequestObject.Algorithm.fromMetadata(stored)
     val storedMethods = stored.get(AuthMethodsField).flatMap(_.as[Set[String]].toOption).getOrElse(Set.empty)
-    val document = state(
+    val document = withMutualTlsAliases(
       state(
-        advertise(
+        state(
           advertise(
             advertise(
               advertise(
-                advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
-                ClientAssertion.Algorithm.MetadataField,
-                assertionAlgorithms.map(_.toString),
+                advertise(
+                  advertise(stored, Dpop.Algorithm.MetadataField, dpopAlgorithms.map(_.toString)),
+                  ClientAssertion.Algorithm.MetadataField,
+                  assertionAlgorithms.map(_.toString),
+                ),
+                RequestObject.Algorithm.MetadataField,
+                requestObjectAlgorithms.map(_.toString),
               ),
-              RequestObject.Algorithm.MetadataField,
-              requestObjectAlgorithms.map(_.toString),
+              AuthorizationSigningAlgField,
+              publishedSigningAlgorithms.map(_.toString),
             ),
-            AuthorizationSigningAlgField,
-            publishedSigningAlgorithms.map(_.toString),
+            AuthMethodsField,
+            storedMethods + ClientAssertion.MethodName,
           ),
-          AuthMethodsField,
-          storedMethods + ClientAssertion.MethodName,
+          RequestParameterField,
+          true,
         ),
-        RequestParameterField,
-        true,
+        RequestUriParameterField,
+        false,
       ),
-      RequestUriParameterField,
-      false,
+      mutualTlsExternalUrl,
     )
     ServedMetadata(document, dpopAlgorithms, assertionAlgorithms, requestObjectAlgorithms)
 

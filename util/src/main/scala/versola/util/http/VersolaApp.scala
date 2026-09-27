@@ -52,6 +52,24 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
   /** Optional second application surface, typically reachable only by internal proxies. */
   def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
 
+  /** Optional third application surface, terminating TLS itself and demanding a client
+    * certificate on the handshake -- RFC 8705 §5's `mtls_endpoint_aliases`.
+    *
+    * Separate from [[additionalRoutes]] rather than a flag on it because the two answer
+    * different questions: that one is about who may reach a surface, this one about what the
+    * connection itself proves. It is served only when [[mutualTlsServerConfig]] also yields
+    * one, since routes with no listener would be silently unreachable.
+    */
+  def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] = None
+
+  /** The listener [[mutualTlsRoutes]] is served on, or `None` to not serve them at all.
+    *
+    * An effect over `Dependencies`, unlike the three plain `Server.Config`s above, because
+    * the certificate and trust paths are service configuration rather than environment: they
+    * are known only once `dependencies` has built and parsed it.
+    */
+  def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] = ZIO.none
+
   def port: Int =
     Option(java.lang.System.getenv("PORT")).flatMap(_.toIntOption).getOrElse(8080)
 
@@ -60,6 +78,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   def additionalPort: Int =
     Option(java.lang.System.getenv("APORT")).flatMap(_.toIntOption).getOrElse(8082)
+
+  def mutualTlsPort: Int =
+    Option(java.lang.System.getenv("MPORT")).flatMap(_.toIntOption).getOrElse(8083)
 
   // Defaults to every interface, same as zio-http's own Server.Config.default
   // -- needed for docker-local, where this process's own 0.0.0.0 inside the
@@ -193,6 +214,37 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
         yield fiber
 
       _ <- ZIO.foreachDiscard(additionalFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
+
+      mutualTlsSurface <- mutualTlsServerConfig.provideEnvironment(appDependencies)
+        .map(config => mutualTlsRoutes.zip(config))
+
+      mutualTlsFiber <- ZIO.foreach(mutualTlsSurface): (routes, config) =>
+        for
+          ready <- Promise.make[Throwable, Int]
+          fiber <- {
+            for
+              port <- Server.install {
+                Observability.handleErrors(routes) @@
+                  Observability.middleware
+              }
+              _ <- ready.succeed(port)
+              _ <- ZIO.never
+            yield ()
+          }.provide(
+            ZLayer.succeedEnvironment(appDependencies),
+            Server.live,
+            ZLayer.succeed(config),
+            ZLayer.succeed(tracing),
+            ZLayer.succeed(envName),
+          ).onExit {
+            case Exit.Failure(cause) => ready.failCause(cause)
+            case _ => ZIO.unit
+          }.fork
+          port <- ready.await
+          _ <- ZIO.logInfo(s"Mutual TLS application server started on port $port")
+        yield fiber
+
+      _ <- ZIO.foreachDiscard(mutualTlsFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
 
       _ <- {
         for

@@ -21,7 +21,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import zio.json.ast.Json
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Base64, CoreConfig, JWT, Secret, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, JWT, Secret, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -99,6 +99,13 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
 
   val dpopCodeExchangeRequest = codeExchangeRequest.addHeader(Header.Custom("DPoP", "a.b.c"))
 
+  /** The same request as it arrives on RFC 8705 §5's listener: a certificate on the connection
+    * rather than in a header, which is what `ClientAuth.Required` guarantees every request
+    * that reaches a handler there carries. Which certificate is irrelevant here -- only that
+    * there is one, since that is what tells the two listeners apart. */
+  val dpopCodeExchangeRequestOverMutualTls =
+    dpopCodeExchangeRequest.copy(remoteCertificate = Some(TestCertificates.generate().certificate))
+
   import TestEnvConfig.{
     escapedClientCertificatePem as escapedCertificatePem,
     base64DerClientCertificate as base64DerCertificate,
@@ -149,14 +156,17 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       clientService: Stub[OAuthConfigurationService],
   )
 
-  /** Stands the endpoint up over stubbed services and hands back the client and the stubs, so
-    * a test can drive more than one request against the same server. */
-  def withTokenEndpoint[A](
+  /** The endpoint's fully-wired routes over stubbed services, and the stubs behind them.
+    *
+    * [[withTokenEndpoint]] registers exactly these with `TestClient` and is what almost every
+    * test uses; this is separate only for the few that must dispatch a `Request` object
+    * directly, because TestClient's simulated round trip does not carry every field of one.
+    */
+  def tokenEndpointRoutes(
       config: CoreConfig = TestEnvConfig.coreConfig,
       requireDpopNonce: Boolean = false,
-  )(use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
+  ): ZIO[Scope, Throwable, (Routes[Any, Nothing], Services)] =
     for
-      client <- ZIO.service[Client]
       tokenService = stub[OAuthTokenService]
       clientService = stub[OAuthConfigurationService]
       // The controller looks the client up only to decide whether reading a client
@@ -178,12 +188,22 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
 
       services = Services(tokenService, userInfoService, dpopService, clientService)
 
-      _ <- TestClient.addRoutes(
-        Observability.handleErrors(
-          TokenEndpointController.routes
-            .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
-        )
+      routes = Observability.handleErrors(
+        TokenEndpointController.routes
+          .provideEnvironment(ZEnvironment(tokenService) ++ ZEnvironment(clientService) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(userInfoService) ++ ZEnvironment(jwksService) ++ ZEnvironment(config) ++ ZEnvironment(dpopService) ++ tracing)
       )
+    yield (routes, services)
+
+  /** Stands the endpoint up over stubbed services and hands back the client and the stubs, so
+    * a test can drive more than one request against the same server. */
+  def withTokenEndpoint[A](
+      config: CoreConfig = TestEnvConfig.coreConfig,
+      requireDpopNonce: Boolean = false,
+  )(use: (Client, Services) => ZIO[Scope, Throwable, A]): ZIO[Client & TestClient & Scope, Throwable, A] =
+    for
+      client <- ZIO.service[Client]
+      (routes, services) <- tokenEndpointRoutes(config, requireDpopNonce)
+      _ <- TestClient.addRoutes(routes)
       result <- use(client, services)
     yield result
 
@@ -1231,6 +1251,41 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         verifyServices = services =>
           ZIO.succeed(assertTrue(services.dpopService.verify.calls.map(_._4) == List(true))),
         requireDpopNonce = true,
+      ),
+      // RFC 9449 §4.3 with RFC 8705 §5: this endpoint answers at two addresses, and a client
+      // that followed the `mtls_endpoint_aliases` one called a different authority -- so that
+      // is the authority §4.3 obliges it to stamp into `htu`, and the one the proof has to be
+      // held to. Held to the issuer's address on both listeners, a correct proof would be
+      // rejected and DPoP could not be combined with mutual TLS at all.
+      // Dispatched via `Routes#runZIO` rather than through `TestClient`: a certificate is a
+      // property of the connection, and TestClient's simulated round trip does not carry one
+      // -- the request reaches the handler with `remoteCertificate` empty, which is precisely
+      // the field under test. The routes are the same fully-wired ones every case above uses.
+      test("holds a proof arriving over the mutual-TLS listener to that listener's own address") {
+        for
+          (routes, services) <- tokenEndpointRoutes(config = TestEnvConfig.coreConfigWithMutualTls)
+          _ <- services.dpopService.verify.succeedsWith(proof1)
+          _ <- services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens)
+          response <- routes.runZIO(dpopCodeExchangeRequestOverMutualTls)
+        yield assertTrue(
+          response.status == Status.Ok,
+          services.dpopService.verify.calls.map(_._3) ==
+            List(s"${TestEnvConfig.mutualTlsExternalUrl}/token"),
+        )
+      } @@ TestAspect.silentLogging,
+      tokenEndpointTestCase(
+        description = "holds a proof arriving on the main listener to the issuer's address, listener or no listener",
+        request = dpopCodeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.dpopService.verify.succeedsWith(proof1) *>
+            services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verifyServices = services =>
+          ZIO.succeed(assertTrue(
+            services.dpopService.verify.calls.map(_._3) ==
+              List(s"${TestEnvConfig.coreConfig.jwt.issuer.stripSuffix("/")}/token"),
+          )),
+        config = TestEnvConfig.coreConfigWithMutualTls,
       ),
       // §5.1: binding is the moment a client's registered narrowing is meant to apply, so the
       // policy reaching the service here is the client's and not the deployment's.

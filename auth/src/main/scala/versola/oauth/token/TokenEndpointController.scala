@@ -31,11 +31,16 @@ object TokenEndpointController extends Controller:
   private val DpopHeader = "DPoP"
   private val DpopNonceHeader = "DPoP-Nonce"
 
-  /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI. It is derived from
-    * the configured issuer rather than from the inbound request, so a forwarded host header
-    * can't be used to make a proof minted for some other origin validate here. */
-  private def tokenEndpointUri(config: CoreConfig): String =
-    s"${config.jwt.issuer.stripSuffix("/")}/token"
+  /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI -- which of this
+    * deployment's two addresses that is depends on the listener the request arrived at, since
+    * RFC 8705 §5 has this endpoint answer at an alias as well. A certificate on the request is
+    * what distinguishes them: the mutual-TLS listener is `ClientAuth.Required`, so every
+    * request that reaches a handler there carries one, and no request on the main listener
+    * does -- the header path of §6.5 is read later, by `ClientAuthentication`, and is not this
+    * decision. Both addresses are configured values either way; see [[CoreConfig.endpointUri]]
+    * for why the inbound host is not consulted. */
+  private def tokenEndpointUri(config: CoreConfig, request: Request): String =
+    config.endpointUri(request.remoteCertificate.isDefined, "/token")
 
   /** draft-ietf-httpapi-idempotency-key-header. Only honoured for `refresh_token`: that is
     * the grant where losing a response costs the client its session rather than one request. */
@@ -135,7 +140,7 @@ object TokenEndpointController extends Controller:
             _.verify(
               token = proof,
               method = Method.POST,
-              uri = tokenEndpointUri(config),
+              uri = tokenEndpointUri(config, request),
               requireNonce = requireNonce,
               keyPolicy = keyPolicy,
             ),

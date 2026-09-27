@@ -15,7 +15,7 @@ import versola.oauth.mtls.ClientCertificate
 import versola.oauth.userinfo.model.{UserInfoError, UserInfoResponse}
 import versola.user.model.UserId
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{CoreConfig, Dpop, EdgeAssertion, UnitSpecBase}
+import versola.util.{CoreConfig, Dpop, EdgeAssertion, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -143,6 +143,12 @@ object UserInfoControllerSpec extends UnitSpecBase:
       verify: Response => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       verifyDpop: Stub[DpopService] => Task[TestResult] = _ => ZIO.succeed(assertTrue(true)),
       config: CoreConfig = TestEnvConfig.coreConfig,
+      // Dispatches `request` straight at the routes instead of through `TestClient`, for the
+      // cases whose point is a field of the request object itself: a certificate is a property
+      // of the connection, and TestClient's simulated round trip does not carry one, so a
+      // request sent through it always reaches the handler with `remoteCertificate` empty. The
+      // routes are identically wired either way.
+      dispatchDirectly: Boolean = false,
   ) =
     test(description) {
       for
@@ -155,24 +161,23 @@ object UserInfoControllerSpec extends UnitSpecBase:
         jwksService = TestEnvConfig.jwksService
         tracing <- NoopTracing.layer.build
 
-        _ <- TestClient.addRoutes(
-          Observability.handleErrors(
-            UserInfoController.routes
-              .provideEnvironment(
-                ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
-                  ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++
-                  ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
-                  tracing,
-              ),
-          ),
+        routes = Observability.handleErrors(
+          UserInfoController.routes
+            .provideEnvironment(
+              ZEnvironment(userInfoService) ++ ZEnvironment(config) ++ ZEnvironment(jwksService) ++
+                ZEnvironment(dpopService) ++ ZEnvironment(edgeAssertionService) ++
+                ZEnvironment(oAuthConfigurationService) ++ ZEnvironment(clientAuthentication) ++
+                tracing,
+            ),
         )
+        _ <- TestClient.addRoutes(routes)
         _ <- setup(userInfoService)
         _ <- dpopSetup(dpopService)
         _ <- edgeAssertionSetup(edgeAssertionService)
         _ <- oAuthConfigurationSetup(oAuthConfigurationService)
         _ <- clientAuthenticationSetup(clientAuthentication)
 
-        response <- client.batched(request)
+        response <- if dispatchDirectly then routes.runZIO(request) else client.batched(request)
         verifyResult <- verify(response)
         verifyDpopResult <- verifyDpop(dpopService)
       yield assertTrue(response.status == expectedStatus) && verifyResult && verifyDpopResult
@@ -319,6 +324,62 @@ object UserInfoControllerSpec extends UnitSpecBase:
               body <- response.body.asString
               userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
             yield assertTrue(userInfo.claims.contains("sub")),
+        )
+      },
+      // RFC 9449 §4.3 with RFC 8705 §5: this endpoint answers at two addresses, and a client
+      // that followed the `mtls_endpoint_aliases` one called a different authority -- which
+      // §4.3 then obliges it to stamp into `htu`. Held to the issuer's address on both
+      // listeners, a correct proof would be rejected, and a DPoP-bound token could not be
+      // presented over mutual TLS at all.
+      locally {
+        val boundAccessToken = createAccessToken(
+          userId1,
+          clientId1,
+          Set(ScopeToken.OpenId),
+          TestEnvConfig.coreConfig,
+          cnfJkt = Some(boundJkt1),
+        )
+        val boundRequest = Request.get(url = URL.empty / "userinfo")
+          .addHeader(Header.Custom("Authorization", s"DPoP $boundAccessToken"))
+          .addHeader(Header.Custom("DPoP", "proof-jwt-placeholder"))
+        val boundProof = Dpop.Proof(
+          jkt = boundJkt1,
+          jti = "proof-jti-mtls",
+          iat = Instant.now(),
+          nonce = None,
+          ath = Some(Dpop.ath(boundAccessToken)),
+        )
+        suite("htu across the two listeners")(
+          userInfoTestCase(
+            description = "hold a proof arriving over the mutual-TLS listener to that listener's own address",
+            // `ClientAuth.Required` puts a certificate on every request that reaches a handler
+            // there; which certificate is irrelevant, only that there is one.
+            request = boundRequest.copy(remoteCertificate = Some(TestCertificates.generate().certificate)),
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            dpopSetup = _.verify.succeedsWith(boundProof),
+            verifyDpop = dpopService =>
+              ZIO.succeed(assertTrue(
+                dpopService.verify.calls.map(_._3) ==
+                  List(s"${TestEnvConfig.mutualTlsExternalUrl}/userinfo"),
+              )),
+            config = TestEnvConfig.coreConfigWithMutualTls,
+            dispatchDirectly = true,
+          ),
+          userInfoTestCase(
+            description = "hold a proof arriving on the main listener to the issuer's address, listener or no listener",
+            request = boundRequest,
+            expectedStatus = Status.Ok,
+            setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
+            dpopSetup = _.verify.succeedsWith(boundProof),
+            verifyDpop = dpopService =>
+              ZIO.succeed(assertTrue(
+                dpopService.verify.calls.map(_._3) ==
+                  List(s"${TestEnvConfig.coreConfig.jwt.issuer.stripSuffix("/")}/userinfo"),
+              )),
+            config = TestEnvConfig.coreConfigWithMutualTls,
+            dispatchDirectly = true,
+          ),
         )
       },
       locally {

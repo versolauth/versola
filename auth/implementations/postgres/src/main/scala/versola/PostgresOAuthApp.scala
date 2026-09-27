@@ -119,6 +119,57 @@ object PostgresOAuthApp extends VersolaApp("auth"):
   override def additionalRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
     Some(AccountSettingsController.routes)
 
+  /** RFC 8705 §5: the endpoints a client certificate is relevant to, served a second time on
+    * the listener that demands one.
+    *
+    * Exactly the five the metadata advertises as aliases, and not the whole route set: the
+    * rest either authenticate nobody (`/jwks` and the discovery documents) or are the
+    * browser's (`/authorize`, the conversation pages), and a browser arriving here is
+    * answered with a certificate prompt before it ever sends a request.
+    */
+  override def mutualTlsRoutes: Option[Routes[Dependencies & Tracing & EnvName, Throwable]] =
+    Some(
+      List(
+        TokenEndpointController.routes,
+        IntrospectionController.routes,
+        RevocationController.routes,
+        PushedAuthorizationController.routes,
+        UserInfoController.routes,
+      ).reduce(_ ++ _),
+    )
+
+  /** `ClientAuth.Required`, not `Optional`, and that is not a preference.
+    *
+    * `Optional` combined with `includeClientCert` is unusable in zio-http 3.6.0: the request
+    * decoder reads `SSLSession.getPeerCertificates` unguarded, which throws
+    * `SSLPeerUnverifiedException` when the peer presented nothing, and the connection is
+    * dropped before any handler runs. Verified against 3.6.0 -- with `includeClientCert` off
+    * the same certificate-less request is answered normally, so it is the read and not the
+    * handshake that fails.
+    *
+    * `Required` is what this listener wants regardless: a request here with no certificate
+    * has no endpoint to reach that the main listener does not serve better, and refusing it
+    * in the handshake is a clearer answer than a 401 several layers later.
+    */
+  override def mutualTlsServerConfig: ZIO[Dependencies, Throwable, Option[Server.Config]] =
+    ZIO.serviceWith[CoreConfig](
+      _.mutualTls.map(mtls =>
+        Server.Config.default.binding(bindHost, mutualTlsPort).ssl(
+          SSLConfig.fromFile(
+            behaviour = SSLConfig.HttpBehaviour.Fail,
+            certPath = mtls.certificate,
+            keyPath = mtls.privateKey,
+            clientAuth = Some(ClientAuth.Required),
+            trustCertCollectionPath = Some(mtls.trustedCertificates),
+            // Without this the handshake still demands a certificate and validates it, and
+            // the handler simply cannot see which one -- which would authenticate every
+            // client as none of them.
+            includeClientCert = true,
+          ),
+        ),
+      ),
+    )
+
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
     PostgresUserRepository.live >+>
       PostgresConversationRepository.live >+>

@@ -392,6 +392,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val consentFlow = ConsentFlowDto(allowPartial = false, rememberDuration = Some(30.days.toSeconds))
 
       for
+        _ <- env.repository.find.succeedsWith(None)
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(
           updateRequest.copy(consentFlow = Some(Patch.Modified(consentFlow))),
@@ -880,6 +881,29 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
         .label("the stored client_secret still decides, so the certificate would never be looked at")
     },
+    test("updateClient refuses the same mtlsAuth patch when the client has not yet reached the cache") {
+      // A client registered a moment ago may not have reached the cache yet -- exactly the miss
+      // `rejectSecretlessClient` already guards against elsewhere. Falling back to the repository
+      // is what keeps this the same rejection as the populated-cache case above, rather than one
+      // that lets an unvalidated patch through because the cache merely hadn't caught up.
+      val env = new Env()
+
+      for
+        _ <- env.repository.find.succeedsWith(Some(cachedClient))
+        _ <- env.securityService.decryptAes256.succeedsWith(Array.fill(32)(1.toByte))
+        _ <- env.terminatesMtls
+        result <- env.service.updateClient(updateRequest.copy(
+          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
+        )).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("registers no certificate")
+          case _ => false,
+        updateCalls == 0,
+      )
+        .label("a cache miss must not read as \"no such client\" and skip validation")
+    },
     test("updateClient leaves a stored mtlsAuth it does not mention alone when the tenant terminates mTLS") {
       val env = new Env(Vector(cachedClient.copy(
         authMethod = AuthMethod.tls_client_auth,
@@ -1018,6 +1042,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.repository.find.succeedsWith(None)
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(
           updateRequest.copy(
@@ -1032,6 +1057,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.repository.find.succeedsWith(None)
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(
           updateRequest.copy(frontChannelLogoutUri = Some(Patch.Modified(" https://rp.example.com/front-logout "))),

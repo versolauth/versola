@@ -41,11 +41,12 @@ object UserInfoController extends Controller:
 
   private val DpopHeader = "DPoP"
 
-  /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI. Derived from the
-    * configured issuer rather than the inbound request, matching `TokenEndpointController`'s
-    * `tokenEndpointUri`. */
-  private def userInfoEndpointUri(config: CoreConfig): String =
-    s"${config.jwt.issuer.stripSuffix("/")}/userinfo"
+  /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI, which -- this
+    * endpoint being served at an RFC 8705 §5 alias too -- depends on the listener the request
+    * arrived at. Matching `TokenEndpointController`'s `tokenEndpointUri`, whose doc comment
+    * explains why a certificate on the request is what tells the two apart. */
+  private def userInfoEndpointUri(config: CoreConfig, request: Request): String =
+    config.endpointUri(request.remoteCertificate.isDefined, "/userinfo")
 
   /** Which RFC 9449 §7.1 / RFC 6750 scheme the caller presented its token under. The token
     * itself is the same either way; the scheme decides whether a proof is demanded. */
@@ -277,7 +278,7 @@ object UserInfoController extends Controller:
         _.verify(
           token = proofHeader,
           method = request.method,
-          uri = userInfoEndpointUri(config),
+          uri = userInfoEndpointUri(config, request),
           requireNonce = requireNonce,
           keyPolicy = keyPolicy,
         ),

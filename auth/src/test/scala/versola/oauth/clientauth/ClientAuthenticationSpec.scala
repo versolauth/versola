@@ -7,9 +7,10 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
-import versola.util.{ClientAssertion, JsonWebKeySet, Secret}
+import versola.oauth.client.model.{AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
+import versola.util.{ClientAssertion, JsonWebKeySet, Secret, TestCertificates}
 import zio.*
+import zio.http.{Request, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -93,6 +94,31 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private def recording = Ref.make(Set.empty[(String, String)]).map(RecordingRepository(_))
+
+  /** A certificate that exists only for these tests, so which source a value came from is
+    * visible in the subject: nothing else in the fixtures carries this DN. */
+  private val sessionCertificate = TestCertificates.generate(subject = "CN=tls-session,O=Versola,C=KZ")
+
+  private val sessionSubjectDn = "CN=tls-session,O=Versola,C=KZ"
+
+  /** An authenticator whose tenant reads nginx's header, for the cases that turn on which of
+    * the two certificate sources is consulted. */
+  private def certificateReader(source: Option[MtlsCertificateSource]) =
+    val configuration = stub[OAuthConfigurationService]
+    configuration.find.returnsWith(ZIO.succeed(Some(TestEnvConfig.mtlsClient(clientId))))
+    configuration.getMtlsCertificateSource.returnsWith(ZIO.succeed(source))
+    ClientAuthentication.Impl(
+      configuration,
+      ClientAssertionService.Impl(RecordingRepository(null), configuration),
+      TestEnvConfig.coreConfig,
+    )
+
+  private def requestWith(
+      certificate: Option[java.security.cert.X509Certificate],
+      header: Option[String],
+  ): Request =
+    val base = Request.get(URL.empty).copy(remoteCertificate = certificate)
+    header.fold(base)(value => base.addHeader("ssl-client-cert", value))
 
   /** A client that authenticates by RFC 8705 §2.2: its certificate's public key is one of the
     * keys it registered, and there is no subject value anywhere in its registration. */
@@ -260,6 +286,44 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
           endpoint = AuthenticatedEndpoint.Token,
         ).either
       yield assertTrue(matched.map(_.id) == Right(clientId), mismatched == Left(()))
+    },
+    // RFC 8705 §5: a listener `auth` terminates itself validates the chain against anchors it
+    // was configured with, which is a stronger fact than a header asserting the same thing.
+    // Where both exist the header is not consulted at all -- see `readCertificate`.
+    test("reads the certificate off the connection when the listener terminated one") {
+      for
+        result <- certificateReader(source = None).certificate(
+          requestWith(Some(sessionCertificate.certificate), header = None),
+          ClientIdWithSecret(clientId, None),
+          CertificateRelevance.Authentication,
+        )
+      yield assertTrue(result.map(_.subjectDn) == Some(sessionSubjectDn))
+        .label("no header is configured for this tenant, and a certificate is still found")
+    },
+    test("prefers the connection's certificate over a header naming a different one") {
+      for
+        result <- certificateReader(source = Some(TestEnvConfig.nginxCertificateSource)).certificate(
+          requestWith(
+            Some(sessionCertificate.certificate),
+            header = Some(TestEnvConfig.escapedClientCertificatePem),
+          ),
+          ClientIdWithSecret(clientId, None),
+          CertificateRelevance.Authentication,
+        )
+      yield assertTrue(
+        result.map(_.subjectDn) == Some(sessionSubjectDn),
+        result.map(_.subjectDn) != Some(TestEnvConfig.clientCertificateSubjectDn),
+      ).label("a request over the mTLS listener cannot talk its way out of what it presented")
+    },
+    test("still reads the header when nothing came off the connection") {
+      for
+        result <- certificateReader(source = Some(TestEnvConfig.nginxCertificateSource)).certificate(
+          requestWith(certificate = None, header = Some(TestEnvConfig.escapedClientCertificatePem)),
+          ClientIdWithSecret(clientId, None),
+          CertificateRelevance.Authentication,
+        )
+      yield assertTrue(result.map(_.subjectDn) == Some(TestEnvConfig.clientCertificateSubjectDn))
+        .label("§6.5 is how every tenant works today and is not disturbed by the listener")
     },
     test("records the jti against the client, so two clients may use the same one") {
       val otherId = ClientId("other-assertion-client")

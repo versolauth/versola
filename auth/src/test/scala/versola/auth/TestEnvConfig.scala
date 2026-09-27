@@ -233,4 +233,26 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     par = None,
     dpop = None,
     argon2 = None,
+    // No listener of `auth`'s own: the specs that exercise RFC 8705 reach the authenticator
+    // directly, and a certificate on the request is what stands in for a handshake.
+    mutualTls = None,
+  )
+
+  /** The address [[coreConfigWithMutualTls]]'s listener is advertised at -- deliberately a
+    * different authority from [[jwtConfig]]'s issuer, since telling the two apart is the whole
+    * of what the specs using it check. */
+  val mutualTlsExternalUrl = "https://mtls.versola.test:8443"
+
+  /** The same deployment with RFC 8705 §5's listener configured. The three paths are never
+    * opened: nothing in a unit test performs a handshake, and a certificate placed on a
+    * request stands in for having done one. */
+  val coreConfigWithMutualTls = coreConfig.copy(
+    mutualTls = Some(
+      CoreConfig.MutualTlsConfig(
+        certificate = "server.crt",
+        privateKey = "server.key",
+        trustedCertificates = "ca.crt",
+        externalUrl = mutualTlsExternalUrl,
+      ),
+    ),
   )

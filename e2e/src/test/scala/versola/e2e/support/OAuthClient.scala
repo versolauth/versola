@@ -488,6 +488,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * endpoint URL -- what RFC 7523 §3 requires an assertion's `aud` to name. */
   val issuer: String = config.authUrl
 
+  /** RFC 8705 §5: `auth`'s own mutual-TLS listener and the PEM material `MutualTlsListenerSpec`
+    * presents to it -- see [[E2EConfig]]'s own doc comment on where these come from. */
+  val authMutualTlsUrl: String = config.authMutualTlsUrl
+  val authMutualTlsClientCertificate: String = config.authMutualTlsClientCertificate
+  val authMutualTlsClientKey: String = config.authMutualTlsClientKey
+  val authMutualTlsTrustedCertificates: String = config.authMutualTlsTrustedCertificates
+
   private def withCertificate(request: Request, certificate: Option[String]): Request =
     certificate.fold(request)(request.addHeader(OAuthClient.mtlsCertificateHeader, _))
 
