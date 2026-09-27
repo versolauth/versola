@@ -62,6 +62,23 @@ const driftedClient = {
   requirePushedAuthorizationRequests: false,
 };
 
+/** A web/high client moved onto a shared secret afterwards. The combination asked for signed
+  * request objects, which are verified against the client's JWK set - having none leaves that
+  * requirement off with nothing the form can do about it. */
+const secretBackedHighClient = {
+  ...alphaClient,
+  id: 'web-downgraded',
+  clientName: { en: 'Web Downgraded' },
+  authMethod: 'client_secret',
+  accessTokenTtl: 3600,
+  dpopBoundAccessTokens: false,
+  certificateBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  requireSignedRequestObject: false,
+  template: { kind: 'web', tier: 'high' },
+  createdAt: '2026-02-01T09:00:00Z',
+};
+
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
   allowedPrefixes: [],
@@ -316,6 +333,25 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     // Step 1's combination, stored so the edit page can show the client against it.
     template: { kind: 'web', tier: 'compat' },
   });
+});
+
+test('dates a just-created client by the time the registration answered with', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [] } },
+  });
+
+  await startCreate(page);
+
+  await fillBasics(page, 'dashboard-client', 'Dashboard Client');
+  await addRedirectUri(page, 'https://dashboard.example/callback');
+  await finishCreate(page);
+
+  await clientCard(page, 'Dashboard Client').getByRole('button', { name: 'Edit client dashboard-client' }).click();
+
+  // Central settles the registration time; without it coming back in the response the client
+  // would read as undated until the list was loaded again.
+  await expect(page.locator('.form-actions-note')).toHaveText('Confidential client · created today');
 });
 
 test('creates a native client without a secret and without rotation controls', async ({ page }) => {
@@ -1586,6 +1622,24 @@ test('lists the settings that differ from the template and resets them back', as
     accessTokenTtl: 3600,
     requirePushedAuthorizationRequests: true,
   });
+});
+
+test('states a template setting the credential cannot hold, and offers no reset for it', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [secretBackedHighClient] } },
+  });
+
+  await clientCard(page, 'Web Downgraded').getByRole('button', { name: 'Edit client web-downgraded' }).click();
+
+  const panel = page.locator('.drift-panel');
+  await expect(panel.locator('.drift-row')).toHaveCount(1);
+  await expect(panel.locator('.drift-row').nth(0)).toContainText('Signed request objects');
+  await expect(panel.locator('.drift-blocked')).toContainText('publishes no signing key');
+
+  // Nothing to press: writing the template's value back would be undone by the same rule
+  // that refuses the requirement at registration.
+  await expect(panel.getByRole('button', { name: /Reset/ })).toHaveCount(0);
 });
 
 test('says nothing about a template for a client registered without one', async ({ page }) => {

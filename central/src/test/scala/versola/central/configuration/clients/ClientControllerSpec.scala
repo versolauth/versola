@@ -624,13 +624,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(Some(rotatedSecret)),
+        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt)),
       verify = (response, service, _) =>
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest, None)),
-          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret))),
+          // The registration time is the service's, handed back as it recorded it.
+          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt),
         ),
     ),
     controllerTestCase(
@@ -642,14 +643,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(None),
+        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt)),
       verify = (response, service, _) =>
         for
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None)),
-          body == CreateClientResponse(None),
+          body == CreateClientResponse(None, registeredAt),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
         ),

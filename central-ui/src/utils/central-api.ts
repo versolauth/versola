@@ -50,7 +50,12 @@ type ConsoleMode = 'prefix' | 'direct';
 type CentralApiConfig = { baseUrl: string | null; loginUrl: string; consoleMode: ConsoleMode };
 
 type ClientSecretResponse = { secret: string };
-type CreateClientResponse = { secret?: string | null };
+type CreateClientResponse = { secret?: string | null; createdAt?: string | null };
+
+/** What a registration hands back: the secret, for the one method that gets one, and the
+ *  time central recorded - the console holds the client it just sent, which cannot know
+ *  either on its own. */
+export type CreatedClient = { secret: string | null; createdAt: string | null };
 type AuthorizationPresetResponse = {
   id: string;
   clientId: string;
@@ -1089,7 +1094,7 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
 }
 
 /** Resolves to the generated secret, or to `null` for a native client, which has none. */
-export async function createClient(tenantId: string, client: OAuthClient): Promise<string | null> {
+export async function createClient(tenantId: string, client: OAuthClient): Promise<CreatedClient> {
   const response = await request<CreateClientResponse>('/configuration/clients', {
     method: 'POST',
     body: {
@@ -1131,7 +1136,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     hasPreviousSecret: client.hasPreviousSecret,
   });
 
-  return response.secret ?? null;
+  return { secret: response.secret ?? null, createdAt: response.createdAt ?? null };
 }
 
 export async function rotateClientSecret(tenantId: string, clientId: string): Promise<string> {

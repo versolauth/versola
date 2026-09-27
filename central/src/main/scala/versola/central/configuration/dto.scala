@@ -445,6 +445,9 @@ case class CreateClientRequest(
 /** `secret` is absent for a native client - there is none to hand back. */
 case class CreateClientResponse(
     secret: Option[String],
+    /** When central recorded the registration, so a caller holding the client it just sent
+      * can state its age without reading it back. */
+    createdAt: Instant,
 ) derives Schema, JsonEncoder
 
 case class RotateSecretResponse(

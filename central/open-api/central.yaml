@@ -2049,6 +2049,26 @@ components:
               minimum: 0
             - type: 'null'
       required: [allowPartial]
+    ClientTemplate:
+      type: object
+      description: |
+        The combination the registration wizard picked, stored as the client registered it
+        rather than derived back out of the settings it applied: once a setting has been
+        edited, several combinations fit the client equally well.
+      properties:
+        kind:
+          type: string
+          enum: [web, device, service]
+          description: |
+            `web` keeps a credential of its own, `device` cannot, `service` calls on its own
+            behalf with no user to sign in.
+        tier:
+          type: string
+          enum: [high, compat]
+          description: |
+            How much the deployment can carry: `high` a registered key and a token bound to
+            it, `compat` a shared secret.
+      required: [kind, tier]
     OAuthClientResponse:
       type: object
       properties:
@@ -2163,6 +2183,20 @@ components:
           description: |
             RFC 9126 §6.2: the client pushes its authorization request to `/par` first, so one
             arriving at `/authorize` without a `request_uri` is refused with `invalid_request`.
+        template:
+          oneOf:
+            - $ref: '#/components/schemas/ClientTemplate'
+            - type: 'null'
+          description: |
+            The wizard combination the client was registered from. `null` for a client
+            registered without naming one, which is every client registered through this API
+            rather than the console.
+        createdAt:
+          type: string
+          format: date-time
+          description: |
+            When the registration was accepted. Set once, by the service that accepted it, and
+            never patched - an update states what the client is now, not when it appeared.
       required:
         - id
         - clientName
@@ -2181,6 +2215,7 @@ components:
         - certificateBoundAccessTokens
         - requireSignedRequestObject
         - requirePushedAuthorizationRequests
+        - createdAt
     GetAllClientsResponse:
       type: object
       properties:
@@ -2317,6 +2352,14 @@ components:
             The private key an edge fronting this client signs and authenticates as it with.
             Must be the private half of a key `jwks` publishes - a pair that cannot verify is
             refused at registration. `null` for a client no edge fronts.
+        template:
+          oneOf:
+            - $ref: '#/components/schemas/ClientTemplate'
+            - type: 'null'
+          description: |
+            The wizard combination this registration came from, recorded as-is and never
+            inferred from the settings sent alongside it. `null` names none, which is what a
+            caller other than the console sends.
       required:
         - tenantId
         - id

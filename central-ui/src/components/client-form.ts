@@ -594,6 +594,12 @@ export class VersolaClientForm extends LitElement {
         font-weight: 600;
       }
 
+      .drift-blocked {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+        padding: 0 0 0.35rem;
+      }
+
       .drift-panel .btn {
         margin-top: 0.6rem;
       }
@@ -2090,9 +2096,20 @@ export class VersolaClientForm extends LitElement {
     return template ? templateDifferences(template, this.currentTemplateSettings) : [];
   }
 
-  /** Puts the template's own value back into every setting that has moved away from it. */
+  /** Whether writing the template's value back would actually take. A signed request object
+    * is verified against `jwks` and nothing else (RFC 9101), so a client whose credential
+    * publishes no signing key cannot require one - this form clamps the setting off, and
+    * registration refuses it. The difference is still real, and still shown: the credential
+    * moved and the template's requirement lapsed with it. What it is not is undoable here,
+    * and a reset that silently did nothing would be the worse answer. */
+  private canResetDifference(difference: TemplateDifference): boolean {
+    return difference.field !== 'requireSignedRequestObject' || this.canRequireSignedRequestObject;
+  }
+
+  /** Puts the template's own value back into every setting that has moved away from it and
+    * can still hold it. */
   private resetToTemplate() {
-    const differences = this.templateDifferenceList;
+    const differences = this.templateDifferenceList.filter(difference => this.canResetDifference(difference));
     const ttl = differences.find(difference => difference.field === 'accessTokenTtl');
     if (ttl) {
       const { value, unit } = secondsToTtl(Number(ttl.templateValue));
@@ -3492,6 +3509,8 @@ export class VersolaClientForm extends LitElement {
       return '';
     }
 
+    const resettable = differences.filter(difference => this.canResetDifference(difference));
+
     return html`
       <div class="drift-panel">
         <div class="drift-head">
@@ -3506,10 +3525,18 @@ export class VersolaClientForm extends LitElement {
               <span class="drift-now">${difference.currentText}</span>
             </span>
           </div>
+          ${this.canResetDifference(difference) ? '' : html`
+            <div class="drift-blocked">
+              Not restorable while the credential publishes no signing key — a request object is
+              verified against the client's JWK set and nothing else.
+            </div>
+          `}
         `)}
-        <button type="button" class="btn btn-secondary btn-sm" @click=${this.resetToTemplate}>
-          ${differences.length === 1 ? 'Reset it to template' : `Reset all ${differences.length} to template`}
-        </button>
+        ${resettable.length ? html`
+          <button type="button" class="btn btn-secondary btn-sm" @click=${this.resetToTemplate}>
+            ${resettable.length === 1 ? 'Reset it to template' : `Reset all ${resettable.length} to template`}
+          </button>
+        ` : ''}
       </div>
     `;
   }

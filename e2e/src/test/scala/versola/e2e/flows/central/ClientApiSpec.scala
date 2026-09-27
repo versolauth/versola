@@ -123,6 +123,18 @@ object ClientApiSpec extends CentralApiSpec:
           .label("the console shows the client's settings against this, so it has to survive the round trip") &&
         assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
     },
+    test("registration answers with the time it recorded, and reads back the same one") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        created <- central.post(path, Fixtures.client(id))
+        answered <- created.stringAt("createdAt")
+        record <- read(central, id)
+        _ <- central.delete(path, "clientId" -> id)
+      yield assertTrue(answered.nonEmpty) &&
+        assertTrue(record.flatMap(_.str("createdAt")).contains(answered))
+          .label("the console dates a client it just registered by this, so it has to be the stored one")
+    },
     test("a client registered without a template reads back without one") {
       for
         central <- api

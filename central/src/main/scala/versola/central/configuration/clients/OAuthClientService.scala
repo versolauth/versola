@@ -19,8 +19,17 @@ import zio.json.ast.Json
 import java.nio.charset.StandardCharsets
 
 import java.security.MessageDigest
+import java.time.Instant
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
+
+/** What a registration produced. [[createdAt]] is the time central recorded, not the time
+  * the caller asked: a console that has just registered a client would otherwise have to
+  * read it back, or date the client by its own clock, to say how old it is. */
+case class RegisteredClient(
+    secret: Option[Secret],
+    createdAt: Instant,
+)
 
 trait OAuthClientService:
 
@@ -37,12 +46,13 @@ trait OAuthClientService:
   /** Returns the generated secret for a client that registered [[AuthMethod.client_secret]],
     * and `None` for every other method - a client whose credential is a certificate, a key
     * set, or nothing at all is registered without a secret, and issuing one anyway would
-    * leave a credential lying in the database that no endpoint would ever accept.
+    * leave a credential lying in the database that no endpoint would ever accept. The
+    * registration time comes back with it: it is settled here, and nowhere else.
     */
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
-  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Option[Secret]]
+  ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
   def updateClient(
       request: UpdateClientRequest,
@@ -145,7 +155,7 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
-    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, Option[Secret]] =
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
         _ <- validateConsentUris(
           "logoUri" -> request.logoUri,
@@ -233,7 +243,7 @@ object OAuthClientService:
           createdAt = registeredAt,
         )
         _ <- clientRepository.createClient(client)
-      yield secret
+      yield RegisteredClient(secret, registeredAt)
 
     override def updateClient(
         request: UpdateClientRequest,

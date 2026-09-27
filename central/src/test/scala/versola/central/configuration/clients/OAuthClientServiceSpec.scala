@@ -373,7 +373,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         created = env.repository.createClient.calls.head
         encryptCall = env.securityService.encryptAes256.calls.head
       yield assertTrue(
-        result.exists(_.sameElements(secretBytes)),
+        result.secret.exists(_.sameElements(secretBytes)),
         encryptCall._1.sameElements(secretBytes),
         created === expectedClient,
       )
@@ -387,11 +387,14 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- TestClock.setTime(Instant.parse("2026-02-01T09:00:00Z"))
-        _ <- env.service.registerClient(createRequest.copy(template = Some(template)))
+        result <- env.service.registerClient(createRequest.copy(template = Some(template)))
         created = env.repository.createClient.calls.head
       yield assertTrue(
         created.template.contains(template),
         created.createdAt == Instant.parse("2026-02-01T09:00:00Z"),
+        // Handed back as well as stored: the caller holding the client it just sent has no
+        // other way to know when central dated it.
+        result.createdAt == created.createdAt,
       )
     },
     test("registerClient leaves the template unset for a registration that names none") {
@@ -415,7 +418,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         generatedSecrets = env.secureRandom.nextBytes.times
         encryptions = env.securityService.encryptAes256.times
       yield assertTrue(
-        result.isEmpty,
+        result.secret.isEmpty,
         created.secret.isEmpty,
         created.isPublic,
         generatedSecrets == 0,
