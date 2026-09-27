@@ -55,6 +55,29 @@ final class EdgeApi(client: Client, config: E2EConfig):
   def complete(params: (String, String)*): Task[Response] =
     send(Method.GET, "/complete", params, None, EdgeAuth.None)
 
+  /** The URL of `POST /native/{endpoint}/{clientId}` (#420) -- also the `htu` a start proof
+    * is signed for. */
+  def nativeUrl(endpoint: String, clientId: String): String =
+    s"${config.edgeUrl}/native/$endpoint/$clientId"
+
+  /** `POST /native/{endpoint}/{clientId}` as a native app sends it: a form body and the
+    * device's `DPoP` proof, when it has one. */
+  def native(
+      endpoint: String,
+      clientId: String,
+      form: List[(String, String)],
+      proof: Option[String],
+      headers: List[(String, String)] = Nil,
+  ): Task[Response] =
+    for
+      url <- ZIO.fromEither(URL.decode(nativeUrl(endpoint, clientId))).mapError(RuntimeException(_))
+      base = Request.post(url, formBody(form))
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+      withProof = proof.fold(base)(value => base.addHeader(Header.Custom("DPoP", value)))
+      request = headers.foldLeft(withProof)((r, h) => r.addHeader(h._1, h._2))
+      response <- Client.batched(request).provide(ZLayer.succeed(client))
+    yield response
+
   /** GET /logout/{presetId} — hands the browser on to the OP's RP-initiated logout. */
   def logout(presetId: String): Task[Response] =
     send(Method.GET, s"/logout/$presetId", Nil, None, EdgeAuth.None)
@@ -162,6 +185,37 @@ final class EdgeApi(client: Client, config: E2EConfig):
         .orElseFail(RuntimeException(s"the OP returned no state: $back"))
     yield EdgeCallback(code, state)
 
+  /** The browser leg of the native flow (#420): the system browser opened on auth's
+    * `/authorize` with the `request_uri` `/native/start` handed back, the user signing in, and
+    * auth redirecting to the app's App Link -- which is not followed, the way the OS hands the
+    * URL to the app instead. Goes to auth directly: edge is not on this leg at all.
+    */
+  def nativeAuthorize(
+      auth: OAuthClient,
+      authorizationEndpoint: String,
+      clientId: String,
+      requestUri: String,
+      login: String,
+      password: String,
+  ): Task[NativeCallback] =
+    def encode(value: String) = java.net.URLEncoder.encode(value, "UTF-8")
+    for
+      authorized <- auth.probe(Method.GET, s"$authorizationEndpoint?client_id=${encode(clientId)}&request_uri=${encode(requestUri)}")
+      conversation <- ZIO.fromOption(OAuthClient.extractConversationCookie(authorized))
+        .orElseFail(RuntimeException(s"the OP started no conversation (status=${authorized.status})"))
+      challenge <- auth.getChallenge(conversation)
+      submitted <- auth.submitLoginPassword(conversation, login, password, challenge.csrf)
+      back <- ZIO.fromOption(submitted.response.header(Header.Location).map(_.url.encode))
+        .orElseFail(RuntimeException(s"the OP did not redirect back (status=${submitted.response.status})"))
+      backUrl <- ZIO.fromEither(URL.decode(back)).mapError(RuntimeException(_))
+      param = (name: String) =>
+        ZIO.fromOption(backUrl.queryParams.getAll(name).headOption)
+          .orElseFail(RuntimeException(s"the OP's redirect carries no $name: $back"))
+      code <- param("code")
+      state <- param("state")
+      iss <- param("iss")
+    yield NativeCallback(back, code, state, iss)
+
   /** Signs a user in the way a browser does, all the way to the `EDGE_SESSION` cookie. */
   def browserLogin(auth: OAuthClient, presetId: String, login: String, password: String): Task[EdgeSession] =
     for
@@ -207,6 +261,9 @@ final class EdgeApi(client: Client, config: E2EConfig):
         .map((name, value) => s"${java.net.URLEncoder.encode(name, "UTF-8")}=${java.net.URLEncoder.encode(value, "UTF-8")}")
         .mkString("&"),
     )
+
+/** What the OS hands a native app from auth's redirect to its App Link. */
+case class NativeCallback(redirect: String, code: String, state: String, iss: String)
 
 /** The parameters the OP hands back to the edge's `/complete`. */
 case class EdgeCallback(code: String, state: String)
