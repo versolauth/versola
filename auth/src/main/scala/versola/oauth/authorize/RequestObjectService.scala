@@ -2,6 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.Error
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.clientauth.ClientAssertionRepository
 import versola.oauth.client.model.{ClientId, SecurityProfile}
 import versola.util.{CoreConfig, JwtAudience, RequestObject}
 import zio.{Chunk, Clock, IO, ZIO, ZLayer}
@@ -26,12 +27,19 @@ trait RequestObjectService:
   def resolve(params: Map[String, Chunk[String]]): IO[Error, Map[String, Chunk[String]]]
 
 object RequestObjectService:
-  def live: ZLayer[CoreConfig & OAuthConfigurationService, Nothing, RequestObjectService] =
-    ZLayer.fromFunction(Impl(_, _))
+  def live: ZLayer[CoreConfig & OAuthConfigurationService & ClientAssertionRepository, Nothing, RequestObjectService] =
+    ZLayer.fromFunction(Impl(_, _, _))
 
+  /** @param replayGuard remembers every `(client, jti)` a verified object carried, until its
+    *   `exp` -- the same store client assertions are checked against. RFC 7519 §4.1.7 makes a
+    *   `jti` unique per issuer across everything it signs, and a client signs both kinds of JWT
+    *   with the same registered keys, so one namespace per client is the stricter reading:
+    *   a `jti` spent on an assertion cannot be spent again on a request object, or vice versa.
+    */
   class Impl(
       config: CoreConfig,
       configurationService: OAuthConfigurationService,
+      replayGuard: ClientAssertionRepository,
   ) extends RequestObjectService:
 
     override def resolve(params: Map[String, Chunk[String]]): IO[Error, Map[String, Chunk[String]]] =
@@ -76,7 +84,41 @@ object RequestObjectService:
           maxLifetime = maxLifetime,
         ).tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))
           .orElseFail(Error.InvalidRequestObject)
+        _ <- rejectReplay(clientId, claims, profile)
       yield RequestObject.parameters(claims)
+
+    /** #358 / RFC 9101 §10: a by-value object sent straight to `/authorize` has no PAR-style
+      * one-time `request_uri` protecting it, so without this it could be replayed to
+      * re-initiate the same signed request for as long as its `exp` allows. Checked after
+      * every other rule, so only an object that would otherwise be accepted is recorded --
+      * mirroring `ClientAssertionService`.
+      *
+      * A `fapi2` tenant requires the `jti` this needs; a `standard` one, where RFC 9101 leaves
+      * it optional, is protected only when the client sends one.
+      */
+    private def rejectReplay(
+        clientId: ClientId,
+        claims: zio.json.ast.Json.Obj,
+        profile: SecurityProfile,
+    ): IO[Error, Unit] =
+      for
+        key <- RequestObject.replayKey(claims)
+          .tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))
+          .orElseFail(Error.InvalidRequestObject)
+        _ <- ZIO.when(key.isEmpty && profile == SecurityProfile.fapi2):
+          ZIO.logInfo(s"Rejected the request object of $clientId: no jti") *> ZIO.fail(Error.InvalidRequestObject)
+        _ <- ZIO.foreachDiscard(key): key =>
+          replayGuard.recordIfAbsent(clientId, key.jti, key.expiresAt)
+            // A replay guard that cannot answer is this server's failure, not the client's: it
+            // surfaces as a 500 rather than as `invalid_request_object`, and the request is
+            // never admitted unchecked.
+            .orDie
+            .flatMap: fresh =>
+              ZIO.unless(fresh)(
+                ZIO.logInfo(s"Rejected the request object of $clientId: jti replayed") *>
+                  ZIO.fail(Error.InvalidRequestObject),
+              )
+      yield ()
 
     /** RFC 9101 §4 names the issuer identifier; §10.3 recommends naming the endpoint the
       * request is for, and clients built against OpenID Connect Core §6.1 send that instead.

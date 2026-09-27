@@ -96,6 +96,7 @@ object JarFlowSpec extends E2ESpec:
       "aud" -> Json.Str(auth.issuer),
       "exp" -> Json.Num(java.time.Instant.now.plusSeconds(60).getEpochSecond),
       "nbf" -> Json.Num(java.time.Instant.now.getEpochSecond),
+      "jti" -> Json.Str(UUID.randomUUID().toString),
       "client_id" -> Json.Str(client.clientId),
       "redirect_uri" -> Json.Str(client.redirectUri),
       "response_type" -> Json.Str("code"),
@@ -283,6 +284,44 @@ object JarFlowSpec extends E2ESpec:
         )
       yield assertTrue(result.response.status == Status.BadRequest)
         .label("the default fapi2 profile requires nbf on a request object")
+    },
+
+    test("the same request object sent straight to /authorize twice is refused the second time (#358)") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(requestClaims(client, auth, codeChallenge)*)()
+        _ <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        ).assertChallengeRedirect
+        replay <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        )
+      yield assertTrue(replay.response.status == Status.BadRequest)
+        .label("a by-value object has no one-time request_uri, so its jti is what makes it single-use")
+    },
+
+    test("FAPI 2.0: an object without a jti is refused") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(
+          requestClaims(client, auth, codeChallenge).filterNot(_._1 == "jti")*,
+        )()
+        result <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        )
+      yield assertTrue(result.response.status == Status.BadRequest)
     },
 
     test("an object signed by a key the client never registered is refused") {

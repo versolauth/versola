@@ -110,7 +110,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
             parser,
             repository,
             clientAuthentication,
-            RequestObjectService.Impl(config, configuration),
+            RequestObjectService.Impl(config, configuration, versola.oauth.clientauth.InMemoryClientAssertionRepository.make),
             secureRandom,
             SecurityService.Impl(secureRandom, hashingSemaphore),
           )
@@ -212,6 +212,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         "aud" -> Json.Str(config.jwt.issuer),
         // A minute ahead of the test clock, which starts at the epoch.
         "exp" -> Json.Num(60),
+        "jti" -> Json.Str(java.util.UUID.randomUUID().toString),
         "nbf" -> Json.Num(0),
         "client_id" -> Json.Str(clientId),
         "redirect_uri" -> Json.Str(redirectUri.encode),
@@ -273,6 +274,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         "iss" -> Json.Str(clientId),
         "aud" -> Json.Str(config.jwt.issuer),
         "exp" -> Json.Num(60),
+        "jti" -> Json.Str(java.util.UUID.randomUUID().toString),
         "nbf" -> Json.Num(0),
         "client_id" -> Json.Str(clientId),
         "redirect_uri" -> Json.Str(redirectUri.encode),

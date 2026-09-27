@@ -272,6 +272,21 @@ object RequestObject:
       requireNotBefore = false,
     )
 
+  /** What a replay guard needs from a verified object: its `jti`, and the signed `exp` that
+    * decides how long the record must be kept (past it the object is refused on `exp` alone).
+    * Mirrors [[ClientAssertion.Assertion]]. */
+  case class ReplayKey(jti: String, expiresAt: Instant)
+
+  /** The replay key of claims [[verify]] already accepted -- `None` when the object carries no
+    * `jti`, which RFC 9101 leaves optional. A `jti` that is present but not a string is
+    * malformed rather than absent. */
+  def replayKey(claims: Json.Obj): IO[Error, Option[ReplayKey]] =
+    claims.get("jti") match
+      case None => ZIO.none
+      case Some(Json.Str(jti)) =>
+        requireInstant(claims, "exp", BigDecimal.RoundingMode.FLOOR).map(exp => Some(ReplayKey(jti, exp)))
+      case Some(_) => ZIO.fail(Error.MalformedClaim("jti"))
+
   /** The authorization request parameters a verified object's claims stand for, in the shape
     * a plain query or form request would have produced.
     */

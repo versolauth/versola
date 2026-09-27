@@ -274,6 +274,19 @@ object RequestObjectSpec extends ZIOSpecDefault:
         yield assertTrue(typed.isRight, plain.isRight, foreign == Left(RequestObject.Error.UnexpectedType))
       },
     ),
+    suite("replayKey")(
+      test("pairs the jti with the signed exp, and is absent without a jti") {
+        for
+          present <- RequestObject.replayKey(claims("jti" -> Json.Str("jti-1")))
+          absent <- RequestObject.replayKey(claims())
+          malformed <- RequestObject.replayKey(claims("jti" -> Json.Num(1))).either
+        yield assertTrue(
+          present == Some(RequestObject.ReplayKey("jti-1", now.plusSeconds(60))),
+          absent.isEmpty,
+          malformed == Left(RequestObject.Error.MalformedClaim("jti")),
+        )
+      },
+    ),
     suite("parameters")(
       test("drops the claims that carry the object rather than a request parameter") {
         val params = RequestObject.parameters(claims())
