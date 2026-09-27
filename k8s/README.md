@@ -393,10 +393,14 @@ extra manifest here.
 
 **Don't point a scrape target at this chart's Service DNS names instead of the annotations.**
 `versola-auth`/`-central`/`-edge` are ClusterIP, one Service per component fronting every
-replica — a target resolving that name lands on an effectively random replica each connection, so
-at `replicaCount > 1` `rate()`/`increase()` over the result undercounts and jitters, and the series
-never carries a `pod` label. This is exactly what happened in the target cluster's `vmagent` (a
-`job_name: versola-sut` static target on the Service DNS, first caught as a several-times
+replica — that name resolves to the Service's single, stable ClusterIP, not to a random pod; the
+randomness is one layer below DNS, in kube-proxy's iptables/IPVS rules, which DNAT each new
+connection to that ClusterIP to one of the backing pods, chosen essentially at random. So at
+`replicaCount > 1` the instance label such a target produces (the ClusterIP:port itself) stays
+fixed while the pod actually behind it varies per connection, `rate()`/`increase()` over the
+result undercounts and jitters, and the series never carries a `pod` label. This is exactly what
+happened in the target cluster's `vmagent` (a `job_name: versola-sut` static target on the Service
+DNS, first caught as a several-times
 distortion during the 1M-run loadgen campaign) — see
 [`k8s/monitoring/vmagent-values.yaml`](monitoring/vmagent-values.yaml) for that cluster's actual
 fix, checked in there because it previously existed only as a live Helm release nobody had a copy

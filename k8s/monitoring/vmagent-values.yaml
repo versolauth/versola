@@ -27,15 +27,19 @@
 # This used to be a `static_configs` entry pointing straight at each
 # component's ClusterIP Service
 # (versola-auth/-central/-edge.versola.svc.cluster.local) -- one DNS name
-# shared by every replica of that component. A scrape target resolves that
-# name to a single pod IP per connection, so at replicaCount > 1 (3 for
-# auth, 2 for edge at the time this was found) every scrape landed on an
-# effectively random replica behind the one instance label, and
-# rate()/increase() over the resulting counters (http_server_requests_total,
-# auth_authorize_total, ...) undercounted and jittered -- first surfaced as
-# a several-times distortion during the 1M-run loadgen campaign. It also
-# never carried a `pod` label at all, which the dashboards
-# (k8s/loadgen/dashboards/) select on alongside `job` and `namespace`.
+# shared by every replica of that component. That name resolves to the
+# Service's single, stable ClusterIP, not to a random pod; the randomness
+# is one layer below DNS, in kube-proxy's iptables/IPVS rules, which DNAT
+# each new connection to that ClusterIP to one of the backing pods, chosen
+# essentially at random. So at replicaCount > 1 (3 for auth, 2 for edge at
+# the time this was found) the instance label such a target produces (the
+# ClusterIP:port itself) stayed fixed while the pod actually behind it
+# varied per connection, and rate()/increase() over the resulting counters
+# (http_server_requests_total, auth_authorize_total, ...) undercounted and
+# jittered -- first surfaced as a several-times distortion during the
+# 1M-run loadgen campaign. It also never carried a `pod` label at all,
+# which the dashboards (k8s/loadgen/dashboards/) select on alongside `job`
+# and `namespace`.
 #
 # Fixed by switching to `kubernetes_sd_configs: role: pod`, scoped to the
 # `versola` namespace, with the same annotation-based relabeling the

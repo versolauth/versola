@@ -192,13 +192,18 @@ services:
 #
 # Why this chart carries this at all, unlike its ClusterIP-only Service
 # (templates/service.yaml): a scrape target set to
-# <fullname>-<component>.<namespace>.svc.cluster.local resolves to a single
-# pod IP per connection, so with replicaCount > 1 every scrape lands on an
-# effectively random replica behind that one instance label. rate()/increase()
-# over the resulting counters (http_server_requests_total,
-# auth_authorize_total, ...) undercounts and jitters, because no single
-# series ever accumulates one replica's full count across scrapes -- see the
-# 1M-run loadgen campaign that first surfaced this.
+# <fullname>-<component>.<namespace>.svc.cluster.local resolves to that
+# Service's single, stable ClusterIP -- DNS is not where the randomness
+# happens. It happens one layer down: kube-proxy's iptables/IPVS rules DNAT
+# each new connection to that ClusterIP to one of the Service's backing
+# pods, chosen essentially at random, per connection. So with
+# replicaCount > 1 the instance label a scrape produces (the ClusterIP:port
+# itself) stays fixed while the pod actually answering it varies randomly
+# underneath, and rate()/increase() over the resulting counters
+# (http_server_requests_total, auth_authorize_total, ...) undercounts and
+# jitters, because the samples under that one instance label are drawn from
+# different replicas' independent counters rather than accumulated from
+# one -- see the 1M-run loadgen campaign that first surfaced this.
 #
 # prometheus.io/scrape+port+path (the same annotations k8s/loadgen's
 # `metrics.prometheusAnnotations` sets) let a kubernetes_sd_configs-based
