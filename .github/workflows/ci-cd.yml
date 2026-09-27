@@ -361,7 +361,7 @@ jobs:
         if: github.event_name != 'release'
         run: |
           # See "Start auth service" above for why RUN_MIGRATIONS=true is required here now.
-          PORT=9003 DPORT=9004 APORT=9007 RUN_MIGRATIONS=true \
+          PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true \
             auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl \
             -Denv.path=auth/dev/env.conf > /tmp/auth.log 2>&1 &
           echo $! > /tmp/auth.pid
