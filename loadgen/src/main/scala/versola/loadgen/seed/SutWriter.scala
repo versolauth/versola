@@ -42,6 +42,39 @@ final class SutWriter(auth: CopySink, central: CopySink):
         yield ()
     yield ()
 
+  /** Backfills warm sessions onto an *already-seeded* id range (§10 step 6, retrofit path):
+    * `refresh_tokens` and, by the caller's own [[CopySink]], `vu_sessions` only -- never `users`,
+    * `user_passwords`, `passkeys` or `user_roles`, which [[write]] would otherwise delete and
+    * regenerate. That distinction matters for exactly one of those four: `passkeys`' key pair is
+    * the one seeded value that is *not* a pure function of the id
+    * ([[PopulationPlan.userOf]]'s doc), so rewriting it here would silently invalidate every
+    * passkey credential a prior seed run (or a live campaign) already exercised, for a user this
+    * call has no reason to touch at all.
+    *
+    * Idempotent by construction, unlike [[write]]: a MAC computation costs nothing worth
+    * resuming past, so every call simply deletes and rewrites the whole range it is given,
+    * rather than tracking which ids already have one.
+    */
+  def writeWarmSessionsOnly(
+      seeded: Chunk[SeededUser],
+      now: Instant,
+      from: Long,
+      until: Long,
+      warmSessions: WarmSessionConfig,
+  ): Task[Unit] =
+    auth.atomically:
+      for
+        _ <- deleteRefreshTokens(auth, from, until)
+        _ <- copy(auth, SutSchema.refreshTokens, withRefreshTokens(seeded, now, Some(warmSessions)))
+      yield ()
+
+  private def deleteRefreshTokens(sink: CopySink, from: Long, until: Long): Task[Unit] =
+    val low = PopulationPlan.phoneOf(from)
+    val high = PopulationPlan.phoneOf(until - 1)
+    sink.execute(
+      s"DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE phone BETWEEN '$low' AND '$high')",
+    )
+
   def analyze: Task[Unit] =
     ZIO.foreachDiscard(SutSchema.all): table =>
       sinkFor(table.owner).execute(SutSchema.analyzeStatement(table))

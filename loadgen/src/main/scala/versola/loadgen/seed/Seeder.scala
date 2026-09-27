@@ -116,8 +116,58 @@ object Seeder:
       )
       _ <- ZIO.foreachDiscard(batches(resume, target, seedConfig.batchSize)): (from, until) =>
         seedBatch(services, population, seedConfig, warmSessions, from, until)
+      _ <- warmSessions.fold(ZIO.unit): config =>
+        backfillWarmSessions(services, population, seedConfig, config, upTo = resume - 1)
       _ <- analyze(services)
       _ <- ZIO.logInfo("Seed complete")
+    yield ()
+
+  /** §10 step 6's retrofit path: a population seeded *before* `warm-sessions` was ever turned on
+    * has no warm sessions to lose, and [[run]]'s own batches above only ever cover ids the store
+    * does not have yet. Every id below `resume` at the time this run started is otherwise
+    * permanently out of [[run]]'s reach -- resumable seeding by design never revisits an id it
+    * has already written -- so this covers that whole prefix on every run, not just once.
+    *
+    * Deliberately not folded into [[seedBatch]]'s loop: that loop's cost is Argon2 and P-256, and
+    * a batch already paid for both is not paying for them again here -- [[SutWriter.writeWarmSessionsOnly]]
+    * touches `refresh_tokens` and `vu_sessions` alone.
+    */
+  private def backfillWarmSessions(
+      services: SeedServices,
+      population: PopulationConfig,
+      seedConfig: SeedConfig,
+      warmSessions: WarmSessionConfig,
+      upTo: Long,
+  ): Task[Unit] =
+    if upTo < 1 then ZIO.unit
+    else
+      ZIO.logInfo(s"Backfilling warm mobile sessions onto the existing population 1..$upTo (dev spec §10 step 6)") *>
+        ZIO.foreachDiscard(batches(1, upTo, seedConfig.batchSize)): (from, until) =>
+          backfillBatch(services, population, seedConfig, warmSessions, from, until)
+
+  private def backfillBatch(
+      services: SeedServices,
+      population: PopulationConfig,
+      seedConfig: SeedConfig,
+      warmSessions: WarmSessionConfig,
+      from: Long,
+      until: Long,
+  ): Task[Unit] =
+    for
+      now <- Clock.instant
+      planned = Chunk.fromIterable((from until until).map(PopulationPlan.userOf(population, seedConfig.shardCount, _)))
+      minted <- services.minter match
+        case Some(minter) => minter.mintAll(planned.filter(SeedRows.needsWarmSession).map(_.id)).map(_.toMap)
+        case None => ZIO.succeed(Map.empty[Long, RefreshTokenMaterial])
+      seeded = planned.map(user => SeededUser(user = user, password = None, passkey = None, refreshToken = minted.get(user.id)))
+      _ <- services.sut.writeWarmSessionsOnly(seeded, now, from, until, warmSessions)
+      _ <- services.store.execute(s"DELETE FROM vu_sessions WHERE user_id >= $from AND user_id < $until")
+      vuSessionRows = withVuSessions(seeded, now, Some(warmSessions))
+      _ <- services.store.copyIn(SeedRows.vuSessionsCopyStatement, vuSessionRows).flatMap: written =>
+        ZIO
+          .fail(ShortCopy("vu_sessions", vuSessionRows.size.toLong, written))
+          .when(written != vuSessionRows.size.toLong)
+      _ <- ZIO.logInfo(s"Backfilled warm sessions for ids $from..${until - 1}")
     yield ()
 
   /** Where a run picks up: `max(vu_users.id) + 1`, or 1 on an empty store.
