@@ -2,8 +2,9 @@ package versola.central.configuration.clients
 
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.RSAKey
+import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.roles.RoleId
-import versola.util.{JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, TestCertificates, UnitSpecBase}
+import versola.util.{RedirectUri, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, TestCertificates, UnitSpecBase}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -204,7 +205,89 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
     },
   )
 
+  /** A web client edge fronts with `tls_client_auth` behind PAR: what FAPI 2.0 admits. */
+  private val conformant = InvalidRegistrationConfiguration.ProfileSubject(
+    authMethod = AuthMethod.tls_client_auth,
+    senderConstrained = true,
+    requirePushedAuthorizationRequests = true,
+    redirectUris = Set(RedirectUri("https://app.example/callback")),
+    native = false,
+  )
+
+  private def fapi2(subject: InvalidRegistrationConfiguration.ProfileSubject, allowHttpLoopback: Boolean = false) =
+    InvalidRegistrationConfiguration.profileViolations(SecurityProfile.fapi2, subject, allowHttpLoopback)
+
+  private val securityProfileSuite = suite("profileViolations")(
+    test("admits an edge-fronted tls_client_auth web client behind PAR") {
+      assertTrue(fapi2(conformant).isEmpty)
+    },
+    test("admits every confidential method FAPI 2.0 leaves a client") {
+      assertTrue(
+        List(AuthMethod.private_key_jwt, AuthMethod.tls_client_auth, AuthMethod.self_signed_tls_client_auth)
+          .forall(method => fapi2(conformant.copy(authMethod = method)).isEmpty),
+      )
+    },
+    test("refuses a client_secret client and a public one") {
+      assertTrue(
+        fapi2(conformant.copy(authMethod = AuthMethod.client_secret)).exists(_.contains("not client_secret")),
+        fapi2(conformant.copy(authMethod = AuthMethod.none)).exists(_.contains("not none")),
+      )
+    },
+    test("refuses bearer access tokens") {
+      assertTrue(fapi2(conformant.copy(senderConstrained = false)).exists(_.contains("sender-constrained")))
+    },
+    test("refuses a client with redirect URIs that does not require PAR, but not a service client") {
+      assertTrue(
+        fapi2(conformant.copy(requirePushedAuthorizationRequests = false)).exists(_.contains("pushed authorization")),
+        fapi2(conformant.copy(requirePushedAuthorizationRequests = false, redirectUris = Set.empty)).isEmpty,
+      )
+    },
+    test("refuses an http redirect URI, and a loopback one for a web client") {
+      val loopback = RedirectUri("http://127.0.0.1:8123/callback")
+      assertTrue(
+        fapi2(conformant.copy(redirectUris = Set(RedirectUri("http://app.example/callback")))).exists(_.contains("https")),
+        fapi2(conformant.copy(redirectUris = Set(loopback))).exists(_.contains("https")),
+        fapi2(conformant.copy(redirectUris = Set(RedirectUri("com.example.app://callback")))).exists(_.contains("https")),
+      )
+    },
+    test("admits a loopback http redirect URI for a native client, or outside production for any") {
+      val loopback = Set(RedirectUri("http://127.0.0.1:8123/callback"), RedirectUri("http://localhost:9005/complete"))
+      assertTrue(
+        fapi2(conformant.copy(redirectUris = loopback, native = true)).isEmpty,
+        fapi2(conformant.copy(redirectUris = loopback), allowHttpLoopback = true).isEmpty,
+        fapi2(conformant.copy(redirectUris = Set(RedirectUri("http://app.example/cb"))), allowHttpLoopback = true).nonEmpty,
+      )
+    },
+    // #421: a native client fronted by edge authenticates with edge's certificate but has its
+    // tokens bound to the device's DPoP key rather than to that certificate.
+    test("admits a native client edge authenticates with tls_client_auth whose tokens are DPoP-bound") {
+      assertTrue(
+        fapi2(conformant.copy(native = true, redirectUris = Set(RedirectUri("https://app.example/app-link")))).isEmpty,
+      )
+    },
+    test("reports every violation, not only the first") {
+      val subject = InvalidRegistrationConfiguration.ProfileSubject(
+        authMethod = AuthMethod.none,
+        senderConstrained = false,
+        requirePushedAuthorizationRequests = false,
+        redirectUris = Set(RedirectUri("http://app.example/a"), RedirectUri("http://app.example/b")),
+        native = false,
+      )
+      assertTrue(fapi2(subject).size == 5)
+    },
+    test("admits anything under the standard profile") {
+      assertTrue(
+        InvalidRegistrationConfiguration.profileViolations(
+          SecurityProfile.standard,
+          conformant.copy(authMethod = AuthMethod.none, senderConstrained = false, requirePushedAuthorizationRequests = false),
+          allowHttpLoopback = false,
+        ).isEmpty,
+      )
+    },
+  )
+
   def spec = suite("InvalidRegistrationConfiguration")(
+    securityProfileSuite,
     edgeSigningKeySuite,
     edgeClientCertificateSuite,
     test("accepts multiple assigned roles") {

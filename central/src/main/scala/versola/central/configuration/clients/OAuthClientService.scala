@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.challenges.{ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -9,7 +9,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, EnvName, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Scheme, URL}
 
@@ -32,6 +32,14 @@ case class RegisteredClient(
     createdAt: Instant,
 )
 
+/** One client that a tenant's security profile would not admit, and every reason why -- what
+  * refusing a switch of the tenant to that profile answers with, so an operator sees the whole
+  * list of clients to fix rather than learning of them one refused switch at a time. */
+case class ClientProfileViolation(
+    clientId: ClientId,
+    reasons: List[String],
+) derives zio.json.JsonCodec
+
 trait OAuthClientService:
 
   def getAllClients: Task[Vector[OAuthClientRecord]]
@@ -53,11 +61,22 @@ trait OAuthClientService:
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
+      enforceSecurityProfile: Boolean = true,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
+  /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
+    *                               [[SecurityProfile]]. Only bootstrap turns it off, and only
+    *                               for a seeded client it cannot yet make conformant -- every
+    *                               API caller is held to the profile. */
   def updateClient(
       request: UpdateClientRequest,
+      enforceSecurityProfile: Boolean = true,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
+
+  /** #353: every client of `tenantId` that `profile` would not admit, read from the
+    * repository rather than the cache so a client registered a moment ago is not missed by a
+    * switch that is about to be refused or applied on the strength of this answer. */
+  def profileViolations(tenantId: TenantId, profile: SecurityProfile): Task[Vector[ClientProfileViolation]]
 
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
@@ -74,14 +93,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig & EnvName, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -127,7 +146,41 @@ object OAuthClientService:
       secureRandom: SecureRandom,
       securityService: SecurityService,
       config: CentralConfig,
+      envName: EnvName,
   ) extends OAuthClientService:
+
+    /** Outside production the local stack's own edge is served at `http://localhost`, and so is
+      * every web client it fronts -- see [[InvalidRegistrationConfiguration.profileViolations]]. */
+    private val allowHttpLoopback: Boolean = envName.isTest
+
+    /** Last of the registration checks, so a client that could not work at all is told why
+      * before it is told that its tenant would not admit it. */
+    private def validateSecurityProfile(
+        client: OAuthClientRecord,
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      challengeSettingsService.getSecurityProfile(client.tenantId).flatMap: profile =>
+        ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateSecurityProfile(
+          client.id,
+          profile,
+          InvalidRegistrationConfiguration.ProfileSubject.of(client),
+          allowHttpLoopback,
+        ))(ZIO.fail(_))
+
+    override def profileViolations(
+        tenantId: TenantId,
+        profile: SecurityProfile,
+    ): Task[Vector[ClientProfileViolation]] =
+      clientRepository.getAll.map:
+        _.filter(_.tenantId == tenantId)
+          .sortBy(_.id: String)
+          .flatMap: client =>
+            InvalidRegistrationConfiguration.profileViolations(
+              profile,
+              InvalidRegistrationConfiguration.ProfileSubject.of(client),
+              allowHttpLoopback,
+            ) match
+              case Nil => None
+              case reasons => Some(ClientProfileViolation(client.id, reasons))
 
     override def getAllClients: Task[Vector[OAuthClientRecord]] =
       cache.get
@@ -156,6 +209,7 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
+        enforceSecurityProfile: Boolean = true,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
         _ <- validateConsentUris(
@@ -246,11 +300,13 @@ object OAuthClientService:
           template = request.template,
           createdAt = registeredAt,
         )
+        _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
       yield RegisteredClient(secret, registeredAt)
 
     override def updateClient(
         request: UpdateClientRequest,
+        enforceSecurityProfile: Boolean = true,
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
         _ <- validateConsentUris(
@@ -307,7 +363,7 @@ object OAuthClientService:
             request.clientId,
             client.tenantId,
             request.mtlsAuth.applyTo(client.mtlsAuth),
-          )
+          ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)
@@ -368,6 +424,19 @@ object OAuthClientService:
       * moment ago may not have reached the cache yet, and a stale miss would let one through.
       * An unknown client is left to the repository, which ignores it.
       */
+    /** The client as the patch will leave it, in the settings the security profile reads --
+      * the rest is left as stored, since nothing the profile checks depends on it. */
+    private def patchedForProfile(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
+      client.copy(
+        authMethod = request.authMethod.getOrElse(client.authMethod),
+        mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
+        certificateBoundAccessTokens = request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+        dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+        requirePushedAuthorizationRequests =
+          request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+        redirectUris = client.redirectUris ++ request.redirectUris.add -- request.redirectUris.remove,
+      )
+
     private def rejectSecretlessClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
       clientRepository.find(clientId).flatMap: client =>
         ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(!_.usesSecret)).unit
