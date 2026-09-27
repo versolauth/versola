@@ -70,6 +70,8 @@ object RequestObjectService:
           allowedAlgorithms = allowedAlgorithms,
           clientId = clientId,
           audience = audience(profile),
+          // FAPI 2.0 Message Signing: a `fapi2` tenant requires `nbf`; RFC 9101 alone does not.
+          requireNotBefore = profile == SecurityProfile.fapi2,
           now = now,
           maxLifetime = maxLifetime,
         ).tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))

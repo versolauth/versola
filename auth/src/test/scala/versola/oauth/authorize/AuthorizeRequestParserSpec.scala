@@ -112,6 +112,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       "aud" -> Json.Str(TestEnvConfig.coreConfig.jwt.issuer),
       // A minute ahead of the test clock, which starts at the epoch.
       "exp" -> Json.Num(60),
+      "nbf" -> Json.Num(0),
       "client_id" -> Json.Str(clientId),
       "redirect_uri" -> Json.Str(redirectUri.encode),
       "response_type" -> Json.Str("code"),

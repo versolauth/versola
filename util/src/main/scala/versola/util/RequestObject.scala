@@ -82,6 +82,7 @@ object RequestObject:
     case AudienceMismatch
     case Expired
     case NotYetValid
+    case NotBeforeTooOld
     case IssuedInFuture
     case LifetimeTooLong
     case NestedRequest
@@ -93,6 +94,12 @@ object RequestObject:
     * `maxLifetime` [[verify]] is called with.
     */
   val Ttl: Duration = 5.minutes
+
+  /** FAPI 2.0 Message Signing / FAPI 1.0 Advanced §5.2.2-17: `nbf` no more than 60 minutes in
+    * the past, and `exp` no more than 60 minutes after `nbf`. Independent of the tenant's
+    * `clientAssertionMaxLifetime`, which bounds `exp` against the clock rather than against
+    * the object's own start. */
+  val MaxValidityWindow: Duration = 60.minutes
 
   /** Signs an authorization request as a request object -- the counterpart of [[verify]], for
     * a caller acting as the client rather than as the server (`versola.edge.SSOClient`).
@@ -131,6 +138,8 @@ object RequestObject:
           .audience(audience)
           .jwtID(UUID.randomUUID().toString)
           .issueTime(Date.from(now))
+          // FAPI 2.0 Message Signing requires `nbf`; the object is valid from the moment it is signed.
+          .notBeforeTime(Date.from(now))
           .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
 
         parameters.iterator
@@ -170,6 +179,8 @@ object RequestObject:
     * @param now current time
     * @param maxLifetime furthest into the future `exp` may sit, bounding how long an observed
     *   object stays replayable
+    * @param requireNotBefore FAPI 2.0 Message Signing / FAPI 1.0 Advanced §5.2.2-13 require an
+    *   `nbf` claim, which RFC 9101 itself leaves optional -- set for a `fapi2` tenant
     */
   def verify(
       token: String,
@@ -179,6 +190,7 @@ object RequestObject:
       audience: JwtAudience,
       now: Instant,
       maxLifetime: Duration,
+      requireNotBefore: Boolean,
   ): IO[Error, Json.Obj] =
     for
       jwt <- ZIO.attempt(SignedJWT.parse(token)).orElseFail(Error.NotJWT)
@@ -230,7 +242,13 @@ object RequestObject:
       // Ceilinged, the opposite of exp above: a remainder Instant cannot hold must round nbf
       // away from the epoch, or a claim naming a moment less than a nanosecond from now would
       // reconstruct as already past and be accepted immediately.
-      notBefore <- optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
+      notBefore <-
+        if requireNotBefore then requireInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING).asSome
+        else optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
+      // §5.2.2-17: however recently it expires, an object that started more than an hour ago
+      // -- or that claims a validity window longer than an hour -- is refused.
+      _ <- ZIO.fail(Error.NotBeforeTooOld).when(notBefore.exists(_.isBefore(now.minus(MaxValidityWindow))))
+      _ <- ZIO.fail(Error.LifetimeTooLong).when(notBefore.exists(nbf => expiresAt.isAfter(nbf.plus(MaxValidityWindow))))
       // FAPI 2.0 §5.3.2.1-13: up to a minute of clock skew is absorbed, as for an assertion
       // (see [[ClientAssertion.FutureLeeway]]); further ahead than that is refused.
       _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
@@ -249,7 +267,10 @@ object RequestObject:
       now: Instant,
       maxLifetime: Duration,
   ): IO[Error, Json.Obj] =
-    verify(token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime)
+    verify(
+      token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime,
+      requireNotBefore = false,
+    )
 
   /** The authorization request parameters a verified object's claims stand for, in the shape
     * a plain query or form request would have produced.

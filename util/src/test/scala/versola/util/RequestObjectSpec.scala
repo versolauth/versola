@@ -50,6 +50,7 @@ object RequestObjectSpec extends ZIOSpecDefault:
       "iss" -> Json.Str(ClientId),
       "aud" -> Json.Str(Issuer),
       "exp" -> Json.Num(now.plusSeconds(60).getEpochSecond),
+      "nbf" -> Json.Num(now.getEpochSecond),
       "client_id" -> Json.Str(ClientId),
       "response_type" -> Json.Str("code"),
       "redirect_uri" -> Json.Str("https://client.example.com/callback"),
@@ -82,8 +83,9 @@ object RequestObjectSpec extends ZIOSpecDefault:
       clientId: String = ClientId,
       allowedAlgorithms: Set[ClientAssertion.Algorithm] = AllAlgorithms,
       audience: JwtAudience = Fapi2,
+      requireNotBefore: Boolean = true,
   ) =
-    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, audience, now, maxLifetime)
+    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, audience, now, maxLifetime, requireNotBefore)
 
   def spec = suite("RequestObject")(
     suite("verify")(
@@ -167,6 +169,50 @@ object RequestObjectSpec extends ZIOSpecDefault:
         val withoutExp = Json.Obj(claims().fields.filterNot(_._1 == "exp"))
         for result <- verify(requestObject(withoutExp)).either
         yield assertTrue(result == Left(RequestObject.Error.MissingClaim("exp")))
+      },
+      test("FAPI 2.0 Message Signing: rejects an object with no nbf under a fapi2 tenant") {
+        val withoutNbf = Json.Obj(claims().fields.filterNot(_._1 == "nbf"))
+        for
+          fapi2 <- verify(requestObject(withoutNbf)).either
+          standard <- verify(requestObject(withoutNbf), audience = Standard, requireNotBefore = false).either
+        yield assertTrue(
+          fapi2 == Left(RequestObject.Error.MissingClaim("nbf")),
+          standard.isRight,
+        )
+      },
+      test("FAPI 1.0 Advanced §5.2.2-17: rejects an nbf more than 60 minutes in the past") {
+        for
+          stale <- verify(requestObject(claims("nbf" -> Json.Num(now.minusSeconds(3601).getEpochSecond)))).either
+          // Inside the hour, and with exp still within an hour of it.
+          recent <- verify(requestObject(claims("nbf" -> Json.Num(now.minusSeconds(3500).getEpochSecond)))).either
+        yield assertTrue(
+          stale == Left(RequestObject.Error.NotBeforeTooOld),
+          recent.isRight,
+        )
+      },
+      test("FAPI 1.0 Advanced §5.2.2-17: rejects an exp more than 60 minutes after nbf") {
+        val nbf = now.minusSeconds(3500)
+        for result <- verify(
+            requestObject(claims(
+              "nbf" -> Json.Num(nbf.getEpochSecond),
+              "exp" -> Json.Num(nbf.plusSeconds(3601).getEpochSecond),
+            )),
+          ).either
+        yield assertTrue(result == Left(RequestObject.Error.LifetimeTooLong))
+      },
+      test("an object minted by sign() carries the nbf a fapi2 tenant requires") {
+        for
+          token <- RequestObject.sign(
+            parameters = Map("client_id" -> Chunk(ClientId), "response_type" -> Chunk("code")),
+            clientId = ClientId,
+            audience = Issuer,
+            algorithm = ClientAssertion.Algorithm.ES256,
+            keyId = "ec-1",
+            privateKey = ecPrivateKey,
+          )
+          signedAt <- Clock.instant
+          result <- RequestObject.verify(token, keys(ecJwk), AllAlgorithms, ClientId, Fapi2, signedAt, maxLifetime, requireNotBefore = true).either
+        yield assertTrue(result.isRight)
       },
       test("rejects an expiry further ahead than the tenant allows") {
         for result <- verify(requestObject(claims("exp" -> Json.Num(now.plusSeconds(3600).getEpochSecond)))).either

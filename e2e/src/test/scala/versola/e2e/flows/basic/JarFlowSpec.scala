@@ -95,6 +95,7 @@ object JarFlowSpec extends E2ESpec:
       "iss" -> Json.Str(client.clientId),
       "aud" -> Json.Str(auth.issuer),
       "exp" -> Json.Num(java.time.Instant.now.plusSeconds(60).getEpochSecond),
+      "nbf" -> Json.Num(java.time.Instant.now.getEpochSecond),
       "client_id" -> Json.Str(client.clientId),
       "redirect_uri" -> Json.Str(client.redirectUri),
       "response_type" -> Json.Str("code"),
@@ -264,6 +265,24 @@ object JarFlowSpec extends E2ESpec:
           request = Some(requestObject),
         )
       yield assertTrue(result.response.status == Status.BadRequest)
+    },
+
+    test("FAPI 2.0 Message Signing: an object without nbf is refused") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(
+          requestClaims(client, auth, codeChallenge).filterNot(_._1 == "nbf")*,
+        )()
+        result <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        )
+      yield assertTrue(result.response.status == Status.BadRequest)
+        .label("the default fapi2 profile requires nbf on a request object")
     },
 
     test("an object signed by a key the client never registered is refused") {

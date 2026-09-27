@@ -232,6 +232,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           audience = JwtAudience.IssuerOnly(Issuer),
           now = now,
           maxLifetime = 10.minutes,
+          requireNotBefore = true,
         )
         parameters = RequestObject.parameters(claims)
       yield assertTrue(
@@ -263,6 +264,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           JwtAudience.IssuerOnly(Issuer),
           now,
           10.minutes,
+          requireNotBefore = true,
         )
       yield assertTrue(claims.get("sub").isEmpty)
     },
@@ -286,6 +288,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           JwtAudience.IssuerOnly(Issuer),
           now,
           10.minutes,
+          requireNotBefore = true,
         )
       yield assertTrue(claims.get("iss") == Some(Json.Str(ClientId)))
     },
