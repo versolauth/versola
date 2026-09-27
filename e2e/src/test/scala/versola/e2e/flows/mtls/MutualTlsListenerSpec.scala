@@ -56,20 +56,26 @@ object MutualTlsListenerSpec extends E2ESpec:
   private def anonymousSsl(auth: OAuthClient): ClientSSLConfig =
     ClientSSLConfig.FromCertFile(auth.authMutualTlsTrustedCertificates)
 
-  private def clientCredentialsRequest(url: String, clientId: String): Request =
-    Request.post(url, Body.fromString(s"grant_type=client_credentials&client_id=${java.net.URLEncoder.encode(clientId, "UTF-8")}"))
+  private def clientCredentialsRequest(url: String, clientId: String, proof: Option[String] = None): Request =
+    val request = Request.post(url, Body.fromString(s"grant_type=client_credentials&client_id=${java.net.URLEncoder.encode(clientId, "UTF-8")}"))
       .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    proof.fold(request)(value => request.addHeader(Header.Custom("DPoP", value)))
 
   /** One token call over a real handshake, `ssl` deciding what -- if anything -- is presented
     * on it. `Client.default`'s own instance is reused rather than rebuilt per call, and given
     * the connection's certificate the way `versola.edge.SSOClient` gives its own: `.ssl(...)`
     * on the client, not on the request, since a certificate is a fact about the connection.
     */
-  private def tokenOver(ssl: ClientSSLConfig, url: String, clientId: String): Task[TokenResult] =
+  private def tokenOver(
+      ssl: ClientSSLConfig,
+      url: String,
+      clientId: String,
+      proof: Option[String] = None,
+  ): Task[TokenResult] =
     ZIO.scoped:
       for
         client <- Client.default.build.map(_.get[Client])
-        result <- Client.batched(clientCredentialsRequest(url, clientId)).provide(ZLayer.succeed(client.ssl(ssl)))
+        result <- Client.batched(clientCredentialsRequest(url, clientId, proof)).provide(ZLayer.succeed(client.ssl(ssl)))
           .flatMap(TokenResult.parse)
       yield result
 
@@ -108,6 +114,34 @@ object MutualTlsListenerSpec extends E2ESpec:
         result <- tokenOver(authenticatedSsl(auth), s"${auth.authMutualTlsUrl}/token", clientId).success
       yield assertTrue(result.accessToken.nonEmpty)
         .label("registration through Central, auth's configuration cache and a real TLS handshake must agree")
+    },
+    // RFC 9449 §4.3 over RFC 8705 §5: a client that followed the alias called a different
+    // authority, so that is the authority §4.3 obliges it to stamp into `htu`. Only at this
+    // level do the two RFCs actually meet -- the proof is signed against the address the
+    // discovery document named, and verified by the listener that address reaches.
+    test("a DPoP proof stamped with the listener's own address binds a token over it") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        clientId <- mtlsClient(auth)
+        prover <- DpopProver.make
+        aliasedTokenEndpoint = s"${auth.authMutualTlsUrl}/token"
+        proof <- prover.proof(Method.POST, aliasedTokenEndpoint)
+        result <- tokenOver(authenticatedSsl(auth), aliasedTokenEndpoint, clientId, Some(proof)).success
+      yield assertTrue(result.tokenType == "DPoP")
+        .label("a proof naming the aliased address is the correct one, and must not be rejected")
+    },
+    test("a DPoP proof stamped with the main listener's address is refused over this one") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        clientId <- mtlsClient(auth)
+        prover <- DpopProver.make
+        // The address the *unaliased* `token_endpoint` names -- correct for the main listener,
+        // and for that reason exactly what §4.3 forbids here.
+        proof <- prover.proof(Method.POST, s"${auth.issuer}/token")
+        result <- tokenOver(authenticatedSsl(auth), s"${auth.authMutualTlsUrl}/token", clientId, Some(proof))
+        body <- result.response.body.asString
+      yield assertTrue(result.response.status == Status.BadRequest, body.contains("invalid_dpop_proof"))
+        .label(s"expected the mismatched htu to be refused, got ${result.response.status}: $body")
     },
     test("the listener refuses a connection that presents no certificate at all") {
       for

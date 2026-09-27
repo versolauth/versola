@@ -25,6 +25,28 @@ case class CoreConfig(
 
   def argon2OrDefault: Argon2Config = argon2.getOrElse(Argon2Config.default)
 
+  /** The address this deployment answers `path` on, for whichever of its two listeners a
+    * request arrived at -- RFC 9449 §4.3's `htu` is the one thing that has to know the
+    * difference.
+    *
+    * `/token` and `/userinfo` are served twice: once at the issuer, once at
+    * [[CoreConfig.MutualTlsConfig.externalUrl]], which RFC 8705 §5 has the metadata advertise
+    * as `mtls_endpoint_aliases`. A client that follows an alias calls a different authority,
+    * so §4.3 obliges it to stamp that authority into `htu` -- and holding both listeners to
+    * the issuer's address, as this did before the alias existed, would reject a proof that is
+    * correct.
+    *
+    * Both sides of the choice are configured values, never the inbound request's own `Host`:
+    * the point of deriving `htu`'s expectation rather than reading it is that a forwarded
+    * host header cannot be used to make a proof minted for some other origin validate here.
+    * What the request decides is only *which* of the two configured addresses applies.
+    */
+  def endpointUri(overMutualTls: Boolean, path: String): String =
+    val origin =
+      if overMutualTls then mutualTls.map(_.externalUrl).getOrElse(jwt.issuer)
+      else jwt.issuer
+    s"${origin.stripSuffix("/")}$path"
+
 object CoreConfig:
   case class BootstrapConfig(
       login: String,
