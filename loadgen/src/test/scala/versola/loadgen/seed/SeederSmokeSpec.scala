@@ -72,6 +72,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     // Four batches over 1,000 users, so the batch loop, the per-batch transaction and the
     // resume boundary are all exercised rather than degenerating into one pass.
     batchSize = 250,
+    warmSessions = None,
   )
 
   private case class Harness(
@@ -93,6 +94,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
         sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central)),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, pepper, seedConfig.hashParallelism),
+        minter = None,
         storeQueries = StoreQueries(store),
       )
     yield Harness(services, store, sut.auth, sut.central, security)
@@ -162,7 +164,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     override def atomically[A](effect: Task[A]): Task[A] = delegate.atomically(effect)
 
   private def seedOnce(harness: Harness) =
-    truncate(harness) *> Seeder.run(harness.services, population, seedConfig)
+    truncate(harness) *> Seeder.run(harness.services, population, seedConfig, None)
 
   def spec = suite("SeederSmokeSpec")(
     test("seeds 1,000 users into every table the campaign's login flows read") {
@@ -313,7 +315,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             _ <- harness.store.connect(
               sql"SELECT pg_stat_reset_single_table_counters('vu_users'::regclass::oid)".query[Option[String]].run(),
             )
-            _ <- Seeder.run(harness.services, population, seedConfig)
+            _ <- Seeder.run(harness.services, population, seedConfig, None)
             counts <- ZIO.foreach(authTables)(analyzed(harness.auth, _))
             index <- analyzed(harness.central, "user_index")
             // The emulator's own table too: the coordinator's population counts are a
@@ -334,7 +336,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
           for
             _ <- seedOnce(harness)
             _ <- harness.store.connect(sql"DELETE FROM vu_users WHERE id > 750".update.run()).unit
-            resumed <- Seeder.run(harness.services, population, seedConfig).exit
+            resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             index <- count(harness.central, "SELECT count(*) FROM user_index")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
@@ -359,7 +361,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             _ <- seedOnce(harness)
             // Only the emulator's table, exactly as crash recovery would leave it.
             _ <- harness.store.connect(sql"TRUNCATE TABLE vu_users".update.run()).unit
-            again <- Seeder.run(harness.services, population, seedConfig).exit
+            again <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
@@ -391,8 +393,8 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             crashing = harness.services.copy(
               sut = SutWriter(Flaky(CopySink.OfConnection(harness.auth), 7, calls), CopySink.OfConnection(harness.central)),
             )
-            crashed <- Seeder.run(crashing, population, seedConfig).exit
-            resumed <- Seeder.run(harness.services, population, seedConfig).exit
+            crashed <- Seeder.run(crashing, population, seedConfig, None).exit
+            resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             index <- count(harness.central, "SELECT count(*) FROM user_index")

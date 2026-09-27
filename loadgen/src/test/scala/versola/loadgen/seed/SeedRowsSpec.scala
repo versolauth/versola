@@ -30,7 +30,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
   private val now = java.time.Instant.parse("2026-09-14T09:00:00Z")
 
   private def seeded(id: Long): SeededUser =
-    SeededUser(PopulationPlan.userOf(population, 8, id), None, None)
+    SeededUser(PopulationPlan.userOf(population, 8, id), None, None, None)
 
   /** Counts CSV fields the way Postgres' reader does: commas outside quotes. */
   private def fields(row: String): Int =
@@ -53,13 +53,35 @@ object SeedRowsSpec extends ZIOSpecDefault:
       val user = seeded(1L)
       val password = HashedPassword(1L, versola.util.Salt(Array.fill(16)(1.toByte)), versola.util.MAC(Array.fill(32)(2.toByte)))
       val passkey = PasskeyMaterial(Array.fill(32)(3.toByte), versola.util.Secret(Array.fill(64)(4.toByte)), Array.fill(77)(5.toByte))
+      val refreshToken = RefreshTokenMaterial(
+        rawToken = Array.fill(32)(6.toByte),
+        tokenMac = Array.fill(32)(7.toByte),
+        sessionMac = Array.fill(32)(8.toByte),
+        familyId = Array.fill(16)(9.toByte),
+        publicSessionId = Array.fill(16)(10.toByte),
+      )
       assertTrue(
         fields(SeedRows.users(user)) == SutSchema.users.columns.size,
         fields(SeedRows.userPasswords(user, password, now)) == SutSchema.userPasswords.columns.size,
         fields(SeedRows.userRoles(user, "default")) == SutSchema.userRoles.columns.size,
         fields(SeedRows.passkeys(user, passkey, now)) == SutSchema.passkeys.columns.size,
+        fields(
+          SeedRows.refreshTokens(
+            user,
+            refreshToken,
+            clientId = "mobile-passkey",
+            audience = List("https://core.example"),
+            scope = List("openid"),
+            amr = List("swk", "user"),
+            now = now,
+            expiresAt = now.plusSeconds(2592000),
+          ),
+        ) == SutSchema.refreshTokens.columns.size,
         fields(SeedRows.userIndex(user)) == SutSchema.userIndex.columns.size,
         fields(SeedRows.vuUsers(user)) == 13,
+        fields(
+          SeedRows.vuSessions(user, refreshToken, clientId = "mobile-passkey", now = now, refreshExpiresAt = now.plusSeconds(2592000)),
+        ) == 14,
       )
     },
     test("the COPY statement names the declared columns, in the declared order") {
@@ -121,7 +143,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
         credential = CredentialKind.Passkey,
         role = UserRole.RetailBasic,
       )
-      val rendered = SeedRows.vuUsers(SeededUser(user, None, None)).split(',').toList
+      val rendered = SeedRows.vuUsers(SeededUser(user, None, None, None)).split(',').toList
       assertTrue(
         rendered(4) == s""""${StoreCodes.activityClass.encode(ActivityClass.Dormant)}"""",
         rendered(5) == s""""${StoreCodes.platform.encode(Platform.Web)}"""",
@@ -156,6 +178,29 @@ object SeedRowsSpec extends ZIOSpecDefault:
           CampaignBlueprint.retailBasicRoleId,
       )
     },
+    // A warm session's client id is the provisioner's too, and the credential it warms with
+    // decides both which client and which `amr` -- getting either wrong presents a resumed
+    // session to a client it never logged into, or claims an assurance level the user's actual
+    // credential cannot back up.
+    test("a warm session's client id and amr match the credential it was minted for") {
+      import versola.loadgen.provision.CampaignBlueprint
+      assertTrue(
+        SeedRows.mobileClientId(CredentialKind.Otp) == CampaignBlueprint.mobileOtpClientId,
+        SeedRows.mobileClientId(CredentialKind.OtpPassword) == CampaignBlueprint.mobileOtpPasswordClientId,
+        SeedRows.mobileClientId(CredentialKind.Passkey) == CampaignBlueprint.mobilePasskeyClientId,
+        SeedRows.amrFor(CredentialKind.Otp) == List("otp", "sms"),
+        SeedRows.amrFor(CredentialKind.OtpPassword) == List("pwd"),
+        SeedRows.amrFor(CredentialKind.Passkey) == List("swk", "user"),
+      )
+    },
+    // §10 step 6 warms the mobile cohort only -- web's `full-login-probability` already favours
+    // a fresh login (§2.3), so a web user here would be a warm session nothing ever resumes.
+    test("only the mobile cohort needs a warm session") {
+      assertTrue(
+        SeedRows.needsWarmSession(PopulationPlan.userOf(population, 8, 1L).copy(platform = Platform.Mobile)),
+        !SeedRows.needsWarmSession(PopulationPlan.userOf(population, 8, 1L).copy(platform = Platform.Web)),
+      )
+    },
     // Defence in depth against a `COPY` that reports fewer rows than it was given. Postgres
     // either accepts the whole stream or raises, so this is not a case anything here can produce
     // naturally -- which is exactly why it is asserted against a stub: a short `COPY` is silent
@@ -168,7 +213,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
 
       val writer = SutWriter(short, short)
       writer
-        .write(zio.Chunk(seeded(1L), seeded(2L)), "default", now, 1L, 3L)
+        .write(zio.Chunk(seeded(1L), seeded(2L)), "default", now, 1L, 3L, None)
         .exit
         .map: exit =>
           assertTrue(

@@ -23,6 +23,7 @@ final class SutWriter(auth: CopySink, central: CopySink):
       now: Instant,
       from: Long,
       until: Long,
+      warmSessions: Option[WarmSessionConfig],
   ): Task[Unit] =
     for
       _ <- auth.atomically:
@@ -32,6 +33,7 @@ final class SutWriter(auth: CopySink, central: CopySink):
           _ <- copy(auth, SutSchema.userPasswords, withPasswords(seeded, now))
           _ <- copy(auth, SutSchema.userRoles, seeded.map(SeedRows.userRoles(_, tenantId)))
           _ <- copy(auth, SutSchema.passkeys, withPasskeys(seeded, now))
+          _ <- copy(auth, SutSchema.refreshTokens, withRefreshTokens(seeded, now, warmSessions))
         yield ()
       _ <- central.atomically:
         for
@@ -60,6 +62,25 @@ final class SutWriter(auth: CopySink, central: CopySink):
 
   private def withPasskeys(seeded: Chunk[SeededUser], now: Instant): Chunk[String] =
     seeded.flatMap(user => user.passkey.map(SeedRows.passkeys(user, _, now)))
+
+  private def withRefreshTokens(
+      seeded: Chunk[SeededUser],
+      now: Instant,
+      warmSessions: Option[WarmSessionConfig],
+  ): Chunk[String] =
+    warmSessions.fold(Chunk.empty[String]): config =>
+      seeded.flatMap: seededUser =>
+        seededUser.refreshToken.map: material =>
+          SeedRows.refreshTokens(
+            seeded = seededUser,
+            material = material,
+            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            audience = config.audience,
+            scope = config.scope,
+            amr = SeedRows.amrFor(seededUser.user.credential),
+            now = now,
+            expiresAt = now.plusSeconds(config.refreshTokenTtl.toSeconds),
+          )
 
   /** Clears the id range this batch is about to write, so a rerun and a resume are both safe.
     *
@@ -90,6 +111,7 @@ final class SutWriter(auth: CopySink, central: CopySink):
             s"DELETE FROM user_passwords WHERE user_id IN $owned",
             s"DELETE FROM passkeys WHERE user_id IN $owned",
             s"DELETE FROM user_roles WHERE user_id IN $owned",
+            s"DELETE FROM refresh_tokens WHERE user_id IN $owned",
             s"DELETE FROM users WHERE $range",
           ),
         )(sink.execute)
