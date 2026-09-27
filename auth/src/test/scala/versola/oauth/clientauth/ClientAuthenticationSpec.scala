@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{ApplicationType, AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret, TestCertificates}
 import zio.*
 import zio.http.{Request, URL}
@@ -314,6 +314,26 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         result.map(_.subjectDn) == Some(sessionSubjectDn),
         result.map(_.subjectDn) != Some(TestEnvConfig.clientCertificateSubjectDn),
       ).label("a request over the mTLS listener cannot talk its way out of what it presented")
+    },
+    // #420: an edge-fronted native client binds nothing to its certificate, but still
+    // authenticates with it -- so /token has to read it for the client's sake alone.
+    test("reads the certificate at /token for an edge-fronted native client whose tokens it does not bind") {
+      val native = TestEnvConfig.mtlsClient(clientId).copy(applicationType = ApplicationType.native)
+      val configuration = stub[OAuthConfigurationService]
+      configuration.find.returnsWith(ZIO.succeed(Some(native)))
+      configuration.getMtlsCertificateSource.returnsWith(ZIO.succeed(None))
+      val reader = ClientAuthentication.Impl(
+        configuration,
+        ClientAssertionService.Impl(RecordingRepository(null), configuration),
+        TestEnvConfig.coreConfig,
+      )
+      for
+        result <- reader.certificate(
+          requestWith(Some(sessionCertificate.certificate), header = None),
+          ClientIdWithSecret(clientId, None),
+          CertificateRelevance.TokenIssuance,
+        )
+      yield assertTrue(!native.bindsAccessTokens, result.map(_.subjectDn) == Some(sessionSubjectDn))
     },
     test("still reads the header when nothing came off the connection") {
       for

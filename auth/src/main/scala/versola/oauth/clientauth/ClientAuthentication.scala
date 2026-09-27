@@ -117,7 +117,9 @@ enum CertificateRelevance:
 
   def appliesTo(client: OAuthClientRecord): Boolean = this match
     case CertificateRelevance.Authentication => client.authenticatesWithCertificate
-    case CertificateRelevance.TokenIssuance  => client.bindsAccessTokens
+    // Both, not `bindsAccessTokens` alone: the two coincided until an edge-fronted native
+    // client, which authenticates with a certificate that deliberately binds nothing.
+    case CertificateRelevance.TokenIssuance  => client.authenticatesWithCertificate || client.bindsAccessTokens
 
 /** The endpoints that authenticate a client, and the path each is served at.
   *

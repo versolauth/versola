@@ -291,3 +291,61 @@ object InvalidRegistrationConfiguration:
           invalid("registration allows only one of set-password or passkey enrollment")
         case Some(_) =>
           None
+
+  /** #421: a native app is either public ([[AuthMethod.none]], calling auth directly) or
+    * fronted by edge, which authenticates as the client with `tls_client_auth` on auth's own
+    * mutual-TLS listener while the device holds the DPoP key (#420). Nothing in between: the
+    * app cannot keep a secret or a signing key, and `self_signed_tls_client_auth` cannot use
+    * the listener, which rejects a certificate no trusted anchor issued in the handshake.
+    *
+    * For the edge-fronted case, what makes the split safe has to be registered, not assumed:
+    *   - `edgeClientCertificate`, because edge is the only party that can authenticate;
+    *   - `requirePushedAuthorizationRequests`, because the authorization request -- and the
+    *     `dpop_jkt` binding the code to the device key -- is only trustworthy when edge
+    *     pushed it over the authenticated back channel;
+    *   - `dpopBoundAccessTokens`, because the device key is the only sender constraint;
+    *   - no `certificateBoundAccessTokens`: edge's certificate is shared by every install,
+    *     so `cnf` must carry only the device's `jkt` (`OAuthClientRecord.bindsAccessTokens`);
+    *   - https redirect URIs only: App Links / Universal Links are bound to a verified
+    *     domain, a custom scheme can be claimed by any app on the device.
+    *
+    * A `web` client is left entirely alone.
+    */
+  def validateEdgeFrontedNative(
+      clientId: ClientId,
+      applicationType: ApplicationType,
+      authMethod: AuthMethod,
+      hasEdgeClientCertificate: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      dpopBoundAccessTokens: Boolean,
+      certificateBoundAccessTokens: Boolean,
+      redirectUris: Set[String],
+  ): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"native client $reason"))
+
+    applicationType match
+      case ApplicationType.web => None
+      case ApplicationType.native =>
+        authMethod match
+          case AuthMethod.none => None
+          case AuthMethod.tls_client_auth =>
+            val nonHttps = redirectUris.toList.sorted.find(uri =>
+              scala.util.Try(java.net.URI(uri)).toOption
+                .forall(parsed => !Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) || parsed.getHost == null),
+            )
+            if !hasEdgeClientCertificate then
+              invalid("fronted by edge needs edgeClientCertificate - the app keeps no credential, edge authenticates as it")
+            else if !requirePushedAuthorizationRequests then
+              invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request binds the code to the device key")
+            else if !dpopBoundAccessTokens then
+              invalid("fronted by edge needs dpopBoundAccessTokens - the device's DPoP key is its only sender constraint")
+            else if certificateBoundAccessTokens then
+              invalid("fronted by edge cannot set certificateBoundAccessTokens - edge's certificate is shared by every installation")
+            else if redirectUris.isEmpty then
+              invalid("fronted by edge needs at least one https redirect URI (App Link / Universal Link)")
+            else
+              nonHttps.flatMap(uri => invalid(s"fronted by edge accepts only https redirect URIs (App Links / Universal Links), not '$uri'"))
+          case other =>
+            invalid(
+              s"cannot authenticate with $other - a native app is public (none) or fronted by edge (tls_client_auth)",
+            )

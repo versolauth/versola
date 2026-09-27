@@ -204,8 +204,57 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
     },
   )
 
+
+  private def edgeFrontedNative(
+      applicationType: ApplicationType = ApplicationType.native,
+      authMethod: AuthMethod = AuthMethod.tls_client_auth,
+      hasEdgeClientCertificate: Boolean = true,
+      requirePushedAuthorizationRequests: Boolean = true,
+      dpopBoundAccessTokens: Boolean = true,
+      certificateBoundAccessTokens: Boolean = false,
+      redirectUris: Set[String] = Set("https://app.example.com/callback"),
+  ) = InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+    clientId, applicationType, authMethod, hasEdgeClientCertificate, requirePushedAuthorizationRequests,
+    dpopBoundAccessTokens, certificateBoundAccessTokens, redirectUris,
+  ).map(_.reason)
+
+  private val edgeFrontedNativeSuite = suite("validateEdgeFrontedNative")(
+    test("accepts a native tls_client_auth client registered for edge") {
+      assertTrue(edgeFrontedNative().isEmpty)
+    },
+    test("leaves a public native client and any web client alone") {
+      assertTrue(
+        edgeFrontedNative(authMethod = AuthMethod.none, hasEdgeClientCertificate = false, dpopBoundAccessTokens = false).isEmpty,
+        edgeFrontedNative(applicationType = ApplicationType.web, requirePushedAuthorizationRequests = false).isEmpty,
+      )
+    },
+    test("refuses a native client with a credential the app would have to keep") {
+      assertTrue(
+        edgeFrontedNative(authMethod = AuthMethod.client_secret).exists(_.contains("client_secret")),
+        edgeFrontedNative(authMethod = AuthMethod.self_signed_tls_client_auth).exists(_.contains("self_signed_tls_client_auth")),
+      )
+    },
+    test("refuses each missing requirement of the edge-fronted split") {
+      assertTrue(
+        edgeFrontedNative(hasEdgeClientCertificate = false).exists(_.contains("edgeClientCertificate")),
+        edgeFrontedNative(requirePushedAuthorizationRequests = false).exists(_.contains("requirePushedAuthorizationRequests")),
+        edgeFrontedNative(dpopBoundAccessTokens = false).exists(_.contains("dpopBoundAccessTokens")),
+        edgeFrontedNative(certificateBoundAccessTokens = true).exists(_.contains("certificateBoundAccessTokens")),
+        edgeFrontedNative(redirectUris = Set.empty).exists(_.contains("redirect URI")),
+      )
+    },
+    test("refuses a custom-scheme or plain-http redirect URI") {
+      assertTrue(
+        edgeFrontedNative(redirectUris = Set("https://app.example.com/cb", "com.example.app:/cb"))
+          .exists(_.contains("com.example.app:/cb")),
+        edgeFrontedNative(redirectUris = Set("http://localhost:3000/cb")).exists(_.contains("http://localhost:3000/cb")),
+      )
+    },
+  )
+
   def spec = suite("InvalidRegistrationConfiguration")(
     edgeSigningKeySuite,
+    edgeFrontedNativeSuite,
     edgeClientCertificateSuite,
     test("accepts multiple assigned roles") {
       val flow = RegistrationFlow.default.copy(

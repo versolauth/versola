@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{ApplicationType, AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -356,6 +356,8 @@ case class OAuthClientResponse(
     template: Option[ClientTemplate],
     /** When the registration was accepted, as an ISO-8601 instant. */
     createdAt: Instant,
+    /** OIDC Registration §2 `application_type`. */
+    applicationType: ApplicationType = ApplicationType.web,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -440,6 +442,10 @@ case class CreateClientRequest(
       * caller that names none -- a template is what the console picked, not something to
       * infer on its behalf from the settings it sent. */
     template: Option[ClientTemplate],
+    /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
+      * with `tls_client_auth` is the app fronted by edge (#421), which registration holds to
+      * the rules in `InvalidRegistrationConfiguration.validateEdgeFrontedNative`. */
+    applicationType: Option[ApplicationType] = None,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -488,6 +494,7 @@ case class UpdateClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    applicationType: Option[ApplicationType] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -692,6 +699,10 @@ case class SyncOAuthClientRecord(
     /** The PEM certificate and key an edge fronting this client presents, encrypted in transit
       * on the same terms as `edgeSigningKey`. */
     edgeClientCertificate: Option[String],
+    /** OIDC Registration §2 `application_type`. Auth reads it to leave an edge-fronted native
+      * client's tokens unbound from edge's certificate; edge reads it to decide which clients
+      * its native endpoints serve. */
+    applicationType: ApplicationType = ApplicationType.web,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

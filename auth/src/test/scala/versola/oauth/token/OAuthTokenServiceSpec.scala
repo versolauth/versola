@@ -3,7 +3,7 @@ package versola.oauth.token
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{ApplicationType, AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.mtls.ClientCertificate
@@ -1870,6 +1870,31 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           // registered -- an unbound token would give up what the certificate just bought.
           result.cnf.flatMap(_.x5tS256).contains(certificateThumbprint1),
           env.clientService.verifySecret.calls.isEmpty,
+        )
+      },
+      test("binds an edge-fronted native client's tokens to the device key alone, never edge's certificate") {
+        val env = new Env
+        val native = mtlsClient.copy(applicationType = ApplicationType.native, dpopBoundAccessTokens = true)
+        for
+          _ <- env.clientService.find.succeedsWith(Some(native))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1)))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          credentials = ClientIdWithSecret(clientId1, None)
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1), Some(clientCertificate1))
+        yield assertTrue(
+          result.cnf.flatMap(_.jkt).contains(jkt1),
+          result.cnf.flatMap(_.x5tS256).isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnf.flatMap(_.x5tS256).isEmpty,
+          env.tokenRepo.createRefreshToken.calls.head._3.cnf.flatMap(_.jkt).contains(jkt1),
         )
       },
       test("authenticates a subject_dn client against the certificate's RFC 4514 subject") {
