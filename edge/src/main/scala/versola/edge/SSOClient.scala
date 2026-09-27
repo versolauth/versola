@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{AccessToken, AuthorizationPreset, ClientCredential, ClientId, Code, CodeVerifier, OAuthClient, RefreshToken, State, TokenResponse}
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, RedirectUri, RequestObject, Secret}
+import versola.util.{Base64, ClientAssertion, EdgeAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
 import zio.Chunk
 import zio.http.*
 import zio.json.ast.Json
@@ -40,17 +40,44 @@ trait SSOClient:
       credential: ClientCredential,
   ): IO[Throwable | SSOClient.InvalidGrant.type, TokenResponse]
 
-  /** `dpopBound` names what the caller already knows about `accessToken` -- whether its
-    * `cnf.jkt` is set -- so this can skip minting an assertion for the common case of a plain
-    * bearer token, which auth would accept over `Bearer` without one anyway. */
+  /** `binding` names what the caller already knows about `accessToken` -- what its `cnf` claim
+    * binds it to -- so this brings only what that binding obliges it to, and nothing at all
+    * for the common case of a plain bearer token, which auth accepts over `Bearer` as it is. */
   def userInfo(
       accessToken: AccessToken,
-      dpopBound: Boolean,
+      binding: SSOClient.TokenBinding,
   ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj]
 
 object SSOClient:
   case object InvalidGrant
   case object UserInfoUnauthorized
+
+  /** What a token's `cnf` claim obliges a call made with it to bring along. Auth enforces the
+    * binding on `/userinfo` too, and the two bindings are honoured in different places -- a
+    * key by an assertion in a header, a certificate by the handshake itself -- so the caller
+    * names which one it holds rather than this guessing from the token.
+    */
+  enum TokenBinding:
+    /** A plain bearer token: auth asks nothing of the call beyond the token. */
+    case Unbound
+
+    /** RFC 9449 §6.1 `cnf.jkt`. */
+    case Key
+
+    /** RFC 8705 §3.1 `cnf.x5t#S256`: the token is honoured only over the certificate it names,
+      * which is the one this client authenticates with. */
+    case Certificate(clientId: ClientId, credential: ClientCredential)
+
+  /** A token bound to a certificate this edge does not hold -- central registered the client
+    * for some other credential after the token was issued. Raised rather than calling without
+    * it and reading back a bare refusal that names nothing about the certificate that was
+    * missing.
+    */
+  case class TokenBoundToAbsentCertificate(clientId: ClientId)
+    extends RuntimeException(
+      s"the access token is bound to a client certificate (RFC 8705 §3.1), but this edge holds " +
+        s"no certificate for client '$clientId' -- central sent some other credential",
+    )
 
   /** A client whose registration demands something the credential central sent cannot
     * produce -- a signed request object from a client edge holds only a secret for. Raised
@@ -63,6 +90,30 @@ object SSOClient:
         "key for it -- central sent only a client secret",
     )
 
+  /** A certificate can only be presented in a handshake there is one of. Raised rather than
+    * calling anyway, which would send the request unauthenticated over plaintext and read back
+    * an `invalid_client` that names the certificate nothing asked for.
+    */
+  case class CredentialNeedsTls(clientId: ClientId, endpoint: URL)
+    extends RuntimeException(
+      s"client '$clientId' authenticates with a certificate, which cannot be presented to " +
+        s"'${endpoint.encode}' -- it is reached over plaintext, so nothing terminates TLS " +
+        "for auth to read a certificate from",
+    )
+
+  /** A handshake whose far side is not authenticated is one any host that can intercept the
+    * route may complete. Raised rather than presenting the certificate to it: zio-http's
+    * `ClientSSLConfig.Default` is Netty's `InsecureTrustManagerFactory`, which accepts every
+    * server certificate, so falling back to it would carry an authenticated session -- and
+    * the tokens it returns -- over a connection to whatever answered.
+    */
+  case class CredentialNeedsTrustedServer(clientId: ClientId, endpoint: URL)
+    extends RuntimeException(
+      s"client '$clientId' authenticates with a certificate, which cannot be presented to " +
+        s"'${endpoint.encode}' -- no trust anchors are configured for it, so the server at " +
+        "that address would not be authenticated. Set `versola-internal-trusted-certificates`",
+    )
+
   /** RFC 9126 §2.2: what `/par` hands back in place of the request. */
   private case class PushedAuthorizationResponse(
       @jsonField("request_uri") requestUri: String,
@@ -73,12 +124,13 @@ object SSOClient:
       @jsonField("error_description") errorDescription: Option[String] = None,
   ) derives JsonCodec
 
-  val live: URLayer[Client & EdgeConfig, SSOClient] =
-    ZLayer.fromFunction(Impl(_, _))
+  val live: URLayer[Client & EdgeConfig & ClientCertificateFiles, SSOClient] =
+    ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
+      certificateFiles: ClientCertificateFiles,
   ) extends SSOClient:
     // authorizeUrl is where the browser gets redirected -- it must stay on
     // versolaUrl (public-facing), never internalUrl. tokenUrl and
@@ -96,6 +148,16 @@ object SSOClient:
       * calls itself, and the two differ wherever edge and auth sit on separate networks.
       */
     private val audience: String = config.versolaUrl.encode
+
+    /** How the certificate auth's internal endpoint presents is validated, for the calls that
+      * authenticate in the handshake. Only those: every other call goes over the client's own
+      * configuration, which this never touches.
+      *
+      * Absent is not a default to fall back on but a refusal (`CredentialNeedsTrustedServer`):
+      * the only untrusted option zio-http offers is one that authenticates no server at all.
+      */
+    private val internalTrust: Option[ClientSSLConfig] =
+      config.versolaInternalTrustedCertificates.map(ClientSSLConfig.FromCertFile.apply)
 
     override def authorizeUri(
         preset: AuthorizationPreset,
@@ -176,7 +238,7 @@ object SSOClient:
           .post(pushedAuthorizationUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         pushed <-
           if response.status.isSuccess then response.bodyAs[SSOClient.PushedAuthorizationResponse]
           else
@@ -190,12 +252,13 @@ object SSOClient:
         "request_uri" -> pushed.requestUri,
       ))
 
-    /** A form and the headers that authenticate it as `clientId`.
+    /** A form, the headers and the connection that authenticate a call as `clientId`.
       *
-      * The two methods land in different places -- RFC 6749 §2.3.1 puts a secret in the
-      * `Authorization` header, RFC 7523 §2.2 puts an assertion in the body -- so this hands
-      * back both rather than one, and every authenticated call goes through it instead of
-      * each deciding for itself.
+      * The three methods land in three different places -- RFC 6749 §2.3.1 puts a secret in
+      * the `Authorization` header, RFC 7523 §2.2 puts an assertion in the body, and RFC 8705
+      * §2 puts a certificate in the handshake, which is not in the request at all -- so this
+      * hands back all of them rather than one, and every authenticated call goes through it
+      * instead of each deciding for itself.
       */
     private def authenticate(
         form: Form,
@@ -235,7 +298,42 @@ object SSOClient:
               Headers.empty,
             )
 
-    private case class Authenticated(form: Form, headers: Headers)
+        case ClientCredential.MutualTls(certificate) =>
+          mutualTlsConnection(clientId, certificate, endpoint).map: connection =>
+            // RFC 8705 §2: the certificate is the whole credential and the request carries
+            // none of it. `client_id` still has to name the client -- §2.1 requires it, the
+            // certificate being matched against what that client registered -- unless the
+            // caller has already named it, on the same terms as the assertion above.
+            val identified =
+              if form.get("client_id").isDefined then form
+              else form.append(FormField.simpleField("client_id", clientId))
+
+            Authenticated(identified, Headers.empty, Some(connection))
+
+    /** The connection a certificate is presented over: the certificate itself, and the anchors
+      * the server answering the far side is checked against. Shared by the calls that
+      * authenticate with it and by the one that only has to prove a token's binding
+      * (`userInfo`) -- both hand the same certificate to the same server, and both are refused
+      * on the same terms if the connection cannot carry it safely.
+      */
+    private def mutualTlsConnection(
+        clientId: ClientId,
+        certificate: PrivateClientCertificate.Material,
+        endpoint: URL,
+    ): Task[ClientSSLConfig] =
+      for
+        _ <- ZIO.fail(SSOClient.CredentialNeedsTls(clientId, endpoint))
+          .unless(endpoint.scheme.contains(Scheme.HTTPS))
+        trust <- ZIO.fromOption(internalTrust)
+          .orElseFail(SSOClient.CredentialNeedsTrustedServer(clientId, endpoint))
+        certificateConfig <- certificateFiles.present(certificate)
+      yield ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)
+
+    /** @param ssl how the connection this is sent over authenticates, for the one method that
+      *            authenticates there rather than in the request. `None` leaves the client's
+      *            own configuration alone -- every other call this edge makes shares it. */
+    private case class Authenticated(form: Form, headers: Headers, ssl: Option[ClientSSLConfig] = None):
+      def over(client: Client): Client = ssl.fold(client)(client.ssl)
 
     override def exchangeAuthorizationCode(
         code: Code,
@@ -257,7 +355,7 @@ object SSOClient:
           .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         tokenResponse <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
           else
@@ -281,7 +379,7 @@ object SSOClient:
           .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(authenticated.over(httpClient).request(request))
         result <-
           if response.status.isSuccess then response.bodyAs[TokenResponse]
           else
@@ -292,27 +390,41 @@ object SSOClient:
 
     override def userInfo(
         accessToken: AccessToken,
-        dpopBound: Boolean,
+        binding: SSOClient.TokenBinding,
     ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
       for
         // auth enforces RFC 9449 §7 on this token too, and this call carries no proof of its
         // own: the client's key signed the one edge already checked, and edge does not hold
         // that key to mint another. The assertion is how auth tells this call apart from the
-        // `Bearer` downgrade of a bound token -- minted only when the token is bound, since an
-        // unbound token needs no such exemption, and per call because it is bound to the token
+        // `Bearer` downgrade of a key-bound token -- minted only when the token is bound to a
+        // key, since nothing else needs such an exemption, and per call because it is bound to the token
         // below: one captured elsewhere buys nothing for any other token.
         assertion <- EdgeAssertion.issue(
           edgeId = config.id,
           keyId = config.keyId,
           privateKey = config.privateKey,
           accessToken = accessToken.toString,
-        ).when(dpopBound)
+        ).when(binding == SSOClient.TokenBinding.Key)
+
+        // RFC 8705 §3: the other binding is answered by the connection rather than by a
+        // header -- auth hashes the certificate this handshake presents and refuses the token
+        // unless it is the one `cnf.x5t#S256` names. The same certificate this client
+        // authenticates with, which is why there is nothing to exempt it from here: proving
+        // the binding and authenticating are the same act.
+        connection <- binding match
+          case SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificate)) =>
+            mutualTlsConnection(clientId, certificate, userInfoUrl).asSome
+          case SSOClient.TokenBinding.Certificate(clientId, _) =>
+            ZIO.fail(SSOClient.TokenBoundToAbsentCertificate(clientId))
+          case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.Unbound =>
+            ZIO.none
+
         request = Request
           .get(userInfoUrl)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
           .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
 
-        response <- ZIO.scoped(httpClient.request(request))
+        response <- ZIO.scoped(connection.fold(httpClient)(httpClient.ssl).request(request))
 
         result <-
           if response.status.isSuccess then

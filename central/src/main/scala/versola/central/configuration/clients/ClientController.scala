@@ -103,6 +103,9 @@ object ClientController extends Controller:
             // how it authenticates as this client. A caller that is not one gets the field
             // absent rather than encrypted to a key it does not hold.
             edgeSigningKey <- ZIO.foreach(client.edgeSigningKey.filter(_ => edgeId.isDefined))(transportEncrypt)
+            edgeClientCertificate <- ZIO.foreach(
+              client.edgeClientCertificate.filter(_ => edgeId.isDefined),
+            )(transportEncrypt)
           yield SyncOAuthClientRecord(
             id = client.id,
             tenantId = client.tenantId,
@@ -135,6 +138,7 @@ object ClientController extends Controller:
             requireSignedRequestObject = client.requireSignedRequestObject,
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKey,
+            edgeClientCertificate = edgeClientCertificate,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

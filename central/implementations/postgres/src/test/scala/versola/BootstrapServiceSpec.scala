@@ -65,6 +65,26 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
+    test("registers central's service endpoints outside production only") {
+      val nonProd = BootstrapService.centralEndpoints(EnvName.Test("local"))
+      val prod = BootstrapService.centralEndpoints(EnvName.Prod)
+
+      assertTrue(
+        nonProd.contains("POST" -> "/service/configuration/sync"),
+        nonProd.contains("POST" -> "/service/users/outbox/flush"),
+        !prod.exists((_, path) => path.startsWith("/service")),
+        prod.forall(nonProd.contains),
+        nonProd.size == prod.size + 2,
+      )
+    },
+    test("service:operate covers exactly the service endpoints") {
+      assertTrue(
+        BootstrapService.serviceEndpointIds == Set(
+          endpointId("POST", "/service/configuration/sync"),
+          endpointId("POST", "/service/users/outbox/flush"),
+        ),
+      )
+    },
     test("auth-settings:manage covers the account page and every one of its APIs") {
       assertTrue(
         BootstrapService.accountEndpointIds == Set(

@@ -13,6 +13,7 @@ import java.io.{File, PrintWriter}
 import java.net.URI
 import java.security.{KeyPairGenerator, SecureRandom}
 import java.security.interfaces.{RSAPrivateCrtKey, RSAPublicKey}
+import scala.sys.process.Process
 import java.util.Base64
 
 def rand(rng: SecureRandom, n: Int): String =
@@ -46,7 +47,32 @@ def b64url(bi: java.math.BigInteger): String =
 // When false (local env), prompts are skipped and defaults are used as-is.
 var interactive = true
 
-def prompt(msg: String, default: String = ""): String =
+// Populated once, at the top of genEnv(), from this run's own `args`. Each
+// `prompt`/`promptYN` call below takes an optional `flag` name; when this run
+// was invoked with a matching `--flag=value` argument, that value is used
+// directly and the prompt (interactive or not) is never reached for it. This
+// is what lets `k8s` -- the only target that stays interactive (see
+// `isKubernetes` below) -- be scripted: supply every flag its prompts need
+// and the whole run completes without reading stdin at all, the same as
+// vps/docker-local already do via environment variables. A run can also mix
+// flags and typed answers freely -- anything without a matching flag just
+// falls back to its usual prompt (or non-interactive default).
+var cliArgs: Map[String, String] = Map.empty
+
+def parseCliArgs(args: Seq[String]): Map[String, String] =
+  args.flatMap { arg =>
+    if !arg.startsWith("--") then None
+    else
+      val body = arg.stripPrefix("--")
+      val eq   = body.indexOf('=')
+      // A bare `--flag` (no `=value`) is treated as `true`, so
+      // `promptYN`-backed flags (--otp, --smtp) can be given without a
+      // value, matching how a shell boolean flag usually reads.
+      if eq < 0 then Some(body -> "true") else Some(body.substring(0, eq) -> body.substring(eq + 1))
+  }.toMap
+
+def prompt(msg: String, default: String = "", flag: String = null): String =
+  if flag != null && cliArgs.contains(flag) then return cliArgs(flag)
   if !interactive then return default
   print(msg)
   val line = scala.io.StdIn.readLine()
@@ -64,7 +90,9 @@ def prompt(msg: String, default: String = ""): String =
 def requiredEnv(name: String): String =
   sys.env.getOrElse(name, throw RuntimeException(s"$name environment variable is required when TARGET=vps"))
 
-def promptYN(msg: String, defaultYes: Boolean = false): Boolean =
+def promptYN(msg: String, defaultYes: Boolean = false, flag: String = null): Boolean =
+  if flag != null && cliArgs.contains(flag) then
+    return Set("y", "yes", "true", "1").contains(cliArgs(flag).trim.toLowerCase)
   if !interactive then return defaultYes
   val hint = if defaultYes then "[Y/n]" else "[y/N]"
   print(s"$msg $hint: ")
@@ -83,18 +111,130 @@ def writeFile(dir: File, name: String, content: String): Unit =
   finally pw.close()
   println(s"  Written: ${f.getPath}")
 
-// ── Secret placeholders (docker-local and vps) ───────────────────────────
-// In docker-local and vps modes, every secret field this script generates
-// becomes a `${VAR}` HOCON substitution placeholder instead of a literal
-// value. versola-cli resolves the real value -- reading it back from
-// OpenBao if a previous `configure` already generated one, or storing this
-// run's freshly generated value there if not -- and supplies it as a real
-// environment variable when it starts each container (see
-// writeGeneratedSecrets below, and versola-cli's openbao package). Every
-// other env (isLocal, and real interactive deployments) keeps writing the
-// value directly: only the two envs versola-tools' entrypoint.sh drives
-// non-interactively are wired through OpenBao so far -- a person running
-// this interactively can just type the real value in.
+// ── nginx: the TLS terminator standing in front of auth for edge's RFC 8705 mutual-TLS
+// calls (SSOClient.scala) ───────────────────────────────────────────────────────────────
+// `versolaInternalTrustedCertificates` names a certificate edge is meant to validate the
+// server against -- for that to be exercisable at all in local dev / CI e2e, something has
+// to actually terminate TLS at `versola-internal-url` and be handed a matching certificate.
+// auth itself never does (see ClientAuthentication.scala's own comment: it reads the
+// certificate from a header, same as any tenant behind a proxy in production), so this
+// generates the same shape locally: an nginx that terminates TLS, forwards whatever
+// certificate it saw to auth's plain HTTP port, and otherwise gets out of the way.
+
+/** A fresh certificate for nginx to present, written to `dir/server.crt` and `dir/server.key`,
+  * signed by a CA written alongside it at `dir/ca.crt` / `dir/ca.key` -- self-signed would be
+  * simpler, but nginx's `ssl_client_certificate` (required below even for `optional_no_ca`)
+  * advertises that certificate's issuer as the one acceptable CA in its handshake's
+  * `CertificateRequest`, and the JDK's default `X509KeyManager` -- what a JDK-provider TLS
+  * client (edge, absent netty-tcnative) chooses a client certificate through -- filters its
+  * available aliases against exactly that list. A self-signed client certificate edge
+  * presents (RFC 8705 §2.2 has no CA at all) would never match a self-signed server
+  * certificate's own issuer, so the handshake would silently complete with no certificate
+  * sent rather than erroring -- confirmed by hand: that is exactly what happened before this
+  * generated a CA at all. Both server and client certificates in this dev/e2e stack (see
+  * `EdgeCertificate.scala`, which reads `ca.crt`/`ca.key` from this same directory) are
+  * signed by the one CA instead, so their issuer is always the DN nginx advertises.
+  *
+  * Generated on every run rather than committed: it is dev-only key material with nothing
+  * pinned to its value, unlike the fixed secrets above that e2e reads back out
+  * (`bootstrapResourceSecretLine` and friends) -- there is nothing here for a test to assert
+  * on beyond "edge trusts precisely this file".
+  */
+def genInternalTlsCertificate(dir: File): Unit =
+  dir.mkdirs()
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val caKey = File(dir, "ca.key").getPath
+  val caCert = File(dir, "ca.crt").getPath
+  val serverKey = File(dir, "server.key").getPath
+  val serverCsr = File(dir, "server.csr").getPath
+  val serverCert = File(dir, "server.crt").getPath
+
+  run("req", "-x509", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", caKey, "-out", caCert, "-days", "3650",
+    "-subj", "/CN=versola-internal-tls-ca")
+  run("req", "-newkey", "rsa:2048", "-nodes",
+    "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=localhost",
+    "-addext", "subjectAltName=DNS:localhost")
+  run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
+    "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
+
+/** `dir` and its certificate must already exist (see [[genInternalTlsCertificate]]) -- this
+  * only renders the conf that points at them. Absolute paths throughout: nginx resolves a
+  * relative one against its own prefix, not this process's working directory, which would
+  * silently pick a different directory than the one just written to.
+  */
+def internalTlsNginxConf(dir: File, port: Int, upstream: String): String =
+  val absolute = dir.getAbsoluteFile
+  val upstreamUri = URI.create(upstream)
+  val upstreamPort = if upstreamUri.getPort > 0 then upstreamUri.getPort else 80
+  s"""daemon off;
+     |pid ${File(absolute, "nginx.pid").getPath};
+     |error_log ${File(absolute, "error.log").getPath};
+     |worker_processes 1;
+     |events {
+     |  worker_connections 64;
+     |}
+     |http {
+     |  access_log ${File(absolute, "access.log").getPath};
+     |  server {
+     |    listen $port ssl;
+     |    server_name localhost;
+     |    ssl_certificate ${File(absolute, "server.crt").getPath};
+     |    ssl_certificate_key ${File(absolute, "server.key").getPath};
+     |    # optional_no_ca: request a client certificate but do not validate it against a CA.
+     |    # RFC 8705's self-signed and registered-subject methods are both validated at the
+     |    # application layer (auth's OAuthClientService), not by the terminator -- nginx's
+     |    # only job is completing the handshake and forwarding what it saw. Naming the CA
+     |    # here (rather than skipping this file, which nginx does not allow even in this
+     |    # mode) is not for that validation, which optional_no_ca skips -- it is what nginx
+     |    # advertises as its one acceptable issuer in the handshake's CertificateRequest, and
+     |    # a JDK-provider TLS client's default key manager will offer no certificate at all
+     |    # if none of its own match an issuer on that list (see genInternalTlsCertificate's
+     |    # own comment). Every certificate this dev/e2e stack signs is signed by this CA for
+     |    # exactly that reason.
+     |    ssl_client_certificate ${File(absolute, "ca.crt").getPath};
+     |    ssl_verify_client optional_no_ca;
+     |    location / {
+     |      proxy_pass http://127.0.0.1:$upstreamPort;
+     |      proxy_set_header Host $$host;
+     |      # RFC 8705 §6.5: the header/encoding the default tenant is configured to read
+     |      # (OAuthClient.mtlsCertificateHeader in e2e's Flows.scala; MutualTlsSpec's
+     |      # `urlEncodedPem`). `$$ssl_client_escaped_cert` is empty when the connection
+     |      # presented no certificate, and proxy_set_header omits a header entirely rather
+     |      # than forwarding an empty value -- so a client_secret/private_key_jwt call
+     |      # through this same port arrives at auth exactly as if this terminator were not
+     |      # here at all.
+     |      proxy_set_header ssl-client-cert $$ssl_client_escaped_cert;
+     |    }
+     |  }
+     |}
+     |""".stripMargin
+
+// ── Secret placeholders (docker-local, vps and k8s) ──────────────────────
+// In docker-local, vps and k8s modes, every secret field this script
+// generates becomes a `${VAR}` HOCON substitution placeholder instead of a
+// literal value -- see `useOpenBao` below, named for the mechanism the
+// first two of these resolve it through. Three different things then
+// supply the real value, one per mode:
+//   - docker-local / vps: versola-cli resolves it against OpenBao --
+//     reading a previous `configure` run's value back, or storing this
+//     run's freshly generated one if there isn't one yet -- and supplies
+//     it as a real environment variable when it starts each container
+//     (see writeGeneratedSecrets below, and versola-cli's openbao
+//     package).
+//   - k8s: nothing in this repository resolves it. The operator builds a
+//     Kubernetes Secret from this run's own `*.generated-secrets.env`
+//     file (see k8s/README.md §4) and points `secrets.existingSecret` at
+//     it; the chart injects each key the same way regardless of where it
+//     came from.
+// isLocal, and any other target this script doesn't specifically know
+// about, keep writing the value directly: a person running this
+// interactively can just type the real value in, and there's no Secret or
+// OpenBao pipeline on the other end to resolve a placeholder against.
 //
 // Deliberately `${VAR}`, not `${?VAR}`: the optional form silently drops
 // the key from the resolved config if the env var is missing, so a broken
@@ -102,11 +242,12 @@ def writeFile(dir: File, name: String, content: String): Unit =
 // key, ...) doesn't fail until whatever code path first reads that
 // specific key -- possibly well after boot, with a message that doesn't
 // name the actual gap. Every placeholder this script writes is one the
-// same run's own writeGeneratedSecrets call (docker-local) or the OpenBao
-// resolution flow (vps) unconditionally populates before the container
-// ever starts, so requiring it costs nothing in the working case and
-// turns the broken case into an immediate, named
-// ConfigException.UnresolvedSubstitution at config load instead.
+// same run's own writeGeneratedSecrets call (docker-local, vps, k8s) or
+// the OpenBao resolution flow (docker-local, vps) unconditionally
+// populates before the container ever starts, so requiring it costs
+// nothing in the working case and turns the broken case into an
+// immediate, named ConfigException.UnresolvedSubstitution at config load
+// instead.
 //
 // usePlaceholder is a parameter, not a closed-over var like `interactive`
 // below: it's decided from local vals inside genEnv() (isDockerLocal,
@@ -123,16 +264,19 @@ def secretKeyField(usePlaceholder: Boolean, value: String, envVar: String): Stri
 
 // Writes the values secretField/secretKeyField placeholdered out, as
 // plain KEY=value lines -- not JSON: this script has no JSON dependency,
-// and a dotenv-shaped file is what versola-cli ends up producing anyway
-// (after resolving each value against OpenBao) for Compose's `env_file:`
-// to load straight into the container. Only called when isDockerLocal or
-// isVps; every other env has nothing to write here since it never
+// and a dotenv shape serves every consumer this has today without change --
+// versola-cli loads it straight into Compose's `env_file:` for docker-local
+// and vps (after resolving each value against OpenBao), and it's also
+// exactly the shape `kubectl create secret generic --from-env-file=...`
+// wants for k8s (see k8s/README.md §4). Only called when useOpenBao is
+// true; every other env has nothing to write here since it never
 // placeholdered anything out in the first place.
 def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)]): Unit =
   val content = secrets.map((k, v) => s"$k=$v").mkString("\n") + "\n"
   writeFile(dir, name, content)
 
-@main def genEnv(): Unit =
+@main def genEnv(args: String*): Unit =
+  cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
 
   // ── Key pairs ─────────────────────────────────────────────────────────────────
@@ -220,6 +364,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
   val edgeDpopNonceSalt         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
+  val centralResourceSecretGenerated = rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
+  val utilityClientSecretGenerated   = rand(rng, 32) // central: seeds bootstrap.utility-client; must match whatever configures loadgen's own provision.provisioner-secret
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -227,7 +373,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // defaults, interactive vs non-interactive) -- see `env` below for why
   // this is deliberately a different question from "what environment name
   // gets written into the config".
-  val target  = prompt("  Target [local]: ", "local")
+  val target  = prompt("  Target [local]: ", "local", flag = "target")
   val isLocal = target == "local"
   // docker-local is for "versola bootstrap local": auth/central/edge each run
   // in their own container on one Docker Compose bridge network, instead of
@@ -250,6 +396,19 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // role already exists outside this script's control -- see the comment
   // on pgPassDefault below.
   val isVps = target == "vps"
+  // k8s is for the k8s/versola and k8s/loadgen Helm charts (see k8s/README.md).
+  // Unlike docker-local/vps it stays interactive: a k8s deployment is a manual,
+  // occasional bootstrap (there is no CI pipeline driving it, unlike vps's
+  // Deploy workflow), and the campaign topology genuinely needs a human's
+  // input at several prompts a shared default can't safely guess -- three
+  // independent Postgres instances (one per service, not one host split by
+  // ?currentSchema=) and auth's internal address, which under an Ingress is
+  // never the same as its public one. The plain interactive branch below
+  // already asks for all of these one at a time; the one thing "k8s" changes
+  // is `useOpenBao`, so every secret becomes a `${VAR}` placeholder instead of
+  // a literal value -- which is what the chart's Secret-based wiring requires
+  // (see versola.secretEnv in k8s/versola/templates/_helpers.tpl).
+  val isKubernetes = target == "k8s"
   // The literal string written into the generated config's own `env`
   // field below -- deliberately a different variable from `target` above,
   // which only picks which of THIS script's own branches to run (network
@@ -284,11 +443,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // placeholder (resolved via OpenBao by versola-cli) in both
   // non-interactive Docker envs, not just docker-local -- see
   // secretField's own comment.
-  val useOpenBao = isDockerLocal || isVps
+  val useOpenBao = isDockerLocal || isVps || isKubernetes
   val configurationCacheRefreshInterval = if isLocal || isDockerLocal then "1 minute" else "5 minutes"
   // Postgres user/password are the same across all three services either
   // way; computed once here so the Auth/Central/Edge sections below don't
-  // each repeat the isDockerLocal/isVps check.
+  // each repeat the useOpenBao check above, rather than the specific targets composing it.
   //
   // vps's password looks random-per-run below (rand(rng, 24) does run
   // every time), but what actually reaches the config is whatever
@@ -307,17 +466,41 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   if isLocal then println("  local env — using defaults, skipping prompts")
   if isDockerLocal then println("  docker-local env — using bridge-network defaults, skipping prompts")
   if isVps then println("  vps env — using host-network defaults, skipping prompts")
+  if isKubernetes then println("  k8s env — interactive, every secret placeholdered out")
 
-  // Pin a known resource secret in local dev so e2e tests can rely on a stable value.
-  // Other environments let central bootstrap generate and persist one.
+  // central refuses to seed itself an admin API nobody can call: both blocks below are
+  // always emitted (bootstrap.resource-secret and bootstrap.utility-client), never left
+  // empty, regardless of target -- BootstrapService only fills either in ONCE, the first
+  // time the resource/client doesn't exist yet, so a value that isn't here at first boot
+  // has no later config-only recovery (versolauth/versola#380). Pinned in local dev so
+  // e2e tests can rely on a stable value they can hardcode against; every other target
+  // gets this run's own freshly generated one, placeholdered out exactly like every other
+  // secret when useOpenBao is set (see secretField's own comment for what resolves it on
+  // each target).
   //
-  // The line MUST end with "\n": centralConf below interpolates this value into
-  // "|${bootstrapResourceSecretLine}|}" — the `}` on that source line is its own
-  // stripMargin-delimited line only because this value supplies the newline that
-  // precedes it. Without the newline, stripMargin leaves a literal "|}" in the
-  // generated HOCON, which fails to parse.
+  // The resource-secret line MUST end with "\n": centralConf below interpolates this value
+  // into "|${bootstrapResourceSecretLine}|}" — the `}` on that source line is its own
+  // stripMargin-delimited line only because this value supplies the newline that precedes
+  // it. Without the newline, stripMargin leaves a literal "|}" in the generated HOCON,
+  // which fails to parse.
   val bootstrapResourceSecretLine =
-    if isLocal then "  resource-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n" else "\n"
+    if isLocal then "  resource-secret = \"ZGV2LWNlbnRyYWwtYWRtaW4tc2VjcmV0LTMyYnl0ZXM\"\n"
+    else s"  resource-secret = ${secretField(useOpenBao, centralResourceSecretGenerated, "CENTRAL_RESOURCE_SECRET")}\n"
+
+  // The utility client `loadgen provision` authenticates as, so that it reaches central's
+  // admin API through edge's proxy instead of holding an internal secret. Client id stays
+  // a literal on every target -- it isn't secret, and central only needs loadgen's own
+  // config (provision.provisioner-client-id) to name the same string, not to keep it out
+  // of sight. The secret is what a deployment that runs a campaign also has to give
+  // loadgen, out of band, the same way Postgres's password is reused rather than
+  // reconciled. Several lines rather than one, so unlike the line above it supplies its
+  // own newlines and nothing follows it on a line.
+  val bootstrapUtilityClientLines =
+    "  utility-client {\n" +
+      "    client-id = \"utils\"\n" +
+      (if isLocal then "    secret = \"ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI\"\n"
+       else s"    secret = ${secretField(useOpenBao, utilityClientSecretGenerated, "UTILITY_CLIENT_SECRET")}\n") +
+      "  }\n"
 
   // Same reasoning for the "auth" resource secret: e2e tests call auth's additional
   // listener (Account Settings) directly, with the Basic credentials edge would use.
@@ -338,7 +521,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
   val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then requiredEnv("AUTH_URL") else "http://localhost:9003"
-  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault)
+  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault, flag = "auth-url")
   val passkeyRpId         = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
   // to reach auth's admin API server-to-server. Defaulting this to authUrl
@@ -347,13 +530,33 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // container can't reach auth via "localhost", it needs auth's Compose
   // service name.
   val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
-  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault)
+  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault, flag = "auth-internal-url")
+  // edgeInternalUrl / edgeInternalTrustPath -- versola-internal-url and
+  // versola-internal-trusted-certificates in edge's own config (EdgeConfig.scala), which
+  // SSOClient.scala uses only for the calls it makes as an RFC 8705 mutual-TLS client. Not
+  // authInternalUrl above: that variable is central's own S2S call to auth's admin API, an
+  // unrelated feature this must not start rerouting.
+  //
+  // isLocal alone gets a real TLS terminator (nginx, generated below) rather than reusing
+  // authInternalUrl's plain address: SSOClient.scala fails closed without a trust anchor for
+  // this credential (there is no secure default to fall back to -- see its own comment), so
+  // e2e's mTLS-fronted client can only be exercised against something that actually
+  // terminates TLS. docker-local/vps/interactive are left exactly as before -- absent here,
+  // same as every environment before this credential existed -- until whoever operates one
+  // decides what terminates TLS in front of their own auth.
+  val edgeInternalTlsDir = File("edge/dev/internal-tls")
+  val edgeInternalTlsPort = 9443
+  val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
+  val edgeInternalTrustPath: Option[String] =
+    if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
+  val edgeInternalTrustLine =
+    edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = "$path"\n""")
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
     else if isLocal then "http://localhost:9007"
     else "http://localhost:8082"
-  val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault)
+  val authAdditionalUrl = prompt(s"  Auth additional URL [$authAdditionalDefault]: ", authAdditionalDefault, flag = "auth-additional-url")
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
   // Reverted to 9001 (not 8090, which every other branch here uses) --
@@ -366,7 +569,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // discrepancy in general; this one specific value turned out to be
   // load-bearing for CI, not just a cosmetic mismatch.
   val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
-  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault)
+  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault, flag = "central-url")
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
   // entry point a browser can reach. edge's own port (8095) isn't
@@ -378,7 +581,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // and the browser got ERR_CONNECTION_REFUSED right after a real login
   // succeeded.
   val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then authUrl else "http://localhost:9005"
-  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault)
+  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault, flag = "edge-url")
   section("\n── Auth service ──────────────────────────────────────────────────────")
   // Postgres is its own container in docker-local (compose service name
   // "postgres"), and all three services share one database via
@@ -396,12 +599,12 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // different ?currentSchema=.
   val pgHostDefault = if isVps then requiredEnv("POSTGRES_HOST") else ""
   val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
-  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault)
-  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
+  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "auth-postgres-user")
+  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "auth-postgres-password")
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
-  val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin")
+  val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin", flag = "admin-login")
   // vps's default here is a freshly random value, not the fixed
   // "Admin1234!" the other envs use -- unlike Postgres's password (see
   // pgPassDefault above), nothing outside this script already owns this
@@ -409,7 +612,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // keeping the first one it sees is exactly right here, no manual
   // seeding needed.
   val bootstrapPasswordDefault = if isVps then rand(rng, 16) else "Admin1234!"
-  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", bootstrapPasswordDefault)
+  val bootstrapPassword = prompt("  Admin bootstrap password [Admin1234!]: ", bootstrapPasswordDefault, flag = "admin-password")
 
   section("\n── Central service ───────────────────────────────────────────────────")
   // edgeCompleteUrl (edgeUrl + "/complete") is always appended to this list
@@ -424,11 +627,11 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // crash loop. Still not localhost:3000 -- nothing runs there in
   // docker-local.
   val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
-  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault)
+  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault, flag = "central-redirect-uris")
   val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
-  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault)
-  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault, flag = "central-postgres-url")
+  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "central-postgres-user")
+  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "central-postgres-password")
 
 
   // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is not a mirror of anything:
@@ -477,9 +680,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
   val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
-  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault)
-  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault)
-  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault)
+  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
+  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
+  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
   val edgeCompleteUrl        = s"$edgeUrl/complete"
@@ -497,13 +700,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   // ── OTP provider ──────────────────────────────────────────────────────────────
   section("\n── OTP Provider ──────────────────────────────────────────────────────")
-  val wantsOtp = promptYN("Configure OTP provider?")
+  val wantsOtp = promptYN("Configure OTP provider?", flag = "otp")
   val otpBlock =
     if wantsOtp then
-      val url    = prompt("  OTP provider URL: ", "http://localhost:9100/sms")
-      val method = prompt("  HTTP method [POST]: ", "POST")
-      val uname  = prompt("  Username (empty = none): ")
-      val pass   = prompt("  Password (empty = none): ")
+      val url    = prompt("  OTP provider URL: ", "http://localhost:9100/sms", flag = "otp-url")
+      val method = prompt("  HTTP method [POST]: ", "POST", flag = "otp-method")
+      val uname  = prompt("  Username (empty = none): ", flag = "otp-username")
+      val pass   = prompt("  Password (empty = none): ", flag = "otp-password")
       val uLine  = if uname.nonEmpty then s"""  username = "$uname"\n""" else ""
       val pLine  = if pass.nonEmpty  then s"""  password = "$pass"\n""" else ""
       s"""
@@ -534,17 +737,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
 
   // ── SMTP ──────────────────────────────────────────────────────────────────────
   section("\n── SMTP ──────────────────────────────────────────────────────────────")
-  val wantsSmtp = promptYN("Configure SMTP?")
+  val wantsSmtp = promptYN("Configure SMTP?", flag = "smtp")
   val smtpBlock =
     if wantsSmtp then
-      val host    = prompt("  Host: ", "localhost")
-      val portStr = prompt("  Port [587]: ", "587")
+      val host    = prompt("  Host: ", "localhost", flag = "smtp-host")
+      val portStr = prompt("  Port [587]: ", "587", flag = "smtp-port")
       val port    = portStr.toIntOption.getOrElse(587)
-      val uname   = prompt("  Username: ", "dev")
-      val pass    = prompt("  Password: ", "dev")
-      val from    = prompt("  From email [noreply@example.com]: ", "noreply@example.com")
-      val subj    = prompt("  Subject [Your verification code]: ", "Your verification code")
-      val tls     = promptYN("  Use STARTTLS?", defaultYes = true)
+      val uname   = prompt("  Username: ", "dev", flag = "smtp-username")
+      val pass    = prompt("  Password: ", "dev", flag = "smtp-password")
+      val from    = prompt("  From email [noreply@example.com]: ", "noreply@example.com", flag = "smtp-from")
+      val subj    = prompt("  Subject [Your verification code]: ", "Your verification code", flag = "smtp-subject")
+      val tls     = promptYN("  Use STARTTLS?", defaultYes = true, flag = "smtp-starttls")
       s"""
          |smtp {
          |  host = "$host"
@@ -580,7 +783,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |
        |bootstrap {
        |  login = "$bootstrapLogin"
-       |  password = ${secretField(isVps, bootstrapPassword, "ADMIN_BOOTSTRAP_PASSWORD")}
+       |  password = ${secretField((isVps || isKubernetes), bootstrapPassword, "ADMIN_BOOTSTRAP_PASSWORD")}
        |  admin-user-id = "$adminUserId"
        |}
        |
@@ -627,7 +830,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |postgres {
        |  url = "$authPgUrl"
        |  user = "$authPgUser"
-       |  password = ${secretField(isVps, authPgPass, "POSTGRES_PASSWORD")}
+       |  password = ${secretField((isVps || isKubernetes), authPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
        |  connection-timeout = "30 seconds"
@@ -735,7 +938,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  }
        |  auth-additional-url = "$authAdditionalUrl"
        |  auth-resource-secret = ${secretField(useOpenBao, accountResourceSecret, "ACCOUNT_RESOURCE_SECRET")}
-       |${bootstrapResourceSecretLine}|}
+       |${bootstrapUtilityClientLines}${bootstrapResourceSecretLine}|}
        |
        |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
        |client-secrets-secret = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
@@ -755,7 +958,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |postgres {
        |  url = "$centralPgUrl"
        |  user = "$centralPgUser"
-       |  password = ${secretField(isVps, centralPgPass, "POSTGRES_PASSWORD")}
+       |  password = ${secretField((isVps || isKubernetes), centralPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 15
        |  minimum-idle = 15
        |  connection-timeout = "30 seconds"
@@ -809,7 +1012,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |postgres {
        |  url = "$edgePgUrl"
        |  user = "$edgePgUser"
-       |  password = ${secretField(isVps, edgePgPass, "POSTGRES_PASSWORD")}
+       |  password = ${secretField((isVps || isKubernetes), edgePgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
        |  connection-timeout = "30 seconds"
@@ -866,8 +1069,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}
        |
        |versola-url = "$authUrl"
-       |versola-internal-url = "$authInternalUrl"
-       |# The origin clients reach this edge on -- what a DPoP proof's htu is
+       |versola-internal-url = "$edgeInternalUrl"
+       |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
        |""".stripMargin
@@ -878,12 +1081,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     writeFile(File("auth/dev"),     "env.conf", authConf)
     writeFile(File("central/dev"),  "env.conf", centralConf)
     writeFile(File("edge/dev"),     "env.conf", edgeConf)
+    genInternalTlsCertificate(edgeInternalTlsDir)
+    writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     println(
       s"""
          |Done! Files written to service dev directories:
          |  - auth/dev/env.conf
          |  - central/dev/env.conf
          |  - edge/dev/env.conf
+         |  - edge/dev/internal-tls/{ca.*,server.*,nginx.conf} (the TLS terminator
+         |    edge's RFC 8705 mutual-TLS calls go through -- start with
+         |    `nginx -c $$(pwd)/edge/dev/internal-tls/nginx.conf` before edge)
          |""".stripMargin,
     )
   else
@@ -903,13 +1111,14 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     // so both files carry them; versola-cli only needs to resolve each
     // shared value once; writing it into both is harmless.
     if useOpenBao then
-      // vps additionally placeholders out Postgres's password and the
-      // admin bootstrap password -- see pgPassDefault and
+      // vps and k8s additionally placeholder out Postgres's password and
+      // the admin bootstrap password -- see pgPassDefault and
       // bootstrapPasswordDefault above for why those two, specifically,
       // aren't part of the docker-local set. Postgres's *user* isn't
-      // here: "versola_app" isn't secret, so it stays a literal value in
-      // the .conf files instead (see pgUserDefault).
-      val authExtras = if isVps then Seq(
+      // here: "versola_app" (or whatever a k8s deployment typed at its own
+      // prompt) isn't secret, so it stays a literal value in the .conf
+      // files instead (see pgUserDefault).
+      val authExtras = if isVps || isKubernetes then Seq(
         "POSTGRES_PASSWORD"        -> authPgPass,
         "ADMIN_BOOTSTRAP_PASSWORD" -> bootstrapPassword,
       ) else Seq.empty
@@ -929,11 +1138,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "CENTRAL_SECRET_KEY"         -> centralSecretKey,
       ) ++ authExtras)
 
-      val centralExtras = if isVps then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
+      val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
       writeGeneratedSecrets(dir, "central.generated-secrets.env", Seq(
         "CENTRAL_SECRET_KEY"    -> centralSecretKey,
         "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
         "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
+        // Reached only when useOpenBao is true (isLocal, the only other target that ever
+        // sets these two, has its own pinned literals and never runs this far -- see
+        // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholder
+        // these two var names back always resolves to exactly the generated value here.
+        "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
+        "UTILITY_CLIENT_SECRET"   -> utilityClientSecretGenerated,
         // Not secret in the confidentiality sense (these are public keys),
         // but resolved through OpenBao the same as everything else here
         // regardless -- see the comment on jwks/public-key-jwk above for
@@ -943,7 +1158,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_PUBLIC_JWK"  -> edgeKey.jwk,
       ) ++ centralExtras)
 
-      val edgeExtras = if isVps then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
+      val edgeExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
       writeGeneratedSecrets(dir, "edge.generated-secrets.env", Seq(
         "EDGE_PRIVATE_KEY"     -> edgeKey.privateB64,
         // Travels with EDGE_PRIVATE_KEY, not written separately -- see the

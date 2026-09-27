@@ -103,6 +103,7 @@ object UserServiceSpec extends UnitSpecBase:
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
+        edgeClientCertificate = None,
         template = None,
         createdAt = Instant.EPOCH,
       )
@@ -165,6 +166,7 @@ object UserServiceSpec extends UnitSpecBase:
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
+        edgeClientCertificate = None,
         template = None,
         createdAt = Instant.EPOCH,
       )

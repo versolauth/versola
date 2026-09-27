@@ -34,6 +34,30 @@ global:
   imageRepository: versolauth
   imagePullPolicy: IfNotPresent
   imagePullSecrets: []
+  # Pod placement, applied to every pod this chart renders. A component's own
+  # `nodeSelector` / `tolerations` / `affinity`, when non-empty, REPLACES the
+  # value here -- it is not merged with it, key by key or entry by entry. An
+  # empty one inherits this. The one consequence worth knowing: a component
+  # cannot opt out of a global value by setting its own to empty; give it a
+  # different value instead.
+  #
+  # What this is for: sharing a cluster with other workloads on separate node
+  # groups -- above all, keeping the load emulator (k8s/loadgen) and the
+  # system under test off each other's nodes. A pod that ignores its placement
+  # still schedules, just somewhere else, and nothing reports it.
+  #
+  # The coordinator is the one exception to "replaces": its affinity has a
+  # default of its own, the standby spread (see `coordinator.replicaCount`),
+  # merged with whatever affinity applies per top-level key, that key winning.
+  # So `nodeAffinity` here pins the coordinator AND keeps the spread; an
+  # explicit `podAntiAffinity` replaces the spread.
+  #
+  # These three keys are read here and on a component, nowhere else. Setting
+  # one at the TOP level of values instead fails the template, rather than
+  # installing a release that reports success and places nothing.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
 
 # terminationGracePeriodSeconds / preStopSleepSeconds for the two `loadgen`
 # roles. Copied from k8s/versola for the same reason: both run VersolaApp,
@@ -47,7 +71,9 @@ terminationGracePeriodSeconds: 30
 
 # The Secret carrying the `${VAR}` values the mounted env.conf files
 # reference -- the emulator store's POSTGRES_PASSWORD, and for a one-shot
-# `role = provision`/`role = seed` run its central/edge secrets and auth's
+# `role = provision`/`role = seed` run its provisioner client secret (the
+# same value central is bootstrapped with, since it reaches central's admin
+# API through edge's proxy rather than with an internal secret) and auth's
 # Argon2 pepper.
 #
 # Delivered with `envFrom: secretRef`, i.e. every key in the Secret becomes a
@@ -67,6 +93,49 @@ terminationGracePeriodSeconds: 30
 # source.
 secrets:
   existingSecret: ""
+
+# The top-level `env` key, injected as ENV_NAME on the two `loadgen` roles.
+#
+# Every VersolaApp service reads this before anything role-specific:
+# VersolaApp.envName is `Config.string("env")` ("prod" -> EnvName.Prod, any
+# other value -> EnvName.Test(value)), and jsonLoggerLayer loads it a second
+# time for the `env` label it stamps on every log line. A file that sets it
+# neither way fails both, and the pod dies on
+#
+#   zio.Config$Error$MissingData: (Missing data at env: Expected env to be set)
+#
+# before a single line of loadgen's own code runs -- coordinator and drivers
+# alike, since both inherit VersolaApp.
+#
+# It is a *config* key and not an environment variable. VersolaApp builds its
+# ConfigProvider from the mounted HOCON alone -- ConfigProvider.fromTypesafeConfigZIO
+# over the `include required(file(...))` that the entrypoint's -Denv.path names
+# -- so the process environment reaches it only through a `${VAR}` substitution
+# written inside env.conf, the same and only route SHARD_INDEX and SHARD_COUNT
+# take. Setting a bare `ENV`/`ENV_NAME` var without the matching line in the
+# file changes nothing.
+#
+# So this is a substitution source, not an override: write
+#
+#   env = ${ENV_NAME}
+#
+# in env.conf to let the release name the environment, and the same Secret
+# serves a dry run and a campaign. A file that writes the name literally is
+# equally valid and ignores this knob entirely.
+#
+# Not injected into mockapi, which is not a VersolaApp and reads no config file
+# at all (see the `mockapi` block below).
+#
+# The templates fail on an empty value here, which is as far as render-time
+# enforcement reaches: env.conf itself arrives as a Secret this chart never
+# reads (see `secrets` above), so unlike `driver.config.existingSecret` there is
+# nothing for a template guard to look at. The requirement is stated in both
+# `config` blocks below and in NOTES.txt, and the worked example every campaign
+# starts from -- `val hocon` in
+# loadgen/src/test/scala/versola/loadgen/config/LoadgenConfigSpec.scala, which
+# is the nearest thing loadgen has to gen-env.scala's output -- now carries it
+# under a test that fails if it stops.
+envName: loadgen
 
 # The driver fleet (dev spec §7). A StatefulSet, and not a Deployment,
 # because the pod ordinal *is* the shard index: `shard = id % shardCount`
@@ -91,6 +160,10 @@ driver:
   # Design doc §6.5 sizes the fleet at ~30% CPU per driver precisely so the
   # client's own queueing stays out of the latencies it reports.
   replicaCount: 8
+  # Placement for the driver fleet alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   port: 8080 # PORT -- VersolaApp's application port
   diagnosticsPort: 8081 # DPORT -- /metrics, /liveness, /readiness
   # How SHARD_INDEX is derived. Only one mechanism, `podIndexLabel`: the
@@ -125,9 +198,12 @@ driver:
   config:
     # REQUIRED (when driver.enabled is true): name of a Secret that already
     # contains an env.conf key (HOCON, dev spec §5), mounted at CONFIG_PATH.
-    # Must set `role = driver`, a `shard` block reading the injected ordinal,
-    # and a `clients` block naming the clients `loadgen provision` registered
-    # (a driver holds no provision block, so it cannot derive them):
+    # Must set `env` (required of every role by VersolaApp itself, long before
+    # LoadgenConfig is decoded -- see `envName` above), `role = driver`, a
+    # `shard` block reading the injected ordinal, and a `clients` block naming
+    # the clients `loadgen provision` registered (a driver holds no provision
+    # block, so it cannot derive them):
+    #   env = ${ENV_NAME}
     #   role = driver
     #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
     #   clients {
@@ -165,6 +241,10 @@ coordinator:
   # and no election to configure, and a driver that polls the other replica
   # mid-failover gets the same answer.
   replicaCount: 2
+  # Placement for the coordinator alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   # 8100, the port dev spec §5's `coordinator { url =
   # "http://loadgen-coordinator:8100" }` names, not VersolaApp's default
   # 8080. Both, and 8081 below, are in docker/Dockerfile.loadgen's EXPOSE
@@ -179,10 +259,11 @@ coordinator:
       memory: 1Gi
   config:
     # REQUIRED (when coordinator.enabled is true), same enforcement as
-    # `driver.config.existingSecret` above. As `driver.config` above, but the
-    # file must set `role = coordinator` and omit the `shard` block
-    # (LoadgenConfig.shard is an Option precisely so a coordinator's config
-    # decodes without one).
+    # `driver.config.existingSecret` above. As `driver.config` above -- `env`
+    # included, since VersolaApp demands it of every role and a coordinator is
+    # no exception -- but the file must set `role = coordinator` and omit the
+    # `shard` block (LoadgenConfig.shard is an Option precisely so a
+    # coordinator's config decodes without one).
     existingSecret: ""
     secretKey: env.conf
   extraEnv: []
@@ -205,6 +286,10 @@ mockapi:
   # latency number in the campaign is measured against, so it is scaled to
   # have headroom rather than to be efficient.
   replicaCount: 3
+  # Placement for mockapi alone; overrides, never merges with, `global`'s.
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
   # 8100/8101, matching docker/Dockerfile.mockapi's EXPOSE and the
   # `targets.mock-url` of dev spec §5.
   port: 8100

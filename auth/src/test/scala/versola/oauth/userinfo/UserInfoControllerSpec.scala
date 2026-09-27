@@ -20,7 +20,6 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -51,7 +50,7 @@ object UserInfoControllerSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = tenantId1,
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken.OpenId),
     secret = None,
     previousSecret = None,

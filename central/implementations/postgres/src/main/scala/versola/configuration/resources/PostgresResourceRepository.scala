@@ -4,7 +4,7 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
-import versola.central.configuration.ResourceUri
+import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.resources.{
   ResourceEndpointId,
@@ -69,7 +69,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
   override def updateResource(
       resourceId: ResourceId,
       resourcePatch: Option[ResourceUri],
-      audiencePatch: Option[List[ClientId]],
+      audiencePatch: PatchAudience,
       addEndpoints: Vector[ResourceEndpointRecord],
       deleteEndpoints: Set[ResourceEndpointId],
   ): Task[Unit] =
@@ -91,7 +91,7 @@ class PostgresResourceRepository(xa: TransactorZIO) extends ResourceRepository, 
             UPDATE resources
             SET
               resource = ${resourcePatch.getOrElse(resource.resource)},
-              audience = ${audiencePatch.getOrElse(resource.audience)},
+              audience = ${audiencePatch.patch(resource.audience)},
               endpoints = $newEndpoints::jsonb[]
             WHERE resource_id = $resourceId
           """.update.run()

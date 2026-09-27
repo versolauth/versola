@@ -11,7 +11,7 @@ import zio.{Ref, UIO, ZIO}
   */
 object WebFlowsSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val request = WebLoginRequest(PresetId(StubSut.preset), None, None)
   private val credentials = Credentials.PhoneOtp("+70000000101")
   private val accounts = ActionCall(Method.GET, "/resources/core/accounts", None)

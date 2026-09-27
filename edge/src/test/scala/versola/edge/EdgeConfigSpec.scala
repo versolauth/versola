@@ -1,13 +1,15 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.util.{PrivateKeyUtil, Secret}
+import versola.util.{PrivateKeyUtil, Secret, TestCertificates}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.http.URL
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path}
 import java.security.KeyPairGenerator
 import java.util.Base64
 
@@ -84,6 +86,28 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |$dpopBlock
        |""".stripMargin
 
+  private def baseConfig(trustPath: Option[Path]): EdgeConfig = EdgeConfig(
+    id = EdgeId("edge-default"),
+    keyId = "test-key",
+    privateKey = PrivateKeyUtil.parse(privateKeyB64, "RSA").toOption.get,
+    security = EdgeConfig.Security(
+      tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32.fromBase64Url(secret32).toOption.get),
+      edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32.fromBase64Url(secret32).toOption.get, 30.days),
+    ),
+    central = EdgeConfig.CentralConfig(url = URL.decode("http://central:8090").toOption.get),
+    versolaUrl = URL.decode("http://localhost:8080").toOption.get,
+    versolaInternalTrustedCertificates = trustPath.map(_.toString),
+    edgeUrl = URL.decode("http://edge:8095").toOption.get,
+    configurationCacheRefreshInterval = 5.minutes,
+  )
+
+  private def writeCertificate(directory: Path, name: String, pem: String): Task[Path] =
+    ZIO.attemptBlocking(Files.write(directory.resolve(name), pem.getBytes(StandardCharsets.UTF_8)).nn)
+
+  private def tempDirectory: ZIO[Scope, Throwable, Path] =
+    ZIO.acquireRelease(ZIO.attemptBlocking(Files.createTempDirectory("edge-config-spec").nn)): dir =>
+      ZIO.attemptBlocking(Files.deleteIfExists(dir)).ignoreLogged
+
   def spec = suite("EdgeConfig")(
     suite("parsing")(
       // Regression for the docker-local login bug: SSOClient's tokenUrl/
@@ -120,6 +144,36 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.internalUrl == config.versolaUrl,
           config.versolaUrl == URL.decode("http://localhost:8080").toOption.get,
         )
+      },
+    ),
+    // The gap #401's own trust-anchor fix could not close by itself: nothing in zio-http's
+    // client verifies the hostname on this connection (see SSOClient's `internalTrust` and
+    // EdgeConfig's own comment), so trusting a CA -- rather than the one leaf certificate the
+    // endpoint actually presents -- would accept any certificate that CA has ever issued, for
+    // any host. `EdgeConfig.validated` is where that is refused instead.
+    suite("validated")(
+      test("refuses a certificate authority named as the trust anchor") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            ca = TestCertificates.generate(subject = "CN=internal-ca,O=Versola,C=KZ", ca = true)
+            path <- writeCertificate(directory, "ca.pem", ca.certificatePem)
+            exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated).exit
+          yield assertTrue(exit.isFailure)
+      },
+      test("accepts the leaf certificate the endpoint actually presents") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            leaf = TestCertificates.generate(subject = "CN=auth.internal,O=Versola,C=KZ")
+            path <- writeCertificate(directory, "leaf.pem", leaf.certificatePem)
+            config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated)
+          yield assertTrue(config.versolaInternalTrustedCertificates == Some(path.toString))
+      },
+      test("passes an absent trust anchor through unexamined") {
+        for
+          config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None)) >>> EdgeConfig.validated)
+        yield assertTrue(config.versolaInternalTrustedCertificates == None)
       },
     ),
   )

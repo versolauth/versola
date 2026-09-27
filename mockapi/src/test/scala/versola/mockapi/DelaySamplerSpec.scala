@@ -36,7 +36,7 @@ object DelaySamplerSpec extends ZIOSpecDefault:
       },
     ),
     suite("read mixture")(
-      test("meets the design doc's composite quantiles within the self-check tolerance") {
+      test("meets its own targets within the self-check's relative tolerance") {
         val targets = DelaySampler.readTargets
         val p50 = read.tableQuantileMicros(0.50) / 1000.0
         val p95 = read.tableQuantileMicros(0.95) / 1000.0
@@ -47,10 +47,28 @@ object DelaySamplerSpec extends ZIOSpecDefault:
           withinPercent(p99, targets.p99Millis, 0.10),
         )
       },
-      test("has the design doc's p90 and mean") {
+      // The gap this closes: the self-check above only ever checked a *relative* tolerance, so
+      // it could not have caught the p99 the calibration gate actually rejects -- the gate's own
+      // tolerance is a 2 ms absolute budget (`CalibrationVerdict.tolerance`), never a percentage,
+      // because the same 10% reads very differently at 6 ms and at 46 ms (versolauth/versola#376).
+      test("meets its own targets within the calibration gate's absolute 2 ms tolerance") {
+        val targets = DelaySampler.readTargets
+        def withinMillis(achievedMillis: Double, targetMillis: Double): Boolean =
+          math.abs(achievedMillis - targetMillis) <= 2.0
         assertTrue(
-          withinPercent(read.tableQuantileMicros(0.90) / 1000.0, 22.0, 0.15),
-          withinPercent(read.tableMeanMicros / 1000.0, 10.0, 0.10),
+          withinMillis(read.tableQuantileMicros(0.50) / 1000.0, targets.p50Millis),
+          withinMillis(read.tableQuantileMicros(0.99) / 1000.0, targets.p99Millis),
+        )
+      },
+      // Not the design doc's rounded composite -- the doc's own p50≈6/p95≈30/p99≈46 line was
+      // never reproducible from the branch parameters under any floor rule, and is corrected to
+      // these branch-derived numbers instead (versolauth/versola#376). p90/mean have no
+      // acceptance criterion of their own; asserted here only so a future change to the branch
+      // parameters or the floor rule cannot silently drift without a test noticing.
+      test("has the branch-derived p90 and mean") {
+        assertTrue(
+          withinPercent(read.tableQuantileMicros(0.90) / 1000.0, 24.238, 0.15),
+          withinPercent(read.tableMeanMicros / 1000.0, 10.597, 0.10),
         )
       },
       test("keeps the bulk of its mass in the sub-10 ms cache branch") {
@@ -67,12 +85,23 @@ object DelaySamplerSpec extends ZIOSpecDefault:
           write.tableMeanMicros > read.tableMeanMicros,
         )
       },
-      test("meets its own targets within the self-check tolerance") {
+      test("meets its own targets within the self-check's relative tolerance") {
         val targets = DelaySampler.writeTargets
         assertTrue(
           withinPercent(write.tableQuantileMicros(0.50) / 1000.0, targets.p50Millis, 0.10),
           withinPercent(write.tableQuantileMicros(0.95) / 1000.0, targets.p95Millis, 0.10),
           withinPercent(write.tableQuantileMicros(0.99) / 1000.0, targets.p99Millis, 0.10),
+        )
+      },
+      // See the read-mixture suite's identical test for why this tolerance exists alongside the
+      // relative one above (versolauth/versola#376).
+      test("meets its own targets within the calibration gate's absolute 2 ms tolerance") {
+        val targets = DelaySampler.writeTargets
+        def withinMillis(achievedMillis: Double, targetMillis: Double): Boolean =
+          math.abs(achievedMillis - targetMillis) <= 2.0
+        assertTrue(
+          withinMillis(write.tableQuantileMicros(0.50) / 1000.0, targets.p50Millis),
+          withinMillis(write.tableQuantileMicros(0.99) / 1000.0, targets.p99Millis),
         )
       },
       test("carries the heavier core-banking tail the write weights ask for") {

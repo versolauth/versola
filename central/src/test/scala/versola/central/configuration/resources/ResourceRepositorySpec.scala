@@ -1,7 +1,7 @@
 package versola.central.configuration.resources
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.configuration.{InjectRule, InjectTarget, ResourceUri}
+import versola.central.configuration.{InjectRule, InjectTarget, PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
@@ -124,7 +124,7 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
           _ <- env.resourceRepository.updateResource(
             resourceId = resourceId,
             resourcePatch = Some(ResourceUri("https://api.internal.example.com")),
-            audiencePatch = Some(List(ClientId("updated-client"))),
+            audiencePatch = PatchAudience(add = Set(ClientId("updated-client")), remove = audience.toSet),
             addEndpoints = Vector(
               endpointRecord(usersMeEndpointId, path = "/users/me", fetchUserInfo = true, inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'"))),
               endpointRecord(usersCreateEndpointId, method = "POST"),
@@ -144,6 +144,41 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
               ),
             )
           ),
+        )
+      },
+      test("audience patches add and remove without submitting the whole list") {
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          _ <- env.resourceRepository.updateResource(
+            resourceId = resourceId,
+            resourcePatch = None,
+            audiencePatch = PatchAudience(add = Set(ClientId("provisioner")), remove = Set.empty),
+            addEndpoints = Vector.empty,
+            deleteEndpoints = Set.empty,
+          )
+          afterAdd <- env.resourceRepository.findResource(resourceId)
+          // A second writer adding itself keeps what the first one added, where two callers
+          // each submitting a whole list would have dropped it.
+          _ <- env.resourceRepository.updateResource(
+            resourceId = resourceId,
+            resourcePatch = None,
+            audiencePatch = PatchAudience(add = Set(ClientId("provisioner"), ClientId("other")), remove = Set.empty),
+            addEndpoints = Vector.empty,
+            deleteEndpoints = Set.empty,
+          )
+          afterSecond <- env.resourceRepository.findResource(resourceId)
+          _ <- env.resourceRepository.updateResource(
+            resourceId = resourceId,
+            resourcePatch = None,
+            audiencePatch = PatchAudience(add = Set.empty, remove = Set(ClientId("other"))),
+            addEndpoints = Vector.empty,
+            deleteEndpoints = Set.empty,
+          )
+          afterRemove <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          afterAdd.map(_.audience) == Some(audience :+ ClientId("provisioner")),
+          afterSecond.map(_.audience) == Some(audience ++ List(ClientId("provisioner"), ClientId("other"))),
+          afterRemove.map(_.audience) == Some(audience :+ ClientId("provisioner")),
         )
       },
       test("delete resource") {

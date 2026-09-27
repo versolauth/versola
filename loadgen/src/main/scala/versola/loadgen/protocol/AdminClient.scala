@@ -25,5 +25,15 @@ trait AdminClient:
   def upsertAuthRequestPresets(spec: AuthRequestPresetsSpec): Task[Unit]
   def upsertChallengeSettings(spec: ChallengeSettingsSpec): Task[Unit]
   def syncConfiguration(): Task[Unit]
-  def syncEdgeConfiguration(): Task[Unit]
+
+  /** Blocks until edge serves `resourceId`, which is how a caller with no way to force edge's
+    * sync learns that the campaign's writes have reached the caches its traffic is authorized
+    * against.
+    *
+    * Probed at `method`/`path` -- one of the resource's own registered endpoints -- rather than
+    * at the resource's bare root: edge only recognizes a loaded resource once the rest-of-path
+    * also matches an endpoint in its catalog, and none of a campaign's resources registers one
+    * at `/`. A root probe would 404 identically whether the resource is cached or not.
+    */
+  def awaitEdgeConfiguration(resourceId: String, method: String, path: String): Task[Unit]
   def flushUserOutbox(): Task[Unit]

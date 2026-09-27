@@ -4,7 +4,7 @@ import versola.util.Dpop
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
-import zio.{Config, Duration, durationInt}
+import zio.{Config, Duration}
 
 /** Pure config-parsing test for [[LoadgenConfig]], mirroring EdgeConfigSpec's pattern: a
   * kebab-case [[zio.ConfigProvider]] over a raw HOCON string, loaded via
@@ -21,15 +21,22 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
 
   /** Not private: [[versola.loadgen.provision.ProvisionerSpec]] loads role dispatch's input from
     * the same tree, and a second copy of it would drift the moment a field is added.
+    *
+    * It is also the repo's one worked example of a complete env.conf -- loadgen has no
+    * scripts/gen-env.scala the way auth, central and edge do -- so it carries the whole tree a
+    * pod reads, not only the part [[LoadgenConfig]] decodes. `env` below is what that costs: it
+    * belongs to `VersolaApp`, every role aborts without it, and no descriptor in this file would
+    * ever have noticed it missing.
     */
   val hocon: String =
-    """role = driver
+    """env = "loadgen-test"
+      |
+      |role = driver
       |shard { index = 0, count = 8 }
       |
       |targets {
       |  auth-url    = "http://auth:8080"
       |  edge-url    = "http://edge:8095"
-      |  central-url = "http://central:8090"
       |  mock-url    = "http://mockapi:8100"
       |  origin      = "https://bank.example.test"
       |}
@@ -115,8 +122,8 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |
       |provision {
       |  tenant-id = default
-      |  central-secret = "central-secret"
-      |  edge-secret = "edge-secret"
+      |  provisioner-client-id = utils
+      |  provisioner-secret = "cHJvdmlzaW9uZXItc2VjcmV0"
       |  mobile-redirect-uri = "versola://callback"
       |  resources {
       |    core-uri   = "http://mockapi-core:8100"
@@ -167,6 +174,26 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
 
   def spec = suite("LoadgenConfig")(
     suite("parsing")(
+      // Not a LoadgenConfig field, and deliberately asserted before any of the
+      // decodes below: `env` is read straight off the same ConfigProvider by
+      // VersolaApp.envName and jsonLoggerLayer, before a single role-specific
+      // field is looked at. deriveConfig[LoadgenConfig] neither requires it nor
+      // rejects it, so `hocon` above -- the one worked example of a full file
+      // this repo has -- was for a while a config that parsed cleanly here and
+      // died in a pod with `Missing data at env`. This test is what keeps the
+      // example bootable; it fails the build rather than a deployment.
+      test("carries the top-level `env` key every VersolaApp role requires") {
+        for
+          driverEnv <- TypesafeConfigProvider
+            .fromHoconString(hocon)
+            .kebabCase
+            .load(Config.string("env"))
+          coordinatorEnv <- TypesafeConfigProvider
+            .fromHoconString(hoconWithoutProvision)
+            .kebabCase
+            .load(Config.string("env"))
+        yield assertTrue(driverEnv.nonEmpty, coordinatorEnv == driverEnv)
+      },
       test("decodes a full campaign config") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hocon)
@@ -448,12 +475,13 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.role == LoadgenRole.Calibrate,
           config.calibration.map(_.ratePerSecond) == Some(120.0),
           config.calibration.map(_.seed) == Some(424242L),
-          config.calibration.map(_.read.p50) == Some(6.millis),
-          config.calibration.map(_.read.p99) == Some(46.millis),
-          // 13.5 ms: mockapi's write mixture has no whole-millisecond p50, so the block has to be
-          // able to state one it does not round.
-          config.calibration.map(_.write.p50) == Some(Duration.fromNanos(13_500_000L)),
-          config.calibration.map(_.write.p99) == Some(50.millis),
+          config.calibration.map(_.read.p50) == Some(Duration.fromNanos(6_298_000L)),
+          config.calibration.map(_.read.p99) == Some(Duration.fromNanos(47_456_000L)),
+          // None of the four land on a whole millisecond (`DelaySampler.readTargets`/
+          // `.writeTargets`, versolauth/versola#376), so the block has to be able to state values
+          // it does not round -- hence microseconds throughout, not just for write's p50.
+          config.calibration.map(_.write.p50) == Some(Duration.fromNanos(13_504_000L)),
+          config.calibration.map(_.write.p99) == Some(Duration.fromNanos(49_676_000L)),
         )
       },
       // No other role runs the gate, so requiring the block would fail a driver's decode before
@@ -479,9 +507,9 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       // distribution any sampler can have produced.
       test("rejects a non-positive target and a p99 below its own p50") {
         for
-          zero <- decodeCalibration(calibration.replaceFirst("p-50 = 6ms", "p-50 = 0ms")).exit
-          negative <- decodeCalibration(calibration.replaceFirst("p-99 = 46ms", "p-99 = -46ms")).exit
-          inverted <- decodeCalibration(calibration.replaceFirst("p-99 = 46ms", "p-99 = 5ms")).exit
+          zero <- decodeCalibration(calibration.replaceFirst("p-50 = 6298micros", "p-50 = 0micros")).exit
+          negative <- decodeCalibration(calibration.replaceFirst("p-99 = 47456micros", "p-99 = -47456micros")).exit
+          inverted <- decodeCalibration(calibration.replaceFirst("p-99 = 47456micros", "p-99 = 5000micros")).exit
         yield assertTrue(zero.isFailure, negative.isFailure, inverted.isFailure)
       },
     ),
@@ -513,14 +541,19 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
   )
 
   /** The gate's own block (versolauth/versola#281), stated with `mockapi`'s configured quantiles
-    * -- the figures a real calibration run compares itself against.
+    * -- the figures a real calibration run compares itself against. `DelaySampler.readTargets` /
+    * `.writeTargets` are the source these mirror; they do not derive from that type (`loadgen`
+    * does not depend on the `mockapi` module), so a future change there has to be re-copied here
+    * by hand -- see versolauth/versola#376, which is the change that produced these particular
+    * values (microseconds, to match `DelaySampler`'s own rounding exactly and avoid a second
+    * fractional-millisecond rounding discussion in this config).
     */
   private val calibration: String =
     """calibration {
       |  rate-per-second = 120.0
       |  seed            = 424242
-      |  read  { p-50 = 6ms,         p-99 = 46ms }
-      |  write { p-50 = 13500micros, p-99 = 50ms }
+      |  read  { p-50 = 6298micros,  p-99 = 47456micros }
+      |  write { p-50 = 13504micros, p-99 = 49676micros }
       |}
       |""".stripMargin
 

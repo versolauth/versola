@@ -159,6 +159,11 @@ lazy val migrateTool = project
 
 lazy val e2e = project
   .in(file("e2e"))
+  // `test->test`: reuses loadgen's own flow-JSON classpath resources and provisioning
+  // fixtures (`FlowResources`, `CampaignBlueprint`) rather than a second copy of them here --
+  // the whole point of `LoadgenProvisionSpec` is that loadgen's real admin client and central's
+  // real decoder agree, which a reimplementation on either side could not prove.
+  .dependsOn(loadgen % "test->test;compile->compile")
   .settings(
     name := "e2e",
     commonSettings,
@@ -223,7 +228,9 @@ lazy val tools = project
     Compile / unmanagedSourceDirectories := Seq(baseDirectory.value),
     Compile / unmanagedSources := Seq(baseDirectory.value / "gen-env.scala"),
     // Matches the synthetic object Scala 3 generates for gen-env.scala's
-    // top-level `@main def genEnv(): Unit`.
+    // top-level `@main def genEnv(args: String*): Unit` -- the generated
+    // object is still named `genEnv` regardless of the vararg parameter,
+    // which the generated `main(args: Array[String])` just forwards along.
     Compile / mainClass := Some("genEnv"),
   )
 

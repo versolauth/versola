@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.{ClientCredential, ClientId, OAuthClient, PermissionId}
-import versola.util.{Base64, CacheSource, PrivateJsonWebKey, Secret, SecurityService}
+import versola.util.{Base64, CacheSource, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
 import zio.json.ast.Json
 import zio.http.{Client, Header, Request}
 import zio.json.{JsonCodec, DecoderOps}
@@ -43,12 +43,17 @@ object OAuthClientsSyncClient:
       */
     private def credentialed(client: SyncOAuthClientRecord): Task[Option[OAuthClient]] =
       for
+        certificate <- ZIO.foreach(client.edgeClientCertificate)(decryptCertificate)
         signing <- ZIO.foreach(client.edgeSigningKey)(decryptSigningKey)
         secret <- ZIO.foreach(client.secret)(decryptSecret)
-        // The key wins where central sent both. It is the stronger credential, and it is the
-        // only one that can sign this client's request objects -- picking the secret here
-        // would leave a client that registered both unable to state a signed request.
-        credential = signing.map(ClientCredential.PrivateKeyJwt(_))
+        // The strongest credential central sent wins, and for an mTLS client that is the only
+        // one auth accepts at all: a certificate registration makes `mtlsAuth` the method, and
+        // an assertion or a secret from such a client is refused. Between the other two the key
+        // wins for its own reason -- it is the only one that can sign this client's request
+        // objects, so picking the secret would leave a client that registered both unable to
+        // state a signed request.
+        credential = certificate.map(ClientCredential.MutualTls(_))
+          .orElse(signing.map(ClientCredential.PrivateKeyJwt(_)))
           .orElse(secret.map(ClientCredential.ClientSecret(_)))
       yield credential.map(
         OAuthClient(
@@ -77,6 +82,20 @@ object OAuthClientsSyncClient:
           .mapError(reason => RuntimeException(s"edge signing key $reason"))
       yield signing
 
+    /** The certificate central encrypted to this edge, parsed into what presenting it needs.
+      *
+      * Fails the whole sync rather than dropping the one client, on the same terms as the
+      * signing key: registration validated this PEM, so one that will not parse here means
+      * central and this edge disagree about what was stored.
+      */
+    private def decryptCertificate(value: String): Task[PrivateClientCertificate.Material] =
+      for
+        decrypted <- decryptSecret(value)
+        material <- ZIO
+          .fromEither(PrivateClientCertificate(String(decrypted, StandardCharsets.UTF_8)).material)
+          .mapError(reason => RuntimeException(s"edge client certificate $reason"))
+      yield material
+
     private def decryptSecret(value: String): Task[Secret] =
       for
         encrypted <- ZIO.attempt(Base64.urlDecode(value))
@@ -94,6 +113,7 @@ object OAuthClientsSyncClient:
         requireSignedRequestObject: Boolean = false,
         requirePushedAuthorizationRequests: Boolean = false,
         edgeSigningKey: Option[String] = None,
+        edgeClientCertificate: Option[String] = None,
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

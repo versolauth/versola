@@ -6,7 +6,6 @@ import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
 import versola.util.UnitSpecBase
 import zio.*
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.time.Instant
@@ -27,7 +26,7 @@ object ConsentServiceSpec extends UnitSpecBase:
     id = clientId,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(openid, profile, email),
     secret = None,
     previousSecret = None,

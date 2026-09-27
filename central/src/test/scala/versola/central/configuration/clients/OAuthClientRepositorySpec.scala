@@ -60,6 +60,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
   )

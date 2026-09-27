@@ -28,24 +28,25 @@ enum AuthorizeOutcome extends RuntimeException, scala.util.control.NoStackTrace:
   *
   * These endpoints answer on the same tokens the proxy accepts, so they have to demand the
   * same thing of them: a token carrying `cnf.jkt` is only honoured here with a valid RFC 9449
-  * proof, or `/permissions/me` would be a way around the binding the proxy enforces.
+  * proof, and one carrying `cnf.x5t#S256` only out of the session cookie, or
+  * `/permissions/me` would be a way around the binding the proxy enforces.
   */
 def authorize(
     request: Request,
 ): ZIO[JwksService & TokenRevocationService & DpopVerifier, AuthorizeOutcome, PermissionsClaims] =
   val presented = request.header(Header.Authorization)
     .collect {
-      case Header.Authorization.Bearer(bearer) => (bearer.stringValue, false)
+      case Header.Authorization.Bearer(bearer) => (bearer.stringValue, Presentation.Bearer)
       case Header.Authorization.Unparsed(scheme, token) if scheme.equalsIgnoreCase(DpopVerifier.Scheme) =>
-        (token.stringValue, true)
+        (token.stringValue, Presentation.Dpop)
     }
     .orElse(
       request.cookie(EdgeSessionCookie.name)
-        .map(c => (EdgeSessionCookie.parse(c.content)._2, false)),
+        .map(c => (EdgeSessionCookie.parse(c.content)._2, Presentation.Cookie)),
     )
 
   presented match
-    case Some((raw, dpopScheme)) =>
+    case Some((raw, presentation)) =>
       for
         jwksService <- ZIO.service[JwksService]
         keys        <- jwksService.getPublicKeys
@@ -59,25 +60,35 @@ def authorize(
           Instant.ofEpochSecond(claims.issuedAt),
         )
         _           <- ZIO.fail(AuthorizeOutcome.Denied).when(revoked)
-        _           <- verifyProof(request, raw, claims, dpopScheme)
+        _           <- verifyBinding(request, raw, claims, presentation)
       yield claims
 
     case None =>
       ZIO.fail(AuthorizeOutcome.Denied)
 
-/** RFC 9449 §7.1/§7.2 for the edge's own endpoints. Nonce enforcement is unconditional
-  * (`DpopVerifier.checkNonce`), so this has exactly one challenge to negotiate, the same as
-  * the proxy's -- everything else here (missing proof, bad binding, a downgrade) has nothing
-  * for the client to retry differently and collapses to the same bare refusal.
+/** Where the caller put the token. Only the cookie is edge's own copy of it -- the two header
+  * schemes carry whatever the caller chose to send -- which is what tells a certificate-bound
+  * token apart here. */
+private enum Presentation:
+  case Cookie, Bearer, Dpop
+
+/** RFC 9449 §7.1/§7.2 and RFC 8705 §3 for the edge's own endpoints. Nonce enforcement is
+  * unconditional (`DpopVerifier.checkNonce`), so this has exactly one challenge to negotiate,
+  * the same as the proxy's -- everything else here (missing proof, bad binding, a downgrade)
+  * has nothing for the client to retry differently and collapses to the same bare refusal.
+  *
+  * A certificate-bound token is answered exactly as the proxy answers it (`EdgeService`'s
+  * `checkTokenBinding`): honoured out of the session cookie, where it is edge's own copy,
+  * refused in a header, which edge holds no certificate to check it against.
   */
-private def verifyProof(
+private def verifyBinding(
     request: Request,
     accessToken: String,
     claims: PermissionsClaims,
-    dpopScheme: Boolean,
+    presentation: Presentation,
 ): ZIO[DpopVerifier, AuthorizeOutcome, Unit] =
-  (claims.confirmation.map(_.jkt), dpopScheme) match
-    case (Some(jkt), true) =>
+  (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint), presentation) match
+    case (Some(jkt), _, Presentation.Dpop) =>
       ZIO.serviceWithZIO[DpopVerifier]: verifier =>
         DpopVerifier.proofHeader(request)
           .orElseFail(AuthorizeOutcome.Denied)
@@ -96,9 +107,11 @@ private def verifyProof(
             }
           .unit
     // §7.2: a key-bound token presented without proof of that key, here as in the proxy.
-    case (Some(_), false) => ZIO.fail(AuthorizeOutcome.Denied)
-    case (None, true) => ZIO.fail(AuthorizeOutcome.Denied)
-    case (None, false) => ZIO.unit
+    case (Some(_), _, _) => ZIO.fail(AuthorizeOutcome.Denied)
+    case (None, Some(_), Presentation.Cookie) => ZIO.unit
+    case (None, Some(_), _) => ZIO.fail(AuthorizeOutcome.Denied)
+    case (None, None, Presentation.Dpop) => ZIO.fail(AuthorizeOutcome.Denied)
+    case (None, None, _) => ZIO.unit
 
 case class PermissionsClaims(
     @jsonField("jti") jti: AccessTokenId,

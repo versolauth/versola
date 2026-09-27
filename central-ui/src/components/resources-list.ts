@@ -492,7 +492,7 @@ export class VersolaResourcesList extends LitElement {
         const activeResource = this.resources.find(candidate => candidate.resourceId === this.activeResourceId);
         if (!activeResource) throw new Error('Resource not found in local state');
         savedResourceId = this.activeResourceId;
-        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, this.resourceAudience, endpointPayloads);
+        savedEndpoints = await updateResource(savedResourceId, activeResource.endpoints, resource, activeResource.audience, this.resourceAudience, endpointPayloads);
         hasSecret = activeResource.hasSecret;
         hasPreviousSecret = activeResource.hasPreviousSecret;
       } else {

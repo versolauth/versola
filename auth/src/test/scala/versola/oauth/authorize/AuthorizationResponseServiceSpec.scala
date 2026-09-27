@@ -8,7 +8,6 @@ import versola.util.{JWT, Secret, UnitSpecBase}
 import zio.*
 import zio.http.URL
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 object AuthorizationResponseServiceSpec extends UnitSpecBase:
@@ -21,7 +20,7 @@ object AuthorizationResponseServiceSpec extends UnitSpecBase:
     id = clientId,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = Some(Secret(Array.fill(32)(4.toByte))),
     previousSecret = None,

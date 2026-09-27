@@ -31,6 +31,10 @@ case class EdgeFixture(
     /** The key pair backing `private_key_jwt`, for a fixture configured with it. The edge
       * holds the private half; this is the same pair, so a spec can check what auth saw. */
     signer: Option[AssertionSigner] = None,
+    /** The certificate backing RFC 8705 mutual TLS, for a fixture configured with it. The
+      * edge holds the same certificate and its private key, which is what it presents at the
+      * handshake edge's own SSOClient makes to auth. */
+    certificate: Option[EdgeCertificate] = None,
 ):
   def endpoint(name: String): String =
     endpoints.getOrElse(name, throw java.util.NoSuchElementException(s"No endpoint registered under '$name'"))
@@ -86,6 +90,12 @@ object EdgeFixture:
       /** RFC 9126 §6.2: the edge must push the authorization request to `/par` before
         * redirecting the browser. */
       requirePushedAuthorizationRequests: Boolean = false,
+      /** Register the client for RFC 8705 §2.2 self-signed mutual TLS instead of a secret,
+        * and hand the certificate -- private key included -- to the edge as its
+        * `edgeClientCertificate`. Mutually exclusive with `privateKeyJwt`: a client
+        * authenticates one way. The fixture generates the certificate and exposes it as
+        * [[EdgeFixture.certificate]]. */
+      mutualTls: Boolean = false,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -110,6 +120,25 @@ object EdgeFixture:
       _ <- central.delete("/configuration/resources", "resourceId" -> config.resourceId)
 
       signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
+      certificate <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
+
+      // Central refuses to register an mtlsAuth client until the tenant names a header for
+      // it (`ClientController`'s own check) -- and `EdgeSpec`'s bootstrap, unlike
+      // `Flows.layer`, never runs the shared setup that configures one. The vocabulary is
+      // the exact one `Flows.layer` uses, not this fixture's own choice: this call
+      // overwrites every field, and a spec run after `Flows.layer` has already configured
+      // the tenant must not clear it out from under specs that share this same backend.
+      _ <- ZIO.when(config.mutualTls)(
+        auth.upsertChallengeSettings(
+          acrVocabulary = Map(
+            Acr.OtpLevel -> List("otp"),
+            Acr.PasswordLevel -> List("password"),
+            Acr.PasskeyLevel -> List("passkey"),
+          ),
+          mtlsCertificateHeader = Some(OAuthClient.mtlsCertificateHeader),
+          mtlsCertificateEncoding = Some("urlEncodedPem"),
+        ) *> auth.syncConfiguration(),
+      )
 
       registered <- auth.registerClient(
         clientId,
@@ -119,9 +148,14 @@ object EdgeFixture:
         authFlow = Some(Flows.loginPasswordAuthFlow),
         // Publishing keys is registering the method that reads them: central refuses a
         // client_secret client that carries a jwks nothing would ever verify against.
-        authMethod = if config.privateKeyJwt then "private_key_jwt" else "client_secret",
-        jwks = signer.map(_.jwks),
+        authMethod =
+          if config.privateKeyJwt then "private_key_jwt"
+          else if config.mutualTls then "self_signed_tls_client_auth"
+          else "client_secret",
+        mtlsAuth = if config.mutualTls then Some(Fixtures.selfSignedTlsClientAuth) else None,
+        jwks = signer.map(_.jwks).orElse(certificate.map(_.jwks)),
         edgeSigningKey = signer.map(_.privateJwk),
+        edgeClientCertificate = certificate.map(_.edgeClientCertificate),
         requireSignedRequestObject = config.requireSignedRequestObject,
         requirePushedAuthorizationRequests = config.requirePushedAuthorizationRequests,
       ).success
@@ -205,6 +239,7 @@ object EdgeFixture:
       resourceUri = config.resourceUri,
       endpoints = byName,
       signer = signer,
+      certificate = certificate,
     )
 
   /** Where a completed edge login sends the browser. Any absolute URI the client is allowed to

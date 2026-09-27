@@ -1,6 +1,6 @@
 package versola.central.configuration.clients
 
-import versola.util.{Dpop, JsonWebKeySet, PrivateJsonWebKey}
+import versola.util.{Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
@@ -171,6 +171,64 @@ object InvalidRegistrationConfiguration:
             .flatMap(validated => PrivateJsonWebKey.publishedIn(validated, keySet))
             .left.toOption
       problem.map(reason => InvalidRegistrationConfiguration(clientId, s"edgeSigningKey $reason"))
+
+  /** The certificate an edge presents as this client has to be one auth recognises it by, and
+    * what auth compares is decided by `mtlsAuth`: RFC 8705 §2.1 matches the registered subject
+    * value against the certificate, §2.2 matches the key inside it against `jwks`. A
+    * certificate that satisfies neither configures an edge whose every call is answered
+    * `invalid_client`, so each is checked against the method the client actually registered.
+    *
+    * Without `mtlsAuth` nothing is compared at all: auth reads the tenant's certificate header
+    * only for a client the certificate can authenticate, so a certificate registered beside
+    * any other method is a credential that is never looked at.
+    *
+    * A signed request object is refused alongside it for what an edge can do rather than what
+    * auth accepts: the object is signed with a key named by `kid` out of `jwks`, the
+    * certificate names none, and `edgeSigningKey` — which would — cannot be registered
+    * beside `mtlsAuth`. The combination leaves an edge holding a certificate it cannot sign
+    * with, which fails at the first authorization request rather than here.
+    */
+  def validateEdgeClientCertificate(
+      clientId: ClientId,
+      edgeClientCertificate: Option[PrivateClientCertificate],
+      mtlsAuth: Option[MutualTlsAuth],
+      jwks: Option[JsonWebKeySet],
+      requireSignedRequestObject: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    edgeClientCertificate.flatMap: certificate =>
+      val problem = certificate.material match
+        case Left(reason) =>
+          Some(reason)
+
+        case Right(_) if requireSignedRequestObject =>
+          Some(
+            "cannot be combined with requireSignedRequestObject - an edge presenting a " +
+              "certificate holds no key it could sign a request object with",
+          )
+
+        case Right(material) =>
+          mtlsAuth match
+            case None =>
+              Some("needs mtlsAuth - no certificate is read for a client that registered none")
+
+            case Some(auth: MutualTlsAuth.TlsClientAuth)
+                if !material.subjectValues(auth.subjectType.toString).contains(auth.subjectValue) =>
+              Some(
+                s"carries no ${auth.subjectType} of '${auth.subjectValue}', which is what " +
+                  "mtlsAuth registered the client to be recognised by",
+              )
+
+            case Some(MutualTlsAuth.SelfSignedTlsClientAuth())
+                if !jwks.exists(material.publishedIn) =>
+              Some(
+                "holds a key the client's jwks does not publish - self_signed_tls_client_auth " +
+                  "matches the certificate against those keys and nothing else",
+              )
+
+            case Some(_) =>
+              None
+
+      problem.map(reason => InvalidRegistrationConfiguration(clientId, s"edgeClientCertificate $reason"))
 
   /** RFC 9449 §5.1 proof key policy: a client may narrow what its own proofs are accepted
     * with, never widen it.

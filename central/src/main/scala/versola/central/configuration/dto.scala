@@ -7,7 +7,7 @@ import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateJsonWebKey, RedirectUri}
+import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -86,6 +86,19 @@ case class PatchPermissions(
     remove: Set[Permission],
 ) derives JsonCodec, Schema
 
+case class PatchAudience(
+    add: Set[ClientId],
+    remove: Set[ClientId],
+) derives Schema, JsonCodec:
+  /** Order-preserving and idempotent: a client already in the audience is not duplicated,
+    * so concurrent writers adding themselves cannot drop each other the way submitting a
+    * whole list does. */
+  def patch(existing: List[ClientId]): List[ClientId] =
+    existing.filterNot(remove.contains) ++ add.filterNot(existing.contains)
+
+object PatchAudience:
+  val empty: PatchAudience = PatchAudience(Set.empty, Set.empty)
+
 case class PatchScope(
     add: List[CreateClaim],
     update: List[PatchClaim],
@@ -162,7 +175,7 @@ case class CreateResourceRequest(
 case class UpdateResourceRequest(
     resourceId: ResourceId,
     resource: Option[ResourceUri],
-    audience: Option[List[ClientId]],
+    audience: PatchAudience,
     deleteEndpoints: Set[ResourceEndpointId],
     createEndpoints: Vector[CreateResourceEndpointRequest],
 ) derives Schema, JsonCodec
@@ -386,8 +399,8 @@ case class CreateClientRequest(
     policyUri: Option[String],
     tosUri: Option[String],
     consentFlow: Option[ConsentFlowDto],
-    /** RFC 9449 §5.2: `false` leaves DPoP opt-in per request for a caller that does not ask
-      * for it. No default -- a create request states every member it registers. */
+    /** RFC 9449 §5.2: whether every token issued to this client is bound to a proof key,
+      * rather than DPoP staying opt-in per request. */
     dpopBoundAccessTokens: Boolean,
     /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
       * what the metadata document advertises. Empty means no narrowing. */
@@ -409,24 +422,23 @@ case class CreateClientRequest(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
-    /** RFC 9101 §10.5: `false` leaves a plain parameter set acceptable for a caller that does
-      * not ask for signed request objects. No default -- see [[dpopBoundAccessTokens]]. */
+    /** RFC 9101 §10.5: whether this client states its authorization request in a signed
+      * request object, rather than a plain parameter set staying acceptable from it. */
     requireSignedRequestObject: Boolean,
-    /** RFC 9126 §6.2: `false` leaves `/par` optional for a caller that does not ask for it.
-      * No default -- see [[dpopBoundAccessTokens]]. */
+    /** RFC 9126 §6.2: whether this client must push its authorization request to `/par`
+      * first, rather than `/authorize` staying reachable directly. */
     requirePushedAuthorizationRequests: Boolean,
     /** The private key an edge fronting this client signs with; `None` when no edge does, which
       * is every client registered before edges could authenticate by key. Must be the private
       * half of a key [[jwks]] publishes — registration refuses a pair that cannot verify. */
     edgeSigningKey: Option[PrivateJsonWebKey],
+    /** The certificate an edge fronting this client presents at the TLS handshake, private key
+      * included, as a single PEM. `None` when no edge does. Requires [[mtlsAuth]] — a
+      * certificate is looked for only where the registration says one authenticates. */
+    edgeClientCertificate: Option[PrivateClientCertificate],
     /** The wizard combination this registration came from, recorded as-is. `None` for a
       * caller that names none -- a template is what the console picked, not something to
-      * infer on its behalf from the settings it sent.
-      *
-      * No field on this request carries a Scala default: a create request is a full snapshot,
-      * not a patch, and a default silently standing in for a member a caller forgot is exactly
-      * the drift this DTO must not allow -- every caller (the console, e2e, loadgen) is
-      * required to state each member itself. */
+      * infer on its behalf from the settings it sent. */
     template: Option[ClientTemplate],
 ) derives Schema, JsonCodec
 
@@ -454,24 +466,25 @@ case class UpdateClientRequest(
     frontChannelLogoutUri: Option[Patch[String]],
     frontChannelLogoutSessionRequired: Option[Boolean],
     backChannelLogoutUri: Option[Patch[String]],
-    logoUri: Option[Patch[String]] = None,
-    policyUri: Option[Patch[String]] = None,
-    tosUri: Option[Patch[String]] = None,
-    consentFlow: Option[Patch[ConsentFlowDto]] = None,
-    dpopBoundAccessTokens: Option[Boolean] = None,
+    logoUri: Option[Patch[String]],
+    policyUri: Option[Patch[String]],
+    tosUri: Option[Patch[String]],
+    consentFlow: Option[Patch[ConsentFlowDto]],
+    dpopBoundAccessTokens: Option[Boolean],
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
     /** Moving a client to another method is a change of credential, not of transport, so it
       * is validated against the resulting [[mtlsAuth]] and [[jwks]] exactly as a registration
       * is. Leaving `client_secret` drops the stored secret: a credential the client no longer
       * authenticates with is one nobody can be told has stopped working. */
-    authMethod: Option[AuthMethod] = None,
+    authMethod: Option[AuthMethod],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],
     jwks: Option[Patch[JsonWebKeySet]],
-    requireSignedRequestObject: Option[Boolean] = None,
-    requirePushedAuthorizationRequests: Option[Boolean] = None,
-    edgeSigningKey: Option[Patch[PrivateJsonWebKey]] = None,
+    requireSignedRequestObject: Option[Boolean],
+    requirePushedAuthorizationRequests: Option[Boolean],
+    edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
+    edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -479,7 +492,7 @@ case class AuthorizationPresetInput(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -499,7 +512,7 @@ case class AuthorizationPresetResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -518,7 +531,7 @@ case class AuthorizationPresetSyncResponse(
     description: String,
     redirectUri: RedirectUri,
     postLoginRedirectUri: RedirectUri,
-    postLogoutRedirectUri: Option[RedirectUri] = None,
+    postLogoutRedirectUri: Option[RedirectUri],
     scope: Set[ScopeToken],
     responseType: ResponseType,
     uiLocales: Option[List[String]],
@@ -664,15 +677,18 @@ case class SyncOAuthClientRecord(
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
     /** RFC 9101 §10.5: the client states its authorization request in a request object it
-      * signed. Defaults to `false` so that an auth node reading a central that predates the
-      * field keeps the behaviour it already had. */
-    requireSignedRequestObject: Boolean = false,
+      * signed. Always written, so an auth node reading a central that predates the field is
+      * the only reader that has to supply its own default. */
+    requireSignedRequestObject: Boolean,
     /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
-    requirePushedAuthorizationRequests: Boolean = false,
+    requirePushedAuthorizationRequests: Boolean,
     /** The private JWK an edge fronting this client signs with, encrypted in transit exactly
       * as `secret` is — to the requesting edge's registered RSA public key. Absent for a
       * caller that is not an edge, which has no key to decrypt it with and no use for it. */
-    edgeSigningKey: Option[String] = None,
+    edgeSigningKey: Option[String],
+    /** The PEM certificate and key an edge fronting this client presents, encrypted in transit
+      * on the same terms as `edgeSigningKey`. */
+    edgeClientCertificate: Option[String],
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

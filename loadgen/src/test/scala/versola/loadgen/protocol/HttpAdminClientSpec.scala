@@ -36,6 +36,13 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
     yield (admin, fake)
 
+  /** Every admin call is made with a token from auth, so a stub central that never answers the
+    * token endpoint fails at authentication instead of at the step under test. */
+  private val issuedToken = Response.json("""{"access_token":"stub-token","token_type":"Bearer"}""")
+
+  private def isTokenRequest(request: Request): Boolean =
+    request.method == Method.POST && request.url.path.encode.endsWith("/token")
+
   /** Reads succeed with an empty listing, writes fail -- so the operation the failure names is
     * the write, not the read that preceded it.
     */
@@ -44,7 +51,8 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       _ <- TestClient.addRoutes(
         Handler
           .fromFunction[Request]: request =>
-            if request.method == Method.GET then Response.json("""{"clients":[],"resources":[],"permissions":[],"roles":[]}""")
+            if isTokenRequest(request) then issuedToken
+            else if request.method == Method.GET then Response.json("""{"clients":[],"resources":[],"permissions":[],"roles":[]}""")
             else Response.text("boom").status(status)
           .toRoutes,
       )
@@ -72,6 +80,31 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           field(body, "registrationFlow") == webClient.registrationFlow,
           optionalStr(body, "backChannelLogoutUri") == webClient.backChannelLogoutUri,
           creds == ClientCreds(webClient.clientId, Some("secret-web-otp-0")),
+        )
+      },
+      // Central declares every one of these mandatory, so omitting them is not "the campaign
+      // wants the default" but a 400 that stops provisioning on its first client.
+      test("names the client protections central requires, all switched off") {
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerClient(webClient)
+          _ <- admin.registerClient(webClient)
+          state <- fake.snapshot
+          create = state.clients(webClient.clientId).spec
+          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+        yield assertTrue(
+          bool(create, "certificateBoundAccessTokens").contains(false),
+          field(create, "dpopSigningAlgs").contains(Json.Arr()),
+          bool(create, "dpopBoundAccessTokens").contains(false),
+          bool(create, "requireSignedRequestObject").contains(false),
+          bool(create, "requirePushedAuthorizationRequests").contains(false),
+          // Written on the update too, so a client left bound by a previous configuration is
+          // converged rather than left holding a setting the campaign cannot satisfy.
+          bool(update, "certificateBoundAccessTokens").contains(false),
+          field(update, "dpopSigningAlgs").contains(Json.Arr()),
+          bool(update, "dpopBoundAccessTokens").contains(false),
+          bool(update, "requireSignedRequestObject").contains(false),
+          bool(update, "requirePushedAuthorizationRequests").contains(false),
         )
       },
       test("marks a mobile client public and carries no secret back") {
@@ -236,6 +269,24 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state.resources(coreResource.resourceId).endpointIds == coreResource.endpoints.map(_.id).toSet,
         )
       },
+      // Central stores a resource's audience as an ordered list and patches it in place (see
+      // `PatchAudience.patch`); sending the full desired list back as `add` would duplicate every
+      // client already in it instead of leaving the list untouched, so the update names only what
+      // changed.
+      test("patches a resource's audience by add and remove rather than resending it whole") {
+        val narrowed = coreResource.copy(audience = List(CampaignBlueprint.mobileOtpClientId, "stale-client"))
+        for
+          (admin, fake) <- fakeAdmin()
+          _ <- admin.registerResource(narrowed)
+          _ <- admin.registerResource(coreResource)
+          state <- fake.snapshot
+          update = parse(state.callsTo(Method.PUT, "/configuration/resources").head.body)
+        yield assertTrue(
+          strings(obj(update, "audience"), "remove") == List("stale-client"),
+          strings(obj(update, "audience"), "add").toSet == coreResource.audience.toSet - CampaignBlueprint.mobileOtpClientId,
+          state.resources(coreResource.resourceId).audience == coreResource.audience.toSet,
+        )
+      },
       // The listing the create-or-update choice is made on is cached, so a retry after a partial
       // run can be told the resource is absent and have the create rejected as a duplicate.
       test("converges on a resource a concurrent run committed behind a stale listing") {
@@ -357,14 +408,13 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       },
     ),
     suite("syncs")(
-      test("tells auth and edge to reload, and flushes the user outbox") {
+      test("tells auth to reload, and flushes the user outbox") {
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.flushUserOutbox()
           _ <- admin.syncConfiguration()
-          _ <- admin.syncEdgeConfiguration()
           state <- fake.snapshot
-        yield assertTrue(state.outboxFlushes == 1, state.authSyncs == 1, state.edgeSyncs == 1)
+        yield assertTrue(state.outboxFlushes == 1, state.authSyncs == 1)
       },
     ),
     suite("failures")(
@@ -383,7 +433,12 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       },
       test("fails when a client listing cannot be read") {
         for
-          _ <- TestClient.addRoutes(Handler.fromResponse(Response.json("""{"unexpected":true}""")).toRoutes)
+          _ <- TestClient.addRoutes(
+            Handler
+              .fromFunction[Request]: request =>
+                if isTokenRequest(request) then issuedToken else Response.json("""{"unexpected":true}""")
+              .toRoutes,
+          )
           client <- ZIO.service[Client]
           admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
           error <- admin.registerClient(webClient).flip

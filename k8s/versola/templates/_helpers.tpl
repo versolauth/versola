@@ -74,9 +74,9 @@ in the single shared Secret (values.yaml's `secrets.existingSecret`).
 */}}
 {{- define "versola.requiredSecretVars" -}}
 {{- $vars := dict
-  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
-  "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD")
-  "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "POSTGRES_PASSWORD")
+  "auth" (list "ACCESS_TOKENS_SECRET" "CLIENT_SECRETS_SECRET" "REFRESH_TOKENS_SECRET" "AUTH_CODES_SECRET" "SESSIONS_SECRET" "PASSWORDS_SECRET" "CONVERSATION_COOKIE_SECRET" "SESSION_COOKIE_SECRET" "USER_AGENT_COOKIE_SECRET" "PAR_REQUESTS_SECRET" "DPOP_NONCES_SECRET" "JWT_PRIVATE_KEY" "CENTRAL_SECRET_KEY" "POSTGRES_PASSWORD" "ADMIN_BOOTSTRAP_PASSWORD")
+  "central" (list "CENTRAL_SECRET_KEY" "CLIENT_SECRETS_SECRET" "ACCOUNT_RESOURCE_SECRET" "JWKS_JSON" "EDGE_PUBLIC_JWK" "POSTGRES_PASSWORD" "CENTRAL_RESOURCE_SECRET" "UTILITY_CLIENT_SECRET")
+  "edge" (list "EDGE_PRIVATE_KEY" "EDGE_KEY_ID" "EDGE_TOKEN_ENC_KEY" "EDGE_SESSIONS_SECRET" "EDGE_INTERNAL_SECRET" "EDGE_DPOP_NONCE_SALT" "POSTGRES_PASSWORD")
  -}}
 {{- toYaml (index $vars .) -}}
 {{- end -}}
@@ -299,4 +299,25 @@ service:
 settings:
   - {path: /settings, pathType: Exact, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
   - {path: /settings/, pathType: Prefix, service: {{ $auth }}, port: {{ $authAdditionalPort }}}
+{{- end -}}
+
+{{/*
+Guard against pod placement set at the top level of values instead of under
+`global` or a component (versolauth/versola#404). Expects the root context.
+
+`nodeSelector`, `tolerations` and `affinity` are valid pod-spec field names on
+their own, so they are what someone reaching for "how do I place this pod"
+guesses at first. This chart reads none of them at the top level, and Helm
+does not reject a values path nothing references: `--set
+nodeSelector.workload=versola` installs, reports success, and places nothing.
+The pods land wherever the scheduler puts them -- which is the one failure
+this chart's placement support exists to prevent, and the only way to notice
+is `kubectl get pods -o wide`.
+*/}}
+{{- define "versola.checkTopLevelPlacement" -}}
+{{- range $field := list "nodeSelector" "tolerations" "affinity" -}}
+{{- if hasKey $.Values $field -}}
+{{- fail (printf "top-level `%s` is not read by this chart -- pod placement is `global.%s` chart-wide, or `services.<name>.%s` / `console.%s` for one component; see values.yaml's `global` block" $field $field $field $field) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}

@@ -14,6 +14,21 @@ Each `loadgen` role reads one HOCON env.conf from its own
 generates neither it nor the `${VAR}` values it references (see values.yaml's
 `secrets` block). `role` lives in that file, which is why the driver and the
 coordinator take one Secret each rather than sharing one.
+
+Whatever the role, every one of those files must set a top-level `env`.
+VersolaApp reads it (EnvName, and the `env` label on every log line) before a
+single loadgen-specific field is decoded, so a file without it is not a failed
+probe but a CrashLoopBackOff on boot, on the coordinator and every driver
+alike:
+
+    zio.Config$Error$MissingData: (Missing data at env: Expected env to be set)
+
+This chart cannot check that for you -- it never reads the Secret. What it does
+supply is ENV_NAME={{ .Values.envName }} on both roles, so the file can say
+
+    env = ${ENV_NAME}
+
+and let this release name the environment rather than the Secret.
 {{- if .Values.driver.enabled }}
 
 The driver fleet is a StatefulSet of {{ .Values.driver.replicaCount }} shards. Its env.conf must read the

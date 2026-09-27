@@ -1,7 +1,7 @@
 {
   "uid": "versola-loadgen-db-pools",
   "title": "Versola loadgen \u2014 database pools",
-  "description": "HikariCP connection-pool occupancy, acquisition wait and timeouts for every process on util/implementations/postgres \u2014 the report's pool section. Metric names and label sets come from util/implementations/postgres/src/main/scala/versola/util/postgres/DbMetrics.scala; namespace, job and pod are added at scrape time. A pool only appears here if its postgres { } block sets pool-metrics-interval.",
+  "description": "HikariCP connection-pool occupancy, acquisition wait and timeouts for every process on util/implementations/postgres \u2014 the report's pool section \u2014 plus, from panel 13 on, per-repository query latency and the LISTEN/NOTIFY channel's own health (config-cache propagation, not a pool concern, but the same DbMetrics.scala emits it). Metric names and label sets come from util/implementations/postgres/src/main/scala/versola/util/postgres/DbMetrics.scala; namespace, job and pod are added at scrape time. The pool-occupancy panels only show a pool whose postgres { } block sets pool-metrics-interval; the notification-listener panels are unaffected by that knob \u2014 they publish whenever a service's LISTEN connection is active at all.",
   "tags": [
     "versola",
     "loadgen",
@@ -752,6 +752,287 @@
           },
           "expr": "sum by (job, pool_name) (rate(db_client_connection_timeouts_total{namespace=\"$namespace\", job=~\"$job\", pool_name=~\"$pool_name\"}[$__rate_interval]))",
           "legendFormat": "{{job}} / {{pool_name}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Per-repository query latency — p50/p99",
+      "description": "db_client_operation_duration_seconds, added alongside the pool-occupancy panels above but not carrying a pool_name — it is keyed by `repository`/`operation` instead, DbMetrics.scala's own view of where the wait budget actually went once a connection was in hand. Not filtered by $pool_name for that reason.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": ["max"],
+          "sortBy": "Max",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.50, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "{{repository}} {{operation}} p50"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval])))",
+          "legendFormat": "{{repository}} {{operation}} p99"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Query outcome — non-success rate by repository",
+      "description": "Same metric's `outcome` label, filtered to everything but success. A repository whose queries are erroring is invisible on the occupancy and wait panels above — a failed acquire never reaches a query at all, but a failed query still holds and releases a connection normally.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{namespace=\"$namespace\", job=~\"$job\", outcome!=\"success\"}[$__rate_interval]))",
+          "legendFormat": "{{repository}} {{operation}}"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Notification listener — reconnects & silent windows",
+      "description": "db_notification_listener_reconnects_total and db_notification_listener_silent_total, the two counters behind config-cache propagation: every service's LISTEN connection that reconnected, and every window it went quiet longer than DbMetrics.scala's own timeout. This is the same channel `loadgen provision`'s syncConfiguration step waits on — a listener stuck reconnecting is a campaign that provisions but whose writes never reach auth's or edge's cache.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum (rate(db_notification_listener_reconnects_total{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval]))",
+          "legendFormat": "reconnects"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum (rate(db_notification_listener_silent_total{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval]))",
+          "legendFormat": "silent windows"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Notification listener connected",
+      "description": "db_notification_listener_connected, 1 while a service's LISTEN connection is up. A line at 0 for any stretch of the selected range is that service running on a stale configuration cache for as long as it lasted, silently — nothing else on this board or on sut-red.json would show it.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "min": 0,
+          "max": 1,
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "min (db_notification_listener_connected{namespace=\"$namespace\", job=~\"$job\"})",
+          "legendFormat": "connected"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "timeseries",
+      "title": "Notification queue overflow",
+      "description": "db_notification_listener_queue_overflow_total — a notification the listener received but could not queue before its own buffer filled, so it was dropped rather than delivered late. Any nonzero rate here is a cache-invalidation message that never arrived, not merely a slow one.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 60
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "line" }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.001 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum (rate(db_notification_listener_queue_overflow_total{namespace=\"$namespace\", job=~\"$job\"}[$__rate_interval]))",
+          "legendFormat": "dropped notifications"
         }
       ]
     }

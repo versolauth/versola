@@ -383,6 +383,35 @@ jobs:
             sleep 2
           done
 
+      # gen-env.scala points edge's `versola-internal-url` at this terminator rather than at
+      # auth's plain port, because auth reads an RFC 8705 client certificate from a header and
+      # never terminates TLS itself -- so a certificate edge presents needs something in front
+      # of auth to turn a handshake into that header. Every other edge -> auth call goes over
+      # the same address, so it has to be listening before edge serves anything at all.
+      - name: Start the internal TLS terminator in front of auth
+        if: github.event_name != 'release'
+        run: |
+          # Preinstalled on the GitHub-hosted Ubuntu images; installed here so a runner image
+          # that drops it fails with a message naming nginx rather than with every edge call
+          # refusing a connection.
+          command -v nginx >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y nginx; }
+          sudo nginx -c "$(pwd)/edge/dev/internal-tls/nginx.conf" > /tmp/nginx.log 2>&1 &
+          echo $! > /tmp/nginx.pid
+          echo "Waiting for the terminator on port 9443..."
+          for i in $(seq 1 30); do
+            if curl -sk -o /dev/null "https://localhost:9443/.well-known/openid-configuration"; then
+              echo "terminator is ready after $(( (i - 1) * 2 ))s"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "the terminator did not answer in 60s"
+              cat /tmp/nginx.log
+              cat edge/dev/internal-tls/error.log 2>/dev/null
+              exit 1
+            fi
+            sleep 2
+          done
+
       # The account-settings e2e specs reach auth's Security page the way a
       # browser does -- through edge -- so edge has to be up alongside auth.
       - name: Start edge service
@@ -410,6 +439,15 @@ jobs:
             sleep 2
           done
 
+      # Runs loadgen's own Provisioner/HttpAdminClient, unmodified, against this real central --
+      # not FakeCentral, loadgen's hand-maintained stand-in, which has twice let a wire-shape
+      # mismatch between the two pass its own suite (see LoadgenProvisionSpec's own doc comment).
+      # A separate step, ahead of the general e2e run below, so a decode mismatch here is
+      # reported as "provisioning broke", not lost among the rest of e2e's failures.
+      - name: Run loadgen provision against a real central
+        if: github.event_name != 'release'
+        run: sbt "e2e/testOnly versola.e2e.flows.provision.LoadgenProvisionSpec"
+
       - name: Run e2e tests
         if: github.event_name != 'release'
         run: sbt e2e/test
@@ -420,6 +458,7 @@ jobs:
           [ -f /tmp/auth.pid ]    && kill "$(cat /tmp/auth.pid)"    2>/dev/null || true
           [ -f /tmp/central.pid ] && kill "$(cat /tmp/central.pid)" 2>/dev/null || true
           [ -f /tmp/edge.pid ]   && kill "$(cat /tmp/edge.pid)"   2>/dev/null || true
+          [ -f /tmp/nginx.pid ]  && sudo kill "$(cat /tmp/nginx.pid)" 2>/dev/null || true
 
   docker-auth:
     needs: build
@@ -840,6 +879,22 @@ jobs:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
 
+      # The admin console (central-ui) ships inside versola-tools: at
+      # `configure` time entrypoint.sh copies it into the deployment bundle,
+      # where the reverse proxy versola-cli sets up serves it as static
+      # files -- no separate gateway image for it. Same build as the
+      # docker-gateway job's, for as long as that job still exists.
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+
+      - name: Build central-ui
+        working-directory: central-ui
+        run: |
+          npm ci
+          npm run build
+
       # See the identical comment in docker-auth's "Set up QEMU" step.
       # This job needs it more than the others: docker/Dockerfile.tools runs
       # jlink/jdeps once (against both genEnv's and migrate-tool's jars
@@ -1087,3 +1142,98 @@ jobs:
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Guards against the k8s/*/values.yaml `image.tag: ""` default -- which
+  # _helpers.tpl resolves to .Chart.AppVersion -- naming a tag that was never
+  # published. That is how k8s/loadgen shipped pointing at 0.4.0 images whose
+  # docker-* jobs did not exist until c17190d8, three releases later.
+  #
+  # No `needs:` -- it compiles nothing, so it stays off the critical path and
+  # reports in well under a minute. Skipped on `release`/`workflow_dispatch`
+  # because the docker-* jobs above are pushing these exact tags on those
+  # events and this check would race them.
+  helm-images:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart images exist in ghcr
+        run: .github/scripts/check-chart-images.sh
+
+  # Separate from helm-images on purpose. That job installs only Helm and
+  # reports in seconds; this one runs gen-env.scala through scala-cli, which
+  # has to compile it first, so folding the two together would slow the fast
+  # check down to the slow one's pace for no gain -- they share no setup
+  # beyond the checkout.
+  #
+  # Same event guard as helm-images, for a different reason: nothing here
+  # races the docker-* jobs, but a drift between the chart and the generator
+  # is something to catch on the PR that introduces it, which is where this
+  # runs.
+  helm-secret-vars:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Set up Scala CLI
+        uses: VirtusLab/scala-cli-setup@v1
+
+      - name: Check chart secret vars match gen-env
+        run: .github/scripts/check-chart-secret-vars.sh
+
+  # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
+  # global values reach every pod, that a component's own value replaces them
+  # rather than merging, and that the loadgen coordinator's standby spread
+  # survives a user's nodeAffinity. A pod that ignores its placement still
+  # schedules -- on the wrong node -- so nothing else would catch a regression.
+  #
+  # Its own job rather than a step in helm-images, which checks something
+  # unrelated, so a failure names what broke. Needs only Helm and the runner's
+  # system python3 with PyYAML; the script exits 2, not 0, if PyYAML is absent.
+  helm-placement:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart pod placement
+        run: .github/scripts/check-chart-placement.sh
+
+  # The plain-Ingress path's className contract: the chart must refuse to
+  # render an Ingress with no class rather than fall back to a cluster default
+  # that may not exist, while the Gateway API path keeps rendering without one.
+  # Every other chart check renders the defaults, where `ingress.enabled` is
+  # false, so dropping the guard would leave CI green.
+  #
+  # Its own job, like helm-placement, so a failure names what broke. Needs only
+  # Helm -- the script asserts on `helm template` output and its exit status.
+  helm-ingress:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Check chart ingress class contract
+        run: .github/scripts/check-chart-ingress.sh

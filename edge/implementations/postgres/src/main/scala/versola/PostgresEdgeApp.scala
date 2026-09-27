@@ -8,7 +8,7 @@ import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuar
 import versola.edge.login.LoginRepository
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -49,6 +49,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     RevocationNotifications &
     TokenRevocationService &
     JwksService &
+    ClientCertificateFiles &
     SSOClient &
     DpopProofRepository &
     DpopReplayGuard &
@@ -62,7 +63,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     ).reduce(_ ++ _)
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    parseConfig[EdgeConfig] >+>
+    // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
+    // rather than the leaf it is documented to require -- see that field's own comment.
+    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >+>
       // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
       (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>
@@ -90,6 +93,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PermissionService.live >+>
       JwksService.live >+>
       TokenRevocationService.live >+>
+      ClientCertificateFiles.live >+>
       SSOClient.live >+>
       DpopReplayGuard.shared >+>
       DpopVerifier.live >+>

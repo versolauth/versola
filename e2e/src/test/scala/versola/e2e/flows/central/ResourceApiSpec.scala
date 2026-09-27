@@ -355,20 +355,41 @@ object ResourceApiSpec extends CentralApiSpec:
       yield assertTrue(updated.status == Status.NoContent) &&
         assertTrue(record.flatMap(_.str("resource")).contains(s"$uri:8443"))
     },
-    test("an update replaces the audience outright") {
+    test("an update removes a client from the audience without naming the rest") {
       for
         central <- api
         ids <- resourceId
         (id, uri) = ids
         clientId <- CentralApi.id("e2e-client")
+        otherId <- CentralApi.id("e2e-client")
         _ <- central.post("/configuration/clients", Fixtures.client(clientId))
-        _ <- central.post(path, Fixtures.resource(id, uri, audience = Set(clientId)))
-        _ <- central.put(path, Fixtures.resourceUpdate(id, audience = Some(Set.empty)))
-        record <- read(central, id, expect = _.strings("audience").isEmpty)
+        _ <- central.post("/configuration/clients", Fixtures.client(otherId))
+        _ <- central.post(path, Fixtures.resource(id, uri, audience = Set(clientId, otherId)))
+        _ <- central.put(path, Fixtures.resourceUpdate(id, removeAudience = Set(clientId)))
+        record <- read(central, id, expect = _.strings("audience") == Set(otherId))
         _ <- cleanup(central, id)
         _ <- central.delete("/configuration/clients", "clientId" -> clientId)
-      yield assertTrue(record.map(_.strings("audience")).contains(Set.empty[String]))
-        .label("revoking a client's access to a resource has to be possible in one call")
+        _ <- central.delete("/configuration/clients", "clientId" -> otherId)
+      yield assertTrue(record.map(_.strings("audience")).contains(Set(otherId)))
+        .label("revoking one client's access must leave every other client's intact")
+    },
+    test("an update adds a client to the audience without dropping the one already there") {
+      for
+        central <- api
+        ids <- resourceId
+        (id, uri) = ids
+        clientId <- CentralApi.id("e2e-client")
+        addedId <- CentralApi.id("e2e-client")
+        _ <- central.post("/configuration/clients", Fixtures.client(clientId))
+        _ <- central.post("/configuration/clients", Fixtures.client(addedId))
+        _ <- central.post(path, Fixtures.resource(id, uri, audience = Set(clientId)))
+        _ <- central.put(path, Fixtures.resourceUpdate(id, addAudience = Set(addedId)))
+        record <- read(central, id, expect = _.strings("audience") == Set(clientId, addedId))
+        _ <- cleanup(central, id)
+        _ <- central.delete("/configuration/clients", "clientId" -> clientId)
+        _ <- central.delete("/configuration/clients", "clientId" -> addedId)
+      yield assertTrue(record.map(_.strings("audience")).contains(Set(clientId, addedId)))
+        .label("a caller adding itself must not have to know who else is in the audience")
     },
     test("an update adds an endpoint to an existing resource") {
       for

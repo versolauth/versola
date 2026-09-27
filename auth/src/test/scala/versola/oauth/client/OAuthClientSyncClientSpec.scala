@@ -7,7 +7,6 @@ import zio.*
 import zio.http.*
 import zio.json.*
 import zio.json.ast.Json
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import javax.crypto.spec.SecretKeySpec
@@ -19,14 +18,11 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   private val config = TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey))
   private val configLayer = ZLayer.succeed(config)
 
-  private given JsonCodec[NonEmptySet[String]] =
-    JsonCodec.nonEmptyChunk[String].transform(NonEmptySet.fromNonEmptyChunk, _.toNonEmptyChunk)
-
   private case class EncodedClient(
       id: ClientId,
       tenantId: TenantId,
       clientName: Map[String, String],
-      redirectUris: NonEmptySet[String],
+      redirectUris: Set[String],
       scope: Set[ScopeToken],
       secret: Option[String],
       previousSecret: Option[String],
@@ -45,6 +41,30 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       certificateBoundAccessTokens: Boolean,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
+
+  /** A `client_credentials` client: no redirect URI, since it runs no redirect-based flow. */
+  private val serviceClient = EncodedClient(
+    ClientId("service"),
+    TenantId("default"),
+    Map("en" -> "Service"),
+    Set.empty,
+    Set(ScopeToken.OpenId),
+    None,
+    None,
+    300.seconds,
+    7776000.seconds,
+    "default",
+    "default",
+    None,
+    false,
+    None,
+    None,
+    None,
+    None,
+    false,
+    AuthMethod.client_secret,
+    false,
+  )
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
@@ -72,6 +92,9 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   )
 
   def spec = suite("OAuthClientsClient")(
+    // The payload carries every client in one document, `serviceClient` among them: a
+    // `redirectUris` that insisted on at least one entry would not just misread that
+    // client, it would fail the decode and leave auth holding no clients at all.
     test("fetch synced clients with bearer token and map decrypted secrets") {
       val currentSecret = Secret.fromString("current-secret")
       val previousSecret = Secret.fromString("previous-secret")
@@ -87,7 +110,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       ClientId("web-app"),
                       TenantId("default"),
                       Map("en" -> "Web App", "de" -> "Web-Anwendung"),
-                      NonEmptySet("https://example.com/callback"),
+                      Set("https://example.com/callback"),
                       Set(ScopeToken.OpenId, ScopeToken("profile")),
                       Some(Base64Url.encode(currentSecret)),
                       Some(Base64Url.encode(previousSecret)),
@@ -104,7 +127,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       true,
                       AuthMethod.client_secret,
                       false,
-                    )
+                    ),
+                    serviceClient,
                   ),
                 ).toJson
               )
@@ -124,7 +148,9 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         claims.iss == "auth",
         claims.sub == "internal-auth",
         claims.aud == List("central"),
-        result.size == 1,
+        result.size == 2,
+        result(ClientId("service")).redirectUris.isEmpty,
+        client.redirectUris == Set("https://example.com/callback"),
         client.scope == Set(ScopeToken.OpenId, ScopeToken("profile")),
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),

@@ -10,7 +10,6 @@ import versola.util.{MAC, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.ast.{Json, JsonCursor}
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.time.Instant
@@ -42,7 +41,7 @@ object LogoutServiceSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = tenantId,
     clientName = Map("en" -> "Client 1"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
     previousSecret = None,

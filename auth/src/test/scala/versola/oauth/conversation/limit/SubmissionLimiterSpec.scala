@@ -4,7 +4,6 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, RateLimit, ScopeToken, SubmissionLimits, TenantId}
 import versola.util.UnitSpecBase
 import zio.*
-import zio.prelude.NonEmptySet
 import zio.test.*
 
 import java.time.Instant
@@ -20,7 +19,7 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     id = clientId,
     tenantId = tenantId,
     clientName = Map("en" -> "Test Client"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("openid")),
     secret = None,
     previousSecret = None,

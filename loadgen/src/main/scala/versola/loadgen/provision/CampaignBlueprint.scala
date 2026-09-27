@@ -248,6 +248,12 @@ object CampaignBlueprint:
 
     val mobileClients = List(
       (mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow, Some(flows.registrationFlow)),
+      // Registration flow kept: `phoneOtpPasswordAuthFlow`'s primary credential is phone, entered
+      // on its own -- OTP and password are both required *factors*, sequential steps after it, not
+      // an inline password on the primary step. `InvalidRegistrationConfiguration.validate` only
+      // rejects a registration flow paired with `primary.inlinePassword`, which this flow does not
+      // set; a client whose primary step itself asks for a password inline is a distinct, currently
+      // unsupported scenario this cohort deliberately does not model.
       (
         mobileOtpPasswordClientId,
         "Loadgen mobile OTP + password",

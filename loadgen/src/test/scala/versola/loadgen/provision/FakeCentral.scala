@@ -8,9 +8,10 @@ import zio.json.ast.Json
 
 import java.util.UUID
 
-/** In-memory stand-in for central's configuration API and edge's service API, with the two
-  * behaviours the provisioner's idempotency actually turns on: a duplicate client is a `409`,
-  * while a duplicate role, permission or resource is the `500` a unique violation surfaces as.
+/** In-memory stand-in for the three hops a provision run makes -- auth's token endpoint, edge's
+  * proxy and central's configuration API behind it -- with the two behaviours the provisioner's
+  * idempotency actually turns on: a duplicate client is a `409`, while a duplicate role,
+  * permission or resource is the `500` a unique violation surfaces as.
   *
   * Holds real state rather than replaying canned responses, so that "run `provision` twice"
   * is a test of convergence and not of a script -- the second run reads back what the first
@@ -51,14 +52,78 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
   private def cold(path: String): UIO[Boolean] =
     state.modify(s => (s.coldPaths.contains(path), s.copy(coldPaths = s.coldPaths - path)))
 
+  /** Edge's proxy in miniature: an admin call arrives under `/resources/central`, must carry the
+    * bearer token auth issued, and is matched against central's own paths with that prefix
+    * removed -- the same rest-of-path forwarding `EdgeService.buildUpstreamRequest` does.
+    */
   private def respond(request: Request, body: String): UIO[Response] =
-    val path = request.url.path.encode
+    val rawPath = request.url.path.encode
+    val proxied = rawPath.startsWith(proxyPrefix + "/")
+    val path = if proxied then rawPath.stripPrefix(proxyPrefix) else rawPath
     val record = state.update(s => s.copy(calls = s.calls :+ Call(request.method, path, body)))
-    val fromEdge = request.header(Header.Authorization).exists {
-      case Header.Authorization.Basic(user, _) => user == "edge"
+    val bearer = request.header(Header.Authorization).exists {
+      case Header.Authorization.Bearer(token) => token.stringValue.startsWith(issuedTokenPrefix)
       case _ => false
     }
+    if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
+    else missingMember(request.method, path, body) match
+      case Some(refusal) => record.as(refusal)
+      case None => dispatch(request, path, body, record)
+
+  /** Central decodes the body before any handler runs, so a payload that leaves out a member
+    * its DTO declares mandatory is refused there and never reaches the behaviour these specs
+    * describe -- the shape of the bug that kept `provision` from registering a client at all.
+    */
+  private def missingMember(method: Method, path: String, body: String): Option[Response] =
+    requiredMembers.get((method, path)).flatMap: required =>
+      val document = Json.decoder.decodeJson(body).toOption.collect { case obj: Json.Obj => obj }
+      required.toList.sorted.find(member => !document.exists(present(_, member.split('.').toList))).map: member =>
+        val trace = member.split('.').mkString(".", ".", "")
+        Response.text(s"Failed to decode JSON: $trace(missing)").status(Status.BadRequest)
+
+  /** A member named by its path from the document root, so that a nested DTO's own mandatory
+    * members are checked too -- `submissionLimits` being present says nothing about the
+    * categories inside it, each of which central requires in its own right.
+    */
+  private def present(document: Json.Obj, path: List[String]): Boolean =
+    path match
+      case Nil => true
+      case member :: rest =>
+        document.get(member).exists:
+          case nested: Json.Obj => present(nested, rest)
+          case _ => rest.isEmpty
+
+  private def dispatch(request: Request, path: String, body: String, record: UIO[Unit]): UIO[Response] =
     record *> ((request.method, path) match
+      // auth's token endpoint. Only `client_credentials` for `resource://central` is modelled,
+      // since that is the one grant an admin client ever asks for.
+      case (Method.POST, "/token") =>
+        val form = Form.fromURLEncoded(body, Charsets.Utf8).toOption.getOrElse(Form.empty)
+        val requested = form.get("resource").flatMap(_.stringValue)
+        val credentialed = request.header(Header.Authorization).exists {
+          case Header.Authorization.Basic(user, _) => user.nonEmpty
+          case _ => false
+        }
+        if !credentialed || requested.contains("resource://central") == false then
+          ZIO.succeed(json(Json.Obj("error" -> Json.Str("invalid_target")), Status.BadRequest))
+        else
+          state.modify: s =>
+            (
+              json(Json.Obj("access_token" -> Json.Str(s"$issuedTokenPrefix${s.tokensIssued + 1}"))),
+              s.copy(tokensIssued = s.tokensIssued + 1),
+            )
+
+      // Edge serves a resource it has synced and 404s one it has not, which is what
+      // `awaitEdgeConfiguration` reads to tell that its writes have landed. Real edge 404s a
+      // probe against a rest-of-path with no matching registered endpoint the same as one
+      // against a resource it has not cached at all -- this stands in for both by keying on the
+      // resource alone, since the endpoint the provisioner probes is always one it registered.
+      case (_, probe) if probe.startsWith("/resources/") && !probe.startsWith(proxyPrefix) =>
+        val resourceId = probe.stripPrefix("/resources/").takeWhile(_ != '/')
+        state.get.map: s =>
+          if s.resources.contains(resourceId) && s.authSyncs > 0 then Response.status(Status.NoContent)
+          else Response.status(Status.NotFound)
+
       case (Method.GET, "/configuration/clients") =>
         // `staleClientListing` reproduces the one race the provisioner cannot read its way out of:
         // the listing is served from a cache a PostgreSQL notification refreshes, so a peer's
@@ -90,7 +155,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               permissions = strings(spec, "permissions").toSet,
             )
             (response, s.copy(clients = s.clients.updated(clientId, stored)))
-        unknownRole(spec).someOrElseZIO(create)
+        invalidRegistration(spec).someOrElseZIO(create)
 
       case (Method.PUT, "/configuration/clients") =>
         val spec = parse(body)
@@ -100,7 +165,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             case None => (Response.status(Status.NoContent), s)
             case Some(stored) =>
               (Response.status(Status.NoContent), s.copy(clients = s.clients.updated(clientId, stored.updated(spec))))
-        unknownRole(spec).someOrElseZIO(update)
+        invalidRegistration(spec).someOrElseZIO(update)
 
       case (Method.POST, "/configuration/clients/rotate-secret") =>
         val clientId = request.url.queryParams.queryParam("clientId").getOrElse("")
@@ -120,6 +185,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
           json(Json.Obj("resources" -> array(visible.map { (resourceId, stored) =>
             Json.Obj(
               "resourceId" -> Json.Str(resourceId),
+              "audience" -> array(stored.audience.toList.sorted.map(Json.Str(_))),
               "endpoints" -> array(stored.endpointIds.toList.sortBy(_.toString).map(idObject)),
             )
           })))
@@ -130,7 +196,11 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         state.modify: s =>
           if s.resources.contains(resourceId) then (uniqueViolation, s)
           else
-            val stored = StoredResource(spec, objects(spec, "endpoints").map(endpointIdOf).toSet)
+            val stored = StoredResource(
+              spec,
+              objects(spec, "endpoints").map(endpointIdOf).toSet,
+              audience = strings(spec, "audience").toSet,
+            )
             (Response.status(Status.Created), s.copy(resources = s.resources.updated(resourceId, stored)))
 
       case (Method.PUT, "/configuration/resources") =>
@@ -143,10 +213,8 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               val deleted = strings(spec, "deleteEndpoints").map(UUID.fromString).toSet
               val created = objects(spec, "createEndpoints").map(endpointIdOf).toSet
               val endpoints = (stored.endpointIds -- deleted -- created) ++ created
-              (
-                Response.status(Status.NoContent),
-                s.copy(resources = s.resources.updated(resourceId, StoredResource(spec, endpoints))),
-              )
+              val updated = StoredResource(spec, endpoints, audience = stored.patchedAudience(spec))
+              (Response.status(Status.NoContent), s.copy(resources = s.resources.updated(resourceId, updated)))
 
       case (Method.GET, "/configuration/permissions") =>
         cold(path).zip(state.get).map: (stale, s) =>
@@ -212,14 +280,39 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       case (Method.POST, "/service/users/outbox/flush") =>
         state.modify(s => (Response.status(Status.NoContent), s.copy(outboxFlushes = s.outboxFlushes + 1)))
 
-      // Central and edge expose this on the same path, so which one was called is told apart by
-      // the credential that arrived rather than by the URL -- the test client routes on path only.
       case (Method.POST, "/service/configuration/sync") =>
-        state.modify: s =>
-          if fromEdge then (Response.status(Status.NoContent), s.copy(edgeSyncs = s.edgeSyncs + 1))
-          else (Response.status(Status.NoContent), s.copy(authSyncs = s.authSyncs + 1))
+        state.modify(s => (Response.status(Status.NoContent), s.copy(authSyncs = s.authSyncs + 1)))
 
       case _ => ZIO.succeed(Response.status(Status.NotFound)))
+
+  /** Mirrors `versola.central.configuration.clients.InvalidRegistrationConfiguration.validate`'s
+    * `auth.primary.inlinePassword` branch: registration is only reachable from a credential card
+    * whose primary credential asks for a phone or an email, proving ownership of the entry
+    * credential -- never one that also asks for the password inline. Central refuses a client
+    * that combines a registration flow with such an auth flow outright (versolauth/versola,
+    * loadgen's `CampaignBlueprint` shipped exactly this combination for one client until it did).
+    */
+  private def inlinePasswordWithRegistration(spec: Json.Obj): Option[Response] =
+    // `.collect { case _: Json.Obj => }`, not `.flatMap(_ => ...)` on the bare field: an update
+    // body states an absent registration flow as an explicit JSON `null`, not a missing key (see
+    // `HttpAdminClient.updateClient`'s `registrationFlow.getOrElse(Json.Null)`), and `field` alone
+    // cannot tell that apart from "genuinely present" -- the same reason `unknownRole` below
+    // collects it the same way rather than testing for mere presence.
+    // `field(flow, "primary").collect { case p: Json.Obj => p }`, not `obj(flow, "primary")`:
+    // `obj` throws when the shape doesn't match, and `ProvisionFixtures`' own auth-flow fixtures
+    // are deliberately flat placeholders (`Json.Obj("primary" -> Json.Str("phone-otp"))`) that
+    // specs comparing them by identity never needed to look inside -- this check has to tolerate
+    // that shape rather than fail every spec that builds a client from one.
+    field(spec, "registrationFlow").collect { case _: Json.Obj => () }
+      .flatMap(_ => field(spec, "authFlow").collect { case flow: Json.Obj => flow })
+      .flatMap(flow => field(flow, "primary").collect { case p: Json.Obj => p })
+      .flatMap(primary => bool(primary, "inlinePassword"))
+      .filter(identity)
+      .map(_ =>
+        Response
+          .text("Invalid registration configuration: registration is not available when the credential card asks for a password inline")
+          .status(Status.BadRequest),
+      )
 
   /** Central validates the roles a client's registration flow grants while saving the client and
     * answers a `400` for one that does not exist yet -- the reason roles are provisioned before
@@ -232,6 +325,15 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       granted.find(!s.roles.contains(_)).map: roleId =>
         Response.text(s"Invalid registration configuration: role '$roleId' does not exist")
           .status(Status.BadRequest)
+
+  /** Every registration-shape rejection a client write can hit, checked in the same order central
+    * itself would reach them: the auth-flow/registration-flow combination is a property of the
+    * request body alone, so it is checked before the role lookup that needs the current state.
+    */
+  private def invalidRegistration(spec: Json.Obj): UIO[Option[Response]] =
+    inlinePasswordWithRegistration(spec) match
+      case some @ Some(_) => ZIO.succeed(some)
+      case None => unknownRole(spec)
 
 object FakeCentral:
 
@@ -246,6 +348,75 @@ object FakeCentral:
     "/configuration/resources",
     "/configuration/permissions",
     "/configuration/roles",
+  )
+
+  /** The members central's DTO for each write declares mandatory -- neither optional nor
+    * carrying a default, so zio-json refuses a body without them. A dotted name is a member of
+    * a nested DTO, which central requires just as strictly as one at the root.
+    *
+    * Kept in step with `versola.central.configuration.dto` by hand, as the payloads themselves
+    * are: this stand-in is the only thing between a member added to a registration DTO and a
+    * `provision` run that fails against a real central.
+    */
+  val requiredMembers: Map[(Method, String), Set[String]] = Map(
+    (Method.POST, "/configuration/clients") -> Set(
+      "tenantId",
+      "id",
+      "clientName",
+      "redirectUris",
+      "allowedScopes",
+      "permissions",
+      "accessTokenTtl",
+      "theme",
+      "otpTemplateId",
+      "frontChannelLogoutSessionRequired",
+      "authMethod",
+      "certificateBoundAccessTokens",
+      "dpopSigningAlgs",
+      "dpopBoundAccessTokens",
+      "requireSignedRequestObject",
+      "requirePushedAuthorizationRequests",
+    ),
+    (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
+    (Method.POST, "/configuration/resources") -> Set(
+      "tenantId",
+      "resourceId",
+      "resource",
+      "audience",
+      "endpoints",
+      "internal",
+    ),
+    (Method.PUT, "/configuration/resources") -> Set(
+      "resourceId",
+      "audience",
+      "audience.add",
+      "audience.remove",
+      "deleteEndpoints",
+      "createEndpoints",
+    ),
+    (Method.POST, "/configuration/permissions") -> Set("tenantId", "permission", "description", "endpointIds"),
+    (Method.PUT, "/configuration/permissions") -> Set("tenantId", "permission", "description"),
+    (Method.POST, "/configuration/roles") -> Set("tenantId", "id", "description", "permissions"),
+    (Method.PUT, "/configuration/roles") -> Set("tenantId", "id", "description", "permissions"),
+    (Method.POST, "/configuration/auth-request-presets") -> Set("clientId", "presets"),
+    (Method.PUT, "/configuration/challenges/challenge-settings") -> Set(
+      "tenantId",
+      "allowedPrefixes",
+      "submissionLimits",
+      "submissionLimits.otpRequest",
+      "submissionLimits.otpSubmit",
+      "submissionLimits.passwordSubmit",
+      "submissionLimits.passkeyAssertion",
+      "submissionLimits.banDurationSeconds",
+      "otpLength",
+      "otpResendAfter",
+      "passkeySettings",
+      "passkeySettings.rpId",
+      "passkeySettings.rpName",
+      "passkeySettings.origins",
+      "passkeySettings.userVerification",
+      "ipHeader",
+    ),
   )
 
   case class StoredClient(
@@ -273,7 +444,13 @@ object FakeCentral:
     private def patched(current: Set[String], patch: Json.Obj): Set[String] =
       current -- strings(patch, "remove") ++ strings(patch, "add")
 
-  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID])
+  case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String] = Set.empty):
+    /** Applies the audience patch the way central's `PatchAudience.patch` does: remove before
+      * add, so a client moved from one resource's audience to another in the same run is not
+      * dropped by whichever write central happens to apply first.
+      */
+    def patchedAudience(spec: Json.Obj): Set[String] =
+      audience -- strings(obj(spec, "audience"), "remove") ++ strings(obj(spec, "audience"), "add")
 
   /** The listings [[FakeCentral.staleListings]] serves cold. Clients are not among them: their
     * listing has its own flag, because the provisioner's 409 fallback needs it stale throughout.
@@ -289,7 +466,7 @@ object FakeCentral:
       presets: Map[String, List[Json.Obj]],
       challengeSettings: Option[Json.Obj],
       authSyncs: Int,
-      edgeSyncs: Int,
+      tokensIssued: Int,
       outboxFlushes: Int,
       coldPaths: Set[String],
       calls: Chunk[Call],
@@ -305,7 +482,7 @@ object FakeCentral:
     presets = Map.empty,
     challengeSettings = None,
     authSyncs = 0,
-    edgeSyncs = 0,
+    tokensIssued = 0,
     outboxFlushes = 0,
     coldPaths = Set.empty,
     calls = Chunk.empty,
@@ -317,6 +494,12 @@ object FakeCentral:
   /** A unique-key violation as central reports it: an unhandled repository failure, not a 409.
     * This is why the provisioner reads before it writes.
     */
+  /** Where edge publishes central's admin API: `BootstrapService` seeds it as the internal
+    * resource `central`, so the proxy's path is this, then central's own. */
+  private val proxyPrefix: String = "/resources/central"
+
+  private val issuedTokenPrefix: String = "provisioner-token-"
+
   private val uniqueViolation: Response =
     Response.text("ERROR: duplicate key value violates unique constraint").status(Status.InternalServerError)
 
@@ -370,15 +553,14 @@ object ProvisionFixtures:
   val targets: TargetsConfig = TargetsConfig(
     authUrl = "http://auth:8080",
     edgeUrl = "http://edge:8095",
-    centralUrl = "http://central:8090",
     mockUrl = "http://mockapi:8100",
     origin = "https://bank.example.test",
   )
 
   val provision: ProvisionConfig = ProvisionConfig(
     tenantId = "default",
-    centralSecret = Config.Secret("central-secret"),
-    edgeSecret = Config.Secret("edge-secret"),
+    provisionerClientId = "utils",
+    provisionerSecret = Config.Secret("provisioner-secret"),
     mobileRedirectUri = "versola://callback",
     resources = ProvisionResourcesConfig(
       coreUri = "http://mockapi-core:8100",

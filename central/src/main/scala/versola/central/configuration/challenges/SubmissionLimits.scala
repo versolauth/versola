@@ -5,16 +5,26 @@ import zio.schema.{Schema, derived}
 
 case class RateLimit(maxAttempts: Int, windowSeconds: Int) derives Schema, JsonCodec
 
+/** No member defaults: a category left out of the request would decode to `Nil`, which is
+  * this tenant running that submission type unthrottled -- the caller has to say so rather
+  * than arrive at it by omission.
+  */
 case class SubmissionLimits(
-    otpRequest: List[RateLimit] = Nil,
-    otpSubmit: List[RateLimit] = Nil,
-    passwordSubmit: List[RateLimit] = Nil,
-    passkeyAssertion: List[RateLimit] = Nil,
-    banDurationSeconds: Int = 0,
+    otpRequest: List[RateLimit],
+    otpSubmit: List[RateLimit],
+    passwordSubmit: List[RateLimit],
+    passkeyAssertion: List[RateLimit],
+    banDurationSeconds: Int,
 ) derives Schema, JsonCodec
 
 object SubmissionLimits:
-  val empty: SubmissionLimits = SubmissionLimits()
+  val empty: SubmissionLimits = SubmissionLimits(
+    otpRequest = Nil,
+    otpSubmit = Nil,
+    passwordSubmit = Nil,
+    passkeyAssertion = Nil,
+    banDurationSeconds = 0,
+  )
 
   /** Seeded on every new tenant unless the caller overrides it in the create-tenant request:
     * tight enough to slow down credential stuffing and OTP brute force, loose enough not to

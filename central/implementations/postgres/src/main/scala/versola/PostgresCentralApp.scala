@@ -199,6 +199,11 @@ object PostgresCentralApp extends VersolaApp("central"):
   given DeriveConfig[versola.central.configuration.edges.EdgeId] =
     DeriveConfig[String].map(versola.central.configuration.edges.EdgeId(_))
 
+  given DeriveConfig[versola.central.configuration.clients.ClientId] =
+    DeriveConfig[String].mapOrFail: str =>
+      versola.central.configuration.clients.ClientId.from(str)
+        .left.map(message => zio.Config.Error.InvalidData(message = message))
+
   private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
     newType.fromBase64Url(str)
       .left.map(message => zio.Config.Error.InvalidData(message = message))

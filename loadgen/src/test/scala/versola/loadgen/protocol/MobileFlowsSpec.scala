@@ -9,7 +9,7 @@ import java.util.UUID
 
 object MobileFlowsSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val sutUserId = UUID.fromString("99999999-8888-7777-6666-555555555555")
   private val expectedTokens = Tokens(AccessToken("at-1"), Some(RefreshToken("rt-1")), Some(IdToken("it-1")), 900L)
 

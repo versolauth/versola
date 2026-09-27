@@ -47,6 +47,7 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
   )

@@ -148,7 +148,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     id = clientId,
     tenantId = tenantId,
     clientName = Map("en" -> "Registering client"),
-    redirectUris = zio.prelude.NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
     previousSecret = None,

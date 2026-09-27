@@ -515,7 +515,7 @@ object EdgeService:
         typedClaims <- ZIO.fromEither(session.claims.as[AccessTokenClaims]).orElseFail(Outcome.Unauthorized)
         _ <- logAccessTokenClaims(typedClaims)
         _ <- checkRevoked(typedClaims)
-        _ <- checkDpop(request, session.accessToken, typedClaims, authSource)
+        _ <- checkTokenBinding(request, session.accessToken, typedClaims, authSource)
 
         resource <- resourceService.findByResourceId(resourceId).someOrFail(Outcome.NotFound)
         endpoint <- findEndpoint(resource.endpoints, request.method.name, restPath)
@@ -525,7 +525,7 @@ object EdgeService:
         parsedBody <- readJsonBody(request)
         _ <- checkPermissions(typedClaims, endpoint)
         _ <- checkAudience(resource, typedClaims)
-        userInfo <- ssoClient.userInfo(session.accessToken, dpopBound = typedClaims.confirmation.isDefined)
+        userInfo <- fetchUserInfo(session.accessToken, typedClaims)
           .when(endpoint.fetchUserInfo)
           .someOrElse(Json.Obj())
           .mapError {
@@ -586,29 +586,34 @@ object EdgeService:
         Observability.setUserId(claims.subject) *>
         ZIO.foreachDiscard(claims.sid)(Observability.setSessionId)
 
-    /** RFC 9449 §7.1: decides what the presented token and scheme oblige the caller to prove,
-      * and holds the request until it has.
+    /** RFC 9449 §7.1 and RFC 8705 §3: decides what the presented token obliges the caller to
+      * prove, and holds the request until it has.
       *
-      * The `cnf.jkt` claim, not the scheme, is what makes a proof mandatory. A caller
-      * choosing `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to
-      * refuse, so that refusal is unconditional -- it holds whether or not this edge has a
-      * `dpop` block configured, and for a token arriving in the session cookie too.
+      * The `cnf` claim, not the scheme, is what makes a proof mandatory. A caller choosing
+      * `Bearer` for a key-bound token is exactly the downgrade §7.2 exists to refuse, so that
+      * refusal is unconditional -- it holds whether or not this edge has a `dpop` block
+      * configured, and for a token arriving in the session cookie too.
       *
-      * The RFC 8705 §3 half of the same rule is not enforced here: a token bound by
-      * `cnf.x5t#S256` is accepted by this edge with no certificate at all, which `/userinfo`
-      * now refuses. Closing it needs edge to see a client certificate in the first place --
-      * there is no `ChallengeSettings` sync and no certificate parsing on this side -- and
-      * whether it sits behind the same mTLS-terminating proxy as `auth` is a deployment
-      * question rather than a code one. Tracked in issue #320.
+      * A certificate-bound token (`cnf.x5t#S256`) is answered differently, because the
+      * certificate it names is this edge's own: edge is the RFC 8705 client that obtained the
+      * token, and no caller of edge holds that certificate or could present it here. Such a
+      * token is honoured only out of the `EDGE_SESSION` cookie -- where edge put it itself,
+      * sealed, and got it back. Presented in an `Authorization` header it is refused: edge
+      * terminates no TLS of its own (there is no `ChallengeSettings` sync and no certificate
+      * parsing on this side -- #320), so it cannot tell a holder of a leaked bound token from
+      * the client the token was bound to, and §3 is explicit that a bound token must not be
+      * honoured for anyone else.
       */
-    private def checkDpop(
+    private def checkTokenBinding(
         request: Request,
         accessToken: AccessToken,
         claims: AccessTokenClaims,
         authSource: AuthSource,
     ): IO[Outcome, Unit] =
-      (claims.confirmation.map(_.jkt), authSource) match
-        case (Some(jkt), AuthSource.Header(AuthScheme.Dpop)) =>
+      val boundKey = claims.confirmation.flatMap(_.jkt)
+      val boundCertificate = claims.confirmation.flatMap(_.certificateThumbprint)
+      (boundKey, boundCertificate, authSource) match
+        case (Some(jkt), _, AuthSource.Header(AuthScheme.Dpop)) =>
           val verified =
             for
               proof <- DpopVerifier.proofHeader(request)
@@ -634,16 +639,47 @@ object EdgeService:
               Observability.setError(s"dpop_${error.productPrefix.toLowerCase}") *>
                 ZIO.fail(Outcome.InvalidDpopProof)
 
-        case (Some(_), _) =>
+        case (Some(_), _, _) =>
           Observability.setError("dpop_downgrade") *> ZIO.fail(Outcome.InvalidDpopProof)
+
+        // The session cookie is edge's own copy of the token, and the certificate it is bound
+        // to is one edge still holds -- and presents on every call it makes with this token.
+        case (None, Some(_), AuthSource.Cookie(_)) => ZIO.unit
+
+        case (None, Some(_), _) =>
+          Observability.setError("certificate_bound_token_outside_session") *>
+            ZIO.fail(Outcome.Unauthorized)
 
         // A proof signed with some key says nothing about a token that was never bound to
         // one: anyone holding the token could have produced it. §7.1 has the resource server
         // treat the token as invalid rather than fall back to bearer semantics.
-        case (None, AuthSource.Header(AuthScheme.Dpop)) =>
+        case (None, None, AuthSource.Header(AuthScheme.Dpop)) =>
           Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
 
-        case (None, _) => ZIO.unit
+        case (None, None, _) => ZIO.unit
+
+    /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
+      * here, so the call has to carry whatever that binding names -- and the two are carried
+      * in different places: an edge assertion in a header for a key-bound token, the
+      * certificate itself in the handshake for a certificate-bound one. Only the second needs
+      * the client looked up: its certificate is part of the registration central syncs, not
+      * of the token.
+      */
+    private def fetchUserInfo(
+        accessToken: AccessToken,
+        claims: AccessTokenClaims,
+    ): IO[Throwable | SSOClient.UserInfoUnauthorized.type, Json.Obj] =
+      for
+        binding <-
+          (claims.confirmation.flatMap(_.jkt), claims.confirmation.flatMap(_.certificateThumbprint)) match
+            case (Some(_), _) => ZIO.succeed(SSOClient.TokenBinding.Key)
+            case (None, Some(_)) =>
+              clientService.findClient(claims.clientId)
+                .someOrFail(ClientNotFound(claims.clientId))
+                .map(client => SSOClient.TokenBinding.Certificate(client.id, client.credential))
+            case (None, None) => ZIO.succeed(SSOClient.TokenBinding.Unbound)
+        info <- ssoClient.userInfo(accessToken, binding)
+      yield info
 
     /** A signed, unexpired token is not necessarily still valid: it may have been revoked on
       * its own, or its whole session logged out. Both are answered from memory, so this costs

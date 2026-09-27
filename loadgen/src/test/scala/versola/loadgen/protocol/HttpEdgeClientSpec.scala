@@ -10,7 +10,7 @@ import zio.{Ref, ZIO, durationInt}
   */
 object HttpEdgeClientSpec extends ZIOSpecDefault:
 
-  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://central.test", "http://mock.test", StubSut.origin)
+  private val targets = TargetsConfig(StubSut.authUrl, StubSut.edgeUrl, "http://mock.test", StubSut.origin)
   private val preset = PresetId(StubSut.preset)
 
   private def edgeFor(routes: Routes[Any, Nothing]): ZIO[TestClient & Client, ProtocolError, EdgeClient] =

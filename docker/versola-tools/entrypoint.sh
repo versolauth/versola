@@ -135,6 +135,14 @@ else
   cp openbao.hcl.template "$OUT_DIR"/openbao.hcl
 fi
 
+# Built admin console (central-ui), both targets: the reverse proxy
+# versola-cli sets up serves it straight from the bundle as static files.
+# Replaced wholesale rather than copied over, so a reused OUT_DIR can
+# neither nest a second copy inside the first nor keep stale assets from a
+# previous version.
+rm -rf "$OUT_DIR"/central-ui
+cp -R central-ui "$OUT_DIR"/central-ui
+
 # nginx.conf/proxy_params.conf are docker-local only -- vps's nginx is a
 # native install on the VPS, deployed by a separate pipeline (see the
 # comment on compose.fragment.vps.yml.template), not something this image
@@ -142,7 +150,7 @@ fi
 if [ "$TARGET" != "vps" ]; then
   cp nginx.conf.template "$OUT_DIR"/nginx.conf
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, openbao.hcl to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, openbao.hcl, central-ui/ to $OUT_DIR"
 fi

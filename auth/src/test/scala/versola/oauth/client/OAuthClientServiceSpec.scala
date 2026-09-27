@@ -8,7 +8,7 @@ import versola.util.*
 import zio.*
 import zio.durationInt
 import zio.json.ast.Json
-import zio.prelude.{EqualOps, NonEmptyList, NonEmptySet}
+import zio.prelude.{EqualOps, NonEmptyList}
 import zio.test.*
 import zio.test.Assertion.*
 
@@ -24,7 +24,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = clientId1,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Private 1"),
-    redirectUris = NonEmptySet("https://example.com/callback"),
+    redirectUris = Set("https://example.com/callback"),
     scope = Set(ScopeToken("read"), ScopeToken("write")),
     secret = Some(testSecret),
     previousSecret = None,
@@ -55,7 +55,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = clientId2,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Private 2"),
-    redirectUris = NonEmptySet("https://example2.com/callback"),
+    redirectUris = Set("https://example2.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = Some(testSecret),
     previousSecret = Some(previousClientSecret),
@@ -86,7 +86,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     id = publicClientId,
     tenantId = TenantId("default"),
     clientName = Map("en" -> "Public"),
-    redirectUris = NonEmptySet("https://public.example.com/callback"),
+    redirectUris = Set("https://public.example.com/callback"),
     scope = Set(ScopeToken("read")),
     secret = None,
     previousSecret = None,

@@ -46,7 +46,7 @@ case class UpsertChallengeSettingsRequest(
     ipHeader: String,
     acrVocabulary: Option[Map[String, List[String]]],
     postLogoutRedirectUris: Option[List[String]],
-    requireDpopNonce: Option[Boolean] = None,
+    requireDpopNonce: Option[Boolean],
     /** Null clears the header, which is how a tenant's mutual TLS is turned off; absent
       * keeps the stored value. Sent together with `mtlsCertificateEncoding` -- a header with
       * no encoding cannot be parsed, and an encoding with no header names nothing. */

@@ -101,9 +101,12 @@ object TokenEndpointController extends Controller:
         }
     }
 
-  /** RFC 9449 §5: DPoP is opt-in per request here -- a request without a proof still yields
-    * bearer tokens. Whether a given client is *required* to use DPoP is a separate, per-client
-    * policy decision that isn't wired up yet.
+  /** RFC 9449 §5: DPoP is opt-in per request here -- parsing a request with no proof yields
+    * `None` rather than a failure. Whether a given client is *required* to use DPoP
+    * (`dpopBoundAccessTokens`) is enforced downstream instead, in
+    * `OAuthTokenService.requireDpop`: this method only has the claimed, not yet authenticated,
+    * `clientId` from the request's credentials, whereas that check needs the client's actual
+    * record, which is only fetched once `OAuthTokenService` authenticates it per grant type.
     *
     * Whether a proof must also carry a server nonce (§8) is the requesting client's tenant
     * setting. It is read from the client named in the request's credentials rather than from
