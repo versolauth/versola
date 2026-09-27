@@ -243,7 +243,12 @@ object OAuthClientService:
         )
         _ <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri.flatMap(patchValue))
         _ <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri.flatMap(patchValue))
-        current <- cache.get.map(_.find(_.id == request.clientId))
+        // Falls back to the repository on a cache miss: a client registered a moment ago may
+        // not have reached the cache yet, and treating that as "no such client" would skip every
+        // validation below -- exactly the miss `rejectSecretlessClient` guards against elsewhere.
+        current <- cache.get.map(_.find(_.id == request.clientId)).flatMap:
+          case some @ Some(_) => ZIO.succeed(some)
+          case None => clientRepository.find(request.clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
