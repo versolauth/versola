@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets
 
 import java.security.MessageDigest
 import java.time.Instant
+import java.time.temporal.ChronoUnit
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -205,7 +206,10 @@ object OAuthClientService:
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
         encryptedEdgeCertificate <- ZIO.foreach(request.edgeClientCertificate)(encryptEdgeClientCertificate)
-        registeredAt <- Clock.instant
+        // Truncated to microseconds: Postgres' TIMESTAMPTZ carries no more than that, and a
+        // value returned here should be the one the row actually holds, not a JVM clock's
+        // extra digits that storage would just drop.
+        registeredAt <- Clock.instant.map(_.truncatedTo(ChronoUnit.MICROS))
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
