@@ -96,7 +96,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
       },
       test("rejects a verify-only kid, without writing") {
         val env = Env()
-        val verifyOnly = signableKey("bootstrap-kid", "RS256").copy(privateKey = None)
+        val verifyOnly = signableKey("bootstrap-kid", "PS256").copy(privateKey = None)
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(verifyOnly))
           _ <- env.repository.upsert.succeedsWith(())
@@ -117,6 +117,17 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
           _ <- env.jwksRepository.find.succeedsWith(Some(noAlg))
           _ <- env.repository.upsert.succeedsWith(())
           result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("no-alg"))).exit
+        yield assertTrue(
+          result.isFailure,
+          env.repository.upsert.calls.isEmpty,
+        )
+      },
+      test("rejects an RS256 key, without writing") {
+        val env = Env()
+        for
+          _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("rs-kid", "RS256")))
+          _ <- env.repository.upsert.succeedsWith(())
+          result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("rs-kid"))).exit
         yield assertTrue(
           result.isFailure,
           env.repository.upsert.calls.isEmpty,
