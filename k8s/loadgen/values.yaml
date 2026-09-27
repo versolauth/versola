@@ -208,7 +208,7 @@ driver:
     #   shard { index = ${SHARD_INDEX}, count = ${SHARD_COUNT} }
     #   clients {
     #     mobile-otp = mobile-otp, mobile-otp-password = mobile-otp-password
-    #     mobile-passkey = mobile-passkey, mobile-redirect-uri = "versola://callback"
+    #     mobile-passkey = mobile-passkey, mobile-redirect-uri = "https://app.versola.test/callback"
     #     web-preset = web-otp, scope = "openid profile phone offline_access"
     #     otp-length = 6
     #   }

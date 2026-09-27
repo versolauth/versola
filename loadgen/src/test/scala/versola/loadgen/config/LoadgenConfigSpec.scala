@@ -74,7 +74,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  mobile-otp          = "mobile-otp"
       |  mobile-otp-password = "mobile-otp-password"
       |  mobile-passkey      = "mobile-passkey"
-      |  mobile-redirect-uri = "versola://callback"
+      |  mobile-redirect-uri = "https://app.versola.test/callback"
       |  web-preset          = "web-otp"
       |  scope               = "openid profile phone offline_access"
       |  otp-length          = 6
@@ -124,7 +124,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  tenant-id = default
       |  provisioner-client-id = utils
       |  provisioner-secret = "cHJvdmlzaW9uZXItc2VjcmV0"
-      |  mobile-redirect-uri = "versola://callback"
+      |  mobile-redirect-uri = "https://app.versola.test/callback"
       |  resources {
       |    core-uri   = "http://mockapi-core:8100"
       |    pay-uri    = "http://mockapi-pay:8100"

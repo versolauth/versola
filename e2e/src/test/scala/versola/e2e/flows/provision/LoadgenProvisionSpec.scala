@@ -46,7 +46,7 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
       tenantId = "default",
       provisionerClientId = c.provisionerClientId,
       provisionerSecret = Config.Secret(c.provisionerSecret),
-      mobileRedirectUri = "versola://e2e-callback",
+      mobileRedirectUri = "https://app.versola.test/e2e-callback",
       resources = ProvisionResourcesConfig(
         coreUri = "http://e2e-mockapi-core.invalid:8100",
         payUri = "http://e2e-mockapi-pay.invalid:8100",

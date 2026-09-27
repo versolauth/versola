@@ -1733,8 +1733,15 @@ components:
       type: string
       format: uri
       description: |
-        An absolute URI with no fragment. `http` is allowed only for `localhost` and
-        `127.0.0.1`; any other scheme, including custom native-app schemes, is accepted.
+        An absolute URI with no fragment. A value being registered (a new client, or a
+        patch's `add`) must be `https` with a host, or `http` to a loopback address
+        (`localhost`, `127.0.0.1`, `[::1]`) for a native app's local listener (FAPI 2.0
+        Security Profile §5.3.2.2, RFC 8252 §7.3). Private-use schemes
+        (`com.example.app://...`) are refused under the tenant's default `fapi2`
+        security profile -- native apps register a claimed `https` redirect (App Links /
+        Universal Links) instead; a `standard`-profile tenant may register a
+        reverse-domain private-use scheme (RFC 8252 §7.1). A patch's `remove` still accepts
+        any value already stored, so a client registered before this rule can be cleaned up.
       examples: ['https://app.example.com/callback']
     ResourceUri:
       type: string
