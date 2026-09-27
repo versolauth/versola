@@ -9,11 +9,10 @@
 #     central/edge's postgres.url/user/password (see gen-env.scala's vps
 #     branch) already point at it directly.
 #
-#   - No `nginx`/gateway service: the VPS's public nginx is deployed by a
-#     separate pipeline (see the `nginx` repo's deploy workflow), outside
-#     this CLI entirely -- it's the thing that already routes
-#     id.versola.kz to auth/edge on the host, not something "versola
-#     configure vps" stands up.
+#   - No `nginx`/gateway service: the reverse proxy is not versola-tools'
+#     business on vps. versola-cli generates its own proxy.yml (official
+#     nginx image, config written by the CLI) and starts it in this same
+#     Compose project -- see versola-cli's internal/proxy and deploy.md.
 #
 # Every remaining service runs with `network_mode: host` instead of
 # Compose's default bridge network: the VPS's addressing (see

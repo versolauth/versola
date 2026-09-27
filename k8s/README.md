@@ -8,9 +8,9 @@ Two charts live here:
 | [`loadgen/`](loadgen) | the load emulator: coordinator, driver fleet and `mockapi` — never the system under test |
 
 > **Scope.** This is not how the shared production host runs today. That is a Docker Compose
-> deployment on a single VPS, documented in [`../deploy.md`](../deploy.md), and the two paths
-> share the configuration *format* and nothing else — no compose file, no `env-config`
-> repository, no host nginx. Where `deploy.md` is a runbook for one specific machine, this is
+> deployment on a single VPS driven by `versola-cli`, documented in [`../deploy.md`](../deploy.md),
+> and the two paths share the configuration *format* and nothing else — no `versola-cli`, no
+> compose file, no `versola-proxy`, no OpenBao-backed `*.secrets.env`. Where `deploy.md` is a runbook for one specific machine, this is
 > an installation guide for a cluster you bring yourself.
 
 ---

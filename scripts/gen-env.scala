@@ -443,8 +443,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val isVps = target == "vps"
   // k8s is for the k8s/versola and k8s/loadgen Helm charts (see k8s/README.md).
   // Unlike docker-local/vps it stays interactive: a k8s deployment is a manual,
-  // occasional bootstrap (there is no CI pipeline driving it, unlike vps's
-  // Deploy workflow), and the campaign topology genuinely needs a human's
+  // occasional bootstrap (no versola-cli target drives it, unlike vps), and the campaign topology genuinely needs a human's
   // input at several prompts a shared default can't safely guess -- three
   // independent Postgres instances (one per service, not one host split by
   // ?currentSchema=) and auth's internal address, which under an Ingress is
@@ -498,12 +497,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // every time), but what actually reaches the config is whatever
   // secretField placeholders it into -- versola-cli resolves that against
   // OpenBao the same as any other secret, and an existing value there wins
-  // over this freshly generated one. The first time this ever runs against
-  // a fresh OpenBao, it WILL store this random value and it WILL be wrong:
-  // the VPS's `versola_app` Postgres role already has a real password this
-  // script has no way to know. That first run needs the real password
-  // seeded into OpenBao by hand first (see develop.md's OpenBao section).
-  // After that, every run reuses it.
+  // over this freshly generated one. So this value only becomes the real
+  // password on the first `configure` against an empty OpenBao: versola-cli
+  // then stores it and prints the CREATE ROLE / ALTER ROLE statement that
+  // gives the `versola_app` role this password (see deploy.md, 3.3), and
+  // every later run reuses the stored one. A server whose role already has
+  // a password of its own gets that one written into OpenBao instead (see
+  // develop.md, "Onboarding a deployment that already has secrets").
   val pgUserDefault = if isDockerLocal then "versola" else if isVps then "versola_app" else "dev"
   val pgPassDefault = if isDockerLocal then "versola" else if isVps then rand(rng, 24) else "1234"
   // isLocal, docker-local and vps are all non-interactive; only the values differ.
