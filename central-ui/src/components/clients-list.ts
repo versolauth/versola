@@ -946,8 +946,11 @@ export class VersolaClientsList extends LitElement {
         await updateClient(this.tenantId, this.editingClient, client);
         this.updateClientInState(client, previousId);
       } else {
-        generatedSecret = await createClient(this.tenantId, client);
-        this.addClientToState(client);
+        const registration = await createClient(this.tenantId, client);
+        generatedSecret = registration.secret;
+        // Dated by central, which settles the registration time - the submitted client
+        // carries none, and a date this browser made up would differ from the stored one.
+        this.addClientToState({ ...client, createdAt: registration.createdAt });
         created = true;
       }
 

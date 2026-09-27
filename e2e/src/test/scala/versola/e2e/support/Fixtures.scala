@@ -76,6 +76,7 @@ object Fixtures:
       requirePushedAuthorizationRequests: Boolean = false,
       dpopSigningAlgs: Set[String] = Set.empty,
       jwks: Option[Json] = None,
+      template: Option[Json] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
@@ -91,6 +92,9 @@ object Fixtures:
         "authMethod" -> Json.Str(authMethod),
         "frontChannelLogoutSessionRequired" -> Json.Bool(frontChannelLogoutSessionRequired),
         "certificateBoundAccessTokens" -> Json.Bool(certificateBoundAccessTokens),
+        // These three carry no Scala default on `CreateClientRequest` any more (a create
+        // request is a full snapshot, not a patch), so every caller through this fixture has
+        // to send them explicitly rather than lean on a default the DTO no longer offers.
         "dpopBoundAccessTokens" -> Json.Bool(dpopBoundAccessTokens),
         "requireSignedRequestObject" -> Json.Bool(requireSignedRequestObject),
         "requirePushedAuthorizationRequests" -> Json.Bool(requirePushedAuthorizationRequests),
@@ -108,9 +112,16 @@ object Fixtures:
           tosUri.map(value => "tosUri" -> Json.Str(value)),
           mtlsAuth.map("mtlsAuth" -> _),
           jwks.map("jwks" -> _),
+          template.map("template" -> _),
         ).flatten,
       ),
     )
+
+  /** The wizard combination a console registration records: what the client is, and how much
+    * assurance its deployment can carry.
+    */
+  def clientTemplate(kind: String, tier: String): Json.Obj =
+    Json.Obj("kind" -> Json.Str(kind), "tier" -> Json.Str(tier))
 
   /** The `MutualTlsAuth` shape RFC 8705 §2.1 `tls_client_auth` registration expects: the
     * method, a discriminator naming which certificate attribute is checked, and the literal

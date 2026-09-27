@@ -10,6 +10,7 @@ import zio.*
 import zio.http.URL
 import zio.prelude.EqualOps
 import zio.test.*
+import java.time.Instant
 
 trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
@@ -60,6 +61,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
 
   /** Applies a registration-flow patch, leaving every other field of the client alone. */
@@ -94,6 +97,36 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           found <- env.repository.find(clientId)
         yield assertTrue(
           found === Some(client)
+        )
+      },
+      test("create and find a client registered from a template") {
+        val templated = client.copy(
+          template = Some(ClientTemplate(ClientKind.device, AssuranceTier.high)),
+          createdAt = Instant.parse("2026-02-01T09:00:00Z"),
+        )
+
+        for
+          _ <- env.repository.createClient(templated)
+          found <- env.repository.find(clientId)
+        yield assertTrue(
+          found === Some(templated)
+        )
+      },
+      test("update client should leave the template and the registration time alone") {
+        val templated = client.copy(
+          template = Some(ClientTemplate(ClientKind.web, AssuranceTier.compat)),
+          createdAt = Instant.parse("2026-02-01T09:00:00Z"),
+        )
+
+        for
+          _ <- env.repository.createClient(templated)
+          _ <- env.repository.updateClient(
+            clientId,
+            OAuthClientPatch.empty.copy(accessTokenTtl = Some(4.hours)),
+          )
+          found <- env.repository.find(clientId)
+        yield assertTrue(
+          found === Some(templated.copy(accessTokenTtl = 4.hours))
         )
       },
       test("create client twice should fail with ClientAlreadyExists") {

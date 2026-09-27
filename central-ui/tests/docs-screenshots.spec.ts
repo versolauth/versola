@@ -208,6 +208,9 @@ test('client registration flow form', async ({ page }) => {
   await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first()
     .getByRole('button', { name: 'Edit client storefront-web' }).click();
 
+  // The edit page opens with every group collapsed behind its summary.
+  await page.getByRole('button', { name: /^Registration and consent/ }).click();
+
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
   await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');

@@ -890,6 +890,7 @@ object BootstrapService:
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
         edgeClientCertificate = None,
+        template = None,
       )
       clientService.registerClient(request).foldZIO(
         {
@@ -973,6 +974,7 @@ object BootstrapService:
           requirePushedAuthorizationRequests = false,
           edgeSigningKey = None,
           edgeClientCertificate = None,
+          template = None,
         )
         clientService.registerClient(request, presetSecret = Some(seed.secret)).foldZIO(
           {

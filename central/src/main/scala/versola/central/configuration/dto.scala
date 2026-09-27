@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -14,6 +14,8 @@ import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
+
+import java.time.Instant
 
 import scala.util.Try
 
@@ -349,6 +351,11 @@ case class OAuthClientResponse(
     requireSignedRequestObject: Boolean,
     /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
     requirePushedAuthorizationRequests: Boolean,
+    /** The wizard combination the client was registered from; `None` when it was registered
+      * without naming one, which is every client registered through the API. */
+    template: Option[ClientTemplate],
+    /** When the registration was accepted, as an ISO-8601 instant. */
+    createdAt: Instant,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -429,11 +436,18 @@ case class CreateClientRequest(
       * included, as a single PEM. `None` when no edge does. Requires [[mtlsAuth]] — a
       * certificate is looked for only where the registration says one authenticates. */
     edgeClientCertificate: Option[PrivateClientCertificate],
+    /** The wizard combination this registration came from, recorded as-is. `None` for a
+      * caller that names none -- a template is what the console picked, not something to
+      * infer on its behalf from the settings it sent. */
+    template: Option[ClientTemplate],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
 case class CreateClientResponse(
     secret: Option[String],
+    /** When central recorded the registration, so a caller holding the client it just sent
+      * can state its age without reading it back. */
+    createdAt: Instant,
 ) derives Schema, JsonEncoder
 
 case class RotateSecretResponse(

@@ -21,6 +21,7 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
 import javax.crypto.spec.SecretKeySpec
+import java.time.Instant
 
 object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -91,6 +92,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    template = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -134,6 +136,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
   )
 
+  /** A fixed registration time, so the response carries the record's own rather than
+    * whatever the clock said when the fixture was built. */
+  private val registeredAt = Instant.parse("2026-02-01T09:00:00Z")
+
   private val clients = Vector(
     OAuthClientRecord(
       id = clientId,
@@ -168,6 +174,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
       edgeClientCertificate = None,
+      template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+      createdAt = registeredAt,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -202,6 +210,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
       edgeClientCertificate = None,
+      template = None,
+      createdAt = registeredAt,
     ),
   )
 
@@ -345,6 +355,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 jwks = None,
                 requireSignedRequestObject = false,
                 requirePushedAuthorizationRequests = false,
+                template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+                createdAt = registeredAt,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -375,6 +387,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 jwks = None,
                 requireSignedRequestObject = false,
                 requirePushedAuthorizationRequests = false,
+                template = None,
+                createdAt = registeredAt,
               ),
             ),
           ),
@@ -610,13 +624,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(Some(rotatedSecret)),
+        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt)),
       verify = (response, service, _) =>
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest, None)),
-          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret))),
+          // The registration time is the service's, handed back as it recorded it.
+          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt),
         ),
     ),
     controllerTestCase(
@@ -628,14 +643,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(None),
+        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt)),
       verify = (response, service, _) =>
         for
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None)),
-          body == CreateClientResponse(None),
+          body == CreateClientResponse(None, registeredAt),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
         ),

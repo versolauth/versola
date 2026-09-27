@@ -24,7 +24,8 @@ type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null };
+type ClientTemplateDto = { kind: string; tier: string };
+type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -81,6 +82,7 @@ type CreateClientRequest = {
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
   authMethod?: AuthMethodDto;
+  template?: ClientTemplateDto | null;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -529,6 +531,9 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
+        // Central dates the registration itself and hands that back, so the console never
+        // has to invent one for the client it just sent.
+        const createdAt = new Date().toISOString();
         const createdClient: ClientDto = {
           id: payload.id,
           clientName: payload.clientName,
@@ -540,12 +545,16 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
+          template: payload.template ?? null,
+          createdAt,
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
         // Only a client that registers client_secret gets one back; every other method
         // authenticates some other way, and a secret alongside it is one nothing would check.
-        const createResponse = createdClient.authMethod === 'client_secret' ? { secret: `secret-${payload.id}` } : {};
+        const createResponse = createdClient.authMethod === 'client_secret'
+          ? { secret: `secret-${payload.id}`, createdAt }
+          : { createdAt };
         await route.fulfill(json(createResponse, 201));
         return;
       }

@@ -9,6 +9,7 @@ import type {
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
+  ClientTemplate,
   JwksKeySummary,
   MtlsCertificateEncoding,
   MutualTlsAuth,
@@ -49,7 +50,12 @@ type ConsoleMode = 'prefix' | 'direct';
 type CentralApiConfig = { baseUrl: string | null; loginUrl: string; consoleMode: ConsoleMode };
 
 type ClientSecretResponse = { secret: string };
-type CreateClientResponse = { secret?: string | null };
+type CreateClientResponse = { secret?: string | null; createdAt?: string | null };
+
+/** What a registration hands back: the secret, for the one method that gets one, and the
+ *  time central recorded - the console holds the client it just sent, which cannot know
+ *  either on its own. */
+export type CreatedClient = { secret: string | null; createdAt: string | null };
 type AuthorizationPresetResponse = {
   id: string;
   clientId: string;
@@ -144,6 +150,8 @@ type ClientsResponse = {
     jwks?: Record<string, unknown> | null;
     requireSignedRequestObject?: boolean;
     requirePushedAuthorizationRequests?: boolean;
+    template?: ClientTemplate | null;
+    createdAt?: string;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -740,6 +748,8 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         jwks: client.jwks ?? null,
         requireSignedRequestObject: client.requireSignedRequestObject ?? false,
         requirePushedAuthorizationRequests: client.requirePushedAuthorizationRequests ?? false,
+        template: client.template ?? null,
+        createdAt: client.createdAt ?? null,
         tenantId,
       };
     }),
@@ -1084,7 +1094,7 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
 }
 
 /** Resolves to the generated secret, or to `null` for a native client, which has none. */
-export async function createClient(tenantId: string, client: OAuthClient): Promise<string | null> {
+export async function createClient(tenantId: string, client: OAuthClient): Promise<CreatedClient> {
   const response = await request<CreateClientResponse>('/configuration/clients', {
     method: 'POST',
     body: {
@@ -1116,6 +1126,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       jwks: client.jwks ?? null,
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
+      template: client.template ?? null,
     },
   });
 
@@ -1125,7 +1136,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
     hasPreviousSecret: client.hasPreviousSecret,
   });
 
-  return response.secret ?? null;
+  return { secret: response.secret ?? null, createdAt: response.createdAt ?? null };
 }
 
 export async function rotateClientSecret(tenantId: string, clientId: string): Promise<string> {

@@ -87,6 +87,14 @@ export type MutualTlsAuth =
   | { type: 'self_signed_tls_client_auth' };
 
 // OAuth Client
+/** The registration wizard's combination, as the client was registered from it. Absent for a
+ *  client registered before templates were stored, or through the API without naming one -
+ *  neither has a template its current settings can be shown against. */
+export interface ClientTemplate {
+  kind: 'web' | 'device' | 'service';
+  tier: 'high' | 'compat';
+}
+
 export interface OAuthClient {
   id: string;
   clientName: Record<string, string>;
@@ -136,6 +144,10 @@ export interface OAuthClient {
   requireSignedRequestObject: boolean;
   /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
   requirePushedAuthorizationRequests: boolean;
+  template?: ClientTemplate | null;
+  /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
+   *  backend did not report one for. */
+  createdAt?: string | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

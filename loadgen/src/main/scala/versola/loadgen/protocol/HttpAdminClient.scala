@@ -78,22 +78,26 @@ final class HttpAdminClient(
       authFlow = spec.authFlow,
       registrationFlow = spec.registrationFlow,
       otpTemplateId = defaultOtpTemplateId,
+      frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
       backChannelLogoutUri = spec.backChannelLogoutUri,
-      authMethod = if spec.publicClient then publicAuthMethod else clientSecretAuthMethod,
-      // The campaign authenticates by secret over plain HTTP and proves DPoP per request, so it
-      // registers neither certificate binding nor an algorithm narrowing. Both are mandatory
-      // members of central's registration DTO, and a body that leaves them out is refused
-      // outright rather than defaulted.
-      certificateBoundAccessTokens = false,
-      dpopSigningAlgs = Set.empty,
-      // Off for the same reason, and mandatory for the same reason: a driver fleet configured
-      // without a `dpop` block sends no proof, a plain parameter set rather than a request
-      // object, and goes to `/authorize` directly -- each of these switched on would refuse
-      // every authorization the campaign makes.
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = None,
+      // A campaign's clients never vary DPoP, mTLS, JAR/PAR or an edge signing key -- see
+      // AdminSpecs.ClientSpec -- but the DTO requires every one of these named regardless.
       dpopBoundAccessTokens = false,
+      dpopSigningAlgs = Set.empty,
+      dpopMinRsaKeySize = None,
+      authMethod = if spec.publicClient then publicAuthMethod else clientSecretAuthMethod,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
+      jwks = None,
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
+      edgeSigningKey = None,
+      template = None,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -529,14 +533,27 @@ object HttpAdminClient:
       authFlow: Json,
       registrationFlow: Option[Json],
       otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
       backChannelLogoutUri: Option[String],
-      authMethod: String,
-      certificateBoundAccessTokens: Boolean,
-      dpopSigningAlgs: Set[String],
+      logoUri: Option[String],
+      policyUri: Option[String],
+      tosUri: Option[String],
+      consentFlow: Option[Json],
+      // None of these carry a Scala default on central's `CreateClientRequest`: a create
+      // request is a full snapshot, and a campaign that never varies a setting still has to
+      // say so, rather than lean on a default the DTO does not offer.
       dpopBoundAccessTokens: Boolean,
+      dpopSigningAlgs: Set[String],
+      dpopMinRsaKeySize: Option[Int],
+      authMethod: String,
+      mtlsAuth: Option[Json],
+      certificateBoundAccessTokens: Boolean,
+      jwks: Option[Json],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
+      edgeSigningKey: Option[Json],
+      template: Option[Json],
   ) derives JsonEncoder
 
   private case class UpdateClientBody(
