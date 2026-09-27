@@ -63,6 +63,9 @@ case class EdgeConfig(
     // EdgeService.extractAccessToken), so the downgrade this exists to close
     // cannot reopen just because the block is missing.
     dpop: Option[EdgeConfig.Dpop] = None,
+    // The `/native/*` back channel for mobile apps under FAPI 2.0 (#420). Absent leaves those
+    // endpoints answering 404 for every client -- nothing else about this edge changes.
+    native: Option[EdgeConfig.Native] = None,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
 
@@ -79,6 +82,7 @@ object EdgeConfig:
       for
         config <- ZIO.service[EdgeConfig]
         _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(refuseCertificateAuthority)
+        _ <- ZIO.foreachDiscard(config.native.map(_.trustedCertificates))(refuseCertificateAuthority)
       yield config,
     )
 
@@ -167,6 +171,33 @@ object EdgeConfig:
       iatLeeway: Duration,
       nonceTtl: Duration,
   )
+
+  /** The native-app back channel (#420): edge authenticates to auth as a native client with
+    * the `tls_client_auth` certificate central synced, straight on auth's own mutual-TLS
+    * listener (`MPORT`, #417) -- no TLS terminator in between -- while the device's DPoP key
+    * is the only sender constraint on the tokens.
+    *
+    * @param authMutualTlsUrl how this edge reaches auth's mutual-TLS listener.
+    * @param authMutualTlsExternalUrl what auth calls that listener (its `mutual-tls.external-url`,
+    *   the `mtls_endpoint_aliases` origin). It is the origin of the `htu` a device proof for
+    *   `/token` must carry, since edge forwards the proof unchanged to that listener. Defaults
+    *   to [[authMutualTlsUrl]], which is right wherever edge and the listener share a network.
+    * @param trustedCertificates PEM of the certificate the listener presents -- a pin, not a
+    *   CA, for the same reason as `versolaInternalTrustedCertificates`: zio-http's client does
+    *   no hostname verification. `EdgeConfig.validated` refuses a CA here.
+    * @param blobKey the AES-256-GCM key sealing the stateless blob `/native/start` hands the app
+    *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
+    * @param blobTtl how long a blob can be redeemed after `/native/start`. Bounded above by the
+    *   single-use `request_uri` and code in any case.
+    */
+  case class Native(
+      authMutualTlsUrl: URL,
+      authMutualTlsExternalUrl: Option[URL] = None,
+      trustedCertificates: String,
+      blobKey: Secret.Bytes32,
+      blobTtl: Duration = Duration.fromSeconds(600),
+  ):
+    def externalUrl: URL = authMutualTlsExternalUrl.getOrElse(authMutualTlsUrl)
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for

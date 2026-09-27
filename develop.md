@@ -402,3 +402,12 @@ see `MutualTlsListenerSpec`. `docker-local`/`vps`/interactive get no such block,
 until whoever operates one decides what certificate it should present.
 
 The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
+### Native apps through edge (#420)
+
+`edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's
+`POST /native/{start,complete,token,revoke}/{clientId}` endpoints: edge authenticates to auth
+as an edge-fronted native client (`applicationType = native`, `tls_client_auth`) straight on
+auth's `MPORT` listener, pinning `auth/dev/mtls/server.crt`. The client certificate edge
+presents is the `edgeClientCertificate` central syncs, and must be issued by a CA in auth's
+`mutual-tls.trusted-certificates` (`auth/dev/mtls/ca.crt` locally) -- zio-http hands auth the
+leaf only. Without the block every native endpoint answers 404.

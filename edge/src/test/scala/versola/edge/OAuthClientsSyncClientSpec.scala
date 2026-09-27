@@ -62,6 +62,8 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       requirePushedAuthorizationRequests: Boolean = false,
       edgeSigningKey: Option[String] = None,
       edgeClientCertificate: Option[String] = None,
+      applicationType: Option[String] = None,
+      redirectUris: Set[String] = Set.empty,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -197,6 +199,38 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             material.leaf.getSubjectX500Principal.getName ==
               clientCertificate.certificate.getSubjectX500Principal.getName
           case _ => false,
+      )
+    },
+    // #420: what decides whether the native endpoints serve a client, and where they may send it.
+    test("carries a native client's application type and redirect URIs, and reads their absence as web") {
+      val certificateCiphertext = Base64.urlEncode(Array.fill(32)(54.toByte))
+      val body = SyncResponseMirror(
+        Vector(
+          SyncClientRecordMirror(
+            ClientId("mobile"),
+            None,
+            15.minutes,
+            edgeClientCertificate = Some(certificateCiphertext),
+            applicationType = Some("native"),
+            redirectUris = Set("https://app.example/cb"),
+          ),
+          SyncClientRecordMirror(ClientId("legacy"), None, 15.minutes, edgeClientCertificate = Some(certificateCiphertext)),
+        ),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(
+          client,
+          config,
+          fakeSecurityService(Map(certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn)),
+          centralSyncTokenService,
+        )
+        clients <- service.getAll
+      yield assertTrue(
+        clients(ClientId("mobile")).isEdgeFrontedNative,
+        clients(ClientId("mobile")).redirectUris == Set("https://app.example/cb"),
+        !clients(ClientId("legacy")).isEdgeFrontedNative,
       )
     },
     test("fails the whole sync on an unusable certificate rather than dropping the client") {
