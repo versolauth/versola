@@ -162,6 +162,30 @@ object PrivateKeyJwtSpec extends E2ESpec:
         .label("RFC 7523 §3: an assertion is only good for the server its aud names")
     },
 
+    test("FAPI 2.0 §5.3.2.1-13: an assertion from a clock a few seconds fast is accepted") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(10)
+        assertion <- signer.assertion(clientId, auth.issuer, notBefore = Some(ahead), issuedAt = Some(ahead))
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
+      yield assertTrue(token.accessToken.nonEmpty)
+        .label("nbf/iat up to 10s in the future must be accepted to absorb clock skew")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-13: an assertion issued more than 60 seconds in the future is refused") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(120)
+        assertion <- signer.assertion(clientId, auth.issuer, lifetime = 3.minutes, issuedAt = Some(ahead))
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+    },
+
     test("an assertion valid for longer than the tenant allows is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

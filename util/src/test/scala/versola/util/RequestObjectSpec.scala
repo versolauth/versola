@@ -172,16 +172,34 @@ object RequestObjectSpec extends ZIOSpecDefault:
         for result <- verify(requestObject(claims("exp" -> Json.Num(now.plusSeconds(3600).getEpochSecond)))).either
         yield assertTrue(result == Left(RequestObject.Error.LifetimeTooLong))
       },
-      test("rejects an object that is not valid yet") {
-        for result <- verify(requestObject(claims("nbf" -> Json.Num(now.plusSeconds(30).getEpochSecond)))).either
-        yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
+      test("FAPI 2.0 §5.3.2.1-13: accepts nbf/iat up to 60s in the future, refuses them beyond") {
+        def at(seconds: Long) = Json.Num(now.plusSeconds(seconds).getEpochSecond)
+        def withExp(extra: (String, Json)*) = requestObject(claims((extra :+ ("exp" -> at(120)))*))
+        for
+          nbf9 <- verify(withExp("nbf" -> at(9))).either
+          nbf10 <- verify(withExp("nbf" -> at(10))).either
+          nbf11 <- verify(withExp("nbf" -> at(11))).either
+          nbf60 <- verify(withExp("nbf" -> at(60))).either
+          nbf61 <- verify(withExp("nbf" -> at(61))).either
+          iat10 <- verify(withExp("iat" -> at(10))).either
+          iat60 <- verify(withExp("iat" -> at(60))).either
+          iat61 <- verify(withExp("iat" -> at(61))).either
+        yield assertTrue(
+          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf61 == Left(RequestObject.Error.NotYetValid),
+          iat10.isRight, iat60.isRight,
+          iat61 == Left(RequestObject.Error.IssuedInFuture),
+        )
       },
       // RFC 7519 §2 allows a fractional NumericDate. Truncating one to whole seconds would
       // start an object's validity up to a second before the client said it began, and end it
       // up to a second after -- so both edges are checked against a fraction.
       test("reads a fractional date as the instant it names rather than the second it sits in") {
         for
-          notYetValid <- verify(requestObject(claims("nbf" -> Json.Num(BigDecimal(now.getEpochSecond) + 0.5)))).either
+          notYetValid <- verify(requestObject(claims(
+            "nbf" -> Json.Num(BigDecimal(now.plus(ClientAssertion.FutureLeeway).getEpochSecond) + 0.5),
+            "exp" -> Json.Num(now.plusSeconds(120).getEpochSecond),
+          ))).either
           expired <- verify(requestObject(claims("exp" -> Json.Num(BigDecimal(now.getEpochSecond) - 0.5)))).either
         yield assertTrue(
           notYetValid == Left(RequestObject.Error.NotYetValid),
@@ -192,8 +210,13 @@ object RequestObjectSpec extends ZIOSpecDefault:
       // away from the epoch: a claim naming a moment a tenth of a nanosecond from now must not
       // be reconstructed as exactly now and accepted immediately.
       test("rejects an nbf whose remainder is finer than a nanosecond, rounding towards not-yet-valid") {
-        val aTenthOfANanosecondFromNow = BigDecimal(now.getEpochSecond) + BigDecimal("0.0000000001")
-        for result <- verify(requestObject(claims("nbf" -> Json.Num(aTenthOfANanosecondFromNow)))).either
+        // At the edge of the clock-skew leeway, which is where "not yet valid" now starts.
+        val aTenthOfANanosecondPastTheLeeway =
+          BigDecimal(now.plus(ClientAssertion.FutureLeeway).getEpochSecond) + BigDecimal("0.0000000001")
+        for result <- verify(requestObject(claims(
+            "nbf" -> Json.Num(aTenthOfANanosecondPastTheLeeway),
+            "exp" -> Json.Num(now.plusSeconds(120).getEpochSecond),
+          ))).either
         yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
       },
 

@@ -123,6 +123,14 @@ object ClientAssertion:
     */
   val Ttl: Duration = 1.minute
 
+  /** FAPI 2.0 Security Profile §5.3.2.1-13: `iat`/`nbf` up to 10 seconds in the future must be
+    * accepted, to absorb clock skew, and anything more than 60 seconds ahead refused. This sits
+    * at the permitted maximum, like [[Dpop]]'s `iatLeeway` -- a client whose clock runs a few
+    * seconds fast is an interop failure, not an attack, and a minute of it buys an attacker
+    * nothing `exp` does not already bound. Shared by [[RequestObject]], which the same rule
+    * covers. */
+  val FutureLeeway: Duration = 60.seconds
+
   /** The `sub` the assertion names, read without verifying anything.
     *
     * RFC 7523 §3 makes `sub` the client the assertion authenticates, and RFC 7521 §4.2 lets
@@ -155,6 +163,7 @@ object ClientAssertion:
     case AudienceMismatch
     case Expired
     case NotYetValid
+    case IssuedInFuture
     case LifetimeTooLong
 
   /** Verifies a client assertion's self-contained properties. Does not check `jti` replay --
@@ -200,6 +209,7 @@ object ClientAssertion:
       jti <- requireClaim(claims.getJWTID, "jti")
       expiresAt <- requireClaim(claims.getExpirationTime, "exp").map(_.toInstant)
       notBefore <- optionalClaim(claims.getNotBeforeTime, "nbf").map(_.map(_.toInstant))
+      issuedAt <- optionalClaim(claims.getIssueTime, "iat").map(_.map(_.toInstant))
 
       // RFC 7523 §3: for client authentication both name the client, which is what makes the
       // assertion an authentication of that client rather than a token about it.
@@ -208,7 +218,9 @@ object ClientAssertion:
 
       _ <- ZIO.fail(Error.Expired).unless(expiresAt.isAfter(now))
       _ <- ZIO.fail(Error.LifetimeTooLong).when(expiresAt.isAfter(now.plus(maxLifetime)))
-      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
+      // §5.3.2.1-13: a clock a little ahead of ours is tolerated, one far ahead is not.
+      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(FutureLeeway))))
+      _ <- ZIO.fail(Error.IssuedInFuture).when(issuedAt.exists(_.isAfter(now.plus(FutureLeeway))))
     yield Assertion(jti = jti, expiresAt = expiresAt)
 
   /** `aud` in the shape it was sent: FAPI 2.0 tells a single string apart from an array, so

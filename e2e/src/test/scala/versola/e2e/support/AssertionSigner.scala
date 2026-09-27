@@ -58,15 +58,19 @@ final class AssertionSigner private (private val signingKey: ECPrivateKey, publi
       lifetime: Duration = 60.seconds,
       signWith: Option[ECPrivateKey] = None,
       audienceAsArray: Boolean = false,
+      notBefore: Option[Instant] = None,
+      issuedAt: Option[Instant] = None,
   ): Task[String] =
     ZIO.attempt:
-      val claims = JWTClaimsSet.Builder()
+      val builder = JWTClaimsSet.Builder()
         .issuer(clientId)
         .subject(clientId)
         .audience(audience)
         .jwtID(jti.getOrElse(UUID.randomUUID().toString))
         .expirationTime(Date.from(Instant.now().plusSeconds(lifetime.toSeconds)))
-        .build()
+      notBefore.foreach(instant => builder.notBeforeTime(Date.from(instant)))
+      issuedAt.foreach(instant => builder.issueTime(Date.from(instant)))
+      val claims = builder.build()
       val header = JWSHeader.Builder(JWSAlgorithm.ES256).keyID(publicJwk.getKeyID).build()
       if audienceAsArray then
         // Nimbus writes a one-element `aud` as a string, so the array goes into the raw payload.

@@ -57,6 +57,7 @@ object ClientAssertionSpec extends ZIOSpecDefault:
       jti: Option[String] = Some("jti-1"),
       exp: Option[Instant] = Some(now.plusSeconds(60)),
       nbf: Option[Instant] = None,
+      iat: Option[Instant] = None,
   ): String =
     val headerBuilder = JWSHeader.Builder(alg)
     kid.foreach(headerBuilder.keyID)
@@ -67,6 +68,7 @@ object ClientAssertionSpec extends ZIOSpecDefault:
     jti.foreach(claimsBuilder.jwtID)
     exp.foreach(instant => claimsBuilder.expirationTime(Date.from(instant)))
     nbf.foreach(instant => claimsBuilder.notBeforeTime(Date.from(instant)))
+    iat.foreach(instant => claimsBuilder.issueTime(Date.from(instant)))
     if audArray then
       // Nimbus collapses a one-element `aud` list into a string when it serializes a claims
       // set, so an array is written into the raw payload instead.
@@ -209,9 +211,27 @@ object ClientAssertionSpec extends ZIOSpecDefault:
         for result <- verify(assertion(exp = Some(now.plusSeconds(600)))).either
         yield assertTrue(result == Left(ClientAssertion.Error.LifetimeTooLong))
       },
-      test("rejects an assertion that is not yet valid") {
-        for result <- verify(assertion(nbf = Some(now.plusSeconds(30)))).either
-        yield assertTrue(result == Left(ClientAssertion.Error.NotYetValid))
+      test("FAPI 2.0 §5.3.2.1-13: accepts nbf/iat up to 60s in the future, refuses them beyond") {
+        def at(seconds: Long) = Some(now.plusSeconds(seconds))
+        for
+          nbf9 <- verify(assertion(nbf = at(9))).either
+          nbf10 <- verify(assertion(nbf = at(10))).either
+          nbf11 <- verify(assertion(nbf = at(11))).either
+          nbf60 <- verify(assertion(nbf = at(60), exp = at(120))).either
+          nbf61 <- verify(assertion(nbf = at(61), exp = at(120))).either
+          iat10 <- verify(assertion(iat = at(10))).either
+          iat60 <- verify(assertion(iat = at(60), exp = at(120))).either
+          iat61 <- verify(assertion(iat = at(61), exp = at(120))).either
+        yield assertTrue(
+          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf61 == Left(ClientAssertion.Error.NotYetValid),
+          iat10.isRight, iat60.isRight,
+          iat61 == Left(ClientAssertion.Error.IssuedInFuture),
+        )
+      },
+      test("accepts an iat in the past") {
+        for result <- verify(assertion(iat = Some(now.minusSeconds(30)))).either
+        yield assertTrue(result.isRight)
       },
       test("requires the claims replay protection and expiry depend on") {
         for

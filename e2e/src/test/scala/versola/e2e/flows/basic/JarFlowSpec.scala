@@ -224,6 +224,48 @@ object JarFlowSpec extends E2ESpec:
         .label(s"under the default fapi2 profile only the issuer names this server, got ${result.response.status}")
     },
 
+    test("FAPI 2.0 §5.3.2.1-13: an object from a clock a few seconds fast is accepted") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      val ahead = java.time.Instant.now.plusSeconds(10).getEpochSecond
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(
+          requestClaims(client, auth, codeChallenge, "nbf" -> Json.Num(ahead), "iat" -> Json.Num(ahead))*,
+        )()
+        _ <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        ).assertChallengeRedirect
+      yield assertCompletes
+    },
+
+    test("FAPI 2.0 §5.3.2.1-13: an object not valid for more than another minute is refused") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      val now = java.time.Instant.now
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(
+          requestClaims(
+            client,
+            auth,
+            codeChallenge,
+            "nbf" -> Json.Num(now.plusSeconds(120).getEpochSecond),
+            "exp" -> Json.Num(now.plusSeconds(180).getEpochSecond),
+          )*,
+        )()
+        result <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        )
+      yield assertTrue(result.response.status == Status.BadRequest)
+    },
+
     test("an object signed by a key the client never registered is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for

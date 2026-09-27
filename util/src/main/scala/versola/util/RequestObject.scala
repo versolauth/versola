@@ -82,6 +82,7 @@ object RequestObject:
     case AudienceMismatch
     case Expired
     case NotYetValid
+    case IssuedInFuture
     case LifetimeTooLong
     case NestedRequest
     case ImpersonatesClientAssertion
@@ -230,7 +231,11 @@ object RequestObject:
       // away from the epoch, or a claim naming a moment less than a nanosecond from now would
       // reconstruct as already past and be accepted immediately.
       notBefore <- optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
-      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
+      // FAPI 2.0 §5.3.2.1-13: up to a minute of clock skew is absorbed, as for an assertion
+      // (see [[ClientAssertion.FutureLeeway]]); further ahead than that is refused.
+      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
+      issuedAt <- optionalInstant(claims, "iat", BigDecimal.RoundingMode.CEILING)
+      _ <- ZIO.fail(Error.IssuedInFuture).when(issuedAt.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
     yield claims
 
   /** [[verify]] against a plain set of accepted audiences, i.e. [[JwtAudience.AnyOf]] -- kept
