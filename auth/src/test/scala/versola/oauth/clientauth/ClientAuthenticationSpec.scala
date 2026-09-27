@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{SecurityProfile, AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret, TestCertificates}
 import zio.*
 import zio.http.{Request, URL}
@@ -128,7 +128,64 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = Some(TestEnvConfig.clientCertificateKeySet),
   )
 
+  /** A public client, which a bare `client_id` authenticates -- unless its tenant asserts
+    * FAPI 2.0 (#353). */
+  private val publicClient = TestEnvConfig.mtlsClient(ClientId("public-client")).copy(
+    authMethod = AuthMethod.none,
+    mtlsAuth = None,
+    secret = None,
+    jwks = None,
+  )
+
+  private def profiled(client: OAuthClientRecord, profile: SecurityProfile) =
+    val configuration = stub[OAuthConfigurationService]
+    configuration.find.returnsWith(ZIO.succeed(Some(client)))
+    configuration.verifySecret.returnsWith(ZIO.succeed(Some(client)))
+    configuration.getSecurityProfile.returnsWith(ZIO.succeed(profile))
+    configuration.getClientAssertionSigningAlgorithms.returnsWith(ZIO.succeed(ClientAssertion.Algorithm.Default))
+    configuration.getClientAssertionMaxLifetime.returnsWith(ZIO.succeed(5.minutes))
+    (
+      ClientAuthentication.Impl(
+        configuration,
+        ClientAssertionService.Impl(RecordingRepository(null), configuration),
+        TestEnvConfig.coreConfig,
+      ),
+      configuration,
+    )
+
+  private val securityProfileSuite = suite("security profile")(
+    test("refuses a public client of a fapi2 tenant at every endpoint") {
+      val (authenticator, _) = profiled(publicClient, SecurityProfile.fapi2)
+      for results <- ZIO.foreach(AuthenticatedEndpoint.values.toList)(endpoint =>
+          authenticator.authenticate(ClientIdWithSecret(publicClient.id, None), None, endpoint).either,
+        )
+      yield assertTrue(results.forall(_ == Left(())))
+    },
+    // #352: on a standard tenant a public client still revokes its own tokens by client_id --
+    // RFC 7009 §2.1 has it prove the token was issued to it, not a credential it has none of.
+    test("authenticates a public client of a standard tenant by its bare client_id, as before") {
+      val (authenticator, _) = profiled(publicClient, SecurityProfile.standard)
+      for
+        token <- authenticator.authenticate(ClientIdWithSecret(publicClient.id, None), None, AuthenticatedEndpoint.Token).either
+        revoke <- authenticator.authenticate(ClientIdWithSecret(publicClient.id, None), None, AuthenticatedEndpoint.Revocation).either
+      yield assertTrue(token == Right(publicClient), revoke == Right(publicClient))
+    },
+    test("never reads the profile for a confidential client") {
+      val confidential = publicClient.copy(authMethod = AuthMethod.client_secret, secret = Some(Secret(Array.fill(32)(1.toByte))))
+      val (authenticator, configuration) = profiled(confidential, SecurityProfile.fapi2)
+      for
+        result <- authenticator.authenticate(
+          ClientIdWithSecret(confidential.id, Some(Secret(Array.fill(32)(1.toByte)))),
+          None,
+          AuthenticatedEndpoint.Token,
+        ).either
+        lookups = configuration.getSecurityProfile.times
+      yield assertTrue(result == Right(confidential), lookups == 0)
+    },
+  )
+
   def spec = suite("ClientAuthentication")(
+    securityProfileSuite,
     test("authenticates a client whose registered keys verify the assertion it presented") {
       for
         now <- Clock.instant
