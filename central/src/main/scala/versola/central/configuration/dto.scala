@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
@@ -14,6 +14,8 @@ import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
 import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
+
+import java.time.Instant
 
 import scala.util.Try
 
@@ -336,6 +338,11 @@ case class OAuthClientResponse(
     requireSignedRequestObject: Boolean,
     /** RFC 9126 §6.2: the client pushes its authorization request to `/par` first. */
     requirePushedAuthorizationRequests: Boolean,
+    /** The wizard combination the client was registered from; `None` when it was registered
+      * without naming one, which is every client registered through the API. */
+    template: Option[ClientTemplate],
+    /** When the registration was accepted, as an ISO-8601 instant. */
+    createdAt: Instant,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -375,13 +382,13 @@ case class CreateClientRequest(
     frontChannelLogoutUri: Option[String],
     frontChannelLogoutSessionRequired: Boolean,
     backChannelLogoutUri: Option[String],
-    logoUri: Option[String] = None,
-    policyUri: Option[String] = None,
-    tosUri: Option[String] = None,
-    consentFlow: Option[ConsentFlowDto] = None,
-    /** RFC 9449 §5.2: defaults to `false`, leaving DPoP opt-in per request for a caller that
-      * does not ask for it. */
-    dpopBoundAccessTokens: Boolean = false,
+    logoUri: Option[String],
+    policyUri: Option[String],
+    tosUri: Option[String],
+    consentFlow: Option[ConsentFlowDto],
+    /** RFC 9449 §5.2: `false` leaves DPoP opt-in per request for a caller that does not ask
+      * for it. No default -- a create request states every member it registers. */
+    dpopBoundAccessTokens: Boolean,
     /** RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use, narrowing
       * what the metadata document advertises. Empty means no narrowing. */
     dpopSigningAlgs: Set[Dpop.Algorithm],
@@ -402,16 +409,25 @@ case class CreateClientRequest(
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
       * assertions with; `None` when it does not use the method. */
     jwks: Option[JsonWebKeySet],
-    /** RFC 9101 §10.5: defaults to `false`, leaving a plain parameter set acceptable for a
-      * caller that does not ask for signed request objects. */
-    requireSignedRequestObject: Boolean = false,
-    /** RFC 9126 §6.2: defaults to `false`, leaving `/par` optional for a caller that does not
-      * ask for it. */
-    requirePushedAuthorizationRequests: Boolean = false,
+    /** RFC 9101 §10.5: `false` leaves a plain parameter set acceptable for a caller that does
+      * not ask for signed request objects. No default -- see [[dpopBoundAccessTokens]]. */
+    requireSignedRequestObject: Boolean,
+    /** RFC 9126 §6.2: `false` leaves `/par` optional for a caller that does not ask for it.
+      * No default -- see [[dpopBoundAccessTokens]]. */
+    requirePushedAuthorizationRequests: Boolean,
     /** The private key an edge fronting this client signs with; `None` when no edge does, which
       * is every client registered before edges could authenticate by key. Must be the private
       * half of a key [[jwks]] publishes — registration refuses a pair that cannot verify. */
-    edgeSigningKey: Option[PrivateJsonWebKey] = None,
+    edgeSigningKey: Option[PrivateJsonWebKey],
+    /** The wizard combination this registration came from, recorded as-is. `None` for a
+      * caller that names none -- a template is what the console picked, not something to
+      * infer on its behalf from the settings it sent.
+      *
+      * No field on this request carries a Scala default: a create request is a full snapshot,
+      * not a patch, and a default silently standing in for a member a caller forgot is exactly
+      * the drift this DTO must not allow -- every caller (the console, e2e, loadgen) is
+      * required to state each member itself. */
+    template: Option[ClientTemplate],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */

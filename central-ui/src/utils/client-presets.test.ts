@@ -9,6 +9,9 @@ import {
   clientTypeFor,
   defaultCredentialMode,
   signsUsersIn,
+  templateDecides,
+  templateDifferences,
+  templateLabel,
 } from './client-presets';
 
 const KINDS: ClientKind[] = ['web', 'device', 'service'];
@@ -138,5 +141,59 @@ describe('signsUsersIn', () => {
     expect(signsUsersIn('service')).toBe(false);
     expect(signsUsersIn('web')).toBe(true);
     expect(signsUsersIn('device')).toBe(true);
+  });
+});
+
+describe('templateDifferences', () => {
+  const device = { kind: 'device' as ClientKind, tier: 'high' as AssuranceTier };
+
+  it('finds nothing while the client still holds what the template asked for', () => {
+    expect(templateDifferences(device, {
+      accessTokenTtl: 3600,
+      dpopBoundAccessTokens: true,
+      certificateBoundAccessTokens: false,
+      requirePushedAuthorizationRequests: true,
+      requireSignedRequestObject: false,
+    })).toEqual([]);
+  });
+
+  it('states the template value a setting moved away from, and the one it holds now', () => {
+    const differences = templateDifferences(device, {
+      accessTokenTtl: 4 * 3600,
+      dpopBoundAccessTokens: true,
+      certificateBoundAccessTokens: false,
+      requirePushedAuthorizationRequests: false,
+      requireSignedRequestObject: false,
+    });
+
+    expect(differences.map(d => [d.label, d.templateText, d.currentText])).toEqual([
+      ['Access token TTL', '1 h', '4 h'],
+      ['Pushed authorization requests', 'required', 'off'],
+    ]);
+    expect(differences.map(d => d.templateValue)).toEqual([3600, true]);
+    expect(differences.map(d => d.section)).toEqual(['tokens', 'integrity']);
+  });
+
+  it('compares nothing a template does not decide', () => {
+    // Every preset decides all five settings, so drift is only ever reported for a value
+    // the registration actually asked for - a scope added later is configuration, not drift.
+    expect(templateDifferences(device, { scope: ['openid'], accessTokenTtl: 3600 })
+      .map(d => d.field)).not.toContain('scope');
+  });
+});
+
+describe('templateDecides', () => {
+  it('knows which part of the form a template has an opinion about', () => {
+    const web = { kind: 'web' as ClientKind, tier: 'high' as AssuranceTier };
+    expect(templateDecides(web, 'tokens')).toBe(true);
+    expect(templateDecides(web, 'integrity')).toBe(true);
+    expect(templateDecides(web, 'credential')).toBe(true);
+  });
+});
+
+describe('templateLabel', () => {
+  it('names the two choices the way they were made', () => {
+    expect(templateLabel({ kind: 'device', tier: 'high' })).toBe('Mobile or desktop app · High assurance');
+    expect(templateLabel({ kind: 'web', tier: 'compat' })).toBe('Web app · Compatibility');
   });
 });

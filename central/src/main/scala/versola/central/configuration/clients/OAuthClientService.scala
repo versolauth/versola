@@ -179,6 +179,7 @@ object OAuthClientService:
           case _                        => ZIO.none
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
+        registeredAt <- Clock.instant
         client = OAuthClientRecord(
           id = request.id,
           tenantId = request.tenantId,
@@ -211,6 +212,8 @@ object OAuthClientService:
           requireSignedRequestObject = request.requireSignedRequestObject,
           requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
           edgeSigningKey = encryptedEdgeSigningKey,
+          template = request.template,
+          createdAt = registeredAt,
         )
         _ <- clientRepository.createClient(client)
       yield secret

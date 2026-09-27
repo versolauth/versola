@@ -1092,6 +1092,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * decode time on `CreateClientRequest`, unlike `mtlsAuth`, since it isn't itself an
         * `Option`. */
       certificateBoundAccessTokens: Boolean = false,
+      /** RFC 9449 §5.2: opts this client's requests into DPoP. */
+      dpopBoundAccessTokens: Boolean = false,
       /** RFC 7523 §2.2: the public keys this client signs its assertions with, instead of
         * authenticating by secret. Build it with `AssertionSigner.jwks`. */
       jwks: Option[zio.json.ast.Json] = None,
@@ -1132,6 +1134,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       authMethod = authMethod,
       mtlsAuth = mtlsAuth,
       certificateBoundAccessTokens = certificateBoundAccessTokens,
+      dpopBoundAccessTokens = dpopBoundAccessTokens,
       jwks = jwks,
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
@@ -1733,6 +1736,7 @@ object OAuthClient:
       authMethod: String,
       mtlsAuth: Option[zio.json.ast.Json],
       certificateBoundAccessTokens: Boolean,
+      dpopBoundAccessTokens: Boolean,
       jwks: Option[zio.json.ast.Json],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,

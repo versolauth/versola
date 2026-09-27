@@ -9,6 +9,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import zio.*
 import zio.test.*
+import java.time.Instant
 
 object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -46,6 +47,8 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
   private val scope = ScopeRecord(
     tenantId,

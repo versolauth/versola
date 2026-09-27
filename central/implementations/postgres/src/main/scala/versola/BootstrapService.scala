@@ -840,12 +840,21 @@ object BootstrapService:
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
         backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
+        dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
         authMethod = AuthMethod.client_secret,
         mtlsAuth = None,
         certificateBoundAccessTokens = false,
         jwks = None,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
+        edgeSigningKey = None,
+        template = None,
       )
       clientService.registerClient(request).foldZIO(
         {

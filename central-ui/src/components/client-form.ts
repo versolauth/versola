@@ -12,10 +12,15 @@ import {
   CLIENT_KINDS,
   ClientCredentialMode,
   ClientKind,
+  TemplateDifference,
+  TemplateSettingSection,
   authMethodFor,
   certificateBoundFor,
   clientPreset,
   defaultCredentialMode,
+  templateDecides,
+  templateDifferences,
+  templateLabel,
 } from '../utils/client-presets';
 
 /** Creation walks four steps; editing shows the same field groups on one page. */
@@ -103,6 +108,9 @@ export class VersolaClientForm extends LitElement {
   @state() private wizardStep: WizardStep = 1;
   @state() private kind: ClientKind | null = null;
   @state() private tier: AssuranceTier = 'high';
+  /** Which edit-page sections are expanded. All collapsed to start: the differences panel
+   *  above them already says what moved, and a section is opened to change something. */
+  @state() private openSections: string[] = [];
 
   private handleDocumentClick = () => {
     this.openInfoKey = null;
@@ -507,6 +515,141 @@ export class VersolaClientForm extends LitElement {
 
       .secondary-action-button {
         margin-right: auto;
+      }
+
+      /* The footer note sits left of every action, including the secret ones, which claim
+         margin-right: auto themselves. */
+      .form-actions-note {
+        margin-right: auto;
+        align-self: center;
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+      }
+
+      .form-actions-note ~ .secondary-action-button {
+        margin-right: 0;
+      }
+
+      .template-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: calc(-1 * var(--spacing-md)) 0 var(--spacing-lg);
+      }
+
+      .template-badge {
+        font-size: 0.8125rem;
+        padding: 0.25rem 0.625rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-dark);
+        color: var(--text-secondary);
+      }
+
+      .template-badge.drift {
+        border-color: var(--warning);
+        background: rgba(210, 153, 34, 0.12);
+        color: var(--warning);
+      }
+
+      .client-id-readonly {
+        font-family: var(--font-mono);
+      }
+
+      .drift-panel {
+        border-left: 3px solid var(--warning);
+        background: rgba(210, 153, 34, 0.08);
+        border-radius: var(--radius-sm);
+        padding: 1rem 1.25rem;
+        margin-bottom: var(--spacing-lg);
+      }
+
+      .drift-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+      }
+
+      .drift-count {
+        color: var(--text-secondary);
+        font-size: 0.8125rem;
+      }
+
+      .drift-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        padding: 0.35rem 0;
+        font-size: 0.875rem;
+      }
+
+      .drift-was {
+        text-decoration: line-through;
+        color: var(--text-secondary);
+        margin-right: 0.5rem;
+      }
+
+      .drift-now {
+        color: var(--warning);
+        font-weight: 600;
+      }
+
+      .drift-panel .btn {
+        margin-top: 0.6rem;
+      }
+
+      .edit-section {
+        border-bottom: 1px solid var(--border-dark);
+      }
+
+      .edit-section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 1rem;
+        width: 100%;
+        padding: 0.9rem 0;
+        background: none;
+        border: none;
+        color: inherit;
+        font-family: inherit;
+        font-size: 0.9rem;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      .edit-section-title {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 600;
+      }
+
+      .edit-section-caret {
+        color: var(--text-secondary);
+      }
+
+      .edit-section-summary {
+        color: var(--text-secondary);
+        text-align: right;
+      }
+
+      .edit-section-body {
+        padding: 0 0 var(--spacing-lg);
+      }
+
+      .section-tag {
+        font-size: 0.7rem;
+        font-weight: 500;
+        padding: 0.15rem 0.5rem;
+        border-radius: var(--radius-sm);
+        background: rgba(139, 148, 158, 0.15);
+        color: var(--text-secondary);
+      }
+
+      .section-tag.changed {
+        background: rgba(210, 153, 34, 0.15);
+        color: var(--warning);
       }
 
       .flow-subsection {
@@ -1393,6 +1536,10 @@ export class VersolaClientForm extends LitElement {
       jwks: this.effectiveJwks,
       requireSignedRequestObject: this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
+      // Only a registration records one: an edit states what the client is now, and the
+      // template it was created from is what that is later shown against.
+      template: this.client?.template ?? (this.kind ? { kind: this.kind, tier: this.tier } : null),
+      createdAt: this.client?.createdAt ?? null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -1918,6 +2065,68 @@ export class VersolaClientForm extends LitElement {
     }
 
     this.formData = { ...this.formData, clientType };
+  }
+
+  /** The template the client was registered from, which only an existing client has. */
+  private get editTemplate(): { kind: ClientKind; tier: AssuranceTier } | null {
+    return this.client?.template ?? null;
+  }
+
+  /** The template-decided settings as the form currently holds them, so a difference
+   *  disappears the moment it is edited back rather than on the next save. The access token
+   *  TTL lives in the value/unit pair the field edits, not in `formData`. */
+  private get currentTemplateSettings(): Partial<OAuthClient> {
+    return {
+      accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
+      dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
+      certificateBoundAccessTokens: !this.effectiveMtlsAuth && !!this.formData.certificateBoundAccessTokens,
+      requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
+      requireSignedRequestObject: this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
+    };
+  }
+
+  private get templateDifferenceList(): TemplateDifference[] {
+    const template = this.editTemplate;
+    return template ? templateDifferences(template, this.currentTemplateSettings) : [];
+  }
+
+  /** Puts the template's own value back into every setting that has moved away from it. */
+  private resetToTemplate() {
+    const differences = this.templateDifferenceList;
+    const ttl = differences.find(difference => difference.field === 'accessTokenTtl');
+    if (ttl) {
+      const { value, unit } = secondsToTtl(Number(ttl.templateValue));
+      this.ttlValue = value;
+      this.ttlUnit = unit;
+    }
+
+    const flags = differences.filter(difference => difference.field !== 'accessTokenTtl');
+    if (flags.length) {
+      this.formData = flags.reduce(
+        (data, difference) => ({ ...data, [difference.field]: difference.templateValue }),
+        this.formData,
+      );
+    }
+  }
+
+  /** `changed` when one of the section's own template-decided settings has moved, `from
+   *  template` when the template decides some of them and none has. A section the template
+   *  says nothing about gets neither - there is nothing for it to agree or disagree with. */
+  private sectionTag(section: TemplateSettingSection | null): 'changed' | 'from template' | null {
+    const template = this.editTemplate;
+    if (!template || !section || !templateDecides(template, section)) {
+      return null;
+    }
+
+    return this.templateDifferenceList.some(difference => difference.section === section)
+      ? 'changed'
+      : 'from template';
+  }
+
+  private toggleSection(key: string) {
+    this.openSections = this.openSections.includes(key)
+      ? this.openSections.filter(open => open !== key)
+      : [...this.openSections, key];
   }
 
   private selectKind(kind: ClientKind) {
@@ -3254,42 +3463,186 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
+  /** What the client is and whether it still matches it, stated once above the form. */
+  private renderTemplateBadges() {
+    const template = this.editTemplate;
+    if (!template) {
+      return '';
+    }
+
+    const differences = this.templateDifferenceList.length;
+
+    return html`
+      <div class="template-badges">
+        <span class="template-badge">${templateLabel(template)}</span>
+        ${differences ? html`
+          <span class="template-badge drift">
+            ${differences} ${differences === 1 ? 'setting differs' : 'settings differ'} from the template
+          </span>
+        ` : ''}
+      </div>
+    `;
+  }
+
+  /** The settings that have moved away from the template, each with the value it moved from,
+    * so the list reads as what an operator would have to undo. */
+  private renderDifferencesPanel() {
+    const differences = this.templateDifferenceList;
+    if (!differences.length) {
+      return '';
+    }
+
+    return html`
+      <div class="drift-panel">
+        <div class="drift-head">
+          <strong>Differences from the template</strong>
+          <span class="drift-count">${differences.length} ${differences.length === 1 ? 'setting' : 'settings'}</span>
+        </div>
+        ${differences.map(difference => html`
+          <div class="drift-row">
+            <span>${difference.label}</span>
+            <span>
+              <span class="drift-was">${difference.templateText}</span>
+              <span class="drift-now">${difference.currentText}</span>
+            </span>
+          </div>
+        `)}
+        <button type="button" class="btn btn-secondary btn-sm" @click=${this.resetToTemplate}>
+          ${differences.length === 1 ? 'Reset it to template' : `Reset all ${differences.length} to template`}
+        </button>
+      </div>
+    `;
+  }
+
+  /** One collapsed row per group of settings: what it holds now on the right, and whether
+    * the template still decides it on the left. Opened to change something. */
+  private renderSection(
+    key: string,
+    title: string,
+    section: TemplateSettingSection | null,
+    summary: string,
+    body: unknown,
+  ) {
+    const open = this.openSections.includes(key);
+    const tag = this.sectionTag(section);
+
+    // Named explicitly rather than from its contents: the caret, the tag and the summary all
+    // read as part of the name otherwise, and the summary changes with every edit.
+    const label = [title, tag === 'changed' ? 'changed from the template' : tag, summary]
+      .filter(Boolean).join(', ');
+
+    return html`
+      <div class="edit-section ${open ? 'open' : ''}">
+        <button
+          type="button"
+          class="edit-section-head"
+          aria-expanded=${open ? 'true' : 'false'}
+          aria-label=${label}
+          @click=${() => this.toggleSection(key)}
+        >
+          <span class="edit-section-title">
+            <span class="edit-section-caret">${open ? '▾' : '▸'}</span>
+            ${title}
+            ${tag ? html`<span class="section-tag ${tag === 'changed' ? 'changed' : ''}">${tag}</span>` : ''}
+          </span>
+          <span class="edit-section-summary">${summary}</span>
+        </button>
+        ${open ? html`<div class="edit-section-body form-grid">${body}</div>` : ''}
+      </div>
+    `;
+  }
+
+  private renderEditSections() {
+    const scopes = this.formData.scope || [];
+    const permissions = this.formData.permissions || [];
+    const redirectUris = this.formData.redirectUris || [];
+    const logoutUris = [this.formData.frontChannelLogoutUri, this.formData.backChannelLogoutUri]
+      .filter(uri => !!(uri || '').trim()).length;
+    const registration = this.hasRegistrationFlow ? 'self-registration on' : 'self-registration off';
+    const consent = this.hasConsentFlow ? 'consent screen on' : 'consent screen off';
+
+    return html`
+      ${this.renderSection('scopes', 'Scopes and permissions', null,
+        [scopes.join(', ') || 'no scopes', permissions.length ? `${permissions.length} permissions` : 'no permissions']
+          .join(' · '),
+        html`${this.renderScopesField()}${this.renderPermissionsField()}`)}
+
+      ${this.renderSection('sign-in', 'How users sign in', null,
+        this.hasAuthFlow
+          ? `${this.firstScreenSummary} · ${redirectUris.length} redirect ${redirectUris.length === 1 ? 'URI' : 'URIs'}`
+          : 'no user signs in',
+        html`${this.renderAuthFlowSection()}${this.renderOtpSettingsSection()}${this.renderRedirectUrisField()}`)}
+
+      ${this.renderSection('tokens', 'Token lifetimes', 'tokens',
+        `${this.ttlValue} ${this.ttlValue === 1 ? this.ttlUnit.slice(0, -1) : this.ttlUnit} access · ${
+          this.hasOfflineAccessScope ? `${this.refreshTokenTtlDays} day refresh` : 'no refresh token'}`,
+        html`${this.renderAccessTokenTtlField()}${this.renderRefreshTokenTtlField()}`)}
+
+      ${this.renderSection('credential', 'Client credential and binding', 'credential',
+        `${this.credentialSummary} · ${this.tokenBindingSummary}`,
+        html`${this.renderCredentialGroup()}${this.renderDpopFieldsGroup()}`)}
+
+      ${this.renderSection('integrity', 'Request integrity', 'integrity',
+        `PAR ${this.formData.requirePushedAuthorizationRequests ? 'required' : 'off'} · JAR ${
+          !this.canRequireSignedRequestObject
+            ? 'unavailable'
+            : this.formData.requireSignedRequestObject ? 'required' : 'off'}`,
+        this.renderRequestIntegrityFields())}
+
+      ${this.renderSection('registration', 'Registration and consent', null,
+        `${registration} · ${consent}`,
+        html`${this.renderRegistrationSection()}${this.renderConsentSection()}`)}
+
+      ${this.renderSection('branding', 'Branding and logout', null,
+        `${this.formData.theme || 'default'} theme · ${logoutUris ? `${logoutUris} logout ${logoutUris === 1 ? 'URI' : 'URIs'}` : 'no logout URIs'}`,
+        html`${this.renderThemeField()}${this.hasAuthFlow ? this.renderLogoutSettings() : ''}`)}
+    `;
+  }
+
+  /** The two facts about the client itself that the form does not otherwise state. */
+  private get editFooterNote(): string {
+    const kind = this.clientType === 'native' ? 'Public client' : 'Confidential client';
+    const created = this.client?.createdAt;
+    if (!created) {
+      return kind;
+    }
+
+    const days = Math.floor((Date.now() - new Date(created).getTime()) / 86_400_000);
+    const age = days < 1 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+    return `${kind} · created ${age}`;
+  }
+
   render() {
     if (!this.client) {
       return this.renderWizard();
     }
+
+    const name = (this.formData.clientName?.en || '').trim();
 
     return html`
       <div class="form-header">
         <div class="form-header-lead">
           <versola-nav-toggle></versola-nav-toggle>
           <div class="title-stack">
-            <h1 class="form-title">Edit Client</h1>
+            <h1 class="form-title">${name || this.formData.id || 'Edit Client'}</h1>
             <div class="entity-id-meta">${this.formData.id || '—'}</div>
           </div>
         </div>
       </div>
 
+      ${this.renderTemplateBadges()}
+
       <div class="card">
         <form @submit=${this.handleSubmit}>
           <div class="form-grid">
             ${this.renderIdentityFields()}
-            ${this.renderAccessTokenTtlField()}
-            ${this.renderRefreshTokenTtlField()}
-            ${this.renderDpopFieldsGroup()}
-            ${this.renderCredentialGroup()}
-            ${this.renderScopesField()}
-            ${this.renderPermissionsField()}
-            ${this.renderAuthFlowSection()}
-            ${this.renderRegistrationSection()}
-            ${this.renderConsentSection()}
-            ${this.renderOtpSettingsSection()}
-            ${this.renderThemeField()}
-            ${this.renderRedirectUrisField()}
-            ${this.hasAuthFlow ? this.renderLogoutSettings() : ''}
           </div>
 
+          ${this.renderDifferencesPanel()}
+          ${this.renderEditSections()}
+
           <div class="form-actions">
+            <span class="form-actions-note">${this.editFooterNote}</span>
             ${this.client && this.canManageSecrets && this.client.authMethod === 'client_secret' ? html`
               ${this.client.hasPreviousSecret ? html`
                 <button
@@ -3311,7 +3664,7 @@ export class VersolaClientForm extends LitElement {
               Cancel
             </button>
             <button type="submit" class="btn btn-primary">
-              Update Client
+              Save changes
             </button>
           </div>
         </form>
@@ -3319,7 +3672,8 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
-  /** Identity: Client ID (creation only, fixed afterwards) and the localized Client Name. */
+  /** Identity: Client ID (chosen at creation, shown read-only afterwards) and the localized
+    * Client Name. */
   private renderIdentityFields() {
     return html`
       ${!this.client ? html`
@@ -3336,7 +3690,13 @@ export class VersolaClientForm extends LitElement {
           />
           <div class="hint">Lowercase letters, numbers, hyphen, start with letter</div>
         </div>
-      ` : ''}
+      ` : html`
+        <div class="form-group">
+          <label for="client-id">Client ID</label>
+          <input type="text" id="client-id" class="compact-input client-id-readonly" .value=${this.formData.id || ''} readonly />
+          <div class="hint">Chosen at creation, never changes.</div>
+        </div>
+      `}
 
       <div class="form-group">
         <div style="display: flex; align-items: center; gap: 0.4rem;">
@@ -3620,6 +3980,14 @@ export class VersolaClientForm extends LitElement {
               </div>
             </div>
 
+    `;
+  }
+
+  /** RFC 9126 PAR and RFC 9101 JAR: what a request from this client has to arrive as.
+    * Shown for a public client too - it pushes with a bare client_id, and the value of
+    * pushing is request integrity rather than client authentication. */
+  private renderRequestIntegrityFields() {
+    return html`
             <div class="form-group">
               <label class="plain-checkbox-label">
                 <input

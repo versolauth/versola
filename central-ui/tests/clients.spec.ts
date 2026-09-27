@@ -40,6 +40,28 @@ const offlineClient = {
   refreshTokenTtl: 180 * 24 * 60 * 60,
 };
 
+/** A client registered from the device/high combination and still holding what it asked for. */
+const templatedClient = {
+  ...alphaClient,
+  id: 'mobile-checkout',
+  clientName: { en: 'Mobile Checkout' },
+  authMethod: 'none',
+  accessTokenTtl: 3600,
+  dpopBoundAccessTokens: true,
+  certificateBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  requireSignedRequestObject: false,
+  template: { kind: 'device', tier: 'high' },
+  createdAt: '2026-02-01T09:00:00Z',
+};
+
+/** The same client after two of the template's settings were moved. */
+const driftedClient = {
+  ...templatedClient,
+  accessTokenTtl: 4 * 3600,
+  requirePushedAuthorizationRequests: false,
+};
+
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
   allowedPrefixes: [],
@@ -101,6 +123,22 @@ async function continueToReview(page: Page) {
 
 async function submitCreate(page: Page) {
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
+}
+
+/**
+ * The edit page keeps every group of settings collapsed behind its summary, so a test that
+ * touches one of its fields opens that group first. Idempotent: opening an open section
+ * would close it again.
+ */
+async function openEditSection(page: Page, title: string) {
+  const head = page.getByRole('button', { name: new RegExp(`^${title}`) });
+  if (await head.getAttribute('aria-expanded') === 'false') {
+    await head.click();
+  }
+}
+
+async function saveEdit(page: Page) {
+  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
 }
 
 /** Step 2 to the created client, for a test with nothing to say about steps 3 and 4. */
@@ -166,9 +204,10 @@ test('shows and updates refresh token TTL in days for offline clients', async ({
   await expect(client).toContainText('180d');
 
   await client.getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'Token lifetimes');
   await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('180');
   await page.getByLabel('Refresh Token TTL (days) *').fill('120');
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
     refreshTokenTtl: 120 * 24 * 60 * 60,
@@ -206,8 +245,9 @@ test('shows refresh token TTL only after selecting offline_access when creating 
   });
 
   await clientCard(page, 'Offline Client').getByRole('button', { name: 'Edit client offline-client' }).click();
+  await openEditSection(page, 'Token lifetimes');
   await page.getByLabel('Refresh Token TTL (days) *').fill('45');
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
   await expect(clientCard(page, 'Offline Client')).toContainText('45d');
 });
 
@@ -273,6 +313,8 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     jwks: null,
     requireSignedRequestObject: false,
     requirePushedAuthorizationRequests: false,
+    // Step 1's combination, stored so the edit page can show the client against it.
+    template: { kind: 'web', tier: 'compat' },
   });
 });
 
@@ -327,6 +369,7 @@ test('settles the client type from the kind step, and fixes it once created', as
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'How users sign in');
   await expect(page.getByText('Client type', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
@@ -775,6 +818,7 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   // OTP delivery is not asked for at creation - the credential picks the channel - so this is
   // the edit page, where the template and the channel are both settable.
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'How users sign in');
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
   await expect(page.getByLabel('OTP Template')).toBeVisible();
   await expect(page.getByLabel('OTP Template').locator('option')).toHaveCount(1);
@@ -843,9 +887,10 @@ test('configures a registration flow and sends it when creating a client', async
   });
 
   await clientCard(page, 'Registering Client').getByRole('button', { name: 'Edit client registering-client' }).click();
+  await openEditSection(page, 'Registration and consent');
   await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
   await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
     registrationFlow: {
@@ -906,11 +951,12 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   });
 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'Registration and consent');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
 
   await page.getByLabel('Remember duration in days').fill('30');
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body.consentFlow)
     .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
@@ -923,6 +969,7 @@ test('explains consent settings with info buttons', async ({ page }) => {
   });
 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'Registration and consent');
 
   await page.getByRole('button', { name: 'Consent settings info' }).click();
   await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
@@ -950,10 +997,12 @@ test('explains which client fields are shown on the consent screen', async ({ pa
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
+  // The client name is identity, shown above the collapsed groups; scopes are inside one.
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
   await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
 
+  await openEditSection(page, 'Scopes and permissions');
   await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
   await expect(page.getByText('Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.', { exact: true })).toBeVisible();
 });
@@ -965,6 +1014,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
   });
 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'Registration and consent');
   const consentRow = page.getByText('Consent', { exact: true }).locator('..');
   await consentRow.locator('label.toggle').click();
 
@@ -1004,15 +1054,17 @@ test('hides registration settings when inline password is enabled', async ({ pag
 
   // Inline password is an edit-page refinement; turning it on leaves sign-up nothing to verify.
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'Registration and consent');
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
   await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
 
+  await openEditSection(page, 'How users sign in');
   await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
   await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
 
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
   // the key is omitted rather than sent as an explicit null.
@@ -1188,16 +1240,22 @@ test('updates a client and sends patch-style changes', async ({ page }) => {
 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
   await page.getByLabel('Client Name').fill('Alpha Console');
+
+  await openEditSection(page, 'How users sign in');
   await page.getByRole('button', { name: 'Remove redirect URI https://alpha.example/callback', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://alpha.example/admin/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+
+  await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
   await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
+
+  await openEditSection(page, 'Token lifetimes');
   await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
 
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   // Verify the API request was made correctly
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toEqual({
@@ -1232,7 +1290,7 @@ test('does not patch a localized client name after reverting an edit', async ({ 
   const clientName = page.getByLabel('Client Name');
   await clientName.fill('Temporary name');
   await clientName.fill('Alpha Web');
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).not.toHaveProperty('clientName');
 });
@@ -1247,11 +1305,12 @@ test('clears the auth flow on an existing client by sending an explicit null', a
   });
 
   await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openEditSection(page, 'How users sign in');
 
   const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
   await authFlowRow.locator('label.toggle').click();
 
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   // An explicit null is required: an omitted key would leave the stored flow in place.
   expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
@@ -1271,11 +1330,12 @@ test('leaves a native client public when its sign-in flow is switched off', asyn
   });
 
   await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
+  await openEditSection(page, 'How users sign in');
 
   const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
   await authFlowRow.locator('label.toggle').click();
 
-  await page.getByRole('button', { name: 'Update Client', exact: true }).click();
+  await saveEdit(page);
 
   // A native client holds no secret, so moving it onto client_secret would leave it unable
   // to authenticate at all - the method is the client's own, not one the flow toggle decides.
@@ -1316,6 +1376,7 @@ test('hides the credential picker on a native client instead of accepting a cred
   });
 
   await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
+  await openEditSection(page, 'Client credential and binding');
 
   // authMethodFor pins a native client to 'none' no matter which mode is picked, so the picker
   // that lets an operator fill in a certificate or a key set that the update would then drop
@@ -1464,8 +1525,78 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     jwks: null,
     requireSignedRequestObject: false,
     requirePushedAuthorizationRequests: false,
+    template: { kind: 'web', tier: 'compat' },
   });
 
   // The client should NOT be added to the list
   await expect(page.locator('.client-card').filter({ hasText: 'Duplicate Client' })).toHaveCount(0);
+});
+
+test('shows a templated client against the template it was registered from', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [templatedClient] } },
+  });
+
+  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+
+  await expect(page.getByText('Mobile or desktop app · High assurance')).toBeVisible();
+  await expect(page.getByText(/settings? differ from the template/)).toHaveCount(0);
+  await expect(page.getByText('Differences from the template')).toHaveCount(0);
+
+  // Every group the template decides says so; the ones it says nothing about stay untagged.
+  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Request integrity, from template/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Scopes and permissions/ })).not.toHaveAccessibleName(/from template|changed/);
+
+  // The client ID is shown but cannot be edited - it is the one field creation fixes.
+  await expect(page.getByLabel('Client ID')).toHaveValue('mobile-checkout');
+  await expect(page.getByLabel('Client ID')).toHaveAttribute('readonly', '');
+});
+
+test('lists the settings that differ from the template and resets them back', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [driftedClient] } },
+  });
+
+  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+
+  await expect(page.getByText('2 settings differ from the template')).toBeVisible();
+
+  const panel = page.locator('.drift-panel');
+  await expect(panel.locator('.drift-row').nth(0)).toContainText('Access token TTL');
+  await expect(panel.locator('.drift-row').nth(0)).toContainText('1 h');
+  await expect(panel.locator('.drift-row').nth(0)).toContainText('4 h');
+  await expect(panel.locator('.drift-row').nth(1)).toContainText('Pushed authorization requests');
+
+  // The two groups holding those settings say so; the untouched ones still read as the template's.
+  await expect(page.getByRole('button', { name: /^Token lifetimes, changed from the template/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Client credential and binding, from template/ })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Reset all 2 to template', exact: true }).click();
+
+  await expect(page.getByText('2 settings differ from the template')).toHaveCount(0);
+  await expect(page.locator('.drift-panel')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
+
+  await saveEdit(page);
+
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body).toMatchObject({
+    accessTokenTtl: 3600,
+    requirePushedAuthorizationRequests: true,
+  });
+});
+
+test('says nothing about a template for a client registered without one', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
+  });
+
+  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+
+  await expect(page.locator('.template-badges')).toHaveCount(0);
+  await expect(page.locator('.drift-panel')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /^Token lifetimes/ })).not.toHaveAccessibleName(/from template|changed/);
 });

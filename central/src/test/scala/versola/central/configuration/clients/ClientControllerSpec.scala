@@ -21,6 +21,7 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
 import javax.crypto.spec.SecretKeySpec
+import java.time.Instant
 
 object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -76,6 +77,11 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
     authMethod = AuthMethod.client_secret,
@@ -84,6 +90,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
+    template = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -116,6 +124,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     certificateBoundAccessTokens = None,
     jwks = None,
   )
+
+  /** A fixed registration time, so the response carries the record's own rather than
+    * whatever the clock said when the fixture was built. */
+  private val registeredAt = Instant.parse("2026-02-01T09:00:00Z")
 
   private val clients = Vector(
     OAuthClientRecord(
@@ -150,6 +162,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
+      template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+      createdAt = registeredAt,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -183,6 +197,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
+      template = None,
+      createdAt = registeredAt,
     ),
   )
 
@@ -326,6 +342,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 jwks = None,
                 requireSignedRequestObject = false,
                 requirePushedAuthorizationRequests = false,
+                template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+                createdAt = registeredAt,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -356,6 +374,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 jwks = None,
                 requireSignedRequestObject = false,
                 requirePushedAuthorizationRequests = false,
+                template = None,
+                createdAt = registeredAt,
               ),
             ),
           ),

@@ -10,6 +10,7 @@ import versola.util.{RedirectUri, ReloadingCache}
 import zio.*
 import zio.durationInt
 import zio.test.*
+import java.time.Instant
 
 object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -56,6 +57,8 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
 
   private val validRequest = SaveAuthorizationPresetsRequest(

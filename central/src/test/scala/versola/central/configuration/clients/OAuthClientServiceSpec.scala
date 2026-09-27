@@ -29,6 +29,7 @@ import zio.test.*
 
 import java.security.interfaces.ECPublicKey
 import javax.crypto.spec.SecretKeySpec
+import java.time.Instant
 
 object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -124,6 +125,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
 
   private val otherTenantClient = OAuthClientRecord(
@@ -158,6 +161,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
 
   private val createRequest = CreateClientRequest(
@@ -176,12 +181,21 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
     backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
     dpopSigningAlgs = Set.empty,
     dpopMinRsaKeySize = None,
     authMethod = AuthMethod.client_secret,
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
+    template = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -327,6 +341,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         requireSignedRequestObject = false,
         requirePushedAuthorizationRequests = false,
         edgeSigningKey = None,
+        template = None,
+        createdAt = Instant.EPOCH,
       )
 
       for
@@ -341,6 +357,33 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         encryptCall._1.sameElements(secretBytes),
         created === expectedClient,
       )
+    },
+    test("registerClient stores the template the registration named, and the time it arrived") {
+      val env = new Env()
+      val template = ClientTemplate(ClientKind.device, AssuranceTier.high)
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- TestClock.setTime(Instant.parse("2026-02-01T09:00:00Z"))
+        _ <- env.service.registerClient(createRequest.copy(template = Some(template)))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.template.contains(template),
+        created.createdAt == Instant.parse("2026-02-01T09:00:00Z"),
+      )
+    },
+    test("registerClient leaves the template unset for a registration that names none") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest)
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.template.isEmpty)
     },
     test("registerClient stores no secret for a native client") {
       val env = new Env()

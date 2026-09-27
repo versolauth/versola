@@ -301,6 +301,103 @@ export function clientPreset(kind: ClientKind, tier: AssuranceTier): ClientPrese
   return PRESETS[kind][tier];
 }
 
+/** The label the tier carries wherever a stored template is named back to an operator. */
+export function assuranceTierName(tier: AssuranceTier): string {
+  return tier === 'high' ? 'High assurance' : 'Compatibility';
+}
+
+/** `"Mobile or desktop app · High assurance"` - the two choices as they were made. */
+export function templateLabel(template: { kind: ClientKind; tier: AssuranceTier }): string {
+  const kind = CLIENT_KINDS.find(descriptor => descriptor.id === template.kind);
+  return `${kind?.name ?? template.kind} · ${assuranceTierName(template.tier)}`;
+}
+
+/** Which part of the edit form a template-decided setting is edited in, so a section can
+ * say that one of its own settings has moved. */
+export type TemplateSettingSection = 'tokens' | 'credential' | 'integrity';
+
+type TemplateSettingField =
+  | 'accessTokenTtl'
+  | 'dpopBoundAccessTokens'
+  | 'certificateBoundAccessTokens'
+  | 'requirePushedAuthorizationRequests'
+  | 'requireSignedRequestObject';
+
+interface TemplateSetting {
+  field: TemplateSettingField;
+  section: TemplateSettingSection;
+  label: string;
+  format: (value: unknown) => string;
+}
+
+const onOff = (value: unknown) => (value ? 'required' : 'off');
+
+const hours = (value: unknown) => {
+  const seconds = Number(value);
+  return seconds % 3600 === 0 ? `${seconds / 3600} h` : `${Math.round(seconds / 60)} min`;
+};
+
+/** The settings a template decides and an operator can move afterwards, which is what a
+ * difference can be stated about. The rest of a preset's patch is either fixed at creation
+ * (`clientType`) or a starting point rather than a rule - a service template clears `scope`,
+ * and the first scope an operator grants is configuration, not drift. */
+const TEMPLATE_SETTINGS: TemplateSetting[] = [
+  { field: 'accessTokenTtl', section: 'tokens', label: 'Access token TTL', format: hours },
+  { field: 'dpopBoundAccessTokens', section: 'credential', label: 'DPoP-bound access tokens', format: onOff },
+  { field: 'certificateBoundAccessTokens', section: 'credential', label: 'Certificate-bound access tokens', format: onOff },
+  { field: 'requirePushedAuthorizationRequests', section: 'integrity', label: 'Pushed authorization requests', format: onOff },
+  { field: 'requireSignedRequestObject', section: 'integrity', label: 'Signed request objects', format: onOff },
+];
+
+export interface TemplateDifference {
+  field: TemplateSettingField;
+  section: TemplateSettingSection;
+  label: string;
+  /** The template's value, and the current one, both already formatted for display. */
+  templateText: string;
+  currentText: string;
+  /** The value resetting this difference writes back. */
+  templateValue: unknown;
+}
+
+/** Every template-decided setting whose current value is no longer the one the template
+ * asked for. Settings the template does not decide are not compared: a template that says
+ * nothing about a field has nothing to differ from. */
+export function templateDifferences(
+  template: { kind: ClientKind; tier: AssuranceTier },
+  current: Partial<OAuthClient>,
+): TemplateDifference[] {
+  const patch = clientPreset(template.kind, template.tier).patch as Record<string, unknown>;
+  return TEMPLATE_SETTINGS.flatMap(setting => {
+    if (!(setting.field in patch)) {
+      return [];
+    }
+    const templateValue = patch[setting.field];
+    const currentValue = (current as Record<string, unknown>)[setting.field];
+    const same = typeof templateValue === 'boolean'
+      ? !!currentValue === templateValue
+      : currentValue === templateValue;
+    return same ? [] : [{
+      field: setting.field,
+      section: setting.section,
+      label: setting.label,
+      templateText: setting.format(templateValue),
+      currentText: setting.format(currentValue),
+      templateValue,
+    }];
+  });
+}
+
+/** Whether the template decides anything the given section shows, so a section with no
+ * template-decided setting is left untagged rather than labelled "from template". */
+export function templateDecides(
+  template: { kind: ClientKind; tier: AssuranceTier },
+  section: TemplateSettingSection,
+): boolean {
+  const patch = clientPreset(template.kind, template.tier).patch as Record<string, unknown>;
+  return TEMPLATE_SETTINGS.some(setting => setting.section === section && setting.field in patch);
+}
+
 /** The credential the combination applies until the next step is told otherwise. */
 export function defaultCredentialMode(kind: ClientKind, tier: AssuranceTier): ClientCredentialMode {
   return clientPreset(kind, tier).credentialModes[0];

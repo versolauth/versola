@@ -67,6 +67,8 @@ object ClientController extends Controller:
               jwks = client.jwks,
               requireSignedRequestObject = client.requireSignedRequestObject,
               requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+              template = client.template,
+              createdAt = client.createdAt,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)

@@ -9,11 +9,14 @@ import zio.prelude.Equal
 import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
 
+import java.time.Instant
+
 given Schema[URL] = Schema.primitive[String].transformOrFail(
   string => URL.decode(string).left.map(_.getMessage),
   url => Right(url.encode),
 )
 given Equal[URL] = (a, b) => a == b
+given Equal[Instant] = (a, b) => a == b
 
 case class OAuthClientRecord(
     id: ClientId,
@@ -90,6 +93,13 @@ case class OAuthClientRecord(
       * Encrypted at rest under the same key as [[secret]], and read back decrypted — a record
       * that reaches a caller carries the key itself, never the ciphertext. */
     edgeSigningKey: Option[Secret],
+    /** The wizard combination this client was registered from, kept so that a later edit can
+      * be shown against what the registration asked for. `None` for a client registered
+      * before the column existed, or through the API without naming one. */
+    template: Option[ClientTemplate],
+    /** When the registration was accepted. Set once, by the service that accepted it, and
+      * never patched: an update states what the client is now, not when it appeared. */
+    createdAt: Instant,
 ) derives Schema, CanEqual, Equal:
 
   /** Whether this client holds a secret at all, which only [[AuthMethod.client_secret]]

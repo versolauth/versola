@@ -111,6 +111,26 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(7776000))
         .label("clients registered without a refresh lifetime must still get a usable default")
     },
+    test("a client registered from a console template reads it back, and a registration time") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("device", "high")))
+        record <- withClient(central, body)(_ => read(central, id))
+        template = record.flatMap(_.obj("template"))
+      yield assertTrue(template.flatMap(_.str("kind")).contains("device")) &&
+        assertTrue(template.flatMap(_.str("tier")).contains("high"))
+          .label("the console shows the client's settings against this, so it has to survive the round trip") &&
+        assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
+    },
+    test("a client registered without a template reads back without one") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        record <- withClient(central, Fixtures.client(id))(_ => read(central, id))
+      yield assertTrue(record.exists(_.obj("template").isEmpty))
+        .label("an API registration names no combination, and a guessed one would look like a recorded choice")
+    },
     test("a new client reports no secret rotation in progress") {
       for
         central <- api
