@@ -1701,8 +1701,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
 object OAuthClient:
 
+  /** Puts the `default` tenant on the `standard` profile first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
-    ZLayer.fromFunction(OAuthClient(_, _))
+    ZLayer.fromZIO(
+      for
+        client <- ZIO.service[Client]
+        config <- ZIO.service[E2EConfig]
+        _ <- SecurityProfiles.ensureStandard(CentralApi(client, config, Some("central" -> config.resourceSecret))).orDie
+      yield OAuthClient(client, config),
+    )
 
   /** The header the bootstrap configures the default tenant to read a client certificate
     * from (see `Flows.layer`). ingress-nginx's name for it, so the fixture matches the
