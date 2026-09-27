@@ -1,9 +1,9 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord, SecurityProfile}
 import versola.oauth.mtls.ClientCertificate
-import versola.util.CoreConfig
+import versola.util.{CoreConfig, JwtAudience}
 import versola.util.http.Observability
 import zio.*
 import zio.http.Request
@@ -123,8 +123,9 @@ enum CertificateRelevance:
   *
   * RFC 7523 §3 requires an assertion's `aud` to name the server it is sent to. OpenID Connect
   * Core §9 reads that as the endpoint's own URL while the OAuth security BCP reads it as the
-  * issuer identifier, and clients in the wild send either -- so both are accepted, and this
-  * is what supplies the endpoint half.
+  * issuer identifier. FAPI 2.0 §5.3.2.1-8 settles it as the issuer alone, which is what a
+  * `fapi2` tenant is held to; a `standard` tenant still accepts either, and this is what
+  * supplies the endpoint half for it -- see [[audience]].
   */
 enum AuthenticatedEndpoint(val path: String):
   case Token extends AuthenticatedEndpoint("/token")
@@ -135,6 +136,11 @@ enum AuthenticatedEndpoint(val path: String):
   def acceptedAudiences(issuer: String): Set[String] =
     val base = issuer.stripSuffix("/")
     Set(issuer, base, base + path)
+
+  /** The `aud` an assertion sent here must carry under the given security profile. */
+  def audience(issuer: String, profile: SecurityProfile): JwtAudience = profile match
+    case SecurityProfile.fapi2 => JwtAudience.IssuerOnly(issuer)
+    case SecurityProfile.standard => JwtAudience.AnyOf(acceptedAudiences(issuer))
 
 object ClientAuthentication:
   def live: ZLayer[OAuthConfigurationService & ClientAssertionService & CoreConfig, Nothing, ClientAuthentication] =
@@ -213,8 +219,9 @@ object ClientAuthentication:
             // certificate, and accepting a signature from them would hand the client a
             // second credential it never registered.
             case Some(client) if client.authMethod == AuthMethod.private_key_jwt =>
-              clientAssertionService
-                .verify(client, assertion, endpoint.acceptedAudiences(config.jwt.issuer))
+              oauthClientService.getSecurityProfile(client.id)
+                .map(endpoint.audience(config.jwt.issuer, _))
+                .flatMap(clientAssertionService.verify(client, assertion, _))
                 .mapError {
                   case error: Throwable => error
                   case _: ClientAssertionService.Error => ()

@@ -2,7 +2,7 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.URL
+import zio.http.{Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -126,7 +126,7 @@ object JarFlowSpec extends E2ESpec:
           .assertRedirect(auth, cookie)
         // Registering a key set is what lets this client sign a request object, and it is also
         // what stops it authenticating by secret -- so the code is redeemed with an assertion.
-        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(client.clientId, auth.issuer)
         token <- auth.token(
           code,
           verifier,
@@ -168,7 +168,7 @@ object JarFlowSpec extends E2ESpec:
         code <- submitted.assertRedirect
         returnedState <- ZIO.fromEither(URL.decode(submitted.location))
           .map(_.queryParam("state"))
-        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(client.clientId, auth.issuer)
         token <- auth.token(
           code,
           verifier,
@@ -204,6 +204,24 @@ object JarFlowSpec extends E2ESpec:
         )
       yield assertTrue(result.response.status.isClientError)
         .label(s"expected a 4xx for a client_id mismatch, got ${result.response.status}")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-8: an object addressed to the authorization endpoint URL is refused") {
+      val (_, codeChallenge) = PkceHelper.generate()
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        client <- jarClient(auth, signer)
+        requestObject <- signer.requestObject(
+          requestClaims(client, auth, codeChallenge, "aud" -> Json.Str(s"${auth.issuer}/authorize"))*,
+        )()
+        result <- auth.authorizeRaw(
+          clientId = client.clientId,
+          redirectUri = client.redirectUri,
+          request = Some(requestObject),
+        )
+      yield assertTrue(result.response.status == Status.BadRequest)
+        .label(s"under the default fapi2 profile only the issuer names this server, got ${result.response.status}")
     },
 
     test("an object signed by a key the client never registered is refused") {
@@ -255,7 +273,7 @@ object JarFlowSpec extends E2ESpec:
         signer <- AssertionSigner.make
         client <- jarClient(auth, signer)
         requestObject <- signer.requestObject(requestClaims(client, auth, codeChallenge)*)()
-        assertion <- signer.assertion(client.clientId, s"${auth.issuer}/par")
+        assertion <- signer.assertion(client.clientId, auth.issuer)
         pushed <- auth.pushAuthorization(
           client.clientId,
           "",
@@ -272,7 +290,7 @@ object JarFlowSpec extends E2ESpec:
         challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         code <- auth.submitLoginPassword(cookie, client.login.get, client.password, challenge.csrf)
           .assertRedirect(auth, cookie)
-        tokenAssertion <- signer.assertion(client.clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(client.clientId, auth.issuer)
         token <- auth.token(
           code,
           verifier,
@@ -317,7 +335,7 @@ object JarFlowSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         client <- signingOnlyClient(auth, signer)
-        assertion <- signer.assertion(client.clientId, s"${auth.issuer}/par")
+        assertion <- signer.assertion(client.clientId, auth.issuer)
         pushed <- auth.pushAuthorization(
           client.clientId,
           "",

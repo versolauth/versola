@@ -106,8 +106,8 @@ object RequestObject:
     *   requires to match the one sent alongside the object. Claims that carry the object
     *   rather than a parameter are set here and dropped from this map, so a caller cannot
     *   introduce an `iss` or `exp` of its own.
-    * @param audience what the receiving server accepts as `aud`: §4 names the issuer
-    *   identifier, and the authorization endpoint's URL is also taken in the wild.
+    * @param audience what the receiving server accepts as `aud`, sent as a single string: pass
+    *   the issuer identifier (§4), the one value every security profile accepts.
     */
   def sign(
       parameters: Map[String, Chunk[String]],
@@ -163,8 +163,9 @@ object RequestObject:
     * @param allowedAlgorithms the algorithms this deployment advertises ([[Algorithm.MetadataField]])
     * @param clientId the client named by the `client_id` parameter outside the object, which
     *   RFC 9101 §6.3 requires the object's own `client_id` claim to match
-    * @param acceptedAudiences the issuer identifier and the authorization endpoint's URL; §4
-    *   names the issuer, and clients in the wild send either
+    * @param audience which `aud` values name this server: under FAPI 2.0 (§5.3.2.1-8) the
+    *   issuer identifier alone, as a string; otherwise the issuer (§4) or the authorization
+    *   endpoint's URL, which clients in the wild also send
     * @param now current time
     * @param maxLifetime furthest into the future `exp` may sit, bounding how long an observed
     *   object stays replayable
@@ -174,7 +175,7 @@ object RequestObject:
       keys: JWT.PublicKeys,
       allowedAlgorithms: Set[ClientAssertion.Algorithm],
       clientId: String,
-      acceptedAudiences: Set[String],
+      audience: JwtAudience,
       now: Instant,
       maxLifetime: Duration,
   ): IO[Error, Json.Obj] =
@@ -212,8 +213,8 @@ object RequestObject:
       // observed in a URL could be replayed as client authentication at the token endpoint.
       _ <- ZIO.fail(Error.ImpersonatesClientAssertion).when(claims.get("sub").isDefined)
 
-      audience <- requireAudience(claims)
-      _ <- ZIO.fail(Error.AudienceMismatch).when(audience.intersect(acceptedAudiences).isEmpty)
+      aud <- requireAudience(claims)
+      _ <- ZIO.fail(Error.AudienceMismatch).unless(audience.accepts(aud))
 
       // RFC 9101 leaves `exp` optional. It is required here: an object with no expiry is a
       // signed instruction that stays valid for as long as the client's key does, and it
@@ -231,6 +232,19 @@ object RequestObject:
       notBefore <- optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
       _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
     yield claims
+
+  /** [[verify]] against a plain set of accepted audiences, i.e. [[JwtAudience.AnyOf]] -- kept
+    * source-compatible for callers outside auth (edge's tests); see [[ClientAssertion.verify]]. */
+  def verify(
+      token: String,
+      keys: JWT.PublicKeys,
+      allowedAlgorithms: Set[ClientAssertion.Algorithm],
+      clientId: String,
+      acceptedAudiences: Set[String],
+      now: Instant,
+      maxLifetime: Duration,
+  ): IO[Error, Json.Obj] =
+    verify(token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime)
 
   /** The authorization request parameters a verified object's claims stand for, in the shape
     * a plain query or form request would have produced.
@@ -270,14 +284,16 @@ object RequestObject:
     ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name))
       .flatMap(json => ZIO.fromEither(json.as[String]).orElseFail(Error.MalformedClaim(name)))
 
-  /** RFC 7519 §4.1.3 allows `aud` to be one string or an array of them. */
-  private def requireAudience(claims: Json.Obj): IO[Error, Set[String]] =
+  /** RFC 7519 §4.1.3 allows `aud` to be one string or an array of them; which of the two was
+    * sent is kept, since FAPI 2.0 accepts only the former. */
+  private def requireAudience(claims: Json.Obj): IO[Error, Either[String, Set[String]]] =
     ZIO.fromOption(claims.get("aud")).orElseFail(Error.MissingClaim("aud"))
       .flatMap:
-        case Json.Str(single) => ZIO.succeed(Set(single))
+        case Json.Str(single) => ZIO.succeed(Left(single))
         case json =>
           ZIO.fromEither(json.as[Set[String]]).orElseFail(Error.MalformedClaim("aud"))
-      .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
+            .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
+            .map(Right(_))
 
   private def requireInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode.Value): IO[Error, Instant] =
     ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name)).flatMap(instant(_, name, rounding))

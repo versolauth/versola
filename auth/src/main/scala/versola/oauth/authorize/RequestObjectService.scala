@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.Error
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
-import versola.util.{CoreConfig, RequestObject}
+import versola.oauth.client.model.{ClientId, SecurityProfile}
+import versola.util.{CoreConfig, JwtAudience, RequestObject}
 import zio.{Chunk, Clock, IO, ZIO, ZLayer}
 
 /** RFC 9101 §6: resolves a `request` parameter into the authorization request parameters it
@@ -61,6 +61,7 @@ object RequestObjectService:
         // question for a request object as for an assertion -- how long an observed one stays
         // replayable -- so it is the same setting rather than a second one to keep in step.
         maxLifetime <- configurationService.getClientAssertionMaxLifetime(clientId)
+        profile <- configurationService.getSecurityProfile(clientId)
         now <- Clock.instant
 
         claims <- RequestObject.verify(
@@ -68,7 +69,7 @@ object RequestObjectService:
           keys = keys,
           allowedAlgorithms = allowedAlgorithms,
           clientId = clientId,
-          acceptedAudiences = acceptedAudiences,
+          audience = audience(profile),
           now = now,
           maxLifetime = maxLifetime,
         ).tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))
@@ -77,6 +78,10 @@ object RequestObjectService:
 
     /** RFC 9101 §4 names the issuer identifier; §10.3 recommends naming the endpoint the
       * request is for, and clients built against OpenID Connect Core §6.1 send that instead.
+      * FAPI 2.0 §5.3.2.1-8 takes the issuer alone, as a string, which is what a `fapi2`
+      * tenant is held to; a `standard` tenant still accepts either.
       */
-    private val acceptedAudiences: Set[String] =
-      Set(config.jwt.issuer, s"${config.jwt.issuer}/authorize")
+    private def audience(profile: SecurityProfile): JwtAudience = profile match
+      case SecurityProfile.fapi2 => JwtAudience.IssuerOnly(config.jwt.issuer)
+      case SecurityProfile.standard =>
+        JwtAudience.AnyOf(Set(config.jwt.issuer, s"${config.jwt.issuer}/authorize"))

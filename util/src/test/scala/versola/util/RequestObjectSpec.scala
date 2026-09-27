@@ -32,7 +32,8 @@ object RequestObjectSpec extends ZIOSpecDefault:
   private val ClientId = "client-1"
   private val Issuer = "https://auth.example.com"
   private val AuthorizeEndpoint = "https://auth.example.com/authorize"
-  private val Audiences = Set(Issuer, AuthorizeEndpoint)
+  private val Fapi2 = JwtAudience.IssuerOnly(Issuer)
+  private val Standard = JwtAudience.AnyOf(Set(Issuer, AuthorizeEndpoint))
 
   private val now = Instant.parse("2024-01-01T00:00:00Z")
   private val maxLifetime = 5.minutes
@@ -80,8 +81,9 @@ object RequestObjectSpec extends ZIOSpecDefault:
       publicKeys: JWT.PublicKeys = keys(ecJwk),
       clientId: String = ClientId,
       allowedAlgorithms: Set[ClientAssertion.Algorithm] = AllAlgorithms,
+      audience: JwtAudience = Fapi2,
   ) =
-    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, Audiences, now, maxLifetime)
+    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, audience, now, maxLifetime)
 
   def spec = suite("RequestObject")(
     suite("verify")(
@@ -99,9 +101,22 @@ object RequestObjectSpec extends ZIOSpecDefault:
           ).either
         yield assertTrue(result.isRight)
       },
-      test("accepts the authorization endpoint as the audience, not only the issuer identifier") {
+      test("FAPI 2.0 §5.3.2.1-8: rejects the authorization endpoint as the audience") {
         for result <- verify(requestObject(claims("aud" -> Json.Str(AuthorizeEndpoint)))).either
-        yield assertTrue(result.isRight)
+        yield assertTrue(result == Left(RequestObject.Error.AudienceMismatch))
+      },
+      test("FAPI 2.0 §5.3.2.1-8: rejects an audience array, even one naming only the issuer") {
+        for result <- verify(requestObject(claims("aud" -> Json.Arr(Json.Str(Issuer))))).either
+        yield assertTrue(result == Left(RequestObject.Error.AudienceMismatch))
+      },
+      test("a standard-profile tenant still accepts the authorization endpoint, or an array naming the issuer") {
+        for
+          endpoint <- verify(requestObject(claims("aud" -> Json.Str(AuthorizeEndpoint))), audience = Standard).either
+          array <- verify(
+            requestObject(claims("aud" -> Json.Arr(Json.Str(Issuer), Json.Str("https://elsewhere.example")))),
+            audience = Standard,
+          ).either
+        yield assertTrue(endpoint.isRight, array.isRight)
       },
       test("rejects an audience naming some other server") {
         for result <- verify(requestObject(claims("aud" -> Json.Str("https://elsewhere.example")))).either

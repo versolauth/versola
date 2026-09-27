@@ -2,7 +2,7 @@ package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.OAuthClientRecord
-import versola.util.ClientAssertion
+import versola.util.{ClientAssertion, JwtAudience}
 import zio.{Clock, IO, ZIO, ZLayer}
 
 /** Orchestrates RFC 7523 client assertion validation for a single request: delegates the
@@ -18,14 +18,13 @@ trait ClientAssertionService:
   /** @param client the client the assertion claims to be, whose registered keys are the only
     *   ones it is verified against -- a client with no registered key set can never be
     *   authenticated this way and is refused before any verification happens
-    * @param acceptedAudiences the issuer identifier and the URL of the endpoint the request
-    *   reached; RFC 7523 §3 requires `aud` to name the server, and clients differ on which of
-    *   the two they use
+    * @param audience the `aud` values that name this server for this client's tenant -- see
+    *   [[ClientAuthentication]], which derives it from the tenant's security profile
     */
   def verify(
       client: OAuthClientRecord,
       assertion: String,
-      acceptedAudiences: Set[String],
+      audience: JwtAudience,
   ): IO[Throwable | ClientAssertionService.Error, Unit]
 
 object ClientAssertionService:
@@ -45,7 +44,7 @@ object ClientAssertionService:
     override def verify(
         client: OAuthClientRecord,
         assertion: String,
-        acceptedAudiences: Set[String],
+        audience: JwtAudience,
     ): IO[Throwable | Error, Unit] =
       for
         now <- Clock.instant
@@ -69,7 +68,7 @@ object ClientAssertionService:
           keys = keys,
           allowedAlgorithms = allowedAlgorithms,
           clientId = client.id,
-          acceptedAudiences = acceptedAudiences,
+          audience = audience,
           now = now,
           maxLifetime = maxLifetime,
         ).mapError(Error.Invalid.apply)

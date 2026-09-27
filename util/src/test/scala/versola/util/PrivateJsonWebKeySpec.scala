@@ -185,7 +185,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           keys = keySet(rsaJwk()).publicKeys.toOption.get,
           allowedAlgorithms = ClientAssertion.Algorithm.Default,
           clientId = ClientId,
-          acceptedAudiences = Set(Issuer),
+          audience = JwtAudience.IssuerOnly(Issuer),
           now = now,
           maxLifetime = 5.minutes,
         )
@@ -201,7 +201,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           keySet(ecJwk).publicKeys.toOption.get,
           ClientAssertion.Algorithm.Default,
           ClientId,
-          Set(Issuer),
+          JwtAudience.IssuerOnly(Issuer),
           now,
           5.minutes,
         ).either
@@ -229,7 +229,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           keys = keySet(rsaJwk()).publicKeys.toOption.get,
           allowedAlgorithms = ClientAssertion.Algorithm.Default,
           clientId = ClientId,
-          acceptedAudiences = Set(Issuer),
+          audience = JwtAudience.IssuerOnly(Issuer),
           now = now,
           maxLifetime = 10.minutes,
         )
@@ -260,7 +260,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           keySet(rsaJwk()).publicKeys.toOption.get,
           ClientAssertion.Algorithm.Default,
           ClientId,
-          Set(Issuer),
+          JwtAudience.IssuerOnly(Issuer),
           now,
           10.minutes,
         )
@@ -283,7 +283,7 @@ object PrivateJsonWebKeySpec extends ZIOSpecDefault:
           keySet(rsaJwk()).publicKeys.toOption.get,
           ClientAssertion.Algorithm.Default,
           ClientId,
-          Set(Issuer),
+          JwtAudience.IssuerOnly(Issuer),
           now,
           10.minutes,
         )
