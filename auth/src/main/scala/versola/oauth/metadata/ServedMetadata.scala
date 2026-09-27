@@ -96,12 +96,17 @@ object ServedMetadata:
     */
   private def withMutualTlsAliases(document: Json.Obj, mutualTlsExternalUrl: Option[String]): Json.Obj =
     mutualTlsExternalUrl.fold(document): externalUrl =>
+      // Stripped the same way CoreConfig.endpointUri strips it: the natural way to write this
+      // setting is with a trailing slash, and `path` below already starts with one, so an
+      // unstripped externalUrl would advertise "https://mtls.example//token" -- a path DPoP
+      // validation (which builds `htu` from endpointUri) never expects and that may not route.
+      val origin = externalUrl.stripSuffix("/")
       val aliases = MtlsRelevantFields.flatMap: field =>
         for
           value <- document.get(field)
           endpoint <- value.as[String].toOption
           path <- URL.decode(endpoint).toOption.map(_.path)
-        yield field -> Json.Str(s"$externalUrl$path")
+        yield field -> Json.Str(s"$origin$path")
       if aliases.isEmpty then document
       else Json.Obj((document.fields.filterNot(_._1 == MtlsAliasesField) :+ (MtlsAliasesField -> Json.Obj(aliases*)))*)
 

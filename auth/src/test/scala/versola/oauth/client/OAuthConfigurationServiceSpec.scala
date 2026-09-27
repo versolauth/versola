@@ -490,6 +490,19 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         ),
       ).label(s"expected exactly the five aliases at the mTLS origin, got $aliases")
     },
+    test("getMetadata aliases with a single slash when externalUrl is configured with a trailing one") {
+      // The natural way to write this setting is with a trailing slash (as `jwt.issuer`
+      // itself is documented). Unstripped, this would advertise ".../mtls.example.com//token"
+      // -- a path CoreConfig.endpointUri's htu never produces and that may not even route.
+      val stored = Json.Obj("token_endpoint" -> Json.Str("https://auth.example.com/token"))
+      for
+        env <- makeEnv()
+        _ <- env.metadataCache.set(ServedMetadata.derive(stored, mutualTlsExternalUrl = Some("https://mtls.example.com/")))
+        served <- env.getMetadata
+        aliases = served.get("mtls_endpoint_aliases").flatMap(_.as[Json.Obj].toOption)
+      yield assertTrue(aliases.contains(Json.Obj("token_endpoint" -> Json.Str("https://mtls.example.com/token"))))
+        .label(s"expected a single slash between origin and path, got $aliases")
+    },
     test("getMetadata advertises no mtls_endpoint_aliases when no mutual-TLS listener is configured") {
       val stored = Json.Obj("token_endpoint" -> Json.Str("https://auth.example.com/token"))
       for
