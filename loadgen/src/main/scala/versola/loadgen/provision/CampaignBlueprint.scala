@@ -286,7 +286,10 @@ object CampaignBlueprint:
       accessTokenTtlSeconds = accessTokenTtlSeconds,
       refreshTokenTtlSeconds = Some(refreshTokenTtlSeconds),
       publicClient = false,
-      authFlow = flows.phoneOtpAuthFlow,
+      // Same `passkey` capability as `mobilePasskeyClientId` (§B: web and mobile logins should
+      // both draw from the population's passkey cohort, not just mobile) -- primary stays
+      // phone+otp, so a user without an enrolled credential logs in exactly as before.
+      authFlow = flows.phonePasskeyAuthFlow,
       registrationFlow = Some(flows.registrationFlow),
       // Design doc §3 #10 exercises the back-channel logout, which only reaches edge if the
       // client edge fronts declares where to send it.

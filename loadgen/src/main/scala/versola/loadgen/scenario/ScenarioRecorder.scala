@@ -57,6 +57,7 @@ final class ScenarioRecorder private (
           _ <- taxonomyRef.update(_.record(outcome))
           _ <- record(flow, step, outcome, latency, error)
           _ <- sample(context, flow, step, outcome, latency)
+          _ <- logFailure(flow, step, outcome, error)
         yield ()
 
   override def flow(flow: FlowName, elapsedNanos: Long, error: Option[ProtocolError]): UIO[Unit] =
@@ -84,6 +85,26 @@ final class ScenarioRecorder private (
     error match
       case None => Right(StepOutcome.ok)
       case Some(failure) => StepOutcome.of(failure)
+
+  /** The error budget's per-scenario counts (§11) say *how many* of a run's steps failed and
+    * under which of the three failure labels; they say nothing about *which* endpoint or *why*,
+    * so a `malformed`/`transport`/`unexpected_status` tail with no reproduction is otherwise
+    * unexplainable after the fact. Only `StepOutcome.Failed` logs -- `Planned` covers the
+    * expected step-up/forbidden/unauthorized branches the scenario itself chose to take.
+    */
+  private def logFailure(flow: FlowName, step: StepName, outcome: StepOutcome, error: Option[ProtocolError]): UIO[Unit] =
+    (outcome, error) match
+      case (StepOutcome.Failed(failed), Some(cause)) =>
+        ZIO.logWarning(s"step failed: flow=${flow.value} step=${step.value} outcome=${failed.label} detail=${detailOf(cause)}")
+      case _ => ZIO.unit
+
+  private def detailOf(error: ProtocolError): String = error match
+    case ProtocolError.Transport(cause) => s"transport: ${cause.getClass.getSimpleName}: ${cause.getMessage}"
+    case ProtocolError.UnexpectedStatus(expected, got, endpoint) =>
+      s"unexpected-status: $endpoint expected $expected got $got"
+    case ProtocolError.MalformedResponse(endpoint, detail) => s"malformed: $endpoint: $detail"
+    case ProtocolError.RefreshRejected(reason) => s"refresh-rejected: $reason"
+    case other => other.toString
 
   /** A refresh rejection is counted by its own metric and deliberately kept out of the duration
     * histograms' label set (§11, and [[LoadgenMetrics.stepCompleted]]'s contract): §7.4 ends the

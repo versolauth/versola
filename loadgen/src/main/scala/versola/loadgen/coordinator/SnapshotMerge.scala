@@ -85,7 +85,7 @@ object SnapshotMerge:
   def summaries(rows: Iterable[MetricSnapshotRow]): Either[String, List[LatencySummary]] =
     for
       reports <- toReports(rows)
-      samples <- reports.foldLeft[Either[String, Chunk[HistogramSample]]](Right(Chunk.empty)):
+      merged <- reports.foldLeft[Either[String, Map[MeasurementId, org.HdrHistogram.Histogram]]](Right(Map.empty)):
         case (Left(error), _) => Left(error)
-        case (Right(accumulated), report) => HistogramWire.decodeReport(report).map(accumulated ++ _)
-    yield HistogramWire.summarise(HistogramWire.merge(samples)).sortBy(_.id.toString)
+        case (Right(accumulated), report) => HistogramWire.decodeReport(report).map(HistogramWire.merge(_, accumulated))
+    yield HistogramWire.summarise(merged).sortBy(_.id.toString)

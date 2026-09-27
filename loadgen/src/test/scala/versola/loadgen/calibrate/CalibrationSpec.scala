@@ -13,9 +13,12 @@ import versola.loadgen.protocol.{
 import versola.loadgen.scenario.BusinessActions
 import versola.loadgen.scheduler.{ArrivalProcess, CampaignSchedule, RandomSource, ScheduleLag}
 import versola.loadgen.store.{MetricSnapshotRepository, MetricSnapshotRow}
+import io.opentelemetry.api
 import zio.*
 import zio.http.*
 import zio.http.netty.NettyConfig
+import zio.telemetry.opentelemetry.OpenTelemetry
+import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
 
 import java.time.Instant
@@ -177,8 +180,15 @@ object CalibrationSpec extends ZIOSpecDefault:
     * the scope it built the layer in as soon as that effect returns, so a client acquired inside
     * `stubServer` would already have been shut down by the time the first arrival used it.
     */
+  private val tracingLayer: ULayer[Tracing] =
+    ZLayer.make[Tracing](
+      Tracing.live(logAnnotated = false),
+      OpenTelemetry.contextZIO,
+      ZLayer.succeed(api.OpenTelemetry.noop().getTracer("test")),
+    )
+
   private val sut: ZLayer[Any, Throwable, Server & Client] =
-    LoadgenHttpClient.live ++
+    (tracingLayer >>> LoadgenHttpClient.live) ++
       ((ZLayer.succeed(Server.Config.default.onAnyOpenPort) ++
         ZLayer.succeed(NettyConfig.default)) >>> Server.customized)
 

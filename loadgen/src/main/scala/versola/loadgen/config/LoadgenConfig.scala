@@ -496,6 +496,39 @@ case class SeedConfig(
     shardCount: Int,
     hashParallelism: Int,
     batchSize: Int,
+    /** `seed.warm-sessions` (§10 step 6), absent by default: an existing `seed` config with no
+      * such block seeds exactly as it always has, mobile users included, no `refresh_tokens` row
+      * and no `vu_sessions` row for any of them. Present, it turns on [[BulkTokenMinter]] for the
+      * mobile cohort -- see [[Seeder]]'s doc for why mobile only and [[WarmSessionSeedConfig]]
+      * for what it needs.
+      */
+    warmSessions: Option[WarmSessionSeedConfig],
+)
+
+/** @param refreshTokensSecret
+  *   auth's `REFRESH_TOKENS_SECRET`. MACs the same way `OAuthTokenService.refreshAccessToken`
+  *   does (`SecurityService.mac`, BLAKE3), so a raw token the seeder mints and one auth issued
+  *   through a real exchange verify identically -- see [[BulkTokenMinter]]. Wrong, and a warm
+  *   session's `refresh_tokens.id` does not match what auth recomputes on the user's first
+  *   resume, and the very login the seeding was meant to skip happens anyway, just one
+  *   `invalid_grant` later.
+  * @param sessionsSecret
+  *   auth's `SESSIONS_SECRET`. MACs `refresh_tokens.session_id` (`SessionService.macOf`) -- not
+  *   read back on a refresh exchange (`OAuthTokenService.refreshAccessToken` never queries
+  *   `sso_sessions`), so a warm session's value never has to resolve to a real one, but it must
+  *   still be *shaped* like a genuine MAC for the same reason [[SeedConfig.passwordsSecret]]
+  *   must: a wrong secret here is invisible until someone reads `refresh_tokens` expecting
+  *   auth's own MAC.
+  * @param audience
+  *   the resolved resource URIs (`core`/`pay`/`notify`) every client is audience-listed on, in
+  *   [[versola.loadgen.provision.CampaignBlueprint]]'s own order -- not re-read from
+  *   `provision`, which is `Option` and need not be part of a resumed seed run's config, so this
+  *   duplicates the three URIs the same way `tenantId` already duplicates `provision`'s.
+  */
+case class WarmSessionSeedConfig(
+    refreshTokensSecret: Secret.Bytes32,
+    sessionsSecret: Secret.Bytes32,
+    audience: List[String],
 )
 
 object SeedConfig:
@@ -540,6 +573,20 @@ object SeedConfig:
         .filterOrElse(
           _.length == 16,
           Config.Error.InvalidData(message = "seed.passwords-secret must be 16 base64url-encoded bytes"),
+        )
+
+  /** Same idiom as [[Secret.Bytes16]]'s, at auth's other secret length: `REFRESH_TOKENS_SECRET`
+    * and `SESSIONS_SECRET` are both 32 bytes (`CoreConfig.security`), base64url like every other
+    * secret auth reads.
+    */
+  given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
+    .mapOrFail: value =>
+      Secret.Bytes32
+        .fromBase64Url(value)
+        .left.map(message => Config.Error.InvalidData(message = message))
+        .filterOrElse(
+          _.length == 32,
+          Config.Error.InvalidData(message = "seed secret must be 32 base64url-encoded bytes"),
         )
 
   given DeriveConfig[SeedConfig] = DeriveConfig

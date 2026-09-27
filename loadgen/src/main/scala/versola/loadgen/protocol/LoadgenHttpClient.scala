@@ -1,7 +1,9 @@
 package versola.loadgen.protocol
 
+import versola.util.http.Observability
 import zio.http.netty.NettyConfig
 import zio.http.{ConnectionPoolConfig, Decompression, DnsResolver, ZClient}
+import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Duration, ZLayer, durationInt}
 
 /** The one `ZClient` a driver pod builds, shared by every fiber (versola-loadgen-dev-spec.md
@@ -39,5 +41,14 @@ object LoadgenHttpClient:
   val nettyConfig: NettyConfig =
     NettyConfig.default.maxThreads(math.min(4, java.lang.Runtime.getRuntime.availableProcessors()))
 
-  val live: ZLayer[Any, Throwable, zio.http.Client] =
-    (ZLayer.succeed(config) ++ ZLayer.succeed(nettyConfig) ++ DnsResolver.default) >>> ZClient.live
+  /** `versola.http.HttpClient`'s `http_client_requests_total`/`http_client_request_duration_seconds`
+    * (§11), the same pair every other service's outbound calls carry -- a driver's own connection
+    * pool otherwise has no metric at all, only the coordinator-facing `loadgen_inflight_requests`
+    * gauge, which says how many calls are in flight and nothing about how long they took or how
+    * they ended.
+    */
+  val live: ZLayer[Tracing, Throwable, zio.http.Client] =
+    ((ZLayer.succeed(config) ++ ZLayer.succeed(nettyConfig) ++ DnsResolver.default) >>> ZClient.live) ++
+      ZLayer.service[Tracing] >>> ZLayer.fromFunction((client: zio.http.Client, tracing: Tracing) =>
+        client @@ Observability.clientMiddleware(tracing),
+      )

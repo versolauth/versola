@@ -231,11 +231,10 @@ object CampaignReport:
         case Some(foreign) =>
           Left(s"report for campaign '${foreign.campaign}' handed to the '$campaign' merge (driver ${foreign.driverId})")
         case None => Right(())
-      samples <- reports.foldLeft[Either[String, Chunk[HistogramSample]]](Right(Chunk.empty)):
+      merged <- reports.foldLeft[Either[String, Map[MeasurementId, org.HdrHistogram.Histogram]]](Right(Map.empty)):
         case (Left(error), _) => Left(error)
-        case (Right(accumulated), one) => HistogramWire.decodeReport(one).map(accumulated ++ _)
+        case (Right(accumulated), one) => HistogramWire.decodeReport(one).map(HistogramWire.merge(_, accumulated))
     yield
-      val merged = HistogramWire.merge(samples)
       val (checks, notEvaluated) = evaluate(merged, taxonomy, health, run, thresholds)
       // The interval each driver actually wrote a snapshot in, not this coordinator's own
       // uptime: a restarted coordinator has no memory of the campaign's start, but every row

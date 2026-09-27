@@ -33,8 +33,8 @@ services:
       DB_PORT: 5432
       DB_NAME: auth
       DB_USER: ${PG_USER:-dev}
-      DB_PASSWORD: [redacted]}
-      AUTH_TYPE: [redacted]
+      DB_PASSWORD: ${PG_PASSWORD:-1234}
+      AUTH_TYPE: plain
       # `SHOW CONFIG` is refused to a stats-only login, and the spec reads
       # `max_client_conn` and `default_pool_size` from it.
       ADMIN_USERS: ${PG_USER:-dev}

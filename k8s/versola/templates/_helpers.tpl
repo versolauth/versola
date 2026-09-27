@@ -161,6 +161,24 @@ checksum/secret: {{ join "," $parts | sha256sum }}
 {{- end -}}
 
 {{/*
+Pod annotations for annotation-based Prometheus/VictoriaMetrics discovery,
+pointing at a component's diagnostics port. Expects a dict: {root: $, port:
+<diagnostics port>}. Empty when metrics.prometheusAnnotations is false --
+see values.yaml's `metrics` block for why this chart carries scrape
+configuration at all when its Service is ClusterIP-only.
+
+/metrics is on the diagnostics port for all three components --
+VersolaApp's serviceRoutes.
+*/}}
+{{- define "versola.scrapeAnnotations" -}}
+{{- if .root.Values.metrics.prometheusAnnotations -}}
+prometheus.io/scrape: "true"
+prometheus.io/port: {{ .port | quote }}
+prometheus.io/path: /metrics
+{{- end -}}
+{{- end -}}
+
+{{/*
 console nginx.conf: static files only.
 
 The docker-compose version of this image (docker/versola-tools/nginx.conf.template)

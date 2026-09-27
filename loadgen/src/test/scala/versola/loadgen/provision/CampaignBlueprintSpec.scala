@@ -44,7 +44,7 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
           flows(CampaignBlueprint.mobileOtpClientId) == ProvisionFixtures.flows.phoneOtpAuthFlow,
           flows(CampaignBlueprint.mobileOtpPasswordClientId) == ProvisionFixtures.flows.phoneOtpPasswordAuthFlow,
           flows(CampaignBlueprint.mobilePasskeyClientId) == ProvisionFixtures.flows.phonePasskeyAuthFlow,
-          flows(CampaignBlueprint.webOtpClientId) == ProvisionFixtures.flows.phoneOtpAuthFlow,
+          flows(CampaignBlueprint.webOtpClientId) == ProvisionFixtures.flows.phonePasskeyAuthFlow,
         )
       },
       test("withholds a registration flow from the passkey client only") {

@@ -72,6 +72,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     // Four batches over 1,000 users, so the batch loop, the per-batch transaction and the
     // resume boundary are all exercised rather than degenerating into one pass.
     batchSize = 250,
+    warmSessions = None,
   )
 
   private case class Harness(
@@ -80,6 +81,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
       auth: Connection,
       central: Connection,
       security: SecurityService,
+      random: SecureRandom,
   )
 
   private val harness: ZIO[Scope, Throwable, Harness] =
@@ -93,14 +95,16 @@ object SeederSmokeSpec extends ZIOSpecDefault:
         sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central)),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, pepper, seedConfig.hashParallelism),
+        minter = None,
         storeQueries = StoreQueries(store),
       )
-    yield Harness(services, store, sut.auth, sut.central, security)
+    yield Harness(services, store, sut.auth, sut.central, security, random)
 
   private def truncate(harness: Harness): Task[Unit] =
     for
       _ <- harness.store.connect(sql"TRUNCATE TABLE vu_users".update.run()).unit
-      _ <- ZIO.foreachDiscard(List("user_passwords", "passkeys", "user_roles", "users"))(table =>
+      _ <- harness.store.connect(sql"TRUNCATE TABLE vu_sessions".update.run()).unit
+      _ <- ZIO.foreachDiscard(List("user_passwords", "passkeys", "user_roles", "refresh_tokens", "users"))(table =>
         SutDatabases.statement(harness.auth, s"TRUNCATE TABLE $table CASCADE"),
       )
       _ <- SutDatabases.statement(harness.central, "TRUNCATE TABLE user_index")
@@ -162,7 +166,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
     override def atomically[A](effect: Task[A]): Task[A] = delegate.atomically(effect)
 
   private def seedOnce(harness: Harness) =
-    truncate(harness) *> Seeder.run(harness.services, population, seedConfig)
+    truncate(harness) *> Seeder.run(harness.services, population, seedConfig, None)
 
   def spec = suite("SeederSmokeSpec")(
     test("seeds 1,000 users into every table the campaign's login flows read") {
@@ -313,7 +317,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             _ <- harness.store.connect(
               sql"SELECT pg_stat_reset_single_table_counters('vu_users'::regclass::oid)".query[Option[String]].run(),
             )
-            _ <- Seeder.run(harness.services, population, seedConfig)
+            _ <- Seeder.run(harness.services, population, seedConfig, None)
             counts <- ZIO.foreach(authTables)(analyzed(harness.auth, _))
             index <- analyzed(harness.central, "user_index")
             // The emulator's own table too: the coordinator's population counts are a
@@ -334,7 +338,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
           for
             _ <- seedOnce(harness)
             _ <- harness.store.connect(sql"DELETE FROM vu_users WHERE id > 750".update.run()).unit
-            resumed <- Seeder.run(harness.services, population, seedConfig).exit
+            resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             index <- count(harness.central, "SELECT count(*) FROM user_index")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
@@ -359,7 +363,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             _ <- seedOnce(harness)
             // Only the emulator's table, exactly as crash recovery would leave it.
             _ <- harness.store.connect(sql"TRUNCATE TABLE vu_users".update.run()).unit
-            again <- Seeder.run(harness.services, population, seedConfig).exit
+            again <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             passwords <- count(harness.auth, "SELECT count(*) FROM user_passwords")
@@ -386,13 +390,14 @@ object SeederSmokeSpec extends ZIOSpecDefault:
           for
             _ <- truncate(harness)
             calls <- Ref.make(0)
-            // The third COPY of the second batch: `users` of batch one is call 1, and each batch
-            // issues four against auth, so this lands inside batch two with batch one committed.
+            // The second COPY of the second batch: `users` of batch one is call 1, and each batch
+            // issues five against auth (users, user_passwords, user_roles, passkeys,
+            // refresh_tokens), so this lands inside batch two with batch one committed.
             crashing = harness.services.copy(
               sut = SutWriter(Flaky(CopySink.OfConnection(harness.auth), 7, calls), CopySink.OfConnection(harness.central)),
             )
-            crashed <- Seeder.run(crashing, population, seedConfig).exit
-            resumed <- Seeder.run(harness.services, population, seedConfig).exit
+            crashed <- Seeder.run(crashing, population, seedConfig, None).exit
+            resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
             users <- count(harness.auth, "SELECT count(*) FROM users")
             roles <- count(harness.auth, "SELECT count(*) FROM user_roles")
             index <- count(harness.central, "SELECT count(*) FROM user_index")
@@ -404,6 +409,51 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             roles == population.target,
             index == population.target,
             states == Map(VirtualUserState.Registered -> population.target),
+          )
+    },
+    // §10 step 6's retrofit path: `seed.warm-sessions` turned on *after* a population already
+    // exists must still reach it, since `run`'s own batch loop only ever covers ids the store
+    // does not have yet. The one thing this has to prove that the schema guard and the live
+    // `/token` exchange do not: that reaching an already-seeded id does not regenerate its
+    // passkey (PopulationPlan's doc: the one seeded value that is *not* a pure function of the
+    // id) or its password hash, both of which a second `write` would otherwise silently rotate.
+    test("backfills warm sessions onto an existing population without touching its passwords or passkeys") {
+      ZIO.scoped:
+        harness.flatMap: harness =>
+          val warmConfig = WarmSessionConfig(
+            audience = List("http://mockapi-core.test:8110", "http://mockapi-pay.test:8120"),
+            scope = List("openid", "profile", "phone", "offline_access"),
+            refreshTokenTtl = 30.days,
+          )
+          val minter = BulkTokenMinter(
+            harness.security,
+            harness.random,
+            Secret.Bytes32(Array.tabulate(32)(index => (index * 11 + 5).toByte)),
+            Secret.Bytes32(Array.tabulate(32)(index => (index * 13 + 7).toByte)),
+            4,
+          )
+          val passwordUser = cohort(CredentialKind.OtpPassword).head
+          val passwordUserId = PopulationPlan.sutUserIdOf(passwordUser.id)
+          val passkeyUser = cohort(CredentialKind.Passkey).head
+          val mobileCount = (1L to population.target).count(id => PopulationPlan.userOf(population, shardCount, id).platform == Platform.Mobile)
+          for
+            _ <- seedOnce(harness)
+            beforePassword <- storedPassword(harness.auth, passwordUserId)
+            beforePasskey <- count(harness.auth, s"SELECT count(*) FROM passkeys WHERE user_id = '${PopulationPlan.sutUserIdOf(passkeyUser.id)}'")
+            withMinter = harness.services.copy(minter = Some(minter))
+            // No new ids: population.target is unchanged, so run's own batch loop seeds nothing
+            // and only the backfill below has anything to do.
+            _ <- Seeder.run(withMinter, population, seedConfig, Some(warmConfig))
+            afterPassword <- storedPassword(harness.auth, passwordUserId)
+            afterPasskey <- count(harness.auth, s"SELECT count(*) FROM passkeys WHERE user_id = '${PopulationPlan.sutUserIdOf(passkeyUser.id)}'")
+            refreshTokens <- count(harness.auth, "SELECT count(*) FROM refresh_tokens")
+            vuSessions <- harness.store.connect(sql"SELECT count(*) FROM vu_sessions".query[Long].run().head)
+          yield assertTrue(
+            afterPassword.hash.sameElements(beforePassword.hash),
+            afterPassword.salt == beforePassword.salt,
+            afterPasskey == beforePasskey,
+            refreshTokens == mobileCount,
+            vuSessions == mobileCount,
           )
     },
   ) @@ TestAspect.withLiveClock @@ TestAspect.timeout(10.minutes)

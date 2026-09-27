@@ -159,9 +159,16 @@ object HistogramWire:
     * the samples would hold, and its quantiles are the campaign's quantiles. Merging into a fresh
     * histogram rather than into the first input keeps the inputs usable afterwards -- the
     * coordinator holds them for the per-driver debugging view.
+    *
+    * `into` is the running merge so a caller decoding one snapshot interval's samples at a time
+    * (§12's report spans hours of them) can fold each batch in and let it go, rather than holding
+    * every decoded histogram of the whole campaign live at once just to call this once at the
+    * end -- a decoded `Histogram` is not the few-hundred-byte wire encoding it came from, and a
+    * campaign's worth of them (drivers × measurements × snapshot intervals) is where the memory
+    * actually goes, not the query that reads the intervals back.
     */
-  def merge(samples: Iterable[HistogramSample]): Map[MeasurementId, Histogram] =
-    samples.foldLeft(Map.empty[MeasurementId, Histogram]): (merged, sample) =>
+  def merge(samples: Iterable[HistogramSample], into: Map[MeasurementId, Histogram] = Map.empty): Map[MeasurementId, Histogram] =
+    samples.foldLeft(into): (merged, sample) =>
       val target = merged.getOrElse(sample.id, LatencyRecorder.emptyHistogram)
       target.add(sample.histogram)
       merged.updated(sample.id, target)

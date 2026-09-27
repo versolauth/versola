@@ -366,6 +366,42 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .exit
         yield assertTrue(tooShort.isFailure, notBase64.isFailure)
       },
+      // Absent by default (`hocon` above has no such block, and "decodes a full campaign
+      // config" already proves that decodes clean), so this is the positive path: present, it
+      // decodes to the block warm-session seeding actually needs, and a malformed secret in it
+      // fails exactly the way `passwords-secret` does -- one rule, two secrets, not two rules.
+      test("decodes seed.warm-sessions when present, and rejects a malformed secret in it") {
+        val warmSessionsBlock =
+          """|  warm-sessions {
+             |    refresh-tokens-secret = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+             |    sessions-secret       = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+             |    audience = [
+             |      "http://mockapi-core:8100",
+             |      "http://mockapi-pay:8100",
+             |      "http://mockapi-notify:8100",
+             |    ]
+             |  }
+             |""".stripMargin
+        val withWarmSessions = hocon.replaceFirst(
+          "(?m)^\\}\\n\\nsut-stats \\{",
+          warmSessionsBlock + "}\n\nsut-stats {",
+        )
+        for
+          decoded <- TypesafeConfigProvider
+            .fromHoconString(withWarmSessions)
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+          malformed <- TypesafeConfigProvider
+            .fromHoconString(withWarmSessions.replaceFirst("refresh-tokens-secret = \"[^\"]+\"", "refresh-tokens-secret = \"AAECAw\""))
+            .kebabCase
+            .load(loadgenConfigDescriptor)
+            .exit
+        yield assertTrue(
+          decoded.seed.flatMap(_.warmSessions).map(_.audience) ==
+            Some(List("http://mockapi-core:8100", "http://mockapi-pay:8100", "http://mockapi-notify:8100")),
+          malformed.isFailure,
+        )
+      },
       // Both hang rather than fail when they reach the seeder: hash-parallelism = 0 builds a
       // zero-permit semaphore in SecurityService and every Argon2 hash waits on it forever,
       // and batch-size = 0 iterates the same id range forever.

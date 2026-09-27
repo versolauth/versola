@@ -115,6 +115,45 @@ object SutSchema:
     ),
   )
 
+  /** A warm mobile session's server-side half (§10 step 6): `refresh_tokens.id` is what
+    * `OAuthTokenService.refreshAccessToken` looks the presented token up by, and every other
+    * column here is exactly what a real `authorization_code` exchange writes into the row --
+    * see [[SeedRows.refreshTokens]] for where each value comes from.
+    *
+    * `rotated_at`, `idempotency_key`, `requested_claims`, `ui_locales`, `nonce`, `acr`, `cnf` and
+    * `authorization_details` are all nullable and left NULL: they are either rotation/replay
+    * bookkeeping a fresh chain has none of yet, or RFC 9396/9449 features this campaign's clients
+    * never request (§B: Bearer tokens only, no DPoP, no `authorization_details` parameter).
+    * `amr`/`auth_time` are `NOT NULL` and always written, matching what auth itself would have
+    * recorded for the credential the user actually logged in with.
+    */
+  val refreshTokens: SeededTable = SeededTable(
+    owner = SchemaOwner.Auth,
+    name = "refresh_tokens",
+    columns = List(
+      SeededColumn("id", "bytea"),
+      SeededColumn("family_id", "text"),
+      SeededColumn("rotated_at", "timestamptz"),
+      SeededColumn("idempotency_key", "bytea"),
+      SeededColumn("session_id", "bytea"),
+      SeededColumn("public_session_id", "text"),
+      SeededColumn("user_id", "uuid"),
+      SeededColumn("client_id", "text"),
+      SeededColumn("audience", "_text"),
+      SeededColumn("scope", "_text"),
+      SeededColumn("issued_at", "timestamptz"),
+      SeededColumn("expires_at", "timestamptz"),
+      SeededColumn("requested_claims", "jsonb"),
+      SeededColumn("ui_locales", "_text"),
+      SeededColumn("nonce", "text"),
+      SeededColumn("acr", "text"),
+      SeededColumn("amr", "jsonb"),
+      SeededColumn("auth_time", "timestamptz"),
+      SeededColumn("cnf", "jsonb"),
+      SeededColumn("authorization_details", "_jsonb"),
+    ),
+  )
+
   /** Central's routing index (§10 step 5). Written directly rather than through the outbox: the
     * outbox exists to carry a user central created to auth, and the seeder writes both sides
     * itself, so there is nothing left to dispatch.
@@ -129,20 +168,22 @@ object SutSchema:
   )
 
   /** Write order, and therefore also the reverse of the delete order. `users` first because
-    * `user_roles.user_id` references it.
+    * `user_roles.user_id` references it; `refreshTokens` last of auth's tables for the same
+    * reason -- it references `users.id` too, just without a declared foreign key (see
+    * `refresh_tokens`'s migration).
     */
-  val all: List[SeededTable] = List(users, userPasswords, userRoles, passkeys, userIndex)
+  val all: List[SeededTable] = List(users, userPasswords, userRoles, passkeys, refreshTokens, userIndex)
 
   def tablesOwnedBy(owner: SchemaOwner): List[SeededTable] = all.filter(_.owner == owner)
 
   /** Derived from [[all]] rather than listed, so a seeded table in a service this object does not
     * yet name cannot be added without its migrations directory joining the fingerprint. That is
     * the reason `edge/implementations/postgres/migrations` is absent today despite dev spec §3.4
-    * naming it: the seeder writes no edge table (the warm-start sessions of §10 step 6 are not
-    * implemented), so fingerprinting it would fail the guard on every unrelated edge migration.
-    * A guard that cries wolf gets its expectation file regenerated without being read, which
-    * costs more than it buys. Implementing step 6 adds an `Edge` owner here and the directory
-    * follows.
+    * naming it: §10 step 6's warm-start sessions are implemented for the mobile/auth half only
+    * (`refreshTokens` above) -- the web half, an edge-side `EDGE_SESSION`, is not, so fingerprinting
+    * edge's directory would fail the guard on every unrelated edge migration. A guard that cries
+    * wolf gets its expectation file regenerated without being read, which costs more than it buys.
+    * Implementing the web half adds an `Edge` owner here and the directory follows.
     */
   val fingerprintedMigrationDirectories: List[String] =
     all.map(_.owner).distinct.sortBy(_.service).map(_.migrationsDirectory)

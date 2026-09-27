@@ -105,7 +105,7 @@ object HistogramWireSpec extends ZIOSpecDefault:
       val json = report.toJson
       val parsed = json.fromJson[DriverHistogramReport]
       val samples = parsed.left.map(_.toString).flatMap(HistogramWire.decodeReport)
-      val merged = samples.map(HistogramWire.merge)
+      val merged = samples.map(HistogramWire.merge(_))
       assertTrue(
         report.version == HistogramWire.version,
         parsed.map(_.campaign) == Right("c3-10m-steady"),

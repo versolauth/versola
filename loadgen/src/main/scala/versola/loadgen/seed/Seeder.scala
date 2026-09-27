@@ -56,9 +56,18 @@ object Seeder:
         sut = SutWriter(CopySink.OfConnection(auth), CopySink.OfConnection(central)),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, seedConfig.passwordsSecret, seedConfig.hashParallelism),
+        minter = seedConfig.warmSessions.map: warm =>
+          BulkTokenMinter(security, random, warm.refreshTokensSecret, warm.sessionsSecret, seedConfig.hashParallelism),
         storeQueries = StoreQueries(store),
       )
-      _ <- run(services, config.population, seedConfig)
+      warmSessions = seedConfig.warmSessions.map: warm =>
+        WarmSessionConfig(
+          audience = warm.audience,
+          scope = versola.loadgen.provision.CampaignBlueprint.scopes.toList,
+          refreshTokenTtl = config.session.refreshTokenTtl,
+        )
+      _ <- ZIO.logInfo("Seeding mobile warm sessions (dev spec §10 step 6)").when(warmSessions.isDefined)
+      _ <- run(services, config.population, seedConfig, warmSessions)
     yield ()
 
   /** The pre-flight the §3.4 guard exists for. Both layers, both fatal, and both before the
@@ -91,7 +100,12 @@ object Seeder:
     * `SeederSmokeSpec` can drive the real thing against real databases without a `ConfigProvider`
     * and without the seeder opening its own connections.
     */
-  private[seed] def run(services: SeedServices, population: PopulationConfig, seedConfig: SeedConfig): Task[Unit] =
+  private[seed] def run(
+      services: SeedServices,
+      population: PopulationConfig,
+      seedConfig: SeedConfig,
+      warmSessions: Option[WarmSessionConfig],
+  ): Task[Unit] =
     val target = population.target
     for
       seeded <- services.storeQueries.maxVirtualUserId
@@ -101,9 +115,59 @@ object Seeder:
           s"batch ${seedConfig.batchSize}, Argon2 parallelism ${seedConfig.hashParallelism}",
       )
       _ <- ZIO.foreachDiscard(batches(resume, target, seedConfig.batchSize)): (from, until) =>
-        seedBatch(services, population, seedConfig, from, until)
+        seedBatch(services, population, seedConfig, warmSessions, from, until)
+      _ <- warmSessions.fold(ZIO.unit): config =>
+        backfillWarmSessions(services, population, seedConfig, config, upTo = resume - 1)
       _ <- analyze(services)
       _ <- ZIO.logInfo("Seed complete")
+    yield ()
+
+  /** §10 step 6's retrofit path: a population seeded *before* `warm-sessions` was ever turned on
+    * has no warm sessions to lose, and [[run]]'s own batches above only ever cover ids the store
+    * does not have yet. Every id below `resume` at the time this run started is otherwise
+    * permanently out of [[run]]'s reach -- resumable seeding by design never revisits an id it
+    * has already written -- so this covers that whole prefix on every run, not just once.
+    *
+    * Deliberately not folded into [[seedBatch]]'s loop: that loop's cost is Argon2 and P-256, and
+    * a batch already paid for both is not paying for them again here -- [[SutWriter.writeWarmSessionsOnly]]
+    * touches `refresh_tokens` and `vu_sessions` alone.
+    */
+  private def backfillWarmSessions(
+      services: SeedServices,
+      population: PopulationConfig,
+      seedConfig: SeedConfig,
+      warmSessions: WarmSessionConfig,
+      upTo: Long,
+  ): Task[Unit] =
+    if upTo < 1 then ZIO.unit
+    else
+      ZIO.logInfo(s"Backfilling warm mobile sessions onto the existing population 1..$upTo (dev spec §10 step 6)") *>
+        ZIO.foreachDiscard(batches(1, upTo, seedConfig.batchSize)): (from, until) =>
+          backfillBatch(services, population, seedConfig, warmSessions, from, until)
+
+  private def backfillBatch(
+      services: SeedServices,
+      population: PopulationConfig,
+      seedConfig: SeedConfig,
+      warmSessions: WarmSessionConfig,
+      from: Long,
+      until: Long,
+  ): Task[Unit] =
+    for
+      now <- Clock.instant
+      planned = Chunk.fromIterable((from until until).map(PopulationPlan.userOf(population, seedConfig.shardCount, _)))
+      minted <- services.minter match
+        case Some(minter) => minter.mintAll(planned.filter(SeedRows.needsWarmSession).map(_.id)).map(_.toMap)
+        case None => ZIO.succeed(Map.empty[Long, RefreshTokenMaterial])
+      seeded = planned.map(user => SeededUser(user = user, password = None, passkey = None, refreshToken = minted.get(user.id)))
+      _ <- services.sut.writeWarmSessionsOnly(seeded, now, from, until, warmSessions)
+      _ <- services.store.execute(s"DELETE FROM vu_sessions WHERE user_id >= $from AND user_id < $until")
+      vuSessionRows = withVuSessions(seeded, now, Some(warmSessions))
+      _ <- services.store.copyIn(SeedRows.vuSessionsCopyStatement, vuSessionRows).flatMap: written =>
+        ZIO
+          .fail(ShortCopy("vu_sessions", vuSessionRows.size.toLong, written))
+          .when(written != vuSessionRows.size.toLong)
+      _ <- ZIO.logInfo(s"Backfilled warm sessions for ids $from..${until - 1}")
     yield ()
 
   /** Where a run picks up: `max(vu_users.id) + 1`, or 1 on an empty store.
@@ -137,6 +201,7 @@ object Seeder:
       services: SeedServices,
       population: PopulationConfig,
       seedConfig: SeedConfig,
+      warmSessions: Option[WarmSessionConfig],
       from: Long,
       until: Long,
   ): Task[Unit] =
@@ -147,16 +212,57 @@ object Seeder:
         planned.filter(SeedRows.needsPassword).map(user => user.id -> PopulationPlan.passwordOf(user.id)),
       )
       passkeys <- enrol(planned)
-      seeded = assemble(planned, hashed, passkeys)
-      _ <- services.sut.write(seeded, seedConfig.tenantId, now, from, until)
-      // Last, and that ordering is the resume protocol: an id in `vu_users` is an id whose SUT
-      // rows are committed.
+      minted <- mint(services, warmSessions, planned)
+      seeded = assemble(planned, hashed, passkeys, minted)
+      _ <- services.sut.write(seeded, seedConfig.tenantId, now, from, until, warmSessions)
+      // Cleared on every attempt, not just a genuine resume: `vu_sessions` is this batch's own
+      // table, unlike the SUT's, and an attempt that minted tokens and died before the `vu_users`
+      // copy below would otherwise leave this id range's sessions behind for the retry's COPY to
+      // collide with on the primary key.
+      _ <- services.store.execute(s"DELETE FROM vu_sessions WHERE user_id >= $from AND user_id < $until")
+      vuSessionRows = withVuSessions(seeded, now, warmSessions)
+      _ <- services.store.copyIn(SeedRows.vuSessionsCopyStatement, vuSessionRows).flatMap: written =>
+        ZIO
+          .fail(ShortCopy("vu_sessions", vuSessionRows.size.toLong, written))
+          .when(written != vuSessionRows.size.toLong)
       _ <- services.store.copyIn(SeedRows.vuUsersCopyStatement, seeded.map(SeedRows.vuUsers)).flatMap: written =>
         ZIO
           .fail(ShortCopy("vu_users", seeded.size.toLong, written))
           .when(written != seeded.size.toLong)
       _ <- ZIO.logInfo(s"Seeded ids $from..${until - 1}")
     yield ()
+
+  /** §10 step 6, mobile cohort only (see [[SeedRows.needsWarmSession]]). `Map`, not `Chunk`, for
+    * the same reason [[assemble]]'s `hashed`/`passkeys` already are: this batch's users, its
+    * passwords and its warm sessions are drawn from three different filtered subsets of the same
+    * id range, and only a lookup by id recombines them correctly in [[assemble]].
+    */
+  private def mint(
+      services: SeedServices,
+      warmSessions: Option[WarmSessionConfig],
+      planned: Chunk[VirtualUser],
+  ): Task[Map[Long, RefreshTokenMaterial]] =
+    (warmSessions, services.minter) match
+      case (Some(_), Some(minter)) =>
+        minter.mintAll(planned.filter(SeedRows.needsWarmSession).map(_.id)).map(_.toMap)
+      case _ =>
+        ZIO.succeed(Map.empty)
+
+  private def withVuSessions(
+      seeded: Chunk[SeededUser],
+      now: Instant,
+      warmSessions: Option[WarmSessionConfig],
+  ): Chunk[String] =
+    warmSessions.fold(Chunk.empty[String]): config =>
+      seeded.flatMap: seededUser =>
+        seededUser.refreshToken.map: material =>
+          SeedRows.vuSessions(
+            seeded = seededUser,
+            material = material,
+            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            now = now,
+            refreshExpiresAt = now.plusSeconds(config.refreshTokenTtl.toSeconds),
+          )
 
   /** P-256 key pairs for the passkey cohort (§10 step 3). Sequential on purpose: generating one
     * is ~0.1 ms against Argon2's ~30 ms, so it is not the cost centre, and `SecureRandom`
@@ -172,6 +278,7 @@ object Seeder:
       planned: Chunk[VirtualUser],
       hashed: Chunk[HashedPassword],
       passkeys: Map[Long, PasskeyMaterial],
+      refreshTokens: Map[Long, RefreshTokenMaterial],
   ): Chunk[SeededUser] =
     val byId = hashed.map(password => password.id -> password).toMap
     planned.map: user =>
@@ -183,6 +290,7 @@ object Seeder:
         ),
         password = byId.get(user.id),
         passkey = passkey,
+        refreshToken = refreshTokens.get(user.id),
       )
 
   /** §10 step 7. Every table the seeder touched, including the emulator's own `vu_users`: the
@@ -243,10 +351,17 @@ object Seeder:
   private def secureRandom: ZIO[Scope, Throwable, SecureRandom] =
     SecureRandom.live.build.map(_.get[SecureRandom])
 
-/** The three sinks and the two services one batch needs, bundled so [[Seeder.run]] takes one
-  * parameter instead of five and so a test can substitute any of them.
+/** The sinks and services one batch needs, bundled so [[Seeder.run]] takes one parameter instead
+  * of several and so a test can substitute any of them. `minter` is `None` exactly when
+  * `seed.warm-sessions` is absent from config -- see [[SeedConfig.warmSessions]].
   */
-case class SeedServices(sut: SutWriter, store: CopySink, hasher: BulkHasher, storeQueries: StoreQueries)
+case class SeedServices(
+    sut: SutWriter,
+    store: CopySink,
+    hasher: BulkHasher,
+    minter: Option[BulkTokenMinter],
+    storeQueries: StoreQueries,
+)
 
 case object MissingSeedConfig
     extends RuntimeException("role = seed requires a 'seed' configuration block")
