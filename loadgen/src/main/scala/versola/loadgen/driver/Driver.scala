@@ -12,6 +12,7 @@ import versola.util.Dpop
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
+import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.time.Instant
 
@@ -48,8 +49,8 @@ object Driver:
     */
   val healthInterval: Duration = 5.seconds
 
-  def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, Unit] =
-    boot(config).provideSome[Scope & ConfigProvider](LoadgenHttpClient.live)
+  def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Tracing, Throwable, Unit] =
+    boot(config).provideSome[Scope & ConfigProvider & Tracing](LoadgenHttpClient.live)
 
   private def boot(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Client, Throwable, Unit] =
     for

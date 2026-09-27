@@ -11,6 +11,7 @@ import versola.loadgen.store.{LoadgenMigrations, MetricSnapshotRepository, Postg
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
+import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.time.Instant
 
@@ -55,8 +56,8 @@ object Calibration:
     */
   private val bearer: EdgeCredential = EdgeCredential.Bearer(AccessToken("calibration"))
 
-  def calibrate(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, Unit] =
-    run(config).provideSome[Scope & ConfigProvider](LoadgenHttpClient.live)
+  def calibrate(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Tracing, Throwable, Unit] =
+    run(config).provideSome[Scope & ConfigProvider & Tracing](LoadgenHttpClient.live)
 
   private def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Client, Throwable, Unit] =
     for
