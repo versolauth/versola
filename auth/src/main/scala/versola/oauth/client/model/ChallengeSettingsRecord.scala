@@ -21,6 +21,11 @@ case class MtlsCertificateSource(
     encoding: MtlsCertificateEncoding,
 )
 
+/** Mirrors central's `SecurityProfile` -- see there for what each case means. */
+enum SecurityProfile derives JsonCodec:
+  case standard
+  case fapi2
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
@@ -48,8 +53,14 @@ case class ChallengeSettingsRecord(
       * long its `jti` is remembered against replay -- see
       * [[versola.oauth.client.OAuthConfigurationService.getClientAssertionMaxLifetime]]. */
     clientAssertionMaxLifetimeSeconds: Int,
+    /** Which FAPI profile this tenant's clients are held to -- see
+      * [[versola.oauth.client.OAuthConfigurationService.getSecurityProfile]]. */
+    securityProfile: SecurityProfile,
 ) derives JsonCodec
 
 object ChallengeSettingsRecord:
   /** Mirrors central's default, and applies where a tenant has no settings row at all. */
   val DefaultClientAssertionMaxLifetime: zio.Duration = zio.Duration.fromSeconds(300)
+
+  /** Mirrors central's default, and applies where a tenant has no settings row at all. */
+  val DefaultSecurityProfile: SecurityProfile = SecurityProfile.fapi2

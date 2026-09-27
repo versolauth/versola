@@ -215,5 +215,10 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
           settings.passkeyOrigins == Set(ProvisionFixtures.targets.origin),
         )
       },
+      // FAPI 2.0 refuses client_secret, which every confidential client here registers with
+      // (§2.2) -- a campaign that asserted fapi2 would have its own clients rejected.
+      test("declares standard, matching the client_secret confidential client it registers") {
+        assertTrue(blueprint.challengeSettings.securityProfile == "standard")
+      },
     ),
   )

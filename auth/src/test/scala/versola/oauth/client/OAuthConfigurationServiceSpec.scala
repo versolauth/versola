@@ -104,6 +104,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     mtlsCertificateEncoding = None,
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
+    securityProfile = SecurityProfile.fapi2,
   )
   val systemSettings = SystemSettingsRecord.default
 
@@ -355,6 +356,22 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       yield assertTrue(
         tenantless == ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime,
         unknown == ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime,
+      )
+    },
+    test("getSecurityProfile returns the profile the client's tenant configured") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(securityProfile = SecurityProfile.standard)))
+        result <- env.getSecurityProfile(clientId1)
+      yield assertTrue(result == SecurityProfile.standard)
+    },
+    test("getSecurityProfile falls back to the default without a settings row") {
+      for
+        env <- makeEnv(challengeSettingsVec = Vector.empty)
+        tenantless <- env.getSecurityProfile(clientId1)
+        unknown <- env.getSecurityProfile(ClientId("missing"))
+      yield assertTrue(
+        tenantless == ChallengeSettingsRecord.DefaultSecurityProfile,
+        unknown == ChallengeSettingsRecord.DefaultSecurityProfile,
       )
     },
     test("getPasskeySettings returns settings for known client") {

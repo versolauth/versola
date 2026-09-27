@@ -7,6 +7,7 @@ import versola.oauth.client.model.{
   ChallengeSettingsRecord,
   ClientId,
   ClientSecret,
+  SecurityProfile,
   FormRecord,
   Locales,
   MtlsCertificateSource,
@@ -78,6 +79,10 @@ trait OAuthConfigurationService:
   /** RFC 7523 §3: how far into the future this client's tenant lets a client assertion's
     * `exp` sit, which is also how long its `jti` is remembered against replay. */
   def getClientAssertionMaxLifetime(id: ClientId): UIO[Duration]
+
+  /** Which FAPI profile this client's tenant is held to -- `ChallengeSettingsRecord.DefaultSecurityProfile`
+    * where the client or its tenant's settings are unknown. */
+  def getSecurityProfile(id: ClientId): UIO[SecurityProfile]
 
   def getOtpSettings(id: ClientId): UIO[OtpSettings]
 
@@ -465,6 +470,15 @@ object OAuthConfigurationService:
               .fold(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetime)(settings =>
                 Duration.fromSeconds(settings.clientAssertionMaxLifetimeSeconds),
               ),
+          )
+
+    override def getSecurityProfile(id: ClientId): UIO[SecurityProfile] =
+      find(id).flatMap:
+        case None => ZIO.succeed(ChallengeSettingsRecord.DefaultSecurityProfile)
+        case Some(client) =>
+          challengeSettingsCache.get.map(
+            _.find(_.tenantId == client.tenantId)
+              .fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile),
           )
 
     override def getOtpSettings(id: ClientId): UIO[OtpSettings] =

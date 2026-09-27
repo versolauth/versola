@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, MtlsCertificateEncoding, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, MtlsCertificateEncoding, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.roles.{RoleRecord, RoleRepository}
@@ -261,6 +261,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
+    securityProfile = SecurityProfile.fapi2,
   )
 
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty):

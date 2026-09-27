@@ -1,7 +1,7 @@
 package versola.oauth.client
 
 import versola.auth.TestEnvConfig
-import versola.oauth.client.model.{ChallengeSettingsRecord, PasskeySettings, SubmissionLimits, TenantId}
+import versola.oauth.client.model.{ChallengeSettingsRecord, PasskeySettings, SecurityProfile, SubmissionLimits, TenantId}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -33,6 +33,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
         mtlsCertificateEncoding = None,
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
+        securityProfile = SecurityProfile.fapi2,
       )
       for
         seen <- Ref.make(Option.empty[Request])

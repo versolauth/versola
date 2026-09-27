@@ -404,6 +404,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           strings(passkey, "origins") == List(ProvisionFixtures.targets.origin),
           strings(obj(body, "acrVocabulary"), versola.loadgen.protocol.Acr.OtpLevel) == List("otp"),
           field(obj(body, "submissionLimits"), "banDurationSeconds").isDefined,
+          str(body, "securityProfile") == "standard",
         )
       },
     ),

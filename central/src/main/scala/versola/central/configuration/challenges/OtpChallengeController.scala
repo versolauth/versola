@@ -93,6 +93,9 @@ object OtpChallengeController extends Controller:
         clientAssertionMaxLifetimeSeconds = body.clientAssertionMaxLifetimeSeconds
           .orElse(existing.map(_.clientAssertionMaxLifetimeSeconds))
           .getOrElse(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds)
+        securityProfile = body.securityProfile
+          .orElse(existing.map(_.securityProfile))
+          .getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile)
         // One setting stored in two columns: a header no encoding says how to read, and an
         // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
         // off while central reports it configured.
@@ -125,6 +128,7 @@ object OtpChallengeController extends Controller:
             mtlsCertificateEncoding,
             body.signingKeyId.applyTo(existing.flatMap(_.signingKeyId)),
             clientAssertionMaxLifetimeSeconds,
+            securityProfile,
           ),
         )
           // A kid nothing can sign with, or one signing under a disallowed algorithm, is the

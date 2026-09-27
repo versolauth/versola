@@ -105,9 +105,12 @@ case class AuthRequestPresetsSpec(
     presets: List[AuthRequestPresetSpec],
 )
 
-/** @param acrVocabulary which authentication factors each ACR value requires -- what makes
-  *                      `acr_values` mean anything to auth, and therefore what makes a step-up
-  *                      resolvable at all (§7.4)
+/** @param acrVocabulary   which authentication factors each ACR value requires -- what makes
+  *                        `acr_values` mean anything to auth, and therefore what makes a
+  *                        step-up resolvable at all (§7.4)
+  * @param securityProfile `standard` or `fapi2` (issue #353). A campaign's clients register
+  *                        with `client_secret` (see [[ClientSpec]]), which `fapi2` refuses, so
+  *                        this must stay `standard` unless the client shapes above change too.
   */
 case class ChallengeSettingsSpec(
     allowedPrefixes: List[String],
@@ -119,4 +122,5 @@ case class ChallengeSettingsSpec(
     passkeyUserVerification: String,
     ipHeader: String,
     acrVocabulary: Map[String, List[String]],
+    securityProfile: String,
 )
