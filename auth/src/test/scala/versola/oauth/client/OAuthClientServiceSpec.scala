@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthMethod, Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{AuthMethod, Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SecurityProfile, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
@@ -422,6 +422,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateEncoding = None,
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
+        securityProfile = SecurityProfile.fapi2,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -448,6 +449,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateEncoding = None,
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
+        securityProfile = SecurityProfile.fapi2,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -475,6 +477,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateEncoding = None,
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
+        securityProfile = SecurityProfile.fapi2,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))
@@ -571,6 +574,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         mtlsCertificateEncoding = None,
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = 300,
+        securityProfile = SecurityProfile.fapi2,
       )
       for
         env <- makeEnv(challengeSettings = Vector(settings))

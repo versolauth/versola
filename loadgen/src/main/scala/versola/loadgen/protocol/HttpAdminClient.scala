@@ -329,6 +329,7 @@ final class HttpAdminClient(
       ),
       ipHeader = spec.ipHeader,
       acrVocabulary = Some(spec.acrVocabulary),
+      securityProfile = spec.securityProfile,
     )
     send(Method.PUT, central("configuration", "challenges", "challenge-settings"), Some(body.toJson))
       .flatMap(expectSuccess("upsertChallengeSettings", _))
@@ -719,6 +720,7 @@ object HttpAdminClient:
       passkeySettings: PasskeySettingsBody,
       ipHeader: String,
       acrVocabulary: Option[Map[String, List[String]]],
+      securityProfile: String,
   ) derives JsonEncoder
 
 final case class InvalidAdminUrl(setting: String, url: String, cause: Throwable)

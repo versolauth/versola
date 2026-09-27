@@ -394,6 +394,9 @@ object CampaignBlueprint:
         Acr.PasswordLevel -> List("password"),
         Acr.PasskeyLevel -> List("passkey"),
       ),
+      // The campaign's clients authenticate with client_secret (see webClient/mobileClients
+      // above), which FAPI 2.0 refuses -- `standard` is the only profile they satisfy.
+      securityProfile = "standard",
     )
 
     CampaignBlueprint(

@@ -2,7 +2,7 @@ package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
@@ -115,6 +115,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsCertificateEncoding = None,
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
+    securityProfile = SecurityProfile.fapi2,
   )
 
   override def spec = suite("AuthorizationPresetService")(

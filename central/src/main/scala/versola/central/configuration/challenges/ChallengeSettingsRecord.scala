@@ -27,6 +27,17 @@ enum MtlsCertificateEncoding derives Schema, JsonCodec:
     */
   case base64Der
 
+/** FAPI 2.0 Security Profile is close to a boolean today -- either a tenant's clients are
+  * validated and enforced against it or they are not -- but stored as an enum so a narrower
+  * or later profile (e.g. a FAPI 1.0 Advanced carve-out) needs no migration to add.
+  *
+  * See https://github.com/versolauth/versola/issues/353: registration/patch validation and
+  * runtime enforcement against this profile land separately from the setting itself.
+  */
+enum SecurityProfile derives Schema, JsonCodec:
+  case standard
+  case fapi2
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     allowedPrefixes: List[String],
@@ -68,12 +79,20 @@ case class ChallengeSettingsRecord(
       * long-lived ones.
       */
     clientAssertionMaxLifetimeSeconds: Int,
+    /** Which FAPI profile this tenant's clients are held to. `fapi2` is the default for new
+      * tenants -- see [[ChallengeSettingsRecord.DefaultSecurityProfile]]. */
+    securityProfile: SecurityProfile,
 ) derives Schema, JsonCodec
 
 object ChallengeSettingsRecord:
   /** Five minutes: what client libraries mint by default, and short enough that the replay
     * guard's retention is measured in minutes rather than hours. */
   val DefaultClientAssertionMaxLifetimeSeconds = 300
+
+  /** FAPI 2.0 for every new tenant, and -- per the migration that introduced this column --
+    * every tenant that existed before it too: there were no external consumers of this
+    * deployment yet, only the seed tenant, so nothing is grandfathered onto `standard`. */
+  val DefaultSecurityProfile: SecurityProfile = SecurityProfile.fapi2
 
   /** The window the replay guard in `auth` is sized to cover. A tenant cannot ask for a
     * longer one, because a `jti` it could no longer remember for the assertion's whole life

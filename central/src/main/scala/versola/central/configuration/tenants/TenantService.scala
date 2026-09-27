@@ -119,4 +119,5 @@ object TenantService:
         // keys exist.
         signingKeyId = None,
         clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
+        securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
       )

@@ -62,4 +62,7 @@ case class UpsertChallengeSettingsRequest(
     /** RFC 7523 §3: furthest into the future a client assertion's `exp` may sit; absent
       * keeps the stored value. */
     clientAssertionMaxLifetimeSeconds: Option[Int],
+    /** Which FAPI profile this tenant's clients are held to; absent keeps the stored value
+      * (or `ChallengeSettingsRecord.DefaultSecurityProfile` for a tenant with none yet). */
+    securityProfile: Option[SecurityProfile],
 ) derives Schema, JsonCodec

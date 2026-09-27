@@ -514,6 +514,7 @@ object BootstrapService:
       // which keys exist.
       signingKeyId = None,
       clientAssertionMaxLifetimeSeconds = ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds,
+      securityProfile = ChallengeSettingsRecord.DefaultSecurityProfile,
     )
 
   /** Default theme seeded from the shared CSS resource. */
