@@ -75,12 +75,25 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
     val payload = java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(1))
     String(payload, "UTF-8").fromJson[Json.Obj].toOption.get
 
-  private def start(prover: DpopProver): ZIO[EdgeApi & EdgeFixture, Throwable, Started] =
+  private def start(prover: DpopProver): ZIO[EdgeApi & OAuthClient & EdgeFixture, Throwable, Started] =
     for
       edgeApi <- edge
       f <- fixture
-      proof <- prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId))
-      response <- edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof))
+      authApi <- auth
+      attempt = prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId))
+        .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof)))
+      // A client central registered a moment ago reaches edge's cache (404 here) and auth's
+      // (401 invalid_client from /par, relayed) by a notification the registering request does
+      // not wait for -- so an early answer of either is a fresh sync and another try, not a result.
+      response <- attempt.flatMap: first =>
+        if first.status != Status.NotFound && first.status != Status.Unauthorized then ZIO.succeed(first)
+        else
+          (edgeApi.syncConfiguration *> authApi.syncConfiguration() *> attempt)
+            .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[Response](r =>
+              r.status != Status.NotFound && r.status != Status.Unauthorized,
+            ))
+            .timeout(60.seconds)
+            .someOrElse(first)
       text <- body(response)
       started <- ZIO.fromEither(text.fromJson[Started])
         .mapError(reason => RuntimeException(s"/native/start answered ${response.status}: $text ($reason)"))
