@@ -629,7 +629,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest, None)),
+          service.registerClient.calls == List((createRequest, None, true)),
           // The registration time is the service's, handed back as it recorded it.
           body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt),
         ),
@@ -649,7 +649,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None)),
+          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None, true)),
           body == CreateClientResponse(None, registeredAt),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
@@ -733,7 +733,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List(updateRequest)),
+          assertTrue(service.updateClient.calls == List((updateRequest, true))),
         ),
     ),
     controllerTestCase(
@@ -759,7 +759,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(
-            service.updateClient.calls == List(updateRequest.copy(registrationFlow = Some(Patch.Deleted))),
+            service.updateClient.calls == List((updateRequest.copy(registrationFlow = Some(Patch.Deleted)), true)),
           ),
         ),
     ),
@@ -813,7 +813,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List(updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)))),
+          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true))),
         ),
     ),
     controllerTestCase(

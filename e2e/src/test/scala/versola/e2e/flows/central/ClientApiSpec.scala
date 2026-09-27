@@ -309,6 +309,8 @@ object ClientApiSpec extends CentralApiSpec:
         // A freshly created tenant has no challenge settings naming a certificate header, so
         // auth would never look for this client's certificate (RFC 8705 §6.5).
         _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
+        // A new tenant is on FAPI 2.0, which this test's client_secret client is not about.
+        _ <- SecurityProfiles.ensureStandard(central, tenantId)
         rejected <- central.post(
           path,
           Fixtures.client(
@@ -492,6 +494,7 @@ object ClientApiSpec extends CentralApiSpec:
         tenantId <- CentralApi.id("e2e-tenant")
         id <- CentralApi.id("e2e-client")
         _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
+        _ <- SecurityProfiles.ensureStandard(central, tenantId)
         _ <- central.post(path, Fixtures.client(id, tenantId = tenantId))
         inOwnTenant <- eventually(central.get(path, "tenantId" -> tenantId).flatMap(_.items("clients")))(
           _.exists(_.str("id").contains(id)),

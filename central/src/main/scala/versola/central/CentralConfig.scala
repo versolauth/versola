@@ -69,6 +69,14 @@ object CentralConfig:
         * API is exactly the failure mode it exists to avoid.
         */
       utilityClient: Option[CentralConfig.BootstrapConfig.UtilityClientSeed] = None,
+      /** #353: how the edge fronting `central-admin` authenticates as it -- RFC 8705 §2.1
+        * `tls_client_auth`, with this certificate, the one credential FAPI 2.0 admits for an
+        * edge-fronted web client. Absent leaves `central-admin` on a `client_secret`, which the
+        * default tenant's FAPI 2.0 profile does not admit: bootstrap then seeds it anyway, with
+        * a warning, since an admin console nobody can sign in to is worse than a
+        * non-conformant one. Only a deployment with something terminating TLS in front of auth
+        * for edge (see develop.md) can configure this. */
+      centralAdminMtls: Option[CentralConfig.BootstrapConfig.CentralAdminMtlsSeed] = None,
   )
 
   object BootstrapConfig:
@@ -78,6 +86,21 @@ object CentralConfig:
       * is: central hands a client secret back once, at registration, and a caller such as loadgen
       * has to be configured with the same value out of band. */
     case class UtilityClientSeed(clientId: ClientId, secret: Secret)
+
+    /** The certificate (with its PKCS#8 private key, one PEM) an edge presents as
+      * `central-admin`, and where the default tenant's TLS terminator forwards it to auth.
+      *
+      * The client is registered to be recognised by the certificate's own subject DN, so the
+      * certificate is the only thing to configure. It has to be issued by a CA the terminator
+      * advertises -- a JDK TLS client offers no certificate otherwise (see `gen-env.scala`).
+      *
+      * `certificateHeader`/`certificateEncoding` are written to the default tenant's challenge
+      * settings only where it names no header yet: an operator's own choice is kept. */
+    case class CentralAdminMtlsSeed(
+        certificate: String,
+        certificateHeader: String,
+        certificateEncoding: String,
+    )
 
     /** Seed data for an authorization preset.
       *

@@ -1,6 +1,7 @@
 package versola.central.configuration.challenges
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.clients.{ClientProfileViolation, OAuthClientService}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -8,10 +9,23 @@ import versola.util.Patch.applyTo
 import versola.util.http.{BadRequest, Controller}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
-import zio.json.EncoderOps
+import zio.json.{EncoderOps, JsonCodec}
 
 object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & OAuthClientService
+
+  /** What refusing a switch to a profile answers with: every client the profile would not
+    * admit, and why. `409` rather than `400`: the request is well formed, and would be
+    * accepted as it stands once the tenant's clients are brought into conformance. */
+  case class SecurityProfileConflict(
+      error: String,
+      message: String,
+      securityProfile: SecurityProfile,
+      violations: Vector[ClientProfileViolation],
+  ) derives JsonCodec
+
+  private case class SecurityProfileRefused(conflict: SecurityProfileConflict)
+    extends RuntimeException(conflict.message)
 
   def routes: Routes[Env, Throwable] = Routes(
     getTemplatesEndpoint,
@@ -83,7 +97,7 @@ object OtpChallengeController extends Controller:
 
   val upsertChallengeSettingsEndpoint =
     Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
-      for
+      (for
         _        <- authorizeBasic(request)
         service  <- ZIO.service[ChallengeSettingsService]
         body     <- request.bodyAs[UpsertChallengeSettingsRequest]
@@ -96,6 +110,24 @@ object OtpChallengeController extends Controller:
         securityProfile = body.securityProfile
           .orElse(existing.map(_.securityProfile))
           .getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile)
+        // #353: switching a tenant onto FAPI 2.0 is refused while any of its clients would
+        // violate it, rather than applied and left for those clients to fail at their next
+        // patch -- or, for public ones, at their next token request. Only on the switch: a
+        // tenant already on the profile (every tenant after the migration that introduced it)
+        // keeps whatever it was holding, and has to stay editable while it fixes that.
+        // Read from the repository, not the cache `existing` came from: a switch back onto the
+        // profile moments after leaving it must not be taken for no switch at all.
+        stored <- service.getSecurityProfile(body.tenantId)
+        violations <-
+          if securityProfile == SecurityProfile.fapi2 && (existing.isEmpty || stored != SecurityProfile.fapi2) then
+            ZIO.serviceWithZIO[OAuthClientService](_.profileViolations(body.tenantId, securityProfile))
+          else ZIO.succeed(Vector.empty)
+        _ <- ZIO.fail(SecurityProfileRefused(SecurityProfileConflict(
+          error = "security_profile_violations",
+          message = s"${violations.size} client(s) of tenant '${body.tenantId}' would violate $securityProfile",
+          securityProfile = securityProfile,
+          violations = violations,
+        ))).when(violations.nonEmpty)
         // One setting stored in two columns: a header no encoding says how to read, and an
         // encoding that names no header, both leave `auth` with a tenant whose mutual TLS is
         // off while central reports it configured.
@@ -138,5 +170,7 @@ object OtpChallengeController extends Controller:
             case error: ChallengeSettingsService.ValidationError => BadRequest(error.message)
             case other                                          => other
           }
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent)).catchSome:
+        case SecurityProfileRefused(conflict) =>
+          ZIO.succeed(Response.json(conflict.toJson).status(Status.Conflict))
     }

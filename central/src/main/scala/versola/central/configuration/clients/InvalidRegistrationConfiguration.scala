@@ -1,6 +1,8 @@
 package versola.central.configuration.clients
 
-import versola.util.{Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey}
+import versola.central.configuration.challenges.SecurityProfile
+import versola.util.{Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
@@ -291,3 +293,113 @@ object InvalidRegistrationConfiguration:
           invalid("registration allows only one of set-password or passkey enrollment")
         case Some(_) =>
           None
+
+
+  // ── #353: the tenant's security profile ────────────────────────────────────────────────
+  //
+  // Kept apart from the per-setting checks above on purpose: those say whether a client's
+  // settings can work at all, whatever tenant it is in, while these say whether a client that
+  // works is one its tenant's asserted profile admits. A client can pass every check above and
+  // still be refused here, and the same client is accepted unchanged in a `standard` tenant.
+
+  /** What [[profileViolations]] reads off a client -- the registration after a create or a
+    * patch has been applied to it, never the request alone, since a patch that leaves a
+    * setting untouched still has to leave the client conformant.
+    *
+    * @param senderConstrained whether an access token issued to the client is bound to a key
+    *                          (RFC 9449 DPoP) or to a certificate (RFC 8705 §3) -- read off
+    *                          the record ([[OAuthClientRecord.dpopBoundAccessTokens]] or
+    *                          [[OAuthClientRecord.bindsAccessTokens]]) rather than recomputed
+    *                          from its columns, so a change to what binds a token changes
+    *                          what is conformant with it.
+    * @param native            the client was registered as a mobile or desktop binary, the
+    *                          one kind FAPI 2.0 lets redirect to a loopback `http` URI.
+    */
+  case class ProfileSubject(
+      authMethod: AuthMethod,
+      senderConstrained: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      redirectUris: Set[RedirectUri],
+      native: Boolean,
+  )
+
+  object ProfileSubject:
+    def of(client: OAuthClientRecord): ProfileSubject =
+      ProfileSubject(
+        authMethod = client.authMethod,
+        senderConstrained = client.dpopBoundAccessTokens || client.bindsAccessTokens,
+        requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+        redirectUris = client.redirectUris,
+        native = client.template.exists(_.kind == ClientKind.device),
+      )
+
+  /** The authentication methods FAPI 2.0 §5.3.2.1 leaves a client: confidential ones, with a
+    * credential that is not a shared secret. */
+  val Fapi2AuthMethods: Set[AuthMethod] =
+    Set(AuthMethod.private_key_jwt, AuthMethod.tls_client_auth, AuthMethod.self_signed_tls_client_auth)
+
+  /** Every way `subject` falls short of `profile`, in a stable order -- empty for a client the
+    * profile admits, and always empty under [[SecurityProfile.standard]].
+    *
+    * All of them rather than the first: the same list answers an operator switching a tenant
+    * to FAPI 2.0, who needs to know everything to fix in each client, not the first thing.
+    *
+    * FAPI 2.0 Security Profile:
+    *  - §5.3.2.1: no public clients, and client authentication by `private_key_jwt` or mTLS
+    *    only -- a `client_secret` is out as well as `none`;
+    *  - §5.3.2.2: sender-constrained access tokens, by DPoP or by certificate;
+    *  - §5.3.2.2: PAR for every authorization request, so for every client that makes them --
+    *    which is every client with a redirect URI;
+    *  - §5.3.2.2 / #361: `https` redirect URIs, except a native client's loopback `http` one
+    *    (RFC 8252 §7.3).
+    *
+    * @param allowHttpLoopback admits a loopback `http` redirect URI for any client, not only a
+    *                          native one. Only outside production, where the local stack's edge
+    *                          is itself served at `http://localhost` and could otherwise not
+    *                          front a single web client of a FAPI 2.0 tenant.
+    */
+  def profileViolations(
+      profile: SecurityProfile,
+      subject: ProfileSubject,
+      allowHttpLoopback: Boolean,
+  ): List[String] =
+    profile match
+      case SecurityProfile.standard => Nil
+      case SecurityProfile.fapi2 =>
+        List(
+          Option.when(!Fapi2AuthMethods.contains(subject.authMethod))(
+            s"FAPI 2.0 admits confidential clients only (private_key_jwt, tls_client_auth or " +
+              s"self_signed_tls_client_auth), not ${subject.authMethod}",
+          ),
+          Option.when(!subject.senderConstrained)(
+            "FAPI 2.0 requires sender-constrained access tokens: set dpopBoundAccessTokens, or " +
+              "authenticate with or bind tokens to a certificate",
+          ),
+          Option.when(subject.redirectUris.nonEmpty && !subject.requirePushedAuthorizationRequests)(
+            "FAPI 2.0 requires pushed authorization requests for a client with redirect URIs: " +
+              "set requirePushedAuthorizationRequests",
+          ),
+        ).flatten ++
+          subject.redirectUris.toList.sortBy(uri => uri: String)
+            .filterNot(uri => admittedRedirectUri(uri, subject.native || allowHttpLoopback))
+            .map(uri =>
+              s"FAPI 2.0 requires https redirect URIs (loopback http only for a native client), not '$uri'",
+            )
+
+  /** [[profileViolations]] as a registration failure: every reason, in one message. */
+  def validateSecurityProfile(
+      clientId: ClientId,
+      profile: SecurityProfile,
+      subject: ProfileSubject,
+      allowHttpLoopback: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    profileViolations(profile, subject, allowHttpLoopback) match
+      case Nil => None
+      case reasons => Some(InvalidRegistrationConfiguration(clientId, reasons.mkString("; ")))
+
+  private val LoopbackHosts = Set("127.0.0.1", "[::1]", "::1", "localhost")
+
+  private def admittedRedirectUri(uri: RedirectUri, loopbackAllowed: Boolean): Boolean =
+    URL.decode(uri).toOption.exists: url =>
+      url.scheme.contains(Scheme.HTTPS) ||
+        (loopbackAllowed && url.scheme.contains(Scheme.HTTP) && url.host.exists(LoopbackHosts.contains))

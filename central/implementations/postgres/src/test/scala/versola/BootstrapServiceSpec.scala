@@ -1,9 +1,10 @@
 package versola
 
 import org.scalamock.stubs.ZIOStubs
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType}
+import versola.central.CentralConfig
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, MutualTlsAuth, MutualTlsSubjectType}
 import versola.central.configuration.{InjectRule, InjectTarget}
-import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom}
+import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.test.*
 
@@ -17,7 +18,33 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       UUID.nameUUIDFromBytes(s"$method $path".getBytes(StandardCharsets.UTF_8)),
     )
 
+  private def mtlsSeed(certificate: String) =
+    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(certificate, "ssl-client-cert", "urlEncodedPem")
+
   def spec = suite("BootstrapService")(
+    // #353: the default tenant is FAPI 2.0, and tls_client_auth by edge is what it admits for
+    // an edge-fronted web client.
+    test("registers central-admin as tls_client_auth by its certificate's subject DN, behind PAR, when given one") {
+      val certificate = TestCertificates.generate(subject = "CN=central-admin,O=Versola")
+      val credential = BootstrapService.centralAdminCredential(Some(mtlsSeed(certificate.bundle)))
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
+        credential.map(_.mtlsAuth) == Right(Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn))),
+        credential.map(_.edgeClientCertificate.map(_.pem)) == Right(Some(certificate.bundle)),
+        credential.map(_.requirePushedAuthorizationRequests) == Right(true),
+        credential.exists(_.conformant),
+      )
+    },
+    test("keeps central-admin on client_secret, outside the profile, without a certificate") {
+      val credential = BootstrapService.centralAdminCredential(None)
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.client_secret),
+        credential.exists(!_.conformant),
+      )
+    },
+    test("refuses to boot on a certificate that could not be presented") {
+      assertTrue(BootstrapService.centralAdminCredential(Some(mtlsSeed("not a pem"))).isLeft)
+    },
     test("adds an OTP factor and phone outside production") {
       val envName = EnvName.Test("local")
 

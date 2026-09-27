@@ -19,7 +19,7 @@ import versola.central.configuration.{
 import versola.central.{CentralConfig, TestCentralConfig}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey}
-import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{EnvName, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -208,6 +208,46 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
   )
 
+  /** What FAPI 2.0 asks of an edge-fronted web client: `tls_client_auth`, which also binds its
+    * tokens to the certificate, behind PAR, redirecting over https. */
+  private val fapi2Request = createRequest.copy(
+    authMethod = AuthMethod.tls_client_auth,
+    mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com")),
+    requirePushedAuthorizationRequests = true,
+  )
+
+  private val noopUpdate = UpdateClientRequest(
+    clientId = clientId,
+    clientName = None,
+    redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
+    scope = PatchClientScope(Set.empty, Set.empty),
+    permissions = PatchPermissions(Set.empty, Set.empty),
+    accessTokenTtl = None,
+    refreshTokenTtl = None,
+    theme = None,
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = None,
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = None,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = None,
+    dpopSigningAlgs = None,
+    dpopMinRsaKeySize = None,
+    authMethod = None,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = None,
+    jwks = None,
+    requireSignedRequestObject = None,
+    requirePushedAuthorizationRequests = None,
+    edgeSigningKey = None,
+    edgeClientCertificate = None,
+  )
+
   private val updateRequest = UpdateClientRequest(
     clientId = clientId,
     clientName = Some(Map("en" -> "Updated Web App")),
@@ -261,10 +301,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
-    securityProfile = SecurityProfile.fapi2,
+    securityProfile = SecurityProfile.standard,
   )
 
-  class Env(initial: Vector[OAuthClientRecord] = Vector.empty):
+  class Env(initial: Vector[OAuthClientRecord] = Vector.empty, envName: EnvName = EnvName.Prod):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
     val tenantRepository = stub[TenantRepository]
@@ -273,7 +313,15 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
     val config = TestCentralConfig.config
-    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, config)
+    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, config, envName)
+
+    // Every test not about the security profile registers under a `standard` tenant, so what
+    // it asserts is not decided by a profile it never mentions.
+    challengeSettingsService.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.standard))
+
+    /** The tenant asserts FAPI 2.0 and terminates mTLS. */
+    def onFapi2: UIO[Unit] =
+      terminatesMtls *> challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
 
     /** The tenant terminates mTLS, so an `mtlsAuth` registration is not refused for the lack
       * of somewhere for a certificate to arrive from. */
@@ -1444,5 +1492,147 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(cachedClient))
       for result <- env.service.verifySecret(Secret(Array.fill(32)(1.toByte)))
       yield assertTrue(!result)
+    },
+    // ── #353: the tenant's security profile ──────────────────────────────────────────────
+    test("registerClient refuses a client_secret client under a fapi2 tenant, naming every reason") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        result <- env.service.registerClient(createRequest).either
+        createdTimes = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration =>
+            error.reason.contains("not client_secret") &&
+              error.reason.contains("sender-constrained") &&
+              error.reason.contains("pushed authorization")
+          case _ => false,
+        createdTimes == 0,
+      )
+    },
+    test("registerClient accepts an edge-fronted tls_client_auth web client behind PAR under a fapi2 tenant") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        _ <- env.repository.createClient.succeedsWith(())
+        registered <- env.service.registerClient(fapi2Request)
+        createdTimes = env.repository.createClient.times
+      yield assertTrue(registered.secret.isEmpty, createdTimes == 1)
+    },
+    test("registerClient refuses a public client under a fapi2 tenant") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        result <- env.service.registerClient(fapi2Request.copy(authMethod = AuthMethod.none, mtlsAuth = None, dpopBoundAccessTokens = true, accessTokenTtl = 3600)).either
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("not none")
+          case _ => false,
+      )
+    },
+    test("registerClient refuses a loopback http redirect URI of a web client under a fapi2 tenant in production") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        result <- env.service.registerClient(fapi2Request.copy(redirectUris = Set(RedirectUri("http://localhost:9005/complete")))).either
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("https redirect URIs")
+          case _ => false,
+      )
+    },
+    test("registerClient admits a loopback http redirect URI of a web client outside production") {
+      val env = new Env(envName = EnvName.Test("local"))
+
+      for
+        _ <- env.onFapi2
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(fapi2Request.copy(redirectUris = Set(RedirectUri("http://localhost:9005/complete"))))
+        createdTimes = env.repository.createClient.times
+      yield assertTrue(createdTimes == 1)
+    },
+    test("registerClient seeds outside the profile only when told to") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest, enforceSecurityProfile = false)
+        createdTimes = env.repository.createClient.times
+      yield assertTrue(createdTimes == 1)
+    },
+    test("updateClient refuses a patch that leaves a pre-existing client_secret client non-conformant") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.onFapi2
+        result <- env.service.updateClient(noopUpdate.copy(theme = Some("dark"))).either
+        updatedTimes = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("not client_secret")
+          case _ => false,
+        updatedTimes == 0,
+      )
+    },
+    test("updateClient accepts the patch that brings a client into conformance") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.onFapi2
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(noopUpdate.copy(
+          authMethod = Some(AuthMethod.tls_client_auth),
+          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com"))),
+          requirePushedAuthorizationRequests = Some(true),
+        ))
+        updatedTimes = env.repository.updateClient.times
+      yield assertTrue(updatedTimes == 1)
+    },
+    test("updateClient reads redirect URIs the patch adds against the profile") {
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com")),
+        requirePushedAuthorizationRequests = true,
+      )))
+
+      for
+        _ <- env.onFapi2
+        result <- env.service.updateClient(noopUpdate.copy(
+          redirectUris = PatchClientRedirectUris(add = Set(RedirectUri("http://web.example.com/cb")), remove = Set.empty),
+        )).either
+        updatedTimes = env.repository.updateClient.times
+      yield assertTrue(result.isLeft, updatedTimes == 0)
+    },
+    test("profileViolations lists every violating client of the tenant, from the repository") {
+      val env = new Env()
+      val conformant = cachedClient.copy(
+        id = ClientId("conformant"),
+        authMethod = AuthMethod.private_key_jwt,
+        secret = None,
+        jwks = Some(publicKeySet),
+        dpopBoundAccessTokens = true,
+        requirePushedAuthorizationRequests = true,
+      )
+      val publicClient = cachedClient.copy(id = ClientId("spa"), authMethod = AuthMethod.none, secret = None)
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(publicClient, conformant, cachedClient, otherTenantClient))
+        violations <- env.service.profileViolations(tenantId, SecurityProfile.fapi2)
+        underStandard <- env.service.profileViolations(tenantId, SecurityProfile.standard)
+      yield assertTrue(
+        violations.map(_.clientId) == Vector(ClientId("spa"), clientId),
+        violations.forall(_.reasons.nonEmpty),
+        underStandard.isEmpty,
+      )
     },
   )

@@ -3,7 +3,7 @@ package versola.oauth.token
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, SecurityProfile, TenantId}
 import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.mtls.ClientCertificate
@@ -1475,6 +1475,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val env = new Env
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(publicClient))
+          _ <- env.clientService.getSecurityProfile.succeedsWith(SecurityProfile.standard)
 
           request = ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None)
           credentials = ClientIdWithSecret(publicClientId, None)

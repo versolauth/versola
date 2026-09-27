@@ -1,7 +1,7 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{SecurityProfile, AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.CoreConfig
 import versola.util.http.Observability
@@ -93,6 +93,13 @@ trait ClientAuthentication:
     *                       reads or revokes tokens it would let anyone knowing a public id act
     *                       for that client. A certificate or an assertion still authenticates
     *                       one — the point is that no credential at all does not.
+    *
+    * #353: a public client of a tenant on the FAPI 2.0 profile is refused at every endpoint,
+    * whatever `secretRequired` says -- FAPI 2.0 §5.3.2.1 admits no public clients, and central
+    * refusing to register one does not reach a client registered before its tenant asserted
+    * the profile. On a `standard` tenant a public client is authenticated by its bare
+    * `client_id` exactly as before: at `/token` by the PKCE exchange, and at `/revoke` by the
+    * token it presents, which RFC 7009 §2.1 checks was issued to it.
     */
   def authenticate(
       credentials: ClientCredentials,
@@ -246,4 +253,16 @@ object ClientAuthentication:
             case _ =>
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(())
-      )
+      ).tap(client => ZIO.fail(()).whenZIO(refusedByProfile(client)))
+
+    /** Only a public client can be refused here: every confidential method is one FAPI 2.0
+      * either admits or leaves to central to refuse at registration, since the client did
+      * authenticate. */
+    private def refusedByProfile(client: OAuthClientRecord): UIO[Boolean] =
+      if client.isPublic then
+        oauthClientService.getSecurityProfile(client.id)
+          .map(_ == SecurityProfile.fapi2)
+          .tap(refused =>
+            ZIO.logWarning(s"Refusing public client ${client.id}: its tenant is on the FAPI 2.0 profile").when(refused),
+          )
+      else ZIO.succeed(false)

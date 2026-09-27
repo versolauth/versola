@@ -43,6 +43,37 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
         result <- EdgeAssertion.verify(assertion, edgeKeys, accessToken).either
       yield assertTrue(id == edgeId, result.map(_.jti.nonEmpty).contains(true))
     },
+    // #359: FAPI 2.0 permits PS256 and ES256 for signed objects, not RS256 -- and the edge's
+    // registered key is RSA, so PSS is the one it can move to without a new key.
+    test("signs with PS256 over the edge's RSA key") {
+      for
+        assertion <- EdgeAssertion.issue(edgeId, keyId, edgePrivateKey, accessToken)
+        algorithm <- ZIO.attempt(com.nimbusds.jwt.SignedJWT.parse(assertion).getHeader.getAlgorithm.getName)
+      yield assertTrue(algorithm == "PS256")
+    },
+    // An edge not yet upgraded still signs RS256, and edge and auth roll out separately.
+    test("still accepts an RS256 assertion from an edge not yet signing PS256") {
+      for
+        legacy <- JWT.serialize(
+          claims = JWT.Claims(edgeId, edgeId, List(EdgeAssertion.Audience), Json.Obj("ath" -> Json.Str(Dpop.ath(accessToken)))),
+          ttl = EdgeAssertion.Ttl,
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, edgePrivateKey),
+          headers = Map(EdgeAssertion.EdgeIdHeader -> edgeId),
+        )
+        result <- EdgeAssertion.verify(legacy, edgeKeys, accessToken).either
+      yield assertTrue(result.isRight)
+    },
+    test("refuses an assertion signed under an algorithm it does not accept") {
+      for
+        hmac <- JWT.serialize(
+          claims = JWT.Claims(edgeId, edgeId, List(EdgeAssertion.Audience), Json.Obj("ath" -> Json.Str(Dpop.ath(accessToken)))),
+          ttl = EdgeAssertion.Ttl,
+          signature = JWT.Signature.Symmetric(javax.crypto.spec.SecretKeySpec(Array.fill(32)(7.toByte), "HmacSHA256")),
+          headers = Map(EdgeAssertion.EdgeIdHeader -> edgeId),
+        )
+        result <- EdgeAssertion.verify(hmac, edgeKeys, accessToken).flip
+      yield assertTrue(result == EdgeAssertion.Error.Unsigned)
+    },
     test("refuses an assertion made for a different access token") {
       for
         assertion <- EdgeAssertion.issue(edgeId, keyId, edgePrivateKey, accessToken)

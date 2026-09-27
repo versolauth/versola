@@ -85,6 +85,18 @@ The script first asks for the environment **Name** (default `local`):
       only from a header. Start it before edge; without it every edge -> auth call
       is refused a connection.
     - `PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+    - `central-admin` is registered as `tls_client_auth` by edge (#353: the `default` tenant is on
+      the FAPI 2.0 security profile, which admits no `client_secret` client). Its certificate
+      is `edge/dev/internal-tls/central-admin.{crt,key}`, signed by the terminator's CA and
+      carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`; edge presents it to
+      the nginx terminator above, which forwards it to auth in `ssl-client-cert`. So the
+      terminator is not optional for the console login: without it edge cannot push
+      `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
+      `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
+      `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
+      docker-local/vps/interactive targets get no `central-admin-mtls` and no terminator, so
+      central keeps `central-admin` on its `client_secret` there and logs that it is outside the
+      tenant's profile.
     - go to http://localhost:9005/login/central-admin
     - enter admin/Admin1234!
     - enter otp code 123456

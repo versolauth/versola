@@ -10,6 +10,12 @@ import zio.{Scope, Task, UIO, ZIO, ZLayer}
 trait ChallengeSettingsService:
   def getSettings(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]]
   def getAllSettings: Task[Vector[ChallengeSettingsRecord]]
+
+  /** #353: the profile the tenant's clients are held to, read from the repository rather
+    * than the cache -- a registration that follows a switch has to be held to the profile the
+    * switch just stored, not to the one the cache last saw. A tenant with no settings row reads
+    * as [[ChallengeSettingsRecord.DefaultSecurityProfile]], what it would be created with. */
+  def getSecurityProfile(tenantId: TenantId): Task[SecurityProfile]
   def upsertSettings(record: ChallengeSettingsRecord): Task[Unit]
   def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit]
 
@@ -73,6 +79,10 @@ object ChallengeSettingsService:
 
     override def getAllSettings: Task[Vector[ChallengeSettingsRecord]] =
       cache.get
+
+    override def getSecurityProfile(tenantId: TenantId): Task[SecurityProfile] =
+      repository.findByTenant(tenantId)
+        .map(_.fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile))
 
     override def upsertSettings(record: ChallengeSettingsRecord): Task[Unit] =
       validateSigningKey(record.signingKeyId) *> repository.upsert(record)
