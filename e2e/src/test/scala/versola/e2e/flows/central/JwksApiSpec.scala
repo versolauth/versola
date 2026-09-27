@@ -122,6 +122,19 @@ object JwksApiSpec extends CentralApiSpec:
         assertTrue(before == after)
           .label("a rejected generation must not leave a key behind")
     },
+    // RS256 is a well-formed JWKS algorithm this server refuses on policy rather than on
+    // shape, so nothing but the live endpoint shows an operator cannot obtain one.
+    test("generating an RS256 key is refused") {
+      for
+        central <- api
+        before <- summaries(central).map(_.size)
+        rejected <- central.postEmpty(generatePath, "alg" -> "RS256")
+        after <- summaries(central).map(_.size)
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label(s"FAPI disallows RS256, so it must not be generated, got ${rejected.status}") &&
+        assertTrue(before == after)
+          .label("a refused generation must not leave a key behind")
+    },
     test("generating without the alg parameter is rejected") {
       for
         central <- api

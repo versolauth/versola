@@ -4,7 +4,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.jwks.{JwksRepository, SigningKeyReferences}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
-import versola.util.ReloadingCache
+import versola.util.{JWT, ReloadingCache}
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 trait ChallengeSettingsService:
@@ -16,7 +16,8 @@ trait ChallengeSettingsService:
 object ChallengeSettingsService:
   /** Rejected before the row is written, so a tenant cannot be left pointing at a key nothing
     * can sign with -- auth would silently fall back to its legacy key and issue tokens under
-    * an algorithm the operator did not choose.
+    * an algorithm the operator did not choose -- nor at one signing under an algorithm this
+    * server will not issue tenant tokens with.
     */
   enum ValidationError(val message: String) extends RuntimeException(message):
     case UnknownSigningKey(kid: String)
@@ -29,6 +30,11 @@ object ChallengeSettingsService:
     case UnusableSigningKey(kid: String)
       extends ValidationError(
         s"Key '$kid' is published without a usable 'alg', so the algorithm to sign under is unknown.",
+      )
+    case Rs256SigningKey(kid: String)
+      extends ValidationError(
+        s"Key '$kid' signs RS256, whose PKCS#1 v1.5 padding FAPI 1.0 Advanced §8.6 and FAPI 2.0 both " +
+          "disallow. Select a PS256 or ES256 key instead.",
       )
 
   def live: ZLayer[
@@ -86,4 +92,9 @@ object ChallengeSettingsService:
           case None => ZIO.fail(ValidationError.UnknownSigningKey(kid))
           case Some(key) if key.privateKey.isEmpty => ZIO.fail(ValidationError.VerifyOnlySigningKey(kid))
           case Some(key) if key.algorithm.isEmpty => ZIO.fail(ValidationError.UnusableSigningKey(kid))
+          // Not gated on the tenant asserting anything: a deployment that would rather not
+          // sign under RS256 anywhere is the only position worth holding, and the legacy key
+          // remains reachable by leaving the selection cleared.
+          case Some(key) if key.algorithm.contains(JWT.Algorithm.RS256) =>
+            ZIO.fail(ValidationError.Rs256SigningKey(kid))
           case Some(_) => ZIO.unit

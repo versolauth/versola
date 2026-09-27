@@ -38,11 +38,11 @@ object JwksRecord:
     * is not cached (`edge.auth`), while signing runs once per token; `PS256` verifies ~18x
     * faster than `ES256` and signs ~5x slower, so past about 1.4 verifications per issued
     * token it is the cheaper of the two -- and an access token is verified on every API call
-    * it is presented for. `RS256` is last: FAPI disallows it, and it is only here for
-    * deployments already issuing under it.
+    * it is presented for. `RS256` is absent: FAPI disallows its PKCS#1 v1.5
+    * padding, so central neither generates it nor signs a tenant's tokens under it.
     */
   val algorithmPreference: List[JWT.Algorithm] =
-    List(JWT.Algorithm.PS256, JWT.Algorithm.ES256, JWT.Algorithm.RS256)
+    List(JWT.Algorithm.PS256, JWT.Algorithm.ES256)
 
   /** The key a tenant gets when none was selected for it: the most preferred algorithm
     * central can actually sign with, newest kid first. `None` when every stored key is

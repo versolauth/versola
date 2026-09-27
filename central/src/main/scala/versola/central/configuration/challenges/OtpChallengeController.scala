@@ -127,8 +127,9 @@ object OtpChallengeController extends Controller:
             clientAssertionMaxLifetimeSeconds,
           ),
         )
-          // A kid nothing can sign with is the operator naming a key that does not fit, not a
-          // fault of this server -- and the message says which of the three reasons it is.
+          // A kid nothing can sign with, or one signing under a disallowed algorithm, is the
+          // operator naming a key that does not fit, not a fault of this server -- and the
+          // message says which of the reasons it is.
           .mapError {
             case error: ChallengeSettingsService.ValidationError => BadRequest(error.message)
             case other                                          => other

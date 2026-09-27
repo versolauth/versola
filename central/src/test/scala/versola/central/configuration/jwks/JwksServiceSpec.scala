@@ -188,6 +188,16 @@ object JwksServiceSpec extends ZIOSpecDefault:
           exit <- service.generateKey(JWT.Algorithm.HS256).exit
         yield assertTrue(exit.isFailure)).provide(serviceFrom(Vector.empty))
       },
+      // A generated RS256 key could never be selected for a tenant, so generating one only
+      // leaves an operator with a key that does nothing.
+      test("refuses RS256, which nothing may sign a tenant's tokens under") {
+        val (repository, layer) = env(Vector.empty)
+        (for
+          service <- ZIO.service[JwksService]
+          exit <- service.generateKey(JWT.Algorithm.RS256).exit
+          stored <- repository.getAll
+        yield assertTrue(exit.isFailure, stored.isEmpty)).provide(layer)
+      },
       // Kids are timestamps to the second, so seeding a set in one go would otherwise
       // collide on the primary key.
       test("gives each algorithm a distinct kid even when generated in the same second") {
