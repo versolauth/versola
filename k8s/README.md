@@ -385,13 +385,28 @@ All of these have open issues; none of them has a fix in the chart yet.
 Observability is external by design. The dashboards in `loadgen/dashboards/` are checked in but
 not installed: `dashboards.configMap.enabled` is off by default, and turning it on only helps if
 Grafana's sidecar watches that label. Nothing here deploys Prometheus, and neither chart creates
-`ServiceMonitor` or `PodMonitor` objects — `loadgen` carries `prometheus.io/scrape` annotations,
-`versola` carries none, so how scraping happens is the cluster's business.
+`ServiceMonitor` or `PodMonitor` objects — both `loadgen` and `versola` carry `prometheus.io/scrape`
+annotations on every pod (`versola`'s via `metrics.prometheusAnnotations`, default `true`), so how
+scraping happens is still the cluster's business, but a `kubernetes_sd_configs`/annotation-based
+scraper (vmagent, vanilla Prometheus) can now find every replica of every component without any
+extra manifest here.
+
+**Don't point a scrape target at this chart's Service DNS names instead of the annotations.**
+`versola-auth`/`-central`/`-edge` are ClusterIP, one Service per component fronting every
+replica — a target resolving that name lands on an effectively random replica each connection, so
+at `replicaCount > 1` `rate()`/`increase()` over the result undercounts and jitters, and the series
+never carries a `pod` label. This is exactly what happened in the target cluster's `vmagent` (a
+`job_name: versola-sut` static target on the Service DNS, first caught as a several-times
+distortion during the 1M-run loadgen campaign) — see
+[`k8s/monitoring/vmagent-values.yaml`](monitoring/vmagent-values.yaml) for that cluster's actual
+fix, checked in there because it previously existed only as a live Helm release nobody had a copy
+of.
 
 `sut-red.json`, `driver-red.json` and `db-pools.json` are hand-authored, each built around a
 specific set of pass criteria (design doc §6.7, #267's definition of done, the report's pool
-section) rather than one panel per metric. `auth-funnel.json` and `security-dpop-revocation.json`
-are the other kind: a mechanical board over a metric family with no curated narrative yet, built by
-`loadgen/dashboards/generate.py`. Re-run it after adding a `Metric.*` registration anywhere in the
+section) rather than one panel per metric. `auth-funnel.json`, `security-dpop-revocation.json` and
+`db-cleanup-batches.json` are the other kind: a mechanical board over a metric family with no
+curated narrative yet, built by `loadgen/dashboards/generate.py`. Re-run it after adding a `Metric.*`
+registration anywhere in the
 codebase that its `CATALOG` does not cover — it will not touch the three hand-authored boards, and
 it will not invent a threshold for a metric with no documented SLA rather than guess one.
