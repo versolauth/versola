@@ -8,6 +8,7 @@ import versola.loadgen.store.{
   MetricSnapshotRepository,
   MetricSnapshotRow,
   PoolerStatSnapshotRow,
+  SutProcessSnapshotRow,
   SutStatPhase,
   SutStatSnapshotRow,
   UserTouch,
@@ -19,6 +20,11 @@ import versola.loadgen.sut.{
   PoolerStatsCapture,
   PoolerStatsDelta,
   PoolerStatsFixture,
+  SutProcessCounters,
+  SutProcessGauges,
+  SutProcessStats,
+  SutProcessStatsCapture,
+  SutProcessStatsDelta,
   SutStatsCapture,
   SutStatsDelta,
   SutStatsFixture,
@@ -235,6 +241,65 @@ object FakeSutStats:
       rows <- Ref.make(Vector.empty[SutStatSnapshotRow])
       captures <- Ref.make(0)
     yield FakeSutStats(rows, captures)
+
+/** [[FakeSutStats]] for `vu_sut_process_snapshots`, and for the same reason: the coordinator owns
+  * which transitions are boundaries, while what a scrape of a real `/metrics` parses into is
+  * [[versola.loadgen.sut.SutProcessStatsReaderSpec]]'s subject.
+  *
+  * CPU grows by one second per capture so a delta over a pair is non-zero and directional, and
+  * the process start time is fixed so the pair is differenceable -- a test that wants the
+  * restart path sets it per capture instead.
+  */
+final class FakeSutProcessStats(
+    rows: Ref[Vector[SutProcessSnapshotRow]],
+    captures: Ref[Int],
+    startedAtEpochSeconds: Ref[Option[Double]],
+) extends SutProcessStatsCapture:
+
+  override def capture(campaign: String, phase: SutStatPhase): UIO[Unit] =
+    for
+      taken <- captures.updateAndGet(_ + 1)
+      now <- Clock.instant
+      startedAt <- startedAtEpochSeconds.get
+      row = SutProcessSnapshotRow(
+        campaign = campaign,
+        service = "auth",
+        phase = phase,
+        capturedAt = now,
+        startedAtEpochSeconds = startedAt,
+        statistics = SutProcessStats(
+          counters = SutProcessCounters(cpuSeconds = taken.toDouble, gcSeconds = taken * 0.1, gcCollections = taken.toLong),
+          gauges = SutProcessGauges(
+            heapUsedBytes = taken.toLong * 1024L,
+            heapCommittedBytes = 512L * 1024L * 1024L,
+            nonHeapUsedBytes = 128L * 1024L * 1024L,
+            residentMemoryBytes = taken.toLong * 2048L,
+            threads = 42L,
+            openFileDescriptors = 128L,
+          ),
+        ),
+      )
+      _ <- rows.update: current =>
+        if current.exists(existing => (existing.campaign, existing.service, existing.phase) == (campaign, "auth", phase))
+        then current
+        else current :+ row
+    yield ()
+
+  override def deltas(campaign: String): Task[List[SutProcessStatsDelta]] =
+    rows.get.map(recorded => SutProcessStatsDelta.from(recorded.filter(_.campaign == campaign)))
+
+  def phases: UIO[List[SutStatPhase]] = rows.get.map(_.map(_.phase).toList)
+
+  /** Makes the next capture look like it came from a process that has since restarted. */
+  def restart(at: Double): UIO[Unit] = startedAtEpochSeconds.set(Some(at))
+
+object FakeSutProcessStats:
+  def make: UIO[FakeSutProcessStats] =
+    for
+      rows <- Ref.make(Vector.empty[SutProcessSnapshotRow])
+      captures <- Ref.make(0)
+      startedAt <- Ref.make(Option(1_790_000_000.0))
+    yield FakeSutProcessStats(rows, captures, startedAt)
 
 /** [[FakeSutStats]] for `vu_pooler_stat_snapshots`, and for the same reason: what the coordinator
   * owns is which transitions are boundaries, and the admin console commands are

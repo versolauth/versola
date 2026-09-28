@@ -16,7 +16,16 @@ import versola.loadgen.metrics.{
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
 import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
-import versola.loadgen.sut.{PoolerQueuePeak, PoolerQueueRecorder, PoolerStatsCapture, PoolerStatsDelta, SutStatsCapture, SutStatsDelta}
+import versola.loadgen.sut.{
+  PoolerQueuePeak,
+  PoolerQueueRecorder,
+  PoolerStatsCapture,
+  PoolerStatsDelta,
+  SutProcessStatsCapture,
+  SutProcessStatsDelta,
+  SutStatsCapture,
+  SutStatsDelta,
+}
 import zio.*
 
 import java.time.Instant
@@ -65,6 +74,7 @@ final class CoordinatorService private (
     rebalancer: ShardRebalancer,
     sutStats: Option[SutStatsCapture],
     poolerStats: Option[PoolerStatsCapture],
+    sutProcessStats: Option[SutProcessStatsCapture],
     transitionLock: Semaphore,
 ):
 
@@ -163,6 +173,7 @@ final class CoordinatorService private (
         databases <- sutDeltas(name)
         poolers <- poolerDeltas(name)
         queue <- poolerPeaks(name)
+        services <- sutProcessDeltas(name)
         report <- ZIO
           .fromEither(
             CampaignReport.assemble(
@@ -175,6 +186,7 @@ final class CoordinatorService private (
               databases,
               poolers,
               queue,
+              services,
             ),
           )
           .mapError(IllegalStateException(_))
@@ -221,6 +233,13 @@ final class CoordinatorService private (
     */
   private def poolerDeltas(name: String): Task[Option[List[PoolerStatsDelta]]] =
     ZIO.foreach(poolerStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
+
+  /** What the run cost the SUT's processes, on [[sutDeltas]]'s conditions and independently of
+    * them: the services are scraped over HTTP and the databases over JDBC, so a coordinator can
+    * perfectly well be given one and not the other.
+    */
+  private def sutProcessDeltas(name: String): Task[Option[List[SutProcessStatsDelta]]] =
+    ZIO.foreach(sutProcessStats)(_.deltas(name)).map(_.filter(_.nonEmpty))
 
   /** §4's sampled half, which unlike [[poolerDeltas]] is already worth reporting mid-run: the
     * peaks accumulate from the opening boundary and every reading taken so far is one the report
@@ -364,7 +383,12 @@ final class CoordinatorService private (
       // are of the same instant only approximately, and where they disagree the database's is
       // the one the report leans on -- so the pooler's boundary is the one that should absorb
       // the other's latency, not the one that adds to it.
-      ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
+      // The processes are scraped first. Their counters are cumulative since process start and
+      // the boundary's meaning is "the instant the campaign changed state", so the reading that
+      // should sit closest to it is the one with no reset instant of its own to anchor against
+      // -- and a scrape of an in-memory gauge is the cheapest of the three.
+      ZIO.foreachDiscard(sutProcessStats)(_.capture(campaign.name, phase)) *>
+        ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
         ZIO.foreachDiscard(poolerStats)(_.capture(campaign.name, phase))
 
   /** Which boundary, if either, a transition is. Shared by both captures so that §3 and §4 can
@@ -483,6 +507,7 @@ object CoordinatorService:
       rebalancer: ShardRebalancer,
       sutStats: Option[SutStatsCapture],
       poolerStats: Option[PoolerStatsCapture],
+      sutProcessStats: Option[SutProcessStatsCapture],
   ): IO[String, CoordinatorService] =
     for
       plan <- ZIO.fromOption(config.plan).orElseFail("role = coordinator requires a 'plan' configuration block")
@@ -521,6 +546,7 @@ object CoordinatorService:
       rebalancer = rebalancer,
       sutStats = sutStats,
       poolerStats = poolerStats,
+      sutProcessStats = sutProcessStats,
       transitionLock = transitionLock,
     )
 

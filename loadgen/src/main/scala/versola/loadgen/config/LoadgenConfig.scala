@@ -40,6 +40,7 @@ case class LoadgenConfig(
     calibration: Option[CalibrationConfig],
     sutStats: Option[SutStatsConfig],
     poolerStats: Option[PoolerStatsConfig],
+    sutProcessStats: Option[SutProcessStatsConfig],
     dpop: Option[DpopConfig],
 )
 
@@ -716,6 +717,56 @@ object PoolerStatsConfig:
     */
   given DeriveConfig[PoolerStatsConfig] = DeriveConfig
     .derived[PoolerStatsConfig]
+    .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
+
+/** One SUT service the coordinator scrapes `/metrics` from, under the name the report shows it
+  * by.
+  *
+  * @param metricsUrl
+  *   the *diagnostics* listener (`DPORT`), not the application one: `/metrics` is served there,
+  *   alongside `/liveness` and `/readiness`, and is never publicly exposed. Stated in full
+  *   rather than assembled from a host and a port, because nothing here should have an opinion
+  *   about how a deployment names its services.
+  */
+case class SutProcessServiceConfig(name: String, metricsUrl: String)
+
+/** What a coordinator needs to state what the run cost the SUT's *processes*, next to what
+  * [[SutStatsConfig]] states it cost their databases.
+  *
+  * Optional, and independently of the other two blocks, for their reason: a coordinator given no
+  * service URLs reports every section but this one. It is also the newest of the three -- a SUT
+  * running a build from before `VersolaApp.jvmRuntimeMetrics` publishes no process metrics to
+  * scrape, and configuring this against one costs the section and nothing else.
+  */
+case class SutProcessStatsConfig(services: List[SutProcessServiceConfig])
+
+object SutProcessStatsConfig:
+  /** [[SutStatsConfig.validate]]'s rules, for [[SutStatsConfig.validate]]'s reasons: an empty
+    * list is indistinguishable from an omitted block, and duplicate names collide on V0007's
+    * identity index so that one service's CPU appears under another's name.
+    *
+    * The URL is checked for being a URL at capture time rather than here, where a failure would
+    * take the whole coordinator down at boot over a section that is allowed to be absent.
+    */
+  def validate(config: SutProcessStatsConfig): Either[String, SutProcessStatsConfig] =
+    val names = config.services.map(_.name)
+    for
+      _ <- Either.cond(config.services.nonEmpty, (), "sut-process-stats.services must name at least one service")
+      _ <- Either.cond(names.forall(_.nonEmpty), (), "sut-process-stats.services[].name must not be empty")
+      _ <- Either.cond(
+        config.services.forall(_.metricsUrl.nonEmpty),
+        (),
+        "sut-process-stats.services[].metrics-url must not be empty",
+      )
+      _ <- Either.cond(
+        names.distinct.size == names.size,
+        (),
+        s"sut-process-stats.services[].name must be unique, got ${names.mkString(", ")}",
+      )
+    yield config
+
+  given DeriveConfig[SutProcessStatsConfig] = DeriveConfig
+    .derived[SutProcessStatsConfig]
     .mapOrFail(config => validate(config).left.map(message => Config.Error.InvalidData(message = message)))
 
 /** The one edge login preset, for the `web-otp` client (design doc §2.2). `cookieDomain`/

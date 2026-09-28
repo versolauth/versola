@@ -4,7 +4,7 @@ import versola.loadgen.config.LoadgenConfig
 import versola.loadgen.metrics.{ErrorTaxonomy, MeasurementId, StepOutcome}
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.store.SutStatPhase
-import versola.loadgen.sut.{PoolerStatsCapture, SutStatsCapture}
+import versola.loadgen.sut.{PoolerStatsCapture, SutProcessStatsCapture, SutStatsCapture}
 import zio.*
 import zio.test.*
 
@@ -44,12 +44,13 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
       snapshots: FakeMetricSnapshots,
       sutStats: Option[SutStatsCapture],
       poolerStats: Option[PoolerStatsCapture],
+      sutProcessStats: Option[SutProcessStatsCapture] = None,
   ) =
     for
       loaded <- config
       rebalancer <- FakeRebalancer.make
       service <- CoordinatorService
-        .make(loaded, users, snapshots, rebalancer, sutStats, poolerStats)
+        .make(loaded, users, snapshots, rebalancer, sutStats, poolerStats, sutProcessStats)
         .mapError(RuntimeException(_))
       _ <- TestClock.setTime(t0)
     yield Harness(service, users, snapshots, rebalancer)
@@ -547,7 +548,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           snapshots <- FakeMetricSnapshots.make()
           rebalancer <- FakeRebalancer.make
           config <- CoordinatorFixture.coordinatorConfig
-          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer, None, None).either
+          refused <- CoordinatorService.make(config.copy(plan = None), users, snapshots, rebalancer, None, None, None).either
         yield assertTrue(refused.isLeft)
       },
     ),

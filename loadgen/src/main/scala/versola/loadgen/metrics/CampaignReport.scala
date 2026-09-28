@@ -1,6 +1,6 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutStatsDelta}
+import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutProcessStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}
 
@@ -210,6 +210,20 @@ case class CampaignReport(
       * fail a run and never clear one is not a threshold.
       */
     poolerQueue: Option[List[PoolerQueuePeak]],
+    /** What the run cost the SUT's *processes*: the difference between the `/metrics` scrapes
+      * bracketing the campaign, per service. `None` on [[databases]]'s conditions -- no
+      * `sut-process-stats` block, or a campaign with only its opening boundary taken.
+      *
+      * This is the section that makes the rest of the report divisible. `latency[].count` says
+      * how many refreshes the run completed and this says how many CPU-seconds the process spent
+      * while it did; neither is a cost per refresh on its own, and until now the second one had
+      * to be reconstructed from a Prometheus range query over a window approximating boundaries
+      * only this coordinator knew.
+      *
+      * Outside `checks` for [[databases]]'s reason: it is evidence, and CPU-seconds per login
+      * has no pass mark to fail against -- the campaign exists to find out what the number is.
+      */
+    services: Option[List[SutProcessStatsDelta]],
 ) derives JsonCodec
 
 object CampaignReport:
@@ -224,6 +238,7 @@ object CampaignReport:
       databases: Option[List[SutStatsDelta]],
       poolers: Option[List[PoolerStatsDelta]],
       poolerQueue: Option[List[PoolerQueuePeak]],
+      services: Option[List[SutProcessStatsDelta]],
   ): Either[String, CampaignReport] =
     for
       _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
@@ -255,6 +270,7 @@ object CampaignReport:
         databases = databases,
         poolers = poolers,
         poolerQueue = poolerQueue,
+        services = services,
       )
 
   private def evaluate(
