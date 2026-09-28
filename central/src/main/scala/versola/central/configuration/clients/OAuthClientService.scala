@@ -346,6 +346,11 @@ object OAuthClientService:
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
+          // What the client would be once the patch is applied, for the two checks that read
+          // both fields at once. Everything below reads `applyTo`/`getOrElse` the same way:
+          // a patch that leaves a setting alone still has to leave the client valid.
+          val applicationType = request.applicationType.getOrElse(client.applicationType)
+          val authMethod = request.authMethod.getOrElse(client.authMethod)
           validateRegistration(
             clientId = request.clientId,
             tenantId = client.tenantId,
@@ -380,28 +385,24 @@ object OAuthClientService:
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
-          ))(ZIO.fail(_)) *> {
-            val applicationType = request.applicationType.getOrElse(client.applicationType)
-            val authMethod = request.authMethod.getOrElse(client.authMethod)
-            ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
-              clientId = request.clientId,
-              applicationType = applicationType,
-              authMethod = authMethod,
-              hasEdgeClientCertificate = edgeCertificate.isDefined,
-              requirePushedAuthorizationRequests =
-                request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
-              dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
-              certificateBoundAccessTokens =
-                request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
-              redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
-                .map(uri => uri: String),
-            ))(ZIO.fail(_)) *> validateMtlsTermination(
-              request.clientId,
-              client.tenantId,
-              request.mtlsAuth.applyTo(client.mtlsAuth)
-                .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
-            ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
-          }
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+            clientId = request.clientId,
+            applicationType = applicationType,
+            authMethod = authMethod,
+            hasEdgeClientCertificate = edgeCertificate.isDefined,
+            requirePushedAuthorizationRequests =
+              request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+            dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+            certificateBoundAccessTokens =
+              request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+            redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
+              .map(uri => uri: String),
+          ))(ZIO.fail(_)) *> validateMtlsTermination(
+            request.clientId,
+            client.tenantId,
+            request.mtlsAuth.applyTo(client.mtlsAuth)
+              .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
+          ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)

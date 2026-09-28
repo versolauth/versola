@@ -229,19 +229,32 @@ object RequestObject:
       aud <- requireAudience(claims)
       _ <- ZIO.fail(Error.AudienceMismatch).unless(audience.accepts(aud))
 
+      _ <- verifyValidityWindow(claims, now, maxLifetime, requireNotBefore)
+    yield claims
+
+  /** When the object is valid for, and for how long: `exp`, `nbf` and `iat` read together,
+    * since each bound is only meaningful against the others.
+    *
+    * The two roundings go opposite ways on purpose. A claim may carry a fraction finer than
+    * the nanosecond `Instant` holds, and dropping it must never widen the window: `exp` is
+    * floored towards the epoch, so the object cannot be reconstructed as expiring later than
+    * the client signed, and `nbf` is ceilinged away from it, so a moment less than a
+    * nanosecond from now cannot reconstruct as already past and be accepted immediately.
+    */
+  private def verifyValidityWindow(
+      claims: Json.Obj,
+      now: Instant,
+      maxLifetime: Duration,
+      requireNotBefore: Boolean,
+  ): IO[Error, Unit] =
+    for
       // RFC 9101 leaves `exp` optional. It is required here: an object with no expiry is a
       // signed instruction that stays valid for as long as the client's key does, and it
       // travels through a user agent's history and referrers.
-      // Floored: a sub-nanosecond remainder below what Instant can hold must be dropped
-      // towards the epoch here, not away from it, or exp would be reconstructed later than
-      // the client signed.
       expiresAt <- requireInstant(claims, "exp", BigDecimal.RoundingMode.FLOOR)
       _ <- ZIO.fail(Error.Expired).unless(expiresAt.isAfter(now))
       _ <- ZIO.fail(Error.LifetimeTooLong).when(expiresAt.isAfter(now.plus(maxLifetime)))
 
-      // Ceilinged, the opposite of exp above: a remainder Instant cannot hold must round nbf
-      // away from the epoch, or a claim naming a moment less than a nanosecond from now would
-      // reconstruct as already past and be accepted immediately.
       notBefore <-
         if requireNotBefore then requireInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING).asSome
         else optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
@@ -252,9 +265,10 @@ object RequestObject:
       // FAPI 2.0 §5.3.2.1-13: up to a minute of clock skew is absorbed, as for an assertion
       // (see [[ClientAssertion.FutureLeeway]]); further ahead than that is refused.
       _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
+
       issuedAt <- optionalInstant(claims, "iat", BigDecimal.RoundingMode.CEILING)
       _ <- ZIO.fail(Error.IssuedInFuture).when(issuedAt.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
-    yield claims
+    yield ()
 
   /** [[verify]] against a plain set of accepted audiences, i.e. [[JwtAudience.AnyOf]] -- kept
     * source-compatible for callers outside auth (edge's tests); see [[ClientAssertion.verify]]. */

@@ -448,10 +448,6 @@ object InvalidRegistrationConfiguration:
         authMethod match
           case AuthMethod.none => None
           case AuthMethod.tls_client_auth =>
-            val nonHttps = redirectUris.toList.sorted.find(uri =>
-              scala.util.Try(java.net.URI(uri)).toOption
-                .forall(parsed => !Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) || parsed.getHost == null),
-            )
             if !hasEdgeClientCertificate then
               invalid("fronted by edge needs edgeClientCertificate - the app keeps no credential, edge authenticates as it")
             else if !requirePushedAuthorizationRequests then
@@ -463,8 +459,18 @@ object InvalidRegistrationConfiguration:
             else if redirectUris.isEmpty then
               invalid("fronted by edge needs at least one https redirect URI (App Link / Universal Link)")
             else
-              nonHttps.flatMap(uri => invalid(s"fronted by edge accepts only https redirect URIs (App Links / Universal Links), not '$uri'"))
+              // Sorted so a client with several bad ones is always told about the same one.
+              redirectUris.toList.sorted.find(!isHttpsWithHost(_)).flatMap(uri =>
+                invalid(s"fronted by edge accepts only https redirect URIs (App Links / Universal Links), not '$uri'"),
+              )
           case other =>
             invalid(
               s"cannot authenticate with $other - a native app is public (none) or fronted by edge (tls_client_auth)",
             )
+
+  /** An `https` URI naming a host -- an App Link / Universal Link, the only redirect an
+    * edge-fronted native client may register. Anything that does not parse at all is not one
+    * either, so it is refused with the same reason rather than passed through. */
+  private def isHttpsWithHost(uri: String): Boolean =
+    scala.util.Try(java.net.URI(uri)).toOption.exists: parsed =>
+      Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) && parsed.getHost != null

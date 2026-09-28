@@ -104,9 +104,14 @@ object RedirectUri:
   def isPrivateUseScheme(scheme: String): Boolean =
     val lower = scheme.toLowerCase
     val labels = lower.split('.')
-    lower != "http" && lower != "https" &&
-      labels.length > 1 && labels.length == lower.count(_ == '.') + 1 &&
-      labels.forall(label => label.nonEmpty && isAsciiLetter(label.head) && label.forall(isSchemeChar))
+    val everyLabelKept = labels.length == lower.count(_ == '.') + 1
+    val reverseDomainName = labels.length > 1 && everyLabelKept && labels.forall(isSchemeLabel)
+    lower != "http" && lower != "https" && reverseDomainName
+
+  /** One label of a scheme, held to RFC 3986 §3.1: `ALPHA *( ALPHA / DIGIT / "+" / "-" )`,
+    * the period that separates labels having been split on already. */
+  private def isSchemeLabel(label: String): Boolean =
+    label.nonEmpty && isAsciiLetter(label.head) && label.forall(isSchemeChar)
 
   private def isAsciiLetter(c: Char): Boolean = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 
