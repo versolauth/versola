@@ -404,4 +404,20 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         env.configuration.verifySecret.calls.isEmpty,
       )
     },
+    test("rejects a hybrid flow request pushed without a nonce") {
+      val env = Env()
+      for
+        _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
+        _ <- env.parser.validate.failsWith(Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment))
+        service <- env.service
+        result <- service.push(
+          validParams("response_type" -> Chunk("code id_token")),
+          credentials,
+          None,
+          request,
+        ).either
+      yield assertTrue(result == Left(PushedAuthorizationError.from(
+        Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
+      )))
+    },
   )

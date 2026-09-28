@@ -12,22 +12,20 @@ import java.util.Base64
 import java.util.UUID
 
 /** Hybrid flow (`response_type=code id_token`, OIDC Core §3.3) happy path and its
-  * implementation-verified edges.
-  *
-  * The `auth` module supports exactly two `response_type` values — `code` and
-  * `code id_token` (see `AuthorizeRequestParser`, which matches those two literal
-  * strings and rejects everything else, including `token`, `code token`, and
-  * `code id_token token`, with `unsupported_response_type`). There is no per-client
-  * allow-list for response types (`OAuthClientRecord` carries no such field): any
-  * registered client may request either supported value, so a "client not registered
-  * for hybrid" rejection does not exist in this implementation and is not tested here.
-  *
-  * `nonce` is parsed as optional (`AuthorizeRequestParser`) and is never required:
-  * `UserInfoService.getUserInfoInternal` simply omits the `nonce` claim when none was
-  * supplied (`auth/.../UserInfoService.scala`). This is the same gap the unit-test
-  * analog (`AuthorizeEndpointServiceSpec`) recently had to correct for — hybrid requests
-  * without a nonce are OIDC-non-compliant, but the server does not reject them.
-  */
+* implementation-verified edges.
+*
+* The `auth` module supports exactly two `response_type` values — `code` and
+* `code id_token` (see `AuthorizeRequestParser`, which matches those two literal
+* strings and rejects everything else, including `token`, `code token`, and
+* `code id_token token`, with `unsupported_response_type`). There is no per-client
+* allow-list for response types (`OAuthClientRecord` carries no such field): any
+* registered client may request either supported value, so a "client not registered
+* for hybrid" rejection does not exist in this implementation and is not tested here.
+*
+* `nonce` is REQUIRED for hybrid flow per OIDC Core §3.3.2.1 and FAPI 1.0 Advanced
+* §5.2.2.1. A hybrid request without a nonce is rejected at the authorization endpoint
+* with `invalid_request`.
+*/
 object HybridFlowSpec extends E2ESpec:
 
   private def decodeJwtPayload(jwt: String): String =
@@ -92,22 +90,15 @@ object HybridFlowSpec extends E2ESpec:
           .label("the code exchanged at /token must resolve to the same 'sub' as the fragment id_token")
     },
 
-    test("hybrid without nonce is accepted but the id_token omits the nonce claim") {
+    test("hybrid without nonce is rejected with invalid_request in the fragment") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        authorize <- auth.authorizeRaw(
+        _ <- auth.authorizeRaw(
           clientId = s.clientId,
           redirectUri = s.redirectUri,
           responseType = Some("code id_token"),
-        ).assertChallengeRedirect
-        cookie = authorize.conversationCookie.get
-        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
-        (_, idToken) <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf)
-          .assertFragmentRedirect
-        claims <- ZIO.fromEither(decodeJwtPayload(idToken).fromJson[HybridIdTokenClaims])
-          .mapError(error => RuntimeException(s"Could not decode hybrid id_token claims [$error]"))
-      yield assertTrue(claims.nonce.isEmpty)
-        .label(s"a hybrid request with no nonce must not fabricate one; got ${claims.nonce}")
+        ).assertFragmentErrorRedirect("invalid_request")
+      yield assertCompletes
     },
 
     test("a protocol error during a hybrid request is returned in the fragment, never the query") {
