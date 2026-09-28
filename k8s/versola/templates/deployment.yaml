@@ -95,12 +95,23 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- if $svc.config.existingSecret }}
           volumeMounts:
+            {{- if $svc.config.existingSecret }}
             - name: config
               mountPath: /app/config
               readOnly: true
-          {{- end }}
+            {{- end }}
+            # Where the heap dump and GC log go (docker/Dockerfile.*'s
+            # JAVA_OPTS). A volume rather than the container's own filesystem
+            # because ExitOnOutOfMemoryError has the kubelet replace the
+            # container, discarding its writable layer along with the dump
+            # that documents why it died -- and because a multi-hundred-MB
+            # dump written into that layer counts against the node's
+            # ephemeral storage on the way out. An emptyDir is scoped to the
+            # pod, so it survives the container restart and the dump is still
+            # there to `kubectl cp`.
+            - name: diagnostics
+              mountPath: /diagnostics
           # /liveness and /readiness are served by the diagnostics server,
           # separate from application traffic on `http` -- see
           # VersolaApp.scala's serviceRoutes.
@@ -122,14 +133,20 @@ spec:
                 command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml $svc.resources | nindent 12 }}
-      {{- if $svc.config.existingSecret }}
       volumes:
+        {{- if $svc.config.existingSecret }}
         - name: config
           secret:
             secretName: {{ $svc.config.existingSecret }}
             items:
               - key: {{ $svc.config.secretKey }}
                 path: env.conf
-      {{- end }}
+        {{- end }}
+        - name: diagnostics
+          emptyDir:
+            # One heap dump is at most about -Xmx, and the GC log is capped at
+            # filecount x filesize (5 x 20M). Bounded so a pod that OOMs in a
+            # loop cannot evict its neighbours by filling the node.
+            sizeLimit: {{ $svc.diagnosticsSizeLimit | default $.Values.diagnosticsSizeLimit }}
 {{- end }}
 {{- end }}
