@@ -20,6 +20,19 @@ object WarmupSpec extends ZIOSpecDefault:
         exit <- fiber.await
       yield assertTrue(exit.isSuccess) // reaching a successful exit is the assertion: run() returned
     },
+    // The interruptible `ZIO.never` above is bounded by a bare `timeout` too; only a step that
+    // cannot be interrupted tells the two apart. On the live clock because the assertion is about
+    // wall time actually elapsed, and self-releasing after 2s so an orphaned uninterruptible
+    // fiber cannot outlive the suite.
+    test("is bounded even when the effect cannot be interrupted") {
+      Live.live(
+        for
+          start <- Clock.nanoTime
+          _ <- Warmup.run(ZIO.sleep(2.seconds).uninterruptible, 100.millis)
+          elapsed <- Clock.nanoTime.map(_ - start)
+        yield assertTrue(elapsed < 1.second.toNanos),
+      )
+    },
     test("is fail-open: a defect in the effect does not propagate") {
       for
         exit <- Warmup.run(ZIO.die(RuntimeException("boom")), 1.second).exit

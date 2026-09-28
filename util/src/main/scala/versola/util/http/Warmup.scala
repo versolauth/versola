@@ -22,9 +22,19 @@ object Warmup:
     * a defect (an unexpected exception); both are handled here identically to keep call sites
     * simple. A concrete warmup that can fail in some recoverable way is expected to sandbox its
     * own steps internally and never let the failure escape.
+    *
+    * `disconnect` before `timeout` is what makes the budget an actual bound rather than a
+    * best-effort one. A bare `timeout` interrupts the loser and then *waits* for that
+    * interruption to finish, so a warmup step inside an uninterruptible region -- a blocking JDBC
+    * call, a `ZIO.attemptBlocking` that ignores its interrupt flag, a tight CPU loop with no
+    * yield point -- holds the expression past `budget`, and can hold it forever. `setReady` is
+    * downstream, so that is a pod that never joins its Service: an optimization turned into the
+    * outage this whole object exists to rule out. Disconnected, the timeout returns at the
+    * deadline and the orphaned step finishes interrupting on its own fiber, where it delays
+    * nothing.
     */
   def run[R](effect: ZIO[R, Nothing, Unit], budget: Duration): URIO[R, Unit] =
-    (ZIO.logInfo("Running warmup") *> effect)
+    (ZIO.logInfo("Running warmup") *> effect).disconnect
       .timeout(budget)
       .flatMap {
         case Some(_) => ZIO.logInfo("Warmup completed")
