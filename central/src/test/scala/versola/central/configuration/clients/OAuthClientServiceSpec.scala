@@ -301,7 +301,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
     signingKeyId = None,
     clientAssertionMaxLifetimeSeconds = 300,
-    securityProfile = SecurityProfile.standard,
+    securityProfile = SecurityProfile.fapi2,
   )
 
   /** #421: the registration an edge-fronted native app is held to -- `tls_client_auth` with a
