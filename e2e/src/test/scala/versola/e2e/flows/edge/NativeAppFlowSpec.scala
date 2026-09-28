@@ -85,10 +85,16 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
       // A client central registered a moment ago reaches edge's cache (404 here) and auth's
       // (401 invalid_client from /par, relayed) by a notification the registering request does
       // not wait for -- so an early answer of either is a fresh sync and another try, not a result.
-      response <- attempt.flatMap: first =>
+      response <- withNonce(nonce =>
+        prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId), nonce = nonce)
+          .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof)))
+      ).flatMap: first =>
         if first.status != Status.NotFound && first.status != Status.Unauthorized then ZIO.succeed(first)
         else
-          (edgeApi.syncConfiguration *> authApi.syncConfiguration() *> attempt)
+          (edgeApi.syncConfiguration *> authApi.syncConfiguration() *> withNonce(nonce =>
+            prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId), nonce = nonce)
+              .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof)))
+          ))
             .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[Response](r =>
               r.status != Status.NotFound && r.status != Status.Unauthorized,
             ))
