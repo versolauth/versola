@@ -1824,6 +1824,54 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         updatedTimes = env.repository.updateClient.times
       yield assertTrue(result.isLeft, updatedTimes == 0)
     },
+    // The repository folds `-- remove ++ add`, so a URI named in both sets is stored. Folding
+    // it the other way round for the profile check dropped it from the check while the row
+    // kept it -- a loopback http redirect that FAPI 2.0 admits only for a native client.
+    test("updateClient holds a redirect URI named in both add and remove to the profile") {
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com")),
+        requirePushedAuthorizationRequests = true,
+      )))
+      val loopback = RedirectUri("http://localhost:9005/complete")
+
+      for
+        _ <- env.onFapi2
+        result <- env.service.updateClient(noopUpdate.copy(
+          redirectUris = PatchClientRedirectUris(add = Set(loopback), remove = Set(loopback)),
+        )).either
+        updatedTimes = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("https redirect URIs")
+          case _ => false,
+        updatedTimes == 0,
+      )
+    },
+    // #421 made `applicationType` where a registration states it is a mobile binary; before
+    // this the profile read it off the console's `device` template instead, so a native client
+    // registered through the API was refused the loopback redirect RFC 8252 §7.3 grants it.
+    test("profileViolations reads native off applicationType, not only the console template") {
+      val env = new Env()
+      val nativeApp = cachedClient.copy(
+        id = ClientId("mobile"),
+        authMethod = AuthMethod.none,
+        secret = None,
+        applicationType = ApplicationType.native,
+        redirectUris = Set(RedirectUri("http://127.0.0.1:9005/complete")),
+      )
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(nativeApp))
+        violations <- env.service.profileViolations(tenantId, SecurityProfile.fapi2)
+      yield assertTrue(
+        violations.map(_.clientId) == Vector(ClientId("mobile")),
+        // Public and not sender-constrained, both of which it is -- but not the redirect URI.
+        violations.head.reasons.exists(_.contains("not none")),
+        !violations.head.reasons.exists(_.contains("https redirect URIs")),
+      )
+    },
     test("profileViolations lists every violating client of the tenant, from the repository") {
       val env = new Env()
       val conformant = cachedClient.copy(

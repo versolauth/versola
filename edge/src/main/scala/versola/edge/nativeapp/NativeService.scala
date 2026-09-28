@@ -1,6 +1,6 @@
 package versola.edge.nativeapp
 
-import versola.edge.dpop.{DpopPolicyService, DpopVerifier}
+import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.model.{ClientCredential, ClientId}
 import versola.edge.{EdgeConfig, OAuthClientService}
 import versola.util.{Base64, Dpop, PrivateClientCertificate, SecureRandom, SecurityService}
@@ -16,15 +16,22 @@ import javax.crypto.spec.SecretKeySpec
   *
   * The client role is split: edge authenticates as the client (`tls_client_auth` on auth's
   * mutual-TLS listener, see [[NativeAuthClient]]), the device sender-constrains the tokens with
-  * a DPoP key that never leaves it. Edge holds no state for these clients -- no login record,
-  * no replay cache, no refresh token: what `/native/start` would have stored travels as a sealed
-  * [[NativeBlob]], and auth remains the only token store.
+  * a DPoP key that never leaves it. Edge holds no login record and no token of its own for
+  * these clients: what `/native/start` would have stored travels as a sealed [[NativeBlob]],
+  * and auth remains the only token store.
   *
   * Proofs a device addresses to auth (`/native/complete`, `/native/token`, `/native/revoke`) are
   * checked here for what edge can check on its own -- signature, `htm`, `htu`, `iat` and, for
   * `complete`, the key the flow started with -- and then forwarded byte for byte. Their `jti`
-  * and `nonce` are auth's to judge: auth keeps the replay cache, and a `use_dpop_nonce` answer
-  * travels back to the device untouched along with its `DPoP-Nonce`.
+  * and `nonce` are auth's to judge: auth keeps the replay cache for those, and a
+  * `use_dpop_nonce` answer travels back to the device untouched along with its `DPoP-Nonce`.
+  *
+  * `/native/start`'s proof is the exception, and the one thing edge does remember. Its `htu` is
+  * edge's own URI, so the proof is never forwarded and auth is never in a position to judge it;
+  * without a guard here an observed one is replayable for the whole `iat` window, on an
+  * endpoint that carries no client credential at all -- each replay minting a further pushed
+  * request at auth and a further blob bound to a key the replayer does not hold. RFC 9449
+  * §4.3 step 12 / §11.1 is applied to it with the same [[DpopReplayGuard]] the proxied path uses.
   */
 trait NativeService:
   def start(clientId: String, request: Request): IO[NativeError | Throwable, Response]
@@ -78,15 +85,17 @@ object NativeService:
   private val Repeatable: Set[String] = Set("resource")
 
   val live: URLayer[
-    EdgeConfig & OAuthClientService & NativeAuthClient & DpopPolicyService & SecureRandom & SecurityService,
+    EdgeConfig & OAuthClientService & NativeAuthClient & DpopPolicyService & DpopReplayGuard &
+      SecureRandom & SecurityService,
     NativeService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   class Impl(
       config: EdgeConfig,
       clientService: OAuthClientService,
       authClient: NativeAuthClient,
       dpopPolicy: DpopPolicyService,
+      replayGuard: DpopReplayGuard,
       secureRandom: SecureRandom,
       securityService: SecurityService,
   ) extends NativeService:
@@ -97,6 +106,11 @@ object NativeService:
       for
         (native, certificate, client) <- nativeClient(clientId)
         proof <- verifyProof(request, htu = ownUri(request.path))
+        // §4.3 step 12: a proof addressed to edge goes no further, so edge is the only party
+        // that can refuse its second use. Before the form is read, so a replay costs nothing
+        // past the verification it has already paid for.
+        fresh <- replayGuard.recordIfAbsent(proof.jkt, proof.jti, proof.iat)
+        _ <- ZIO.fail(NativeError.InvalidDpopProof("proof has already been used")).unless(fresh)
         form <- readForm(request)
         redirectUri <- chooseRedirectUri(form, client.redirectUris)
         passThrough <- ZIO.foreach(PassThroughParameters)(name => values(form, name).map(name -> _))

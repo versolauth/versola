@@ -313,7 +313,10 @@ object InvalidRegistrationConfiguration:
     *                          from its columns, so a change to what binds a token changes
     *                          what is conformant with it.
     * @param native            the client was registered as a mobile or desktop binary, the
-    *                          one kind FAPI 2.0 lets redirect to a loopback `http` URI.
+    *                          one kind FAPI 2.0 lets redirect to a loopback `http` URI. Read
+    *                          off [[ApplicationType]] (#421), which is where a registration
+    *                          states this; the console's `device` template is still honoured
+    *                          for clients registered before that field existed.
     */
   case class ProfileSubject(
       authMethod: AuthMethod,
@@ -330,7 +333,8 @@ object InvalidRegistrationConfiguration:
         senderConstrained = client.dpopBoundAccessTokens || client.bindsAccessTokens,
         requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
         redirectUris = client.redirectUris,
-        native = client.template.exists(_.kind == ClientKind.device),
+        native = client.applicationType == ApplicationType.native ||
+          client.template.exists(_.kind == ClientKind.device),
       )
 
   /** The authentication methods FAPI 2.0 §5.3.2.1 leaves a client: confidential ones, with a
@@ -397,12 +401,13 @@ object InvalidRegistrationConfiguration:
       case Nil => None
       case reasons => Some(InvalidRegistrationConfiguration(clientId, reasons.mkString("; ")))
 
-  private val LoopbackHosts = Set("127.0.0.1", "[::1]", "::1", "localhost")
-
+  /** [[RedirectUri.isLoopback]] rather than a second list: the two decide the same question
+    * -- whether plain HTTP is tolerated for this host -- and a copy here would let the
+    * structural check and the profile check drift apart on what counts as loopback. */
   private def admittedRedirectUri(uri: RedirectUri, loopbackAllowed: Boolean): Boolean =
     URL.decode(uri).toOption.exists: url =>
       url.scheme.contains(Scheme.HTTPS) ||
-        (loopbackAllowed && url.scheme.contains(Scheme.HTTP) && url.host.exists(LoopbackHosts.contains))
+        (loopbackAllowed && url.scheme.contains(Scheme.HTTP) && url.host.exists(RedirectUri.isLoopback))
 
   // ── #421: applicationType (web/native) for an edge-fronted native client ───────────────
 

@@ -83,8 +83,27 @@ object EdgeConfig:
         config <- ZIO.service[EdgeConfig]
         _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(refuseCertificateAuthority)
         _ <- ZIO.foreachDiscard(config.native.map(_.trustedCertificates))(refuseCertificateAuthority)
+        _ <- refuseNativeWithoutDpop(config)
       yield config,
     )
+
+  /** The native flow is DPoP end to end -- every client it serves is registered
+    * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,
+    * and both windows come from the `dpop` block. Without it this edge would verify those
+    * proofs against a default nobody chose and then refuse, as `DpopVerifier.Error.NotConfigured`,
+    * every API call made with the very tokens the flow issued. Refused at startup rather than
+    * discovered one request at a time.
+    */
+  private def refuseNativeWithoutDpop(config: EdgeConfig): Task[Unit] =
+    ZIO.when(config.native.isDefined && config.dpop.isEmpty)(
+      ZIO.fail(
+        IllegalArgumentException(
+          "a `native` block needs a `dpop` block: the native endpoints verify and replay-guard " +
+            "the device's DPoP proofs on its windows, and every token they issue is DPoP-bound, " +
+            "so an edge without one serves a flow whose tokens it will then refuse.",
+        ),
+      ),
+    ).unit
 
   private def refuseCertificateAuthority(path: String): Task[Unit] =
     ZIO.attemptBlocking {

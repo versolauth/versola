@@ -19,9 +19,14 @@ object NativeControllerSpec extends ZIOSpecDefault:
       .provide(ZLayer.succeed(failing(error)), Scope.default)
 
   def spec = suite("NativeController")(
-    test("an unknown client is a bare 404 on every endpoint") {
+    test("an unknown client is a bare, uncached 404 on every endpoint") {
       for responses <- ZIO.foreach(List("start", "complete", "token", "revoke"))(call(NativeError.UnknownClient, _))
-      yield assertTrue(responses.forall(_.status == Status.NotFound))
+      yield assertTrue(
+        responses.forall(_.status == Status.NotFound),
+        // Which client ids this edge fronts is what the 404 answers; an intermediary holding
+        // one would go on answering it after the client exists.
+        responses.forall(_.header(Header.CacheControl).contains(Header.CacheControl.NoStore)),
+      )
     },
     test("edge's own refusals are RFC 6749 error objects, never cached") {
       for

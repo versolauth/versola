@@ -464,7 +464,13 @@ object OAuthClientService:
       * An unknown client is left to the repository, which ignores it.
       */
     /** The client as the patch will leave it, in the settings the security profile reads --
-      * the rest is left as stored, since nothing the profile checks depends on it. */
+      * the rest is left as stored, since nothing the profile checks depends on it.
+      *
+      * `redirectUris` is folded in the order the repository folds it (`-- remove ++ add`, see
+      * `PostgresOAuthClientRepository.updateClient`), not the reverse: a URI named in both
+      * sets is stored, so it has to be a URI the profile was held to. Applying the two the
+      * other way round dropped it from the check while the row kept it.
+      */
     private def patchedForProfile(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
       client.copy(
         authMethod = request.authMethod.getOrElse(client.authMethod),
@@ -473,7 +479,8 @@ object OAuthClientService:
         dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
         requirePushedAuthorizationRequests =
           request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
-        redirectUris = client.redirectUris ++ request.redirectUris.add -- request.redirectUris.remove,
+        redirectUris = client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add,
+        applicationType = request.applicationType.getOrElse(client.applicationType),
       )
 
     private def rejectSecretlessClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =

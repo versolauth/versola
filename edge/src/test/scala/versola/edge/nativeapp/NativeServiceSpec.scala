@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.ECDSASigner
 import com.nimbusds.jose.jwk.{Curve, ECKey}
 import com.nimbusds.jose.{JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
-import versola.edge.dpop.DpopPolicyService
+import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard}
 import versola.edge.model.{ApplicationType, AuthorizationPreset, ClientCredential, ClientId, EdgeId, OAuthClient, PresetId}
 import versola.edge.{EdgeConfig, OAuthClientService}
 import versola.util.{Base64, Dpop, PrivateClientCertificate, Secret, SecureRandom, SecurityService, TestCertificates}
@@ -149,7 +149,15 @@ object NativeServiceSpec extends ZIOSpecDefault:
         def allowedAlgorithms: UIO[Set[Dpop.Algorithm]] = ZIO.succeed(Dpop.Algorithm.Default)
         def requireNonce: UIO[Boolean] = ZIO.succeed(false)
         def refreshNow: Task[Unit] = ZIO.unit
-      service = NativeService.Impl(config(native), clientService, FakeAuth(calls, answer), policy, secureRandom, securityService)
+      service = NativeService.Impl(
+        config(native),
+        clientService,
+        FakeAuth(calls, answer),
+        policy,
+        DpopReplayGuard.Impl(DpopReplayGuard.MaxSlotEntries),
+        secureRandom,
+        securityService,
+      )
     yield Harness(service, calls, answer)
 
   private def request(path: String, form: Map[String, String], proof: Option[String]*): Request =
@@ -227,6 +235,24 @@ object NativeServiceSpec extends ZIOSpecDefault:
         error <- failure(h.service.start(NativeClientId, request(s"/native/start/$NativeClientId", Map.empty)))
         calls <- h.calls.get
       yield assertTrue(error.exists(_.isInstanceOf[NativeError.InvalidDpopProof]), calls.isEmpty)
+    },
+    // RFC 9449 §4.3 step 12 / §11.1. The proof is edge's to judge -- it is never forwarded --
+    // and the endpoint carries no client credential, so without this an observed one mints a
+    // further pushed request at auth for the whole `iat` window.
+    test("refuses a start proof already used, and pushes nothing the second time") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      val proof = device.proof(s"$EdgeUrl$path")
+      for
+        h <- harness()
+        first <- h.service.start(NativeClientId, request(path, Map.empty, Some(proof)))
+        error <- failure(h.service.start(NativeClientId, request(path, Map.empty, Some(proof))))
+        calls <- h.calls.get
+      yield assertTrue(
+        first.status == Status.Ok,
+        error.exists(_.isInstanceOf[NativeError.InvalidDpopProof]),
+        calls.size == 1,
+      )
     },
     test("refuses a start proof addressed to another URI") {
       val device = DeviceKey()

@@ -92,11 +92,26 @@ object RedirectUri:
           Left("Redirect URI must use https:// (or http:// to a loopback address)")
 
   /** RFC 8252 §7.1: a reverse-domain-name scheme, which is the only private-use scheme shape
-    * the RFC lets a native app pick. */
+    * the RFC lets a native app pick.
+    *
+    * Held to RFC 3986 §3.1's own alphabet as well as to §7.1's shape: a scheme is
+    * `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, all ASCII. `Char.isLetter` is
+    * Unicode-aware, so without this a scheme spelled with Cyrillic or fullwidth letters --
+    * one that no platform will ever register, and that reads as its ASCII lookalike -- would
+    * pass for a reverse domain name. `split('.')` also drops a trailing empty label, so the
+    * label count is checked against the separator count rather than taken from it.
+    */
   def isPrivateUseScheme(scheme: String): Boolean =
     val lower = scheme.toLowerCase
-    lower != "http" && lower != "https" && lower.contains('.') &&
-      lower.split('.').forall(label => label.nonEmpty && label.head.isLetter)
+    val labels = lower.split('.')
+    lower != "http" && lower != "https" &&
+      labels.length > 1 && labels.length == lower.count(_ == '.') + 1 &&
+      labels.forall(label => label.nonEmpty && isAsciiLetter(label.head) && label.forall(isSchemeChar))
+
+  private def isAsciiLetter(c: Char): Boolean = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+
+  private def isSchemeChar(c: Char): Boolean =
+    isAsciiLetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-'
 
   given Schema[Type] = Schema.primitive[String]
     .transformOrFail(parse, Right(_))

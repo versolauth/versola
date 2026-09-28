@@ -41,7 +41,9 @@ object NativeController extends Controller:
         .status(Status.BadRequest)
         .addHeader(Header.CacheControl.NoStore)
     error match
-      case NativeError.UnknownClient => Response.notFound
+      // Cached like every other answer here: a 404 names which client ids this edge fronts,
+      // and an intermediary holding one would go on answering it after the client is created.
+      case NativeError.UnknownClient => Response.notFound.addHeader(Header.CacheControl.NoStore)
       case NativeError.InvalidRequest(description) => oauth("invalid_request", Some(description))
       case NativeError.UnsupportedGrantType =>
         oauth("unsupported_grant_type", Some("only refresh_token is served here"))
