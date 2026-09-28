@@ -1020,6 +1020,124 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(patch.mtlsAuth.isEmpty)
         .label("the effective value is still the stored one, which the tenant still supports")
     },
+    test("registerClient rejects a redirect URI with a private-use scheme (FAPI 2.0 §5.3.2.2)") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(redirectUri1, RedirectUri("com.example.app://callback"))))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "redirectUris"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient rejects a private-use scheme for a tenant with no settings, as the default profile is fapi2") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("com.example.app://callback"))))
+          .either
+      yield assertTrue(result.left.toOption.exists(_.isInstanceOf[InvalidConsentUri]))
+    },
+    test("registerClient accepts a reverse-domain private-use scheme for a standard-profile tenant") {
+      val env = new Env()
+      val uris = Set(redirectUri1, RedirectUri("com.example.app://callback"))
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
+          securityProfile = SecurityProfile.standard,
+        )))
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(redirectUris = uris))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.redirectUris == uris)
+    },
+    test("registerClient rejects plain http to a non-loopback host even for a standard-profile tenant") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
+          securityProfile = SecurityProfile.standard,
+        )))
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("http://rp.example.com/callback"))))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(result.left.toOption.exists(_.isInstanceOf[InvalidConsentUri]), createCalls == 0)
+    },
+    test("registerClient rejects a plain-http redirect URI to a non-loopback host") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("http://rp.example.com/callback"))))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "redirectUris"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient accepts https and loopback-http redirect URIs") {
+      val env = new Env()
+      val uris = Set(
+        redirectUri1,
+        RedirectUri("http://localhost:3000/callback"),
+        RedirectUri("http://127.0.0.1:51004/callback"),
+        RedirectUri("http://[::1]:51004/callback"),
+      )
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(redirectUris = uris))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.redirectUris == uris)
+    },
+    test("updateClient rejects adding a redirect URI with a private-use scheme") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+        result <- env.service
+          .updateClient(updateRequest.copy(redirectUris =
+            PatchClientRedirectUris(add = Set(RedirectUri("com.example.app://callback")), remove = Set.empty),
+          ))
+          .either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "redirectUris"
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient still removes a legacy private-use redirect URI registered before the rule") {
+      val env = new Env()
+      val legacy = RedirectUri("versola://callback")
+
+      for
+        _ <- env.repository.find.succeedsWith(None)
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest.copy(redirectUris =
+          PatchClientRedirectUris(add = Set(redirectUri2), remove = Set(legacy)),
+        ))
+        patch = env.repository.updateClient.calls.head._2
+      yield assertTrue(patch.redirectUris.remove == Set(legacy))
+    },
     test("registerClient rejects a non-HTTPS logoUri instead of silently dropping it") {
       val env = new Env()
 

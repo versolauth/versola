@@ -7,6 +7,7 @@ import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.oauth.client.model.SecurityProfile
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -109,7 +110,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
             parser,
             repository,
             clientAuthentication,
-            RequestObjectService.Impl(config, configuration),
+            RequestObjectService.Impl(config, configuration, versola.oauth.clientauth.InMemoryClientAssertionRepository.make),
             secureRandom,
             SecurityService.Impl(secureRandom, hashingSemaphore),
           )
@@ -132,6 +133,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- clientAssertionService.verify.succeedsWith(())
         _ <- configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
         _ <- configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+        _ <- configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
       yield ()
 
   /** A client that registered a key set, so it can push a JAR request object signed with it. */
@@ -210,6 +212,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         "aud" -> Json.Str(config.jwt.issuer),
         // A minute ahead of the test clock, which starts at the epoch.
         "exp" -> Json.Num(60),
+        "jti" -> Json.Str(java.util.UUID.randomUUID().toString),
+        "nbf" -> Json.Num(0),
         "client_id" -> Json.Str(clientId),
         "redirect_uri" -> Json.Str(redirectUri.encode),
         "response_type" -> Json.Str("code"),
@@ -270,6 +274,8 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         "iss" -> Json.Str(clientId),
         "aud" -> Json.Str(config.jwt.issuer),
         "exp" -> Json.Num(60),
+        "jti" -> Json.Str(java.util.UUID.randomUUID().toString),
+        "nbf" -> Json.Num(0),
         "client_id" -> Json.Str(clientId),
         "redirect_uri" -> Json.Str(redirectUri.encode),
         "response_type" -> Json.Str("code"),

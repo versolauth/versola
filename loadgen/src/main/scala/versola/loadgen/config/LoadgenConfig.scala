@@ -144,8 +144,9 @@ case class CoordinatorClientConfig(url: String, pollInterval: Duration)
   * dispatch asserts it is present for `driver`.
   *
   * @param mobileRedirectUri
-  *   the app scheme the three mobile clients' authorization codes come back on. One value for
-  *   all three because `provision` registers one.
+  *   the redirect the three mobile clients' authorization codes come back on -- a claimed
+  *   `https` URI (App Links / Universal Links), since central refuses private-use schemes at
+  *   registration. One value for all three because `provision` registers one.
   * @param scope
   *   requested on every authorization. `offline_access` in particular is what makes §2.3's 96.7%
   *   refresh path exist at all -- a scope string without it produces a campaign of full logins
@@ -433,8 +434,10 @@ case class ProvisionConfig(
       */
     provisionerClientId: String,
     provisionerSecret: Config.Secret,
-    /** Where the three mobile clients' authorization codes are redirected -- an app scheme, which
-      * central accepts for a native client but not over plain HTTP on a non-loopback host.
+    /** Where the three mobile clients' authorization codes are redirected -- a claimed `https`
+      * URI, as a real native app would register (App Links / Universal Links). Central refuses a
+      * private-use scheme (`versola://...`) and plain HTTP to a non-loopback host at registration
+      * (FAPI 2.0 §5.3.2.2), so a config still naming one fails `provision` with a 400.
       */
     mobileRedirectUri: String,
     resources: ProvisionResourcesConfig,

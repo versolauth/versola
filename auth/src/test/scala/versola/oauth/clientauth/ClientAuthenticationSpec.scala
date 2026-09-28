@@ -56,7 +56,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def assertion(
       now: Instant,
-      audience: String = s"$issuer/token",
+      audience: String = issuer,
       jti: String = "jti-1",
       subject: String = clientId,
   ): String =
@@ -79,8 +79,10 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
   private def authentication(
       client: Option[OAuthClientRecord],
       repository: ClientAssertionRepository,
+      profile: SecurityProfile = SecurityProfile.fapi2,
   ) =
     val configuration = stub[OAuthConfigurationService]
+    configuration.getSecurityProfile.returnsWith(ZIO.succeed(profile))
     configuration.find.returnsWith(ZIO.succeed(client))
     configuration.verifySecret.returnsWith(ZIO.succeed(client))
     configuration.getClientAssertionSigningAlgorithms.returnsWith(
@@ -197,11 +199,22 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         ).either
       yield assertTrue(result.map(_.id) == Right(clientId))
     },
-    test("accepts an assertion addressed to the endpoint it arrived at, and not to another") {
+    test("FAPI 2.0 §5.3.2.1-8: refuses an assertion addressed to the endpoint rather than the issuer") {
       for
         now <- Clock.instant
         repository <- recording
-        authenticator = authentication(Some(assertionClient), repository)
+        result <- authentication(Some(assertionClient), repository).authenticate(
+          ClientIdWithAssertion(clientId, assertion(now, audience = s"$issuer/token")),
+          certificate = None,
+          endpoint = AuthenticatedEndpoint.Token,
+        ).either
+      yield assertTrue(result == Left(()))
+    },
+    test("a standard-profile tenant accepts an assertion addressed to the endpoint it arrived at, and not to another") {
+      for
+        now <- Clock.instant
+        repository <- recording
+        authenticator = authentication(Some(assertionClient), repository, SecurityProfile.standard)
         atPar <- authenticator.authenticate(
           ClientIdWithAssertion(clientId, assertion(now, audience = s"$issuer/par")),
           certificate = None,
@@ -216,7 +229,7 @@ object ClientAuthenticationSpec extends ZIOSpecDefault, ZIOStubs:
         ).either
       yield assertTrue(atPar.isRight, atRevocation == Left(()))
     },
-    test("accepts the issuer identifier as the audience, which the OAuth security BCP reads it as") {
+    test("accepts the issuer identifier as the audience, which FAPI 2.0 and the OAuth security BCP read it as") {
       for
         now <- Clock.instant
         repository <- recording

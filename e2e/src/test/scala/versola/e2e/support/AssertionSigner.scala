@@ -43,7 +43,10 @@ final class AssertionSigner private (private val signingKey: ECPrivateKey, publi
   /** One assertion.
     *
     * @param audience RFC 7523 §3 requires this to name the server the assertion is sent to;
-    *   auth accepts its issuer identifier or the endpoint's own URL.
+    *   under the default `fapi2` profile auth accepts its issuer identifier alone (FAPI 2.0
+    *   §5.3.2.1-8), a `standard` tenant also the endpoint's own URL.
+    * @param audienceAsArray send `aud` as a one-element JSON array rather than a string, for
+    *   the test that FAPI 2.0 refuses it.
     * @param jti reused deliberately by the replay test -- every other caller wants a fresh
     *   one, which is the default.
     * @param lifetime how far ahead `exp` sits, which the tenant's configured ceiling bounds.
@@ -54,19 +57,32 @@ final class AssertionSigner private (private val signingKey: ECPrivateKey, publi
       jti: Option[String] = None,
       lifetime: Duration = 60.seconds,
       signWith: Option[ECPrivateKey] = None,
-
+      audienceAsArray: Boolean = false,
+      notBefore: Option[Instant] = None,
+      issuedAt: Option[Instant] = None,
   ): Task[String] =
     ZIO.attempt:
-      val claims = JWTClaimsSet.Builder()
+      val builder = JWTClaimsSet.Builder()
         .issuer(clientId)
         .subject(clientId)
         .audience(audience)
         .jwtID(jti.getOrElse(UUID.randomUUID().toString))
         .expirationTime(Date.from(Instant.now().plusSeconds(lifetime.toSeconds)))
-        .build()
-      val jwt = SignedJWT(JWSHeader.Builder(JWSAlgorithm.ES256).keyID(publicJwk.getKeyID).build(), claims)
-      jwt.sign(ECDSASigner(signWith.getOrElse(signingKey)))
-      jwt.serialize()
+      notBefore.foreach(instant => builder.notBeforeTime(Date.from(instant)))
+      issuedAt.foreach(instant => builder.issueTime(Date.from(instant)))
+      val claims = builder.build()
+      val header = JWSHeader.Builder(JWSAlgorithm.ES256).keyID(publicJwk.getKeyID).build()
+      if audienceAsArray then
+        // Nimbus writes a one-element `aud` as a string, so the array goes into the raw payload.
+        val payload = claims.toJSONObject
+        payload.put("aud", java.util.ArrayList(java.util.List.of(audience)))
+        val jws = com.nimbusds.jose.JWSObject(header, com.nimbusds.jose.Payload(payload))
+        jws.sign(ECDSASigner(signWith.getOrElse(signingKey)))
+        jws.serialize()
+      else
+        val jwt = SignedJWT(header, claims)
+        jwt.sign(ECDSASigner(signWith.getOrElse(signingKey)))
+        jwt.serialize()
 
   /** The private half of a pair this client never registered, for the assertion that has to
     * be refused however well formed it is. */

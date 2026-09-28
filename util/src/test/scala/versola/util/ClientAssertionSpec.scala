@@ -37,7 +37,8 @@ object ClientAssertionSpec extends ZIOSpecDefault:
   private val ClientId = "client-1"
   private val Issuer = "https://auth.example.com"
   private val TokenEndpoint = "https://auth.example.com/token"
-  private val Audiences = Set(Issuer, TokenEndpoint)
+  private val Fapi2 = JwtAudience.IssuerOnly(Issuer)
+  private val Standard = JwtAudience.AnyOf(Set(Issuer, TokenEndpoint))
 
   private val now = Instant.parse("2024-01-01T00:00:00Z")
   private val maxLifetime = 5.minutes
@@ -51,23 +52,35 @@ object ClientAssertionSpec extends ZIOSpecDefault:
       kid: Option[String] = Some("ec-1"),
       iss: Option[String] = Some(ClientId),
       sub: Option[String] = Some(ClientId),
-      aud: List[String] = List(TokenEndpoint),
+      aud: List[String] = List(Issuer),
+      audArray: Boolean = false,
       jti: Option[String] = Some("jti-1"),
       exp: Option[Instant] = Some(now.plusSeconds(60)),
       nbf: Option[Instant] = None,
+      iat: Option[Instant] = None,
   ): String =
     val headerBuilder = JWSHeader.Builder(alg)
     kid.foreach(headerBuilder.keyID)
     val claimsBuilder = JWTClaimsSet.Builder()
     iss.foreach(claimsBuilder.issuer)
     sub.foreach(claimsBuilder.subject)
-    if aud.nonEmpty then claimsBuilder.audience(aud.asJava)
+    if aud.nonEmpty && !audArray then claimsBuilder.audience(aud.asJava)
     jti.foreach(claimsBuilder.jwtID)
     exp.foreach(instant => claimsBuilder.expirationTime(Date.from(instant)))
     nbf.foreach(instant => claimsBuilder.notBeforeTime(Date.from(instant)))
-    val jwt = SignedJWT(headerBuilder.build(), claimsBuilder.build())
-    jwt.sign(signer)
-    jwt.serialize()
+    iat.foreach(instant => claimsBuilder.issueTime(Date.from(instant)))
+    if audArray then
+      // Nimbus collapses a one-element `aud` list into a string when it serializes a claims
+      // set, so an array is written into the raw payload instead.
+      val payload = claimsBuilder.build().toJSONObject
+      payload.put("aud", java.util.ArrayList(aud.asJava))
+      val jws = com.nimbusds.jose.JWSObject(headerBuilder.build(), com.nimbusds.jose.Payload(payload))
+      jws.sign(signer)
+      jws.serialize()
+    else
+      val jwt = SignedJWT(headerBuilder.build(), claimsBuilder.build())
+      jwt.sign(signer)
+      jwt.serialize()
 
   private val AllAlgorithms = ClientAssertion.Algorithm.values.toSet
 
@@ -76,8 +89,9 @@ object ClientAssertionSpec extends ZIOSpecDefault:
       publicKeys: JWT.PublicKeys = keys(ecJwk),
       clientId: String = ClientId,
       allowedAlgorithms: Set[ClientAssertion.Algorithm] = AllAlgorithms,
+      audience: JwtAudience = Fapi2,
   ) =
-    ClientAssertion.verify(token, publicKeys, allowedAlgorithms, clientId, Audiences, now, maxLifetime)
+    ClientAssertion.verify(token, publicKeys, allowedAlgorithms, clientId, audience, now, maxLifetime)
 
   def spec = suite("ClientAssertion")(
     suite("verify")(
@@ -100,17 +114,47 @@ object ClientAssertionSpec extends ZIOSpecDefault:
           ).either
         yield assertTrue(ps256.isRight, rs256.isRight)
       },
-      test("accepts the issuer identifier as an audience, not only the endpoint URL") {
+      test("FAPI 2.0 §5.3.2.1-8: accepts the issuer identifier as a string") {
         for result <- verify(assertion(aud = List(Issuer))).either
         yield assertTrue(result.isRight)
       },
-      test("accepts an audience array that names an accepted value alongside others") {
-        for result <- verify(assertion(aud = List("https://elsewhere.example", TokenEndpoint))).either
-        yield assertTrue(result.isRight)
+      test("FAPI 2.0 §5.3.2.1-8: rejects an endpoint URL as the audience") {
+        for result <- verify(assertion(aud = List(TokenEndpoint))).either
+        yield assertTrue(result == Left(ClientAssertion.Error.AudienceMismatch))
+      },
+      test("FAPI 2.0 §5.3.2.1-8: rejects an array, even one naming only the issuer") {
+        for
+          alone <- verify(assertion(aud = List(Issuer), audArray = true)).either
+          withOthers <- verify(assertion(aud = List(Issuer, "https://elsewhere.example"), audArray = true)).either
+        yield assertTrue(
+          alone == Left(ClientAssertion.Error.AudienceMismatch),
+          withOthers == Left(ClientAssertion.Error.AudienceMismatch),
+        )
+      },
+      test("a standard-profile tenant still accepts the endpoint URL, or an array naming an accepted value") {
+        for
+          endpoint <- verify(assertion(aud = List(TokenEndpoint)), audience = Standard).either
+          array <- verify(
+            assertion(aud = List("https://elsewhere.example", TokenEndpoint), audArray = true),
+            audience = Standard,
+          ).either
+        yield assertTrue(endpoint.isRight, array.isRight)
       },
       test("rejects an audience naming neither the issuer nor an endpoint") {
-        for result <- verify(assertion(aud = List("https://elsewhere.example"))).either
-        yield assertTrue(result == Left(ClientAssertion.Error.AudienceMismatch))
+        for
+          fapi2 <- verify(assertion(aud = List("https://elsewhere.example"))).either
+          standard <- verify(assertion(aud = List("https://elsewhere.example")), audience = Standard).either
+        yield assertTrue(
+          fapi2 == Left(ClientAssertion.Error.AudienceMismatch),
+          standard == Left(ClientAssertion.Error.AudienceMismatch),
+        )
+      },
+      test("an assertion minted by issue() passes the FAPI 2.0 audience rule") {
+        for
+          token <- ClientAssertion.issue(ClientId, Issuer, ClientAssertion.Algorithm.ES256, "ec-1", ecPrivateKey)
+          issuedAt <- Clock.instant
+          result <- ClientAssertion.verify(token, keys(ecJwk), AllAlgorithms, ClientId, Fapi2, issuedAt, maxLifetime).either
+        yield assertTrue(result.isRight)
       },
       test("rejects an assertion whose iss or sub is not the client being authenticated") {
         for
@@ -167,9 +211,27 @@ object ClientAssertionSpec extends ZIOSpecDefault:
         for result <- verify(assertion(exp = Some(now.plusSeconds(600)))).either
         yield assertTrue(result == Left(ClientAssertion.Error.LifetimeTooLong))
       },
-      test("rejects an assertion that is not yet valid") {
-        for result <- verify(assertion(nbf = Some(now.plusSeconds(30)))).either
-        yield assertTrue(result == Left(ClientAssertion.Error.NotYetValid))
+      test("FAPI 2.0 §5.3.2.1-13: accepts nbf/iat up to 60s in the future, refuses them beyond") {
+        def at(seconds: Long) = Some(now.plusSeconds(seconds))
+        for
+          nbf9 <- verify(assertion(nbf = at(9))).either
+          nbf10 <- verify(assertion(nbf = at(10))).either
+          nbf11 <- verify(assertion(nbf = at(11))).either
+          nbf60 <- verify(assertion(nbf = at(60), exp = at(120))).either
+          nbf61 <- verify(assertion(nbf = at(61), exp = at(120))).either
+          iat10 <- verify(assertion(iat = at(10))).either
+          iat60 <- verify(assertion(iat = at(60), exp = at(120))).either
+          iat61 <- verify(assertion(iat = at(61), exp = at(120))).either
+        yield assertTrue(
+          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf61 == Left(ClientAssertion.Error.NotYetValid),
+          iat10.isRight, iat60.isRight,
+          iat61 == Left(ClientAssertion.Error.IssuedInFuture),
+        )
+      },
+      test("accepts an iat in the past") {
+        for result <- verify(assertion(iat = Some(now.minusSeconds(30)))).either
+        yield assertTrue(result.isRight)
       },
       test("requires the claims replay protection and expiry depend on") {
         for

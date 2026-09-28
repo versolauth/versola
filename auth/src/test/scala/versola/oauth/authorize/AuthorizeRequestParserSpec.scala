@@ -20,6 +20,7 @@ import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.*
+import versola.oauth.client.model.SecurityProfile
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -111,6 +112,8 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       "aud" -> Json.Str(TestEnvConfig.coreConfig.jwt.issuer),
       // A minute ahead of the test clock, which starts at the epoch.
       "exp" -> Json.Num(60),
+      "nbf" -> Json.Num(0),
+      "jti" -> Json.Str(java.util.UUID.randomUUID().toString),
       "client_id" -> Json.Str(clientId),
       "redirect_uri" -> Json.Str(redirectUri.encode),
       "response_type" -> Json.Str("code"),
@@ -152,7 +155,11 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     val securityService = stub[SecurityService]
     // Real rather than stubbed: what a request object resolves to is the parser's input, so
     // a stub would leave every assertion about it asserting on the stub's own answer.
-    val requestObjectService = RequestObjectService.Impl(TestEnvConfig.coreConfig, configuration)
+    val requestObjectService = RequestObjectService.Impl(
+      TestEnvConfig.coreConfig,
+      configuration,
+      versola.oauth.clientauth.InMemoryClientAssertionRepository.make,
+    )
     val parser = AuthorizeRequestParser.Impl(
       TestEnvConfig.coreConfig,
       configuration,
@@ -888,6 +895,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request)
         yield assertTrue(
           result.clientId == clientId,
@@ -909,11 +917,56 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request)
         yield assertTrue(
           result.scope == Set(ScopeToken("openid"), ScopeToken("profile")),
           result.nonce.isEmpty,
         )
+      },
+      test("refuses the same request object presented a second time (#358)") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims()*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
+          first <- env.parser.parse(request).either
+          replay <- env.parser.parse(request).either
+        yield assertTrue(first.isRight, replay == Left(Error.InvalidRequestObject))
+          .label("a by-value object has no one-time request_uri, so its jti is what makes it single-use")
+      },
+      test("under fapi2, refuses a request object with no jti to guard against replay") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims().filterNot(_._1 == "jti")*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidRequestObject))
+      },
+      test("a standard-profile tenant still admits a request object with no jti") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request" -> requestObject(requestObjectClaims().filterNot(_._1 == "jti")*)(),
+        )))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
+          _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
+          _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result.isRight)
       },
       test("carries a numeric claim through as the parameter it stands for") {
         val env = Env()
@@ -925,6 +978,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request)
         yield assertTrue(result.maxAge.contains(300L))
       },
@@ -938,6 +992,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidRequestObject))
       },
@@ -954,6 +1009,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.InvalidRequestObject))
       },
@@ -1004,6 +1060,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requireSignedRequestObject = true)))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request)
         yield assertTrue(result.clientId == clientId)
       },
@@ -1043,6 +1100,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientWithJwks.copy(requirePushedAuthorizationRequests = true)))
           _ <- env.configuration.getRequestObjectSigningAlgorithms.succeedsWith(Set(ClientAssertion.Algorithm.ES256))
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
         yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.PushedAuthorizationRequired]))
       },

@@ -82,21 +82,34 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         // No secret at all: the assertion is the whole credential.
         token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
       yield assertTrue(token.accessToken.nonEmpty)
         .label("RFC 7523 §2.2: a key the client registered is the credential, so no secret is needed")
     },
 
-    test("the issuer identifier is accepted as the audience, not only the endpoint URL") {
+    test("FAPI 2.0 §5.3.2.1-8: an assertion addressed to the token endpoint URL is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, auth.issuer)
-        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
-      yield assertTrue(token.accessToken.nonEmpty)
+        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+        .label("under the default fapi2 profile only the issuer identifier names this server")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-8: an audience sent as an array is refused, even naming only the issuer") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        assertion <- signer.assertion(clientId, auth.issuer, audienceAsArray = true)
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
     },
 
     test("a client that registered keys is refused its own secret") {
@@ -117,7 +130,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", jti = Some(s"replayed-${clientId}"))
+        assertion <- signer.assertion(clientId, auth.issuer, jti = Some(s"replayed-${clientId}"))
         first <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
         replay <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(replay)
@@ -131,7 +144,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
         foreign <- signer.foreignKey
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", signWith = Some(foreign))
+        assertion <- signer.assertion(clientId, auth.issuer, signWith = Some(foreign))
         result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -149,6 +162,30 @@ object PrivateKeyJwtSpec extends E2ESpec:
         .label("RFC 7523 §3: an assertion is only good for the server its aud names")
     },
 
+    test("FAPI 2.0 §5.3.2.1-13: an assertion from a clock a few seconds fast is accepted") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(10)
+        assertion <- signer.assertion(clientId, auth.issuer, notBefore = Some(ahead), issuedAt = Some(ahead))
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
+      yield assertTrue(token.accessToken.nonEmpty)
+        .label("nbf/iat up to 10s in the future must be accepted to absorb clock skew")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-13: an assertion issued more than 60 seconds in the future is refused") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(120)
+        assertion <- signer.assertion(clientId, auth.issuer, lifetime = 3.minutes, issuedAt = Some(ahead))
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+    },
+
     test("an assertion valid for longer than the tenant allows is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -157,7 +194,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         // The default tenant's ceiling is five minutes, and a `jti` is only remembered for as
         // long as the assertion carrying it is acceptable -- an hour-long one would outlive
         // the replay guard's memory of it.
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", lifetime = 1.hour)
+        assertion <- signer.assertion(clientId, auth.issuer, lifetime = 1.hour)
         result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -170,7 +207,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         id <- uid.map(s => s"secret-client-$s")
         _ <- auth.registerClient(id, "Secret Client", Set(redirectUri), allowedScopes = Set("openid")).success
         _ <- auth.syncConfiguration()
-        assertion <- signer.assertion(id, s"${auth.issuer}/token")
+        assertion <- signer.assertion(id, auth.issuer)
         result <- auth.clientCredentials(id, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client", setupResult.clientId.nonEmpty)
@@ -182,7 +219,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, clientSecret) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.clientCredentials(clientId, clientSecret, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -197,7 +234,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         resource = s"https://$clientId.example.test"
         _ <- auth.registerResource(s"res-$clientId", resource, audience = Set(clientId))
         _ <- auth.syncConfiguration()
-        tokenAssertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(clientId, auth.issuer)
         token <- auth.clientCredentials(
           clientId,
           "",
@@ -207,7 +244,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         ).success
         // A fresh assertion, addressed to the endpoint this one reaches: the first one's jti
         // is spent, and `/introspect` is not `/token`.
-        introspectAssertion <- signer.assertion(clientId, s"${auth.issuer}/introspect")
+        introspectAssertion <- signer.assertion(clientId, auth.issuer)
         introspection <- auth.introspect(
           token.accessToken,
           Some(clientId),
@@ -221,7 +258,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/par")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion)).success
       yield assertTrue(result.requestUri.nonEmpty)
         .label("RFC 9126 authenticates the pusher the same way /token does")
@@ -232,7 +269,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion))
       yield result match
         case _: PushedAuthorizationResult.Success =>
@@ -246,13 +283,13 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        tokenAssertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(clientId, auth.issuer)
         token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(tokenAssertion)).success
         // A fresh assertion, addressed to the endpoint this one reaches: the first one's jti
         // is spent, and `/revoke` is not `/token`.
-        revokeAssertion <- signer.assertion(clientId, s"${auth.issuer}/revoke")
+        revokeAssertion <- signer.assertion(clientId, auth.issuer)
         response <- auth.revoke(token.accessToken, clientId, "", assertion = Some(revokeAssertion))
-        introspectAssertion <- signer.assertion(clientId, s"${auth.issuer}/introspect")
+        introspectAssertion <- signer.assertion(clientId, auth.issuer)
         introspection <- auth.introspect(token.accessToken, Some(clientId), assertion = Some(introspectAssertion)).success
       yield assertTrue(response.status.isSuccess, !introspection.active)
         .label("RFC 7009 accepts the same credential /token and /introspect do")

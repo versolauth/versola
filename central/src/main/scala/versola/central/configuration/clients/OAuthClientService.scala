@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsService, SecurityProfile}
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -9,7 +9,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, EnvName, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, EnvName, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Scheme, URL}
 
@@ -217,6 +217,7 @@ object OAuthClientService:
           "policyUri" -> request.policyUri,
           "tosUri" -> request.tosUri,
         )
+        _ <- validateRedirectUris(Some(request.tenantId), request.redirectUris)
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
@@ -340,6 +341,8 @@ object OAuthClientService:
         current <- cache.get.map(_.find(_.id == request.clientId)).flatMap:
           case some @ Some(_) => ZIO.succeed(some)
           case None => clientRepository.find(request.clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+        // Only what the patch adds: a URI registered before this rule existed stays removable.
+        _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
@@ -575,6 +578,33 @@ object OAuthClientService:
                 if !url.isAbsolute || url.scheme != Some(Scheme.HTTPS) || url.host.isEmpty =>
               ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
             case Right(_) => ZIO.unit
+
+    /** FAPI 2.0 Security Profile §5.3.2.2-8: a redirect URI is registered only as `https://`, or
+      * `http://` to a loopback address (RFC 8252 §7.3). The request body's decoder has already
+      * applied the structural check ([[RedirectUri.parse]]); this is the registration policy on
+      * top of it. See [[RedirectUri.validateForRegistration]].
+      *
+      * A tenant on the `standard` security profile may additionally register a reverse-domain
+      * private-use scheme (RFC 8252 §7.1) -- plain OAuth permits one for native apps, FAPI 2.0
+      * does not. The tenant's settings are read only when a URI actually needs that allowance,
+      * like [[validateMtlsTermination]]; a tenant with no settings, or a patch to a client that
+      * cannot be found, is held to the default profile (`fapi2`).
+      */
+    private def validateRedirectUris(
+        tenantId: Option[TenantId],
+        uris: Set[RedirectUri],
+    ): IO[InvalidConsentUri | Throwable, Unit] =
+      val strictlyInvalid = uris.filter(RedirectUri.validateForRegistration(_).isLeft)
+      ZIO.unless(strictlyInvalid.isEmpty):
+        for
+          profile <- ZIO.foreach(tenantId)(challengeSettingsService.getSettings)
+            .map(_.flatten.fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile))
+          allowPrivateUseSchemes = profile == SecurityProfile.standard
+          _ <- ZIO.foreachDiscard(strictlyInvalid): uri =>
+            ZIO.fromEither(RedirectUri.validateForRegistration(uri, allowPrivateUseSchemes))
+              .mapError(reason => InvalidConsentUri("redirectUris", s"'$uri': $reason"))
+        yield ()
+      .unit
 
     /** Unlike `logoUri`/`policyUri`/`tosUri` (browser-loaded consent links, HTTPS-only), a
       * logout notification URI may target `http://localhost` for local development - matching

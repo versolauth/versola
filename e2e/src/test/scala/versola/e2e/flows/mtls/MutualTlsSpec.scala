@@ -336,7 +336,7 @@ object MutualTlsSpec extends E2ESpec:
         // what makes this a rule rather than an accident of the fixture: those keys are
         // matched against a certificate, and RFC 7523 is a second credential nobody granted.
         (clientId, _) <- selfSignedClient(auth, jwks = signer.jwks)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")

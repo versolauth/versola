@@ -90,9 +90,9 @@ object ClientAssertion:
     * Kept beside [[verify]] so the two cannot drift: every claim required there is set here,
     * and `jti`/`iat`/`exp` come from [[JWT.serialize]], which mints a fresh `jti` per call.
     *
-    * @param audience what the receiving server accepts as `aud`. RFC 7523 §3 names the token
-    *   endpoint's URL; the issuer identifier is also accepted in the wild, and [[verify]]
-    *   takes either -- so the caller states which one it is sending rather than this guessing.
+    * @param audience what the receiving server accepts as `aud`. Sent as a single string, the
+    *   only shape FAPI 2.0 §5.3.2.1-8 accepts; pass the issuer identifier, which is the one
+    *   value every security profile accepts.
     */
   def issue(
       clientId: String,
@@ -122,6 +122,14 @@ object ClientAssertion:
     * that observed one. Well inside the `maxLifetime` [[verify]] is called with.
     */
   val Ttl: Duration = 1.minute
+
+  /** FAPI 2.0 Security Profile §5.3.2.1-13: `iat`/`nbf` up to 10 seconds in the future must be
+    * accepted, to absorb clock skew, and anything more than 60 seconds ahead refused. This sits
+    * at the permitted maximum, like [[Dpop]]'s `iatLeeway` -- a client whose clock runs a few
+    * seconds fast is an interop failure, not an attack, and a minute of it buys an attacker
+    * nothing `exp` does not already bound. Shared by [[RequestObject]], which the same rule
+    * covers. */
+  val FutureLeeway: Duration = 60.seconds
 
   /** The `sub` the assertion names, read without verifying anything.
     *
@@ -155,6 +163,7 @@ object ClientAssertion:
     case AudienceMismatch
     case Expired
     case NotYetValid
+    case IssuedInFuture
     case LifetimeTooLong
 
   /** Verifies a client assertion's self-contained properties. Does not check `jti` replay --
@@ -168,9 +177,9 @@ object ClientAssertion:
     *   ([[Algorithm.MetadataField]])
     * @param clientId the client being authenticated, which RFC 7523 §3 requires both `iss` and
     *   `sub` to name
-    * @param acceptedAudiences values the `aud` claim may name: the issuer identifier and the
-    *   endpoint URL the request reached. OpenID Connect Core §9 specifies the endpoint, the
-    *   OAuth security BCP the issuer, and clients in the wild send either
+    * @param audience which `aud` values name this server: under FAPI 2.0 (§5.3.2.1-8) the
+    *   issuer identifier alone, as a string; otherwise the issuer or the endpoint URL the
+    *   request reached, which OpenID Connect Core §9 and the OAuth security BCP differ on
     * @param now current time
     * @param maxLifetime furthest into the future `exp` may sit. Bounds how long a `jti` has to
     *   be remembered for, so an assertion minted to expire in a year cannot pin a replay
@@ -181,7 +190,7 @@ object ClientAssertion:
       keys: JWT.PublicKeys,
       allowedAlgorithms: Set[Algorithm],
       clientId: String,
-      acceptedAudiences: Set[String],
+      audience: JwtAudience,
       now: Instant,
       maxLifetime: Duration,
   ): IO[Error, Assertion] =
@@ -196,23 +205,53 @@ object ClientAssertion:
       claims <- ZIO.attempt(jwt.getJWTClaimsSet).orElseFail(Error.NotJWT)
       iss <- requireClaim(claims.getIssuer, "iss")
       sub <- requireClaim(claims.getSubject, "sub")
-      // Nimbus reads an absent `aud` as an empty list rather than as null, so the emptiness
-      // check is what distinguishes "no audience" from "the wrong audience" here.
-      audience <- requireClaim(claims.getAudience, "aud").map(_.asScala.toSet)
-        .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
+      aud <- readAudience(jwt)
       jti <- requireClaim(claims.getJWTID, "jti")
       expiresAt <- requireClaim(claims.getExpirationTime, "exp").map(_.toInstant)
       notBefore <- optionalClaim(claims.getNotBeforeTime, "nbf").map(_.map(_.toInstant))
+      issuedAt <- optionalClaim(claims.getIssueTime, "iat").map(_.map(_.toInstant))
 
       // RFC 7523 §3: for client authentication both name the client, which is what makes the
       // assertion an authentication of that client rather than a token about it.
       _ <- ZIO.fail(Error.IssuerMismatch).unless(iss == clientId && sub == clientId)
-      _ <- ZIO.fail(Error.AudienceMismatch).when(audience.intersect(acceptedAudiences).isEmpty)
+      _ <- ZIO.fail(Error.AudienceMismatch).unless(audience.accepts(aud))
 
       _ <- ZIO.fail(Error.Expired).unless(expiresAt.isAfter(now))
       _ <- ZIO.fail(Error.LifetimeTooLong).when(expiresAt.isAfter(now.plus(maxLifetime)))
-      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
+      // §5.3.2.1-13: a clock a little ahead of ours is tolerated, one far ahead is not.
+      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(FutureLeeway))))
+      _ <- ZIO.fail(Error.IssuedInFuture).when(issuedAt.exists(_.isAfter(now.plus(FutureLeeway))))
     yield Assertion(jti = jti, expiresAt = expiresAt)
+
+  /** `aud` in the shape it was sent: FAPI 2.0 tells a single string apart from an array, so
+    * this reads the raw payload -- Nimbus' parsed claims set normalises a string `aud` into a
+    * one-element list, erasing exactly that difference. An empty array is as absent as a
+    * missing claim. */
+  private def readAudience(jwt: SignedJWT): IO[Error, Either[String, Set[String]]] =
+    ZIO.attempt(Option(jwt.getPayload.toJSONObject).flatMap(json => Option(json.get("aud"))))
+      .orElseFail(Error.MalformedClaim("aud"))
+      .someOrFail(Error.MissingClaim("aud"))
+      .flatMap:
+        case single: String => ZIO.succeed(Left(single))
+        case many: java.util.List[?] if many.asScala.forall(_.isInstanceOf[String]) =>
+          val values: Set[String] = many.asScala.iterator.collect { case value: String => value: String }.toSet
+          if values.isEmpty then ZIO.fail(Error.MissingClaim("aud")) else ZIO.succeed(Right(values))
+        case _ => ZIO.fail(Error.MalformedClaim("aud"))
+
+  /** [[verify]] against a plain set of accepted audiences (string or array), i.e.
+    * [[JwtAudience.AnyOf]]. Kept source-compatible for callers outside auth -- edge's tests
+    * check what edge mints with it; auth itself always passes a [[JwtAudience]] derived from
+    * the tenant's security profile. */
+  def verify(
+      token: String,
+      keys: JWT.PublicKeys,
+      allowedAlgorithms: Set[Algorithm],
+      clientId: String,
+      acceptedAudiences: Set[String],
+      now: Instant,
+      maxLifetime: Duration,
+  ): IO[Error, Assertion] =
+    verify(token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime)
 
   private def requireClaim[A](value: => A, name: String): IO[Error, A] =
     ZIO.attempt(Option(value)).orElseFail(Error.MalformedClaim(name)).someOrFail(Error.MissingClaim(name))

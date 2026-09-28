@@ -451,6 +451,52 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("redirectUris"))
     },
+    test("a redirect URI with a private-use scheme is refused (FAPI 2.0 §5.3.2.2)") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        rejected <- central.post(path, Fixtures.client(id, redirectUris = Set("com.example.app://callback")))
+        _ <- central.delete(path, "clientId" -> id).ignore
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(rejected.body.contains("redirectUris"))
+          .label("any app can claim a custom scheme, so the code it carries has no authenticated destination")
+    },
+    test("a standard-profile tenant may register a reverse-domain private-use scheme") {
+      for
+        central <- api
+        tenantId <- CentralApi.id("e2e-standard")
+        id <- CentralApi.id("e2e-client")
+        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
+        _ <- central.put(
+          "/configuration/challenges/challenge-settings",
+          Fixtures.challengeSettings(tenantId, extras = List("securityProfile" -> Json.Str("standard"))),
+        )
+        // Central's settings cache catches up asynchronously; a refused attempt stores nothing.
+        created <- eventually(
+          central.post(path, Fixtures.client(id, tenantId = tenantId, redirectUris = Set("com.example.app://callback"))),
+        )(_.status == Status.Created)
+        _ <- central.delete(path, "clientId" -> id).ignore
+        _ <- central.delete("/configuration/tenants", "tenantId" -> tenantId).ignore
+      yield assertTrue(created.status == Status.Created)
+        .label("RFC 8252 §7.1 allows it outside FAPI 2.0; the default fapi2 profile does not")
+    },
+    test("a plain HTTP redirect URI to a non-loopback host is refused") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        rejected <- central.post(path, Fixtures.client(id, redirectUris = Set("http://app.test/callback")))
+        _ <- central.delete(path, "clientId" -> id).ignore
+      yield assertTrue(rejected.status == Status.BadRequest)
+    },
+    test("HTTPS and loopback HTTP redirect URIs are stored") {
+      val uris = Set("https://app.test/callback", "http://127.0.0.1:51004/callback", "http://[::1]:51004/callback")
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        record <- withClient(central, Fixtures.client(id, redirectUris = uris))(_ => read(central, id))
+      yield assertTrue(record.map(_.strings("redirectUris")).contains(uris))
+        .label("RFC 8252 §7.3: a native app's loopback listener is the one place plain HTTP is allowed")
+    },
     test("a permission outside the documented alphabet is refused") {
       for
         central <- api
@@ -669,6 +715,21 @@ object ClientApiSpec extends CentralApiSpec:
           central.put(path, Fixtures.clientUpdate(clientId, "redirectUris" -> Fixtures.patch(add = Set("nope"))))
         }
       yield assertTrue(rejected.status == Status.BadRequest)
+    },
+    test("an update refuses to add a redirect URI with a private-use scheme") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(
+            path,
+            Fixtures.clientUpdate(clientId, "redirectUris" -> Fixtures.patch(add = Set("versola://callback"))),
+          ).zip(read(central, id))
+        }
+        (rejected, record) = outcome
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(record.exists(!_.strings("redirectUris").contains("versola://callback")))
+          .label("validation that only runs on the create path is validation an update can bypass")
     },
     test("an update without the required patch members is refused") {
       for
