@@ -69,6 +69,7 @@ object ClientController extends Controller:
               requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
               template = client.template,
               createdAt = client.createdAt,
+              applicationType = client.applicationType,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -139,6 +140,7 @@ object ClientController extends Controller:
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKey,
             edgeClientCertificate = edgeClientCertificate,
+            applicationType = client.applicationType,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)

@@ -134,6 +134,22 @@ object EdgeConfigSpec extends ZIOSpecDefault:
       // must still parse — and versolaInternalUrl must fall back to
       // versolaUrl — or every existing deployment fails to start on
       // upgrade.
+      test("parses a native block, the external URL defaulting to the one edge dials") {
+        val block =
+          s"""native {
+             |  auth-mutual-tls-url = "https://localhost:9008"
+             |  trusted-certificates = "/tmp/server.crt"
+             |  blob-key = "$secret32"
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.native.map(_.externalUrl) == Some(URL.decode("https://localhost:9008").toOption.get),
+          config.native.map(_.blobTtl) == Some(10.minutes),
+        )
+      },
       test("internalUrl falls back to versolaUrl when versola-internal-url is absent") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false))
@@ -169,6 +185,21 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             path <- writeCertificate(directory, "leaf.pem", leaf.certificatePem)
             config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated)
           yield assertTrue(config.versolaInternalTrustedCertificates == Some(path.toString))
+      },
+      test("refuses a certificate authority pinned for auth's mutual-TLS listener") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            ca = TestCertificates.generate(subject = "CN=auth-mtls-ca,O=Versola,C=KZ", ca = true)
+            path <- writeCertificate(directory, "mtls-ca.pem", ca.certificatePem)
+            native = EdgeConfig.Native(
+              authMutualTlsUrl = URL.decode("https://auth:8083").toOption.get,
+              trustedCertificates = path.toString,
+              blobKey = Secret.Bytes32.fromBase64Url(secret32).toOption.get,
+            )
+            exit <- ZIO.service[EdgeConfig]
+              .provideLayer(ZLayer.succeed(baseConfig(None).copy(native = Some(native))) >>> EdgeConfig.validated).exit
+          yield assertTrue(exit.isFailure)
       },
       test("passes an absent trust anchor through unexamined") {
         for

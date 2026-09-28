@@ -304,6 +304,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     securityProfile = SecurityProfile.standard,
   )
 
+  /** #421: the registration an edge-fronted native app is held to -- `tls_client_auth` with a
+    * certificate edge holds, PAR, DPoP-bound tokens, https App Link redirect. */
+  private def edgeFrontedNativeRequest(certificate: TestCertificates.Generated): CreateClientRequest =
+    createRequest.copy(
+      applicationType = Some(ApplicationType.native),
+      authMethod = AuthMethod.tls_client_auth,
+      mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn)),
+      edgeClientCertificate = Some(PrivateClientCertificate(certificate.bundle)),
+      requirePushedAuthorizationRequests = true,
+      dpopBoundAccessTokens = true,
+      accessTokenTtl = 3600,
+      redirectUris = Set(RedirectUri("https://app.example.com/callback")),
+    )
+
   class Env(initial: Vector[OAuthClientRecord] = Vector.empty, envName: EnvName = EnvName.Prod):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
@@ -1487,6 +1501,85 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(adminClient))
       for result <- env.service.verifySecret(Secret(Array.fill(32)(9.toByte)))
       yield assertTrue(!result)
+    },
+    // #421: a native app fronted by edge -- native and confidential at once.
+    test("registerClient accepts an edge-fronted native client without a tenant mTLS header") {
+      val env = new Env()
+      val certificate = TestCertificates.generate(subject = "CN=native-app")
+
+      for
+        // No header: the client reaches auth on its own mutual-TLS listener (#417).
+        _ <- env.terminatesNoMtls
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        result <- env.service.registerClient(edgeFrontedNativeRequest(certificate))
+        created = env.repository.createClient.calls.head
+        lookups = env.challengeSettingsService.getSettings.times
+      yield assertTrue(
+        result.secret.isEmpty,
+        created.applicationType == ApplicationType.native,
+        created.isEdgeFrontedNative,
+        created.isConfidential,
+        // cnf carries only the device's jkt, never edge's certificate thumbprint.
+        !created.bindsAccessTokens,
+        lookups == 0,
+      )
+    },
+    test("registerClient refuses an edge-fronted native client that does not require PAR") {
+      val env = new Env()
+      val certificate = TestCertificates.generate(subject = "CN=native-app")
+
+      for
+        result <- env.service.registerClient(
+          edgeFrontedNativeRequest(certificate).copy(requirePushedAuthorizationRequests = false),
+        ).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("requirePushedAuthorizationRequests")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient still binds a web tls_client_auth client's tokens to its certificate") {
+      val env = new Env()
+      val certificate = TestCertificates.generate(subject = "CN=native-app")
+
+      for
+        _ <- env.terminatesMtls
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(edgeFrontedNativeRequest(certificate).copy(applicationType = None))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(created.applicationType == ApplicationType.web, created.bindsAccessTokens)
+    },
+    test("updateClient refuses turning DPoP binding off for an edge-fronted native client") {
+      val certificate = TestCertificates.generate(subject = "CN=native-app")
+      val stored = cachedClient.copy(
+        applicationType = ApplicationType.native,
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
+        previousSecret = None,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=native-app")),
+        edgeClientCertificate = Some(Secret(certificate.bundle.getBytes(java.nio.charset.StandardCharsets.UTF_8))),
+        requirePushedAuthorizationRequests = true,
+        dpopBoundAccessTokens = true,
+        accessTokenTtl = 3600.seconds,
+        redirectUris = Set(redirectUri1),
+      )
+      val env = new Env(Vector(stored))
+
+      for
+        result <- env.service.updateClient(
+          updateRequest.copy(accessTokenTtl = None, dpopBoundAccessTokens = Some(false)),
+        ).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("dpopBoundAccessTokens")
+          case _ => false,
+        updateCalls == 0,
+      )
     },
     test("verifySecret rejects when no central-admin client is cached") {
       val env = new Env(Vector(cachedClient))

@@ -436,6 +436,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
   val edgeDpopNonceSalt         = rand(rng, 32)
+  val edgeNativeBlobKey         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
   val centralResourceSecretGenerated = rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
   val utilityClientSecretGenerated   = rand(rng, 32) // central: seeds bootstrap.utility-client; must match whatever configures loadgen's own provision.provisioner-secret
@@ -667,6 +668,20 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  private-key            = "${File(authMutualTlsDir, "server.key").getAbsolutePath}"
          |  trusted-certificates   = "${File(authMutualTlsDir, "ca.crt").getAbsolutePath}"
          |  external-url           = "$authMutualTlsUrl"
+         |}
+         |""".stripMargin
+    else ""
+
+  // #420: edge's native-app back channel, straight to the listener above -- no terminator in
+  // between. `trusted-certificates` pins the listener's own server certificate (a leaf, which
+  // EdgeConfig.validated insists on). Local-only, like the listener itself.
+  val edgeNativeBlock =
+    if isLocal then
+      s"""
+         |native {
+         |  auth-mutual-tls-url   = "$authMutualTlsUrl"
+         |  trusted-certificates  = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  blob-key              = "$edgeNativeBlobKey"
          |}
          |""".stripMargin
     else ""
@@ -1187,7 +1202,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
-       |""".stripMargin
+       |$edgeNativeBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────
   println("\nGenerating config files...")

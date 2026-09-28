@@ -253,7 +253,24 @@ object OAuthClientService:
           request.id,
           request.dpopMinRsaKeySize,
         ))(ZIO.fail(_))
-        _ <- validateMtlsTermination(request.id, request.tenantId, request.mtlsAuth)
+        applicationType = request.applicationType.getOrElse(ApplicationType.web)
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+          clientId = request.id,
+          applicationType = applicationType,
+          authMethod = request.authMethod,
+          hasEdgeClientCertificate = request.edgeClientCertificate.isDefined,
+          requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
+          dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+          redirectUris = request.redirectUris.map(uri => uri: String),
+        ))(ZIO.fail(_))
+        // An edge-fronted native client reaches auth on its own mutual-TLS listener (#417),
+        // which reads the certificate off the handshake -- the tenant header is never consulted.
+        _ <- validateMtlsTermination(
+          request.id,
+          request.tenantId,
+          request.mtlsAuth.filterNot(_ => isEdgeFrontedNative(applicationType, request.authMethod)),
+        )
         secret <- request.authMethod match
           case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case _                        => ZIO.none
@@ -299,6 +316,7 @@ object OAuthClientService:
           edgeClientCertificate = encryptedEdgeCertificate,
           template = request.template,
           createdAt = registeredAt,
+          applicationType = applicationType,
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
@@ -359,11 +377,28 @@ object OAuthClientService:
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
-          ))(ZIO.fail(_)) *> validateMtlsTermination(
-            request.clientId,
-            client.tenantId,
-            request.mtlsAuth.applyTo(client.mtlsAuth),
-          ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
+          ))(ZIO.fail(_)) *> {
+            val applicationType = request.applicationType.getOrElse(client.applicationType)
+            val authMethod = request.authMethod.getOrElse(client.authMethod)
+            ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+              clientId = request.clientId,
+              applicationType = applicationType,
+              authMethod = authMethod,
+              hasEdgeClientCertificate = edgeCertificate.isDefined,
+              requirePushedAuthorizationRequests =
+                request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+              dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+              certificateBoundAccessTokens =
+                request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+              redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
+                .map(uri => uri: String),
+            ))(ZIO.fail(_)) *> validateMtlsTermination(
+              request.clientId,
+              client.tenantId,
+              request.mtlsAuth.applyTo(client.mtlsAuth)
+                .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
+            ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
+          }
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)
@@ -401,6 +436,7 @@ object OAuthClientService:
             requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKeyPatch,
             edgeClientCertificate = edgeCertificatePatch,
+            applicationType = request.applicationType,
           ),
         )
       yield ()
@@ -472,6 +508,9 @@ object OAuthClientService:
             roleRepository.findRole(tenantId, roleId).someOrFail:
               InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
       yield ()
+
+    private def isEdgeFrontedNative(applicationType: ApplicationType, authMethod: AuthMethod): Boolean =
+      applicationType == ApplicationType.native && authMethod == AuthMethod.tls_client_auth
 
     /** Reads the tenant's challenge settings only when there is an `mtlsAuth` to justify it:
       * every other registration would pay for a lookup whose answer it has no use for.

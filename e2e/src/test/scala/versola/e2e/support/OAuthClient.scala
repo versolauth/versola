@@ -1125,6 +1125,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The modulus an RSA proof key from this client must reach; `None` leaves the RFC 7518
         * §3.3 floor auth applies to every client. */
       dpopMinRsaKeySize: Option[Int] = None,
+      /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
+        * with `tls_client_auth` is the app fronted by edge (#421). */
+      applicationType: Option[String] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1155,6 +1158,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       edgeClientCertificate = edgeClientCertificate,
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
+      applicationType = applicationType,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1765,4 +1769,5 @@ object OAuthClient:
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
+      applicationType: Option[String] = None,
   ) derives JsonEncoder

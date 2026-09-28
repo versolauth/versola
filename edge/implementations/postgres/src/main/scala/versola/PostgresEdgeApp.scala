@@ -6,6 +6,7 @@ import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
 import versola.edge.dpop.{DpopPolicyService, DpopProofRepository, DpopReplayGuard, DpopVerifier}
 import versola.edge.login.LoginRepository
+import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
 import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
@@ -54,11 +55,14 @@ object PostgresEdgeApp extends VersolaApp("edge"):
     DpopProofRepository &
     DpopReplayGuard &
     DpopVerifier &
-    EdgeService
+    EdgeService &
+    NativeAuthClient &
+    NativeService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
       EdgeController.routes,
+      NativeController.routes,
       ServiceController.routes,
     ).reduce(_ ++ _)
 
@@ -97,7 +101,9 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SSOClient.live >+>
       DpopReplayGuard.shared >+>
       DpopVerifier.live >+>
-      EdgeService.live
+      EdgeService.live >+>
+      NativeAuthClient.live >+>
+      NativeService.live
 
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))

@@ -96,6 +96,13 @@ object EdgeFixture:
         * authenticates one way. The fixture generates the certificate and exposes it as
         * [[EdgeFixture.certificate]]. */
       mutualTls: Boolean = false,
+      /** #420/#421: register the client as a native app fronted by edge -- `application_type`
+        * `native`, `tls_client_auth` by a certificate issued by the CA auth's own mutual-TLS
+        * listener trusts (held by edge as `edgeClientCertificate`), PAR, DPoP-bound tokens and
+        * an https App Link redirect ([[EdgeFixture.nativeRedirectUri]]). No login preset is
+        * registered: a native app is served by the native endpoints, never by `/login`. Mutually
+        * exclusive with `privateKeyJwt` and `mutualTls`. */
+      nativeApp: Boolean = false,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -121,6 +128,8 @@ object EdgeFixture:
 
       signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
       certificate <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
+      nativeCommonName = s"e2e-native-${clientId.takeRight(12)}"
+      nativeCertificate <- ZIO.when(config.nativeApp)(EdgeCertificate.forAuthListener(nativeCommonName))
 
       // Central refuses to register an mtlsAuth client until the tenant names a header for
       // it (`ClientController`'s own check) -- and `EdgeSpec`'s bootstrap, unlike
@@ -143,7 +152,7 @@ object EdgeFixture:
       registered <- auth.registerClient(
         clientId,
         "Edge Test Client",
-        redirectUris = Set(edge.completeUri),
+        redirectUris = if config.nativeApp then Set(nativeRedirectUri) else Set(edge.completeUri),
         allowedScopes = config.scopes,
         authFlow = Some(Flows.loginPasswordAuthFlow),
         // Publishing keys is registering the method that reads them: central refuses a
@@ -151,13 +160,19 @@ object EdgeFixture:
         authMethod =
           if config.privateKeyJwt then "private_key_jwt"
           else if config.mutualTls then "self_signed_tls_client_auth"
+          else if config.nativeApp then "tls_client_auth"
           else "client_secret",
-        mtlsAuth = if config.mutualTls then Some(Fixtures.selfSignedTlsClientAuth) else None,
+        mtlsAuth =
+          if config.mutualTls then Some(Fixtures.selfSignedTlsClientAuth)
+          else if config.nativeApp then Some(Fixtures.mutualTlsAuth("subject_dn", s"CN=$nativeCommonName"))
+          else None,
         jwks = signer.map(_.jwks).orElse(certificate.map(_.jwks)),
         edgeSigningKey = signer.map(_.privateJwk),
-        edgeClientCertificate = certificate.map(_.edgeClientCertificate),
+        edgeClientCertificate = certificate.orElse(nativeCertificate).map(_.edgeClientCertificate),
         requireSignedRequestObject = config.requireSignedRequestObject,
-        requirePushedAuthorizationRequests = config.requirePushedAuthorizationRequests,
+        requirePushedAuthorizationRequests = config.requirePushedAuthorizationRequests || config.nativeApp,
+        dpopBoundAccessTokens = config.nativeApp,
+        applicationType = Option.when(config.nativeApp)("native"),
       ).success
 
       userId <- auth.registerUser(login = Some(login))
@@ -204,7 +219,7 @@ object EdgeFixture:
       _ <- auth.assignUserRoles(userId, Set(roleId))
       _ <- auth.flushUserOutbox()
 
-      _ <- central.post(
+      _ <- ZIO.unless(config.nativeApp)(central.post(
         "/configuration/auth-request-presets",
         Fixtures.presets(
           clientId,
@@ -217,7 +232,7 @@ object EdgeFixture:
             cookiePath = config.cookiePath,
           ),
         ),
-      ).flatMap(expect("register the login preset"))
+      ).flatMap(expect("register the login preset")))
 
       _ <- auth.syncConfiguration()
       _ <- edge.syncConfiguration
@@ -239,13 +254,17 @@ object EdgeFixture:
       resourceUri = config.resourceUri,
       endpoints = byName,
       signer = signer,
-      certificate = certificate,
+      certificate = certificate.orElse(nativeCertificate),
     )
 
   /** Where a completed edge login sends the browser. Any absolute URI the client is allowed to
     * be redirected to works; this one is the app origin the rest of the e2e setup uses.
     */
   val postLoginRedirectUri = "http://localhost:3000"
+
+  /** The App Link a native fixture registers. Never dereferenced: the spec reads the code off
+    * auth's redirect to it, the way the OS would hand it to the app. */
+  val nativeRedirectUri = "https://app.e2e.versola.test/callback"
 
   /** Blocks until the edge's resource and permission caches carry this fixture.
     *
