@@ -102,12 +102,13 @@ object EdgeAssertion:
     * registered key is RSA, and the same key signs either. */
   val SigningAlgorithm: JWT.Algorithm = JWT.Algorithm.PS256
 
-  /** What [[verify]] accepts. RS256 stays accepted for the assertions of an edge that has not
-    * yet been upgraded to sign with [[SigningAlgorithm]]: edge and auth are deployed
-    * separately, and refusing it would fail every bound token's `/userinfo` call from such an
-    * edge for the length of a rollout. Nothing else is accepted -- in particular no `HS256`,
-    * which would have a key set speak for a secret it does not hold. */
-  val AcceptedAlgorithms: Set[JWT.Algorithm] = Set(JWT.Algorithm.PS256, JWT.Algorithm.RS256)
+  /** What [[verify]] accepts: [[SigningAlgorithm]] and nothing else -- in particular no `RS256`,
+    * which FAPI 2.0 §5.3.2.1 does not permit for a signed object, and no `HS256`, which would
+    * have a key set speak for a secret it does not hold. An edge not yet upgraded to sign
+    * PS256 fails every bound token's `/userinfo` call rather than being grandfathered in: this
+    * is the client-facing enforcement #359 asks for everywhere else, and a rollout allowance
+    * here would be a hole in it with no expiry of its own. */
+  val AcceptedAlgorithms: Set[JWT.Algorithm] = Set(JWT.Algorithm.PS256)
 
   /** Mints an assertion for one specific access token. */
   def issue(

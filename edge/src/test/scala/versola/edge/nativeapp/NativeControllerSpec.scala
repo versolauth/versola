@@ -41,4 +41,15 @@ object NativeControllerSpec extends ZIOSpecDefault:
         proofBody.contains("\"error\":\"invalid_dpop_proof\""),
       )
     },
+    // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 with the
+    // nonce to retry over, not an RFC 6749 error object.
+    test("a required nonce is a bare, uncached 401 carrying the nonce to retry over") {
+      for response <- call(NativeError.NonceRequired("n-1"), "start")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.rawHeader("DPoP-Nonce").contains("n-1"),
+        response.rawHeader("WWW-Authenticate").contains("""DPoP error="use_dpop_nonce""""),
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
+      )
+    },
   )

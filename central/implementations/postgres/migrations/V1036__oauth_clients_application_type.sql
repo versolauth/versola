@@ -8,6 +8,9 @@
 --
 -- Every existing row is `web`: nothing registered before this column could have stated
 -- otherwise, and `web` is what the rules applied to those rows all along assumed.
+--
+-- No CHECK against the two known values, matching `security_profile` (V1035) and every other
+-- enum-shaped text column here: a value outside the set fails at the application decoder on
+-- read, which is where every other one of these is validated.
 ALTER TABLE oauth_clients
-    ADD COLUMN application_type TEXT NOT NULL DEFAULT 'web'
-        CHECK (application_type IN ('web', 'native'));
+    ADD COLUMN application_type TEXT NOT NULL DEFAULT 'web';

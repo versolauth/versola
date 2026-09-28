@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard}
 import versola.edge.model.{ApplicationType, AuthorizationPreset, ClientCredential, ClientId, EdgeId, OAuthClient, PresetId}
 import versola.edge.{EdgeConfig, OAuthClientService}
-import versola.util.{Base64, Dpop, PrivateClientCertificate, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{Base64, Dpop, DpopNonce, PrivateClientCertificate, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -78,7 +78,9 @@ object NativeServiceSpec extends ZIOSpecDefault:
     generator.initialize(2048)
     generator.generateKeyPair().nn
 
-  private def config(native: Boolean = true) = EdgeConfig(
+  private val nonceSalt = Secret.Bytes32(Array.fill(32)(9.toByte))
+
+  private def config(native: Boolean = true, withNonceDpop: Boolean = false) = EdgeConfig(
     id = EdgeId("edge-1"),
     keyId = "kid-1",
     privateKey = keyPair.getPrivate.nn,
@@ -90,6 +92,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
     versolaUrl = URL.decode(Issuer).toOption.get,
     edgeUrl = URL.decode(EdgeUrl).toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
+    dpop = Option.when(withNonceDpop)(EdgeConfig.Dpop.default(nonceSalt)),
     native = Option.when(native)(
       EdgeConfig.Native(
         authMutualTlsUrl = URL.decode("https://auth-internal:9008").toOption.get,
@@ -133,7 +136,11 @@ object NativeServiceSpec extends ZIOSpecDefault:
 
   private final case class Harness(service: NativeService, calls: Ref[List[Call]], answer: Ref[String => NativeAuthClient.Relayed])
 
-  private def harness(clients: List[OAuthClient] = List(nativeClient, webClient), native: Boolean = true) =
+  private def harness(
+      clients: List[OAuthClient] = List(nativeClient, webClient),
+      native: Boolean = true,
+      requireNonce: Boolean = false,
+  ) =
     for
       calls <- Ref.make(List.empty[Call])
       answer <- Ref.make(defaultAnswers)
@@ -145,12 +152,13 @@ object NativeServiceSpec extends ZIOSpecDefault:
         def findClient(clientId: ClientId): UIO[Option[OAuthClient]] = ZIO.succeed(clients.find(_.id == clientId))
         def listClients: UIO[List[OAuthClient]] = ZIO.succeed(clients)
         def refreshNow: Task[Unit] = ZIO.unit
+      nonceRequired = requireNonce
       policy = new DpopPolicyService:
         def allowedAlgorithms: UIO[Set[Dpop.Algorithm]] = ZIO.succeed(Dpop.Algorithm.Default)
-        def requireNonce: UIO[Boolean] = ZIO.succeed(false)
+        def requireNonce: UIO[Boolean] = ZIO.succeed(nonceRequired)
         def refreshNow: Task[Unit] = ZIO.unit
       service = NativeService.Impl(
-        config(native),
+        config(native, withNonceDpop = requireNonce),
         clientService,
         FakeAuth(calls, answer),
         policy,
@@ -306,6 +314,26 @@ object NativeServiceSpec extends ZIOSpecDefault:
         response <- h.service.start(NativeClientId, startRequest(device))
         body <- response.body.asString
       yield assertTrue(response.status == Status.BadRequest, body.contains("invalid_scope"))
+    },
+    // §9 / §4.3 step 10: where this edge's policy requires a nonce, a start proof carrying
+    // none (or a stale one) is refused with a fresh one, the same as the proxied path.
+    test("requires a nonce this edge issued when the policy demands one, and accepts a proof over it") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      for
+        h <- harness(requireNonce = true)
+        noNonce <- failure(h.service.start(NativeClientId, request(path, Map.empty, Some(device.proof(s"$EdgeUrl$path")))))
+        nonce <- Clock.instant.map(DpopNonce.issue(nonceSalt, _))
+        withNonce <- h.service.start(
+          NativeClientId,
+          request(path, Map.empty, Some(device.proof(s"$EdgeUrl$path", nonce = Some(nonce)))),
+        )
+        calls <- h.calls.get
+      yield assertTrue(
+        noNonce.exists(_.isInstanceOf[NativeError.NonceRequired]),
+        withNonce.status == Status.Ok,
+        calls.map(_.endpoint) == List("par"),
+      )
     },
   )
 

@@ -3,13 +3,14 @@ package versola.edge.nativeapp
 import versola.edge.dpop.{DpopPolicyService, DpopReplayGuard, DpopVerifier}
 import versola.edge.model.{ClientCredential, ClientId}
 import versola.edge.{EdgeConfig, OAuthClientService}
-import versola.util.{Base64, Dpop, PrivateClientCertificate, SecureRandom, SecurityService}
+import versola.util.{Base64, Dpop, DpopNonce, PrivateClientCertificate, SecureRandom, SecurityService}
 import zio.http.*
 import zio.json.{DecoderOps, EncoderOps, JsonCodec, JsonDecoder, jsonField}
 import zio.{Clock, Duration, IO, URLayer, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
+import java.time.Instant
 import javax.crypto.spec.SecretKeySpec
 
 /** The four native endpoints of #420, fronting a mobile app under FAPI 2.0.
@@ -50,6 +51,10 @@ enum NativeError:
   case UnsupportedGrantType
   case InvalidDpopProof(description: String)
   case InvalidGrant(description: String)
+  /** RFC 9449 §9: this edge requires a nonce and the proof carried none it issued, or one
+    * that has expired. Carries a fresh one for the retry, the same challenge shape as the
+    * proxied path's `Outcome.UseDpopNonce`. */
+  case NonceRequired(nonce: String)
 
 object NativeService:
 
@@ -191,8 +196,11 @@ object NativeService:
           .unless(constantTimeEquals(blob.state, state))
         // RFC 9207: the response names the issuer that produced it, which has to be the one
         // edge pushed to -- otherwise the code may be a mix-up from another authorization server.
+        // Compared against auth's own `jwt.issuer` (native.issuer), not edge's `versolaUrl`: the
+        // two are separate settings, and assuming them equal is exactly the RFC 9207 mix-up this
+        // check exists to catch, not a shortcut past it.
         _ <- ZIO.fail(NativeError.InvalidGrant("iss is not the authorization server the request was pushed to"))
-          .unless(iss.stripSuffix("/") == config.versolaUrl.encode.stripSuffix("/"))
+          .unless(iss.stripSuffix("/") == native.issuer(config.versolaUrl).encode.stripSuffix("/"))
 
         proof <- verifyProof(request, htu = authUri(native, "token"))
         // RFC 9449 §10: auth refuses this too (the code is bound to `dpop_jkt`), but a proof by
@@ -283,7 +291,26 @@ object NativeService:
           now = now,
           iatLeeway = config.dpop.fold(defaultIatLeeway)(_.iatLeeway),
         ).mapError(reason => NativeError.InvalidDpopProof(reason.toString))
+        _ <- checkNonce(proof, now)
       yield proof
+
+    /** RFC 9449 §9 / §4.3 step 10, applied here the way [[DpopVerifier]] applies it to the
+      * proxied path: where central has this edge requiring a nonce, every proof -- a native
+      * one included -- must carry one this edge issued, or a caller already given a challenge
+      * walks straight past it on a nonce-less retry (§11.3's downgrade). `native` cannot be
+      * configured without `dpop` (`EdgeConfig.validated`), so `config.dpop` is always present
+      * by the time a request reaches here.
+      */
+    private def checkNonce(proof: Dpop.Proof, now: Instant): IO[NativeError, Unit] =
+      dpopPolicy.requireNonce.flatMap: required =>
+        if !required then ZIO.unit
+        else
+          val dpop = config.dpop.getOrElse(
+            throw IllegalStateException("native configured without dpop -- EdgeConfig.validated should have refused this"),
+          )
+          proof.nonce.map(DpopNonce.verify(dpop.nonceSalt, _, now, dpop.nonceTtl)) match
+            case Some(Right(_)) => ZIO.unit
+            case _ => ZIO.fail(NativeError.NonceRequired(DpopNonce.issue(dpop.nonceSalt, now)))
 
     /** The redirect URI to push: the one the app named, which must be registered, or the
       * client's only one. Auth validates it again at `/par`; this only spares the call. */

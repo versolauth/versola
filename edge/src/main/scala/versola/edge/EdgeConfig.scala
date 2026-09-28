@@ -208,6 +208,12 @@ object EdgeConfig:
     *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
     * @param blobTtl how long a blob can be redeemed after `/native/start`. Bounded above by the
     *   single-use `request_uri` and code in any case.
+    * @param authIssuer the `iss` auth's authorization responses carry -- its `jwt.issuer`
+    *   (`CoreConfig.JwtConfig.issuer`), a setting of auth's own and not derived from
+    *   [[versolaUrl]]. Absent defaults to `versolaUrl` via [[issuer]] below, which is right
+    *   only where the two happen to be configured alike; naming this here is what lets
+    *   `/native/complete`'s RFC 9207 check compare against the value auth actually emits
+    *   rather than assume it.
     */
   case class Native(
       authMutualTlsUrl: URL,
@@ -215,8 +221,13 @@ object EdgeConfig:
       trustedCertificates: String,
       blobKey: Secret.Bytes32,
       blobTtl: Duration = Duration.fromSeconds(600),
+      authIssuer: Option[URL] = None,
   ):
     def externalUrl: URL = authMutualTlsExternalUrl.getOrElse(authMutualTlsUrl)
+
+    /** RFC 9207 `iss` comparison target: [[authIssuer]] if this deployment names one, else
+      * `versolaUrl` -- see [[authIssuer]]'s own comment for when that fallback is wrong. */
+    def issuer(versolaUrl: URL): URL = authIssuer.getOrElse(versolaUrl)
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for
