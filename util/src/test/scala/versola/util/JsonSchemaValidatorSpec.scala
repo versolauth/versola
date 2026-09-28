@@ -108,6 +108,24 @@ object JsonSchemaValidatorSpec extends ZIOSpecDefault:
         rejected <- validator.validate(after, instance)
       yield assertTrue(accepted.isEmpty, rejected.nonEmpty)
     },
+    test("warmCompile makes a later validate behave identically to one that compiled cold") {
+      for
+        validator <- ZIO.service[JsonSchemaValidator]
+        _ <- validator.warmCompile(paymentSchema)
+        valid <- validator.validate(
+          paymentSchema,
+          value("""{"type":"payment","instructedAmount":{"currency":"EUR","amount":"1.00"}}"""),
+        )
+        invalid <- validator.validate(paymentSchema, value("""{"type":"payment"}"""))
+      yield assertTrue(valid.isEmpty, invalid.nonEmpty)
+    },
+    test("warmCompile on a malformed schema does not fail; the error surfaces on validate instead") {
+      for
+        validator <- ZIO.service[JsonSchemaValidator]
+        _ <- validator.warmCompile(obj("""{"$ref":"https://example.invalid/schema.json"}"""))
+        errors <- validator.validate(obj("""{"$ref":"https://example.invalid/schema.json"}"""), Json.Str("x"))
+      yield assertTrue(errors.nonEmpty)
+    },
     test("keeps validating correctly once the compiled-schema cache has evicted entries") {
       // Comfortably exceeds the cache bound so the first schema is evicted before it is reused.
       val churn = 1200

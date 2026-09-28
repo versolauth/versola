@@ -31,6 +31,13 @@ trait JsonSchemaValidator:
     * is a well-formed schema. */
   def validateSchema(schema: Json.Obj): UIO[List[String]]
 
+  /** Compiles `schema` into the cache ahead of any [[validate]] call, so the compile happens
+    * once here -- typically on sync/load of an admin-defined schema -- rather than on whichever
+    * request happens to validate against it first. Never fails: a schema that doesn't compile
+    * is cached as the same error [[validate]] would have produced anyway, so calling this for a
+    * schema that turns out to be invalid is a one-time no-op, not a startup risk. */
+  def warmCompile(schema: Json.Obj): UIO[Unit]
+
 object JsonSchemaValidator:
   val Dialect: String = SpecificationVersion.DRAFT_2020_12.getDialectId
 
@@ -60,6 +67,9 @@ object JsonSchemaValidator:
 
     override def validateSchema(schema: Json.Obj): UIO[List[String]] =
       errorsOf(metaSchema, schema)
+
+    override def warmCompile(schema: Json.Obj): UIO[Unit] =
+      compile(schema).unit
 
     private def errorsOf(schema: Schema, instance: Json): UIO[List[String]] =
       ZIO.attempt(schema.validate(instance.toJson, InputFormat.JSON).nn.asScala.toList.map(_.nn.getMessage.nn))
