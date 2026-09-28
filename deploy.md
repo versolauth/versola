@@ -60,7 +60,9 @@ host nginx.
 | `versola-proxy` | 2821 | — | — |
 | OpenBao | 8200 | — | — |
 
-The source of truth is the generated `compose.yml` in the active bundle (next section).
+The source of truth is the generated `compose.yml` in the active bundle (next section). The
+Dockerfiles `EXPOSE 8080 9345`, but with `network_mode: host` `EXPOSE` is inert — `PORT`/`DPORT`
+decide.
 
 ### Where things live on the host
 
@@ -151,10 +153,12 @@ switch.
 **First admin login.** `AuthBootstrapService` (in `auth`) creates the `admin` user, grants it the
 `oauth-admin` role (full permissions), and sets a **temporary** password from `auth.conf`'s
 `bootstrap.password` — on vps that is `ADMIN_BOOTSTRAP_PASSWORD`, generated once and kept in
-OpenBao; `versola up` prints where to read it:
+OpenBao. `versola up` prints the exact file to read it from (the current bundle's
+`auth.secrets.env`; right after a `configure` an older bundle may still exist next to it, holding
+the same value):
 
 ```bash
-grep ADMIN_BOOTSTRAP_PASSWORD ~/.versola/active/bundle-*/auth.secrets.env
+grep ADMIN_BOOTSTRAP_PASSWORD <bundle printed by versola up>/auth.secrets.env
 ```
 
 It is valid **24 hours**; logging in with it forces a set-password step. If it expired before
@@ -263,7 +267,7 @@ in `~/.versola/active/bundle-*/auth.secrets.env`.
 > `flyway_schema_history` table *inside the schema it is pointed at*. Two services sharing one
 > schema share one history table, and the second one to migrate aborts with
 > `FlywayValidateException`. This is exactly how the first deployment failed — see
-> [9.1](#91-flywayvalidateexception-on-startup).
+> [9.1](#91-flywayvalidateexception-on-startup-or-during-migrate).
 
 ### 3.4 Migrate
 
@@ -375,9 +379,25 @@ applied — only adding new ones is safe. `git diff --name-status <old>..<new> -
 and leaves no safe way forward except recreating that schema
 ([6](#6-recreating-the-database-from-scratch)).
 
-**Rollback.** Restore the previous state with the previous version: `versola configure vps
-<previous> …` + `up` (install the matching CLI from GitHub Releases if needed), and restore the
-database from the dump if the new migrations must be undone.
+**Rollback.** If the new release only *added* migrations and the previous version runs fine on the
+newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
+matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database
+**before** starting the previous version — never start it against a schema only the new release
+understands:
+
+```bash
+versola down                                               # nothing may write while restoring
+sudo -u postgres psql -c "DROP DATABASE auth;"
+sudo -u postgres psql -c "CREATE DATABASE auth OWNER versola_app;"
+sudo -u postgres psql -d auth -f ~/auth-backup-before-<version>-<timestamp>.sql
+versola configure vps <previous> --auth-url https://id.versola.kz \
+  --postgres-host 127.0.0.1:5432 --proxy external
+versola migrate                                            # no-op: the dump already has the previous schema
+versola up
+```
+
+Anything written between the dump in step 3 and the rollback is lost — which is why the dump is taken
+right before `migrate`.
 
 #### Tag naming
 
@@ -407,7 +427,9 @@ in the bundle (mode `600`), which Compose passes to the containers. The services
 OpenBao at runtime — it only has to be up for `configure`.
 
 To change a secret: write the new value into OpenBao with `bao kv patch` (merges; `kv put` would
-replace the whole path), then `versola configure` + `versola up`:
+replace the whole path), then run `versola configure vps <current version>` with the same flags as
+in [4](#4-deploying-a-new-version) — `--proxy external` included, or it defaults to `nginx` and
+stops on ports 80/443 — followed by `versola up`:
 
 ```bash
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
@@ -429,12 +451,14 @@ CLI is planned. If you do edit a `.conf` by hand, keep it UTF-8 — HOCON cannot
 ## 6. Recreating the database from scratch
 
 Flyway is configured with `cleanDisabled(true)`, so the application cannot drop anything. Do it by
-hand, with a dump taken first.
+hand. In both cases **stop the stack first, then dump, then drop** — a dump taken while the services
+still run misses whatever they write before they stop.
 
 **A whole database:**
 
 ```bash
-versola down                 # release the connections first
+versola down                 # stop writes and release the connections
+sudo -u postgres pg_dump auth > ~/auth-backup-$(date +%Y%m%d-%H%M%S).sql
 sudo -u postgres psql
 ```
 
@@ -444,18 +468,23 @@ CREATE DATABASE auth OWNER versola_app;
 ```
 
 `DROP DATABASE` fails with *"is being accessed by other users"* while any service still holds a
-connection, which is why the stack goes down first. Recreate the three schemas as in
+connection, which is why the stack goes down first (OpenBao with it — see the note under
+"A single schema" below). Recreate the three schemas as in
 [3.3](#33-database-role-and-schemas), then `versola migrate` and `versola up`. `central` re-runs its
 bootstrap and reseeds clients, roles, forms and the admin user.
 
 **A single schema** (e.g. one whose migration history no longer matches the release):
 
 ```bash
+versola down
 sudo -u postgres pg_dump -Fc -n <schema> -f /tmp/versola-backup-<schema>-$(date +%Y%m%d-%H%M%S).dump auth
 sudo -u postgres psql -d auth -c "DROP SCHEMA <schema> CASCADE; CREATE SCHEMA <schema> AUTHORIZATION versola_app;"
 versola migrate
 versola up
 ```
+
+(`versola down` also stops OpenBao, which is in the same Compose project; `up` doesn't start it
+again — it isn't needed at runtime, and the next `configure` brings it back.)
 
 Everything configured by hand in that schema (clients, resources, roles…) is gone afterwards; only
 what `central`'s bootstrap seeds comes back.
@@ -609,11 +638,13 @@ ready, then `docker restart versola-auth`.
 ### 9.6 `docker pull` / `configure` says the tag is not found
 
 Check the prefix: Versola's image tags have no leading `v` (`0.6.2`). See [Tag naming](#tag-naming).
+`docker buildx imagetools inspect ghcr.io/versolauth/versola-tools:<tag>` or the package page on
+GitHub shows what actually exists.
 
 ### 9.7 Recovering a user event stuck in the outbox dead letter table
 
 `central` propagates user changes to `auth` via an outbox (`central.user_outbox`) with retries;
-after `user-outbox.max-attempts` failed attempts the event is moved to `central.user_outbox_dead`
+after `user-outbox.max-attempts` failed attempts (5 in prod) the event is moved to `central.user_outbox_dead`
 and **stops retrying permanently** — for example if `auth` was down when `central` started
 dispatching.
 
@@ -632,6 +663,9 @@ WHERE id = '<event-id>';
 DELETE FROM central.user_outbox_dead WHERE id = '<event-id>';
 ```
 
+`central`'s outbox processor picks it up on its next poll; `SELECT count(*) FROM
+central.user_outbox_dead;` should drop by one.
+
 ### 9.8 OpenBao doesn't start after a reboot, or is sealed
 
 OpenBao comes back **sealed** after every restart (no auto-unseal), and it mounts `openbao.hcl`
@@ -645,11 +679,12 @@ current bundle and unseals it with the key in `~/.versola/openbao/vps-admin.json
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 versola-openbao-vps bao operator unseal
 ```
 
-### 9.9 `configure` fails with "container name already in use"
+### 9.9 `configure` or `up` fails with "container name already in use"
 
-A container with one of the fixed names (`versola-auth`, `versola-central`, `versola-edge`,
-`versola-openbao-vps`) exists under a *different* Compose project — typically left over from a
-deployment not made by `versola-cli`. Check with `docker compose ls` and `docker ps -a`; stop and
+A container with one of the fixed names exists under a *different* Compose project — `configure`
+hits it for `versola-openbao-vps` (the only container it starts), `up` for `versola-auth`,
+`versola-central` or `versola-edge`. That is — typically left over from a
+deployment not made by `versola-cli`, or a container under an old project name. Check with `docker compose ls` and `docker ps -a`; stop and
 remove those specific containers by name (nothing stateful lives in them: Postgres is native,
 OpenBao's data is in its external volume) and run `configure` again.
 
@@ -679,7 +714,10 @@ b=~/.versola/active/$(python3 -c 'import json,os;print(json.load(open(os.path.ex
 iconv -f UTF-16 -t UTF-8 "$b/auth.conf" > /tmp/auth.conf && cp /tmp/auth.conf "$b/auth.conf" && docker restart versola-auth
 ```
 
-Generated files are always UTF-8; a new `configure` also fixes it.
+Check all three — `file "$b"/*.conf` must say `ASCII`/`UTF-8` for each — and convert
+`central.conf`/`edge.conf` too if needed, even if those services are currently up, or they'll
+crash-loop on their next restart. Generated files are always UTF-8; a new `configure` also fixes
+it.
 
 ---
 
@@ -719,7 +757,9 @@ references make sense.
   configs from `env-config`; it also built `central-ui` and copied it to `/website/central-ui/dist`.
   **Removed** — running it now would start a second set of containers with the same names as
   `versola-cli`'s and take production down. Its repository secrets (`VPS_HOST`, `VPS_USER`,
-  `VPS_SSH_KEY`, `VPS_HOST_FINGERPRINT`, `ENV_CONFIG_PAT`) are no longer needed.
+  `VPS_SSH_KEY`, `VPS_HOST_FINGERPRINT`, `ENV_CONFIG_PAT`) should be deleted, the `ENV_CONFIG_PAT`
+  token revoked (it can read `env-config`), and the `VPS_SSH_KEY` public key removed from the
+  host's `authorized_keys`.
 - **The `env-config` repository** — held the production `.conf` files, secrets in plaintext.
   Replaced by generated configs plus OpenBao. Its contents are stale; treat access to it as access to
   old production secrets until it is archived.

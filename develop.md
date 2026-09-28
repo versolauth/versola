@@ -76,8 +76,8 @@ The script first asks for the environment **Name** (default `local`):
     - `docker-compose -f services.yml up -d jaeger` - Jaeger (optional)
     - Each service below needs `RUN_MIGRATIONS=true` against a fresh Postgres --
       without it, a service only *validates* its schema on startup rather than
-      applying migrations to it (deliberate for real deployments, see deploy.md's
-      own RUN_MIGRATIONS section), which fails immediately with no schema yet.
+      applying migrations to it (deliberate for real deployments, see
+      [deploy.md's `RUN_MIGRATIONS`](deploy.md#run_migrations)), which fails immediately with no schema yet.
     - `PORT=9001 DPORT=9002 RUN_MIGRATIONS=true sbt -Denv.path=central/dev/env.conf "project central-postgres-impl; run"` - Central
     - `PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true sbt -Denv.path=auth/dev/env.conf "project auth-postgres-impl; run"` - Auth
       (`MPORT` only does anything when `auth/dev/env.conf` carries a `mutual-tls` block -- see below)
@@ -107,7 +107,7 @@ docker build -t versola-auth -f docker/Dockerfile.auth .
 
 Run the Docker image (mount config file):
 ```bash
-docker run -p 8080:8080 -p 9345:9345 \
+docker run -p 8080:8080 -p 8081:8081 \
   -v $(pwd)/auth/dev/env.conf:/app/config/env.conf:ro \
   versola-auth
 ```
@@ -127,13 +127,14 @@ before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:
 ```bash
-docker run -p 8080:8080 -p 9345:9345 \
+docker run -p 8080:8080 -p 8081:8081 \
   -v /path/to/your/env.conf:/custom/path/env.conf:ro \
   -e CONFIG_PATH=/custom/path/env.conf \
   versola-auth
 ```
 
-This will test if the package is public or requires authentication.
+(The Dockerfiles `EXPOSE 8080 9345`, but the diagnostics server listens on
+`DPORT`, 8081 by default — publish that one.)
 
 ## Secrets (OpenBao)
 
@@ -246,8 +247,10 @@ versola secrets login vps http://<address> <role-id>
 ### Changing a stored secret
 
 `bao kv patch` merges into a path; `bao kv put` **replaces the whole path**
-and would wipe every other key there. Then run `versola configure` + `versola
-up` so the new value reaches the services:
+and would wipe every other key there. Then run `versola configure <target>
+<version>` again with the same flags as the deployment (for `vps`, see
+[`deploy.md`](deploy.md#4-deploying-a-new-version)) and `versola up`, so the
+new value reaches the services:
 
 ```bash
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
@@ -280,10 +283,17 @@ counterparts that a fresh one won't match, and each mismatch fails differently:
   every edge→central sync call 401. `JWKS_JSON` is auth's public key wrapped as
   `{"keys":[<jwk>]}`, whose `kid` must match `JWT_PRIVATE_KEY`.
 
-Existing values in OpenBao always win, so write the real ones there — before the
-first `configure`, or, if that already ran and stored generated ones, afterwards
-with `bao kv patch`, then `configure` again:
+Existing values in OpenBao always win, but with automatic setup OpenBao only
+exists once `configure` has run — and that same first run already stores
+generated values. So the order is:
 
+1. Run `versola configure vps …` once. It provisions OpenBao and stores
+   generated values. It also prints a `CREATE ROLE`/`ALTER ROLE` for a new
+   Postgres password — **don't run it**: the existing role keeps its real
+   password, which goes into OpenBao in the next step. Don't run `migrate`/`up`
+   yet.
+2. Overwrite the generated values with the real ones (`kv patch`, root token
+   from `~/.versola/openbao/vps-admin.json`):
 ```bash
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/auth \
@@ -298,8 +308,13 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
     POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>'
 ```
 
-(`kv patch` on a path that doesn't exist yet fails — use `kv put` for a path's
-very first write.) `ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list:
+3. Run the same `versola configure vps …` again — it now resolves the real
+   values into the bundle — then `versola migrate` and `versola up`.
+
+With `--setup-openbao` instead, nothing is stored before you do it: provision
+OpenBao by hand, write the real values with `bao kv put` (a path's very first
+write — `kv patch` fails on a path that doesn't exist yet), then `configure`.
+`ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list:
 nothing outside gen-env.scala owns that value, so the generated one is correct.
 
 If containers named `versola-auth`/`versola-central`/`versola-edge` are already
@@ -327,7 +342,7 @@ itself — see [`deploy.md`](deploy.md#4-deploying-a-new-version).
 
 ## HTTP Server
 
-Metrics, liveness, and readiness probes are served on the diagnostics port (`dport`, default 9345):
+Metrics, liveness, and readiness probes are served on the diagnostics port (`DPORT`, default 8081):
 - `GET /metrics`
 - `GET /liveness`
 - `GET /readiness`
