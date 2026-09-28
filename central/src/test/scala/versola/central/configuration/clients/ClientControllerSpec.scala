@@ -93,6 +93,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     template = None,
+    applicationType = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -134,6 +135,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    applicationType = None,
   )
 
   /** A fixed registration time, so the response carries the record's own rather than
@@ -357,6 +359,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 requirePushedAuthorizationRequests = false,
                 template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
                 createdAt = registeredAt,
+                applicationType = ApplicationType.web,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -389,6 +392,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 requirePushedAuthorizationRequests = false,
                 template = None,
                 createdAt = registeredAt,
+                applicationType = ApplicationType.web,
               ),
             ),
           ),

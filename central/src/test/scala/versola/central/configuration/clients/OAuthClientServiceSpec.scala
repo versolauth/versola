@@ -206,6 +206,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     template = None,
+    applicationType = None,
   )
 
   /** What FAPI 2.0 asks of an edge-fronted web client: `tls_client_auth`, which also binds its
@@ -246,6 +247,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    applicationType = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -278,6 +280,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    applicationType = None,
   )
 
   /** A tenant whose reverse proxy terminates mTLS and forwards the certificate, which RFC

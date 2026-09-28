@@ -72,6 +72,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           str(body, "tenantId") == tenantId,
           str(body, "id") == webClient.clientId,
           str(body, "authMethod") == "client_secret",
+          str(body, "applicationType") == "web",
           strings(body, "redirectUris").toSet == webClient.redirectUris,
           strings(body, "allowedScopes").toSet == webClient.allowedScopes,
           num(body, "accessTokenTtl").contains(BigDecimal(900)),
@@ -98,6 +99,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           bool(create, "dpopBoundAccessTokens").contains(false),
           bool(create, "requireSignedRequestObject").contains(false),
           bool(create, "requirePushedAuthorizationRequests").contains(false),
+          str(create, "applicationType") == "web",
           // Written on the update too, so a client left bound by a previous configuration is
           // converged rather than left holding a setting the campaign cannot satisfy.
           bool(update, "certificateBoundAccessTokens").contains(false),
@@ -105,6 +107,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           bool(update, "dpopBoundAccessTokens").contains(false),
           bool(update, "requireSignedRequestObject").contains(false),
           bool(update, "requirePushedAuthorizationRequests").contains(false),
+          str(update, "applicationType") == "web",
         )
       },
       test("marks a mobile client public and carries no secret back") {
@@ -115,6 +118,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           body = state.clients(passkeyClient.clientId).spec
         yield assertTrue(
           str(body, "authMethod") == "none",
+          str(body, "applicationType") == "native",
           field(body, "registrationFlow").isEmpty,
           creds == ClientCreds(passkeyClient.clientId, None),
         )

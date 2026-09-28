@@ -98,6 +98,7 @@ final class HttpAdminClient(
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
       template = None,
+      applicationType = applicationType(spec),
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -137,9 +138,19 @@ final class HttpAdminClient(
       dpopBoundAccessTokens = false,
       requireSignedRequestObject = false,
       requirePushedAuthorizationRequests = false,
+      // Written on the update too, on the same convergence terms as the resets above -- a
+      // client a previous configuration left `native` (or vice versa) converges on the
+      // blueprint's type rather than keeping whatever it registered with.
+      applicationType = applicationType(spec),
     )
     send(Method.PUT, central("configuration", "clients"), Some(body.toJson))
       .flatMap(expectSuccess("updateClient", _))
+
+  /** OIDC Registration §2 `application_type`, as central's `ApplicationType` enum encodes it:
+    * `spec.publicClient` is the same PKCE-only-vs-confidential distinction [[ClientSpec]] names
+    * it for (see its scaladoc), just under central's own vocabulary. */
+  private def applicationType(spec: ClientSpec): String =
+    if spec.publicClient then nativeApplicationType else webApplicationType
 
   private def rotateClientSecret(clientId: String): Task[String] =
     val url = central("configuration", "clients", "rotate-secret").addQueryParam("clientId", clientId)
@@ -499,6 +510,8 @@ object HttpAdminClient:
   private val defaultOtpTemplateId = "default"
   private val publicAuthMethod = "none"
   private val clientSecretAuthMethod = "client_secret"
+  private val nativeApplicationType = "native"
+  private val webApplicationType = "web"
 
   /** The internal resource id `BootstrapService` seeds central's admin API under; the RFC 8707
     * identifier of an internal resource is `resource://<id>`, which is what edge's proxy checks
@@ -555,6 +568,7 @@ object HttpAdminClient:
       requirePushedAuthorizationRequests: Boolean,
       edgeSigningKey: Option[Json],
       template: Option[Json],
+      applicationType: String,
   ) derives JsonEncoder
 
   private case class UpdateClientBody(
@@ -575,6 +589,7 @@ object HttpAdminClient:
       dpopBoundAccessTokens: Boolean,
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
+      applicationType: String,
   ) derives JsonEncoder
 
   private case class CreateClientResponseBody(secret: Option[String]) derives JsonDecoder
