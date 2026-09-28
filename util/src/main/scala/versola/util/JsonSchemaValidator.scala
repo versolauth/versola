@@ -71,6 +71,16 @@ object JsonSchemaValidator:
     override def warmCompile(schema: Json.Obj): UIO[Unit] =
       compile(schema).unit
 
+    /** How many schemas are held compiled.
+      *
+      * [[warmCompile]] has no effect other than on this cache -- it returns unit either way, and
+      * a later [[validate]] answers identically whether the compile happened then or on its own
+      * cold path. A test with no view of the cache therefore cannot tell it from a no-op, which
+      * is what [[JsonSchemaValidatorSpec]] uses this for.
+      */
+    private[util] def compiledCount: UIO[Int] =
+      ZIO.succeed(compiled.size)
+
     private def errorsOf(schema: Schema, instance: Json): UIO[List[String]] =
       ZIO.attempt(schema.validate(instance.toJson, InputFormat.JSON).nn.asScala.toList.map(_.nn.getMessage.nn))
         .catchAll(error => ZIO.succeed(List(Option(error.getMessage).getOrElse("Schema validation failed"))))

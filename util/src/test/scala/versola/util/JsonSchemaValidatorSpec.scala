@@ -119,12 +119,38 @@ object JsonSchemaValidatorSpec extends ZIOSpecDefault:
         invalid <- validator.validate(paymentSchema, value("""{"type":"payment"}"""))
       yield assertTrue(valid.isEmpty, invalid.nonEmpty)
     },
+    // The test above passes against a warmCompile that does nothing at all, because validate
+    // compiles cold and answers the same either way. The cache is the only place the method has
+    // an effect, so proving it did anything means looking there. Its own Impl, not the suite's
+    // shared layer, so the counts are this test's alone.
+    test("warmCompile compiles into the cache, and the later validate reuses it") {
+      val validator = JsonSchemaValidator.Impl()
+      for
+        beforeWarm <- validator.compiledCount
+        _ <- validator.warmCompile(paymentSchema)
+        afterWarm <- validator.compiledCount
+        _ <- validator.validate(paymentSchema, value("""{"type":"payment"}"""))
+        afterValidate <- validator.compiledCount
+      yield assertTrue(beforeWarm == 0, afterWarm == 1, afterValidate == 1)
+    },
     test("warmCompile on a malformed schema does not fail; the error surfaces on validate instead") {
       for
         validator <- ZIO.service[JsonSchemaValidator]
         _ <- validator.warmCompile(obj("""{"$ref":"https://example.invalid/schema.json"}"""))
         errors <- validator.validate(obj("""{"$ref":"https://example.invalid/schema.json"}"""), Json.Str("x"))
       yield assertTrue(errors.nonEmpty)
+    },
+    // Same gap as above: that the failure is cached rather than recompiled on every validate is
+    // the claim warmCompile's "one-time no-op" rests on, and only the cache shows it.
+    test("warmCompile caches a malformed schema's failure instead of retrying the compile") {
+      val malformed = obj("""{"$ref":"https://example.invalid/schema.json"}""")
+      val validator = JsonSchemaValidator.Impl()
+      for
+        _ <- validator.warmCompile(malformed)
+        afterWarm <- validator.compiledCount
+        errors <- validator.validate(malformed, Json.Str("x"))
+        afterValidate <- validator.compiledCount
+      yield assertTrue(afterWarm == 1, errors.nonEmpty, afterValidate == 1)
     },
     test("keeps validating correctly once the compiled-schema cache has evicted entries") {
       // Comfortably exceeds the cache bound so the first schema is evicted before it is reused.
