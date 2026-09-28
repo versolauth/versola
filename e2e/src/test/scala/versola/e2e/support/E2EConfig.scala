@@ -9,6 +9,9 @@ final case class E2EConfig(
     authUrl: String,
     /** Auth's additional listener (`APORT`), which serves the Account Settings resource. */
     authAdditionalUrl: String,
+    /** Auth's diagnostics listener (`DPORT`), which serves `/metrics`, `/liveness` and
+      * `/readiness` -- separate from application traffic, and never publicly exposed. */
+    authDiagnosticsUrl: String,
     centralUrl: String,
     /** Edge's public listener, which proxies the Account Settings resource back to auth. */
     edgeUrl: String,
@@ -47,6 +50,7 @@ object E2EConfig:
     for
       authUrl       <- env("AUTH_URL",        "http://localhost:9003")
       authAdditionalUrl <- env("AUTH_ADDITIONAL_URL", "http://localhost:9007")
+      authDiagnosticsUrl <- env("AUTH_DIAGNOSTICS_URL", "http://localhost:9004")
       centralUrl    <- env("CENTRAL_URL",     "http://localhost:9001")
       edgeUrl       <- env("EDGE_URL",        "http://localhost:9005")
       adminLogin       <- env("E2E_LOGIN",          "admin")
@@ -73,6 +77,7 @@ object E2EConfig:
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
+      authDiagnosticsUrl,
       centralUrl,
       edgeUrl,
       adminLogin,
