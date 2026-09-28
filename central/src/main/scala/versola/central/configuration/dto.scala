@@ -357,7 +357,7 @@ case class OAuthClientResponse(
     /** When the registration was accepted, as an ISO-8601 instant. */
     createdAt: Instant,
     /** OIDC Registration §2 `application_type`. */
-    applicationType: ApplicationType = ApplicationType.web,
+    applicationType: ApplicationType,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -445,7 +445,7 @@ case class CreateClientRequest(
     /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
       * with `tls_client_auth` is the app fronted by edge (#421), which registration holds to
       * the rules in `InvalidRegistrationConfiguration.validateEdgeFrontedNative`. */
-    applicationType: Option[ApplicationType] = None,
+    applicationType: Option[ApplicationType],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -494,7 +494,7 @@ case class UpdateClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
-    applicationType: Option[ApplicationType] = None,
+    applicationType: Option[ApplicationType],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -702,7 +702,7 @@ case class SyncOAuthClientRecord(
     /** OIDC Registration §2 `application_type`. Auth reads it to leave an edge-fronted native
       * client's tokens unbound from edge's certificate; edge reads it to decide which clients
       * its native endpoints serve. */
-    applicationType: ApplicationType = ApplicationType.web,
+    applicationType: ApplicationType,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

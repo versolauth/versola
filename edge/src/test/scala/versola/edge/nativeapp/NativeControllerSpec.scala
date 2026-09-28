@@ -19,9 +19,14 @@ object NativeControllerSpec extends ZIOSpecDefault:
       .provide(ZLayer.succeed(failing(error)), Scope.default)
 
   def spec = suite("NativeController")(
-    test("an unknown client is a bare 404 on every endpoint") {
+    test("an unknown client is a bare, uncached 404 on every endpoint") {
       for responses <- ZIO.foreach(List("start", "complete", "token", "revoke"))(call(NativeError.UnknownClient, _))
-      yield assertTrue(responses.forall(_.status == Status.NotFound))
+      yield assertTrue(
+        responses.forall(_.status == Status.NotFound),
+        // Which client ids this edge fronts is what the 404 answers; an intermediary holding
+        // one would go on answering it after the client exists.
+        responses.forall(_.header(Header.CacheControl).contains(Header.CacheControl.NoStore)),
+      )
     },
     test("edge's own refusals are RFC 6749 error objects, never cached") {
       for
@@ -34,6 +39,17 @@ object NativeControllerSpec extends ZIOSpecDefault:
         grantBody == """{"error":"invalid_grant","error_description":"blob has expired"}""",
         grant.header(Header.CacheControl).isDefined,
         proofBody.contains("\"error\":\"invalid_dpop_proof\""),
+      )
+    },
+    // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 with the
+    // nonce to retry over, not an RFC 6749 error object.
+    test("a required nonce is a bare, uncached 401 carrying the nonce to retry over") {
+      for response <- call(NativeError.NonceRequired("n-1"), "start")
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.rawHeader("DPoP-Nonce").contains("n-1"),
+        response.rawHeader("WWW-Authenticate").contains("""DPoP error="use_dpop_nonce""""),
+        response.header(Header.CacheControl).contains(Header.CacheControl.NoStore),
       )
     },
   )

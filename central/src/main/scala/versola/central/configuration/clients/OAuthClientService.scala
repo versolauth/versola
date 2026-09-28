@@ -346,6 +346,11 @@ object OAuthClientService:
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
+          // What the client would be once the patch is applied, for the two checks that read
+          // both fields at once. Everything below reads `applyTo`/`getOrElse` the same way:
+          // a patch that leaves a setting alone still has to leave the client valid.
+          val applicationType = request.applicationType.getOrElse(client.applicationType)
+          val authMethod = request.authMethod.getOrElse(client.authMethod)
           validateRegistration(
             clientId = request.clientId,
             tenantId = client.tenantId,
@@ -380,28 +385,24 @@ object OAuthClientService:
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
-          ))(ZIO.fail(_)) *> {
-            val applicationType = request.applicationType.getOrElse(client.applicationType)
-            val authMethod = request.authMethod.getOrElse(client.authMethod)
-            ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
-              clientId = request.clientId,
-              applicationType = applicationType,
-              authMethod = authMethod,
-              hasEdgeClientCertificate = edgeCertificate.isDefined,
-              requirePushedAuthorizationRequests =
-                request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
-              dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
-              certificateBoundAccessTokens =
-                request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
-              redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
-                .map(uri => uri: String),
-            ))(ZIO.fail(_)) *> validateMtlsTermination(
-              request.clientId,
-              client.tenantId,
-              request.mtlsAuth.applyTo(client.mtlsAuth)
-                .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
-            ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
-          }
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+            clientId = request.clientId,
+            applicationType = applicationType,
+            authMethod = authMethod,
+            hasEdgeClientCertificate = edgeCertificate.isDefined,
+            requirePushedAuthorizationRequests =
+              request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+            dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+            certificateBoundAccessTokens =
+              request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+            redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
+              .map(uri => uri: String),
+          ))(ZIO.fail(_)) *> validateMtlsTermination(
+            request.clientId,
+            client.tenantId,
+            request.mtlsAuth.applyTo(client.mtlsAuth)
+              .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
+          ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)
@@ -464,7 +465,13 @@ object OAuthClientService:
       * An unknown client is left to the repository, which ignores it.
       */
     /** The client as the patch will leave it, in the settings the security profile reads --
-      * the rest is left as stored, since nothing the profile checks depends on it. */
+      * the rest is left as stored, since nothing the profile checks depends on it.
+      *
+      * `redirectUris` is folded in the order the repository folds it (`-- remove ++ add`, see
+      * `PostgresOAuthClientRepository.updateClient`), not the reverse: a URI named in both
+      * sets is stored, so it has to be a URI the profile was held to. Applying the two the
+      * other way round dropped it from the check while the row kept it.
+      */
     private def patchedForProfile(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
       client.copy(
         authMethod = request.authMethod.getOrElse(client.authMethod),
@@ -473,7 +480,8 @@ object OAuthClientService:
         dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
         requirePushedAuthorizationRequests =
           request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
-        redirectUris = client.redirectUris ++ request.redirectUris.add -- request.redirectUris.remove,
+        redirectUris = client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add,
+        applicationType = request.applicationType.getOrElse(client.applicationType),
       )
 
     private def rejectSecretlessClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =

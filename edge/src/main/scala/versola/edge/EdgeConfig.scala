@@ -83,8 +83,27 @@ object EdgeConfig:
         config <- ZIO.service[EdgeConfig]
         _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(refuseCertificateAuthority)
         _ <- ZIO.foreachDiscard(config.native.map(_.trustedCertificates))(refuseCertificateAuthority)
+        _ <- refuseNativeWithoutDpop(config)
       yield config,
     )
+
+  /** The native flow is DPoP end to end -- every client it serves is registered
+    * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,
+    * and both windows come from the `dpop` block. Without it this edge would verify those
+    * proofs against a default nobody chose and then refuse, as `DpopVerifier.Error.NotConfigured`,
+    * every API call made with the very tokens the flow issued. Refused at startup rather than
+    * discovered one request at a time.
+    */
+  private def refuseNativeWithoutDpop(config: EdgeConfig): Task[Unit] =
+    ZIO.when(config.native.isDefined && config.dpop.isEmpty)(
+      ZIO.fail(
+        IllegalArgumentException(
+          "a `native` block needs a `dpop` block: the native endpoints verify and replay-guard " +
+            "the device's DPoP proofs on its windows, and every token they issue is DPoP-bound, " +
+            "so an edge without one serves a flow whose tokens it will then refuse.",
+        ),
+      ),
+    ).unit
 
   private def refuseCertificateAuthority(path: String): Task[Unit] =
     ZIO.attemptBlocking {
@@ -189,6 +208,12 @@ object EdgeConfig:
     *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
     * @param blobTtl how long a blob can be redeemed after `/native/start`. Bounded above by the
     *   single-use `request_uri` and code in any case.
+    * @param authIssuer the `iss` auth's authorization responses carry -- its `jwt.issuer`
+    *   (`CoreConfig.JwtConfig.issuer`), a setting of auth's own and not derived from
+    *   [[versolaUrl]]. Absent defaults to `versolaUrl` via [[issuer]] below, which is right
+    *   only where the two happen to be configured alike; naming this here is what lets
+    *   `/native/complete`'s RFC 9207 check compare against the value auth actually emits
+    *   rather than assume it.
     */
   case class Native(
       authMutualTlsUrl: URL,
@@ -196,8 +221,13 @@ object EdgeConfig:
       trustedCertificates: String,
       blobKey: Secret.Bytes32,
       blobTtl: Duration = Duration.fromSeconds(600),
+      authIssuer: Option[URL] = None,
   ):
     def externalUrl: URL = authMutualTlsExternalUrl.getOrElse(authMutualTlsUrl)
+
+    /** RFC 9207 `iss` comparison target: [[authIssuer]] if this deployment names one, else
+      * `versolaUrl` -- see [[authIssuer]]'s own comment for when that fallback is wrong. */
+    def issuer(versolaUrl: URL): URL = authIssuer.getOrElse(versolaUrl)
 
   object Dpop:
     /** The values a generated `dpop { }` block ships with (see `scripts/gen-env.scala`), for

@@ -968,6 +968,7 @@ object BootstrapService:
         edgeSigningKey = None,
         edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
+        applicationType = None,
       )
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
@@ -1007,6 +1008,7 @@ object BootstrapService:
                 requirePushedAuthorizationRequests = Some(credential.requirePushedAuthorizationRequests),
                 edgeSigningKey = None,
                 edgeClientCertificate = Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
+                applicationType = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1057,6 +1059,7 @@ object BootstrapService:
           edgeSigningKey = None,
           edgeClientCertificate = None,
           template = None,
+          applicationType = None,
         )
         // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
         // does not admit. Seeded outside the profile until the tooling that authenticates as
@@ -1101,6 +1104,7 @@ object BootstrapService:
                   requirePushedAuthorizationRequests = None,
                   edgeSigningKey = None,
                   edgeClientCertificate = None,
+                  applicationType = None,
                 ),
                 enforceSecurityProfile = false,
               ).mapError(registrationConfigurationError)

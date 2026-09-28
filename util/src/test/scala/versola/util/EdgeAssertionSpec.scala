@@ -51,8 +51,10 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
         algorithm <- ZIO.attempt(com.nimbusds.jwt.SignedJWT.parse(assertion).getHeader.getAlgorithm.getName)
       yield assertTrue(algorithm == "PS256")
     },
-    // An edge not yet upgraded still signs RS256, and edge and auth roll out separately.
-    test("still accepts an RS256 assertion from an edge not yet signing PS256") {
+    // #359, and reasserted here: RS256 is not grandfathered in for an edge that has not
+    // upgraded to PS256 -- FAPI 2.0 does not permit it for a signed object, and a rollout
+    // allowance would be a hole in the client-facing enforcement with no expiry of its own.
+    test("refuses an RS256 assertion from an edge not signing PS256") {
       for
         legacy <- JWT.serialize(
           claims = JWT.Claims(edgeId, edgeId, List(EdgeAssertion.Audience), Json.Obj("ath" -> Json.Str(Dpop.ath(accessToken)))),
@@ -60,8 +62,8 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
           signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, edgePrivateKey),
           headers = Map(EdgeAssertion.EdgeIdHeader -> edgeId),
         )
-        result <- EdgeAssertion.verify(legacy, edgeKeys, accessToken).either
-      yield assertTrue(result.isRight)
+        result <- EdgeAssertion.verify(legacy, edgeKeys, accessToken).flip
+      yield assertTrue(result == EdgeAssertion.Error.Unsigned)
     },
     test("refuses an assertion signed under an algorithm it does not accept") {
       for
@@ -113,7 +115,7 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
             custom = Json.Obj("ath" -> Json.Str(Dpop.ath(accessToken))),
           ),
           ttl = 10.minutes,
-          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, edgePrivateKey),
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, keyId, edgePrivateKey),
           headers = Map(EdgeAssertion.EdgeIdHeader -> edgeId),
         )
         result <- EdgeAssertion.verify(centralSyncToken, edgeKeys, accessToken).flip
@@ -134,7 +136,7 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
             .audience(java.util.List.of(EdgeAssertion.Audience))
             .claim("ath", Dpop.ath(accessToken))
             .build()
-          val header = JWSHeader.Builder(JWSAlgorithm.RS256)
+          val header = JWSHeader.Builder(JWSAlgorithm.PS256)
             .keyID(keyId)
             .`type`(JOSEObjectType.JWT)
             .customParam(EdgeAssertion.EdgeIdHeader, edgeId)
@@ -156,7 +158,7 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
             custom = Json.Obj(),
           ),
           ttl = EdgeAssertion.Ttl,
-          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, edgePrivateKey),
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, keyId, edgePrivateKey),
           headers = Map(EdgeAssertion.EdgeIdHeader -> edgeId),
         )
         result <- EdgeAssertion.verify(noAth, edgeKeys, accessToken).flip
@@ -167,7 +169,7 @@ object EdgeAssertionSpec extends ZIOSpecDefault:
         missing <- JWT.serialize(
           claims = JWT.Claims(edgeId, edgeId, List(EdgeAssertion.Audience), Json.Obj()),
           ttl = EdgeAssertion.Ttl,
-          signature = JWT.Signature.Asymmetric(JWT.Algorithm.RS256, keyId, edgePrivateKey),
+          signature = JWT.Signature.Asymmetric(JWT.Algorithm.PS256, keyId, edgePrivateKey),
         )
         result <- EdgeAssertion.edgeIdOf(missing).flip
         garbage <- EdgeAssertion.edgeIdOf("not-a-jwt").flip

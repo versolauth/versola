@@ -41,6 +41,20 @@ object RedirectUriSpec extends ZIOSpecDefault:
           RedirectUri.validateForRegistration("http://rp.example.com/cb", allowPrivateUseSchemes = true).isLeft,
         )
       },
+      // RFC 3986 §3.1 spells a scheme in ASCII. `Char.isLetter` does not, so a scheme written
+      // in Cyrillic or fullwidth letters reads as its ASCII lookalike to an operator while
+      // being a scheme no platform will ever register.
+      test("refuses a reverse-domain scheme that is not spelled in ASCII, or not well-formed") {
+        assertTrue(
+          !RedirectUri.isPrivateUseScheme("сom.example.app"),
+          !RedirectUri.isPrivateUseScheme("com.ex_ample.app"),
+          !RedirectUri.isPrivateUseScheme("com."),
+          !RedirectUri.isPrivateUseScheme(".com.example"),
+          !RedirectUri.isPrivateUseScheme("com..example"),
+          RedirectUri.isPrivateUseScheme("com.example.app"),
+          RedirectUri.isPrivateUseScheme("io.versola.app-2"),
+        )
+      },
       test("rejects a malformed, relative or fragment-bearing value") {
         assertTrue(
           RedirectUri.validateForRegistration("not a uri").isLeft,

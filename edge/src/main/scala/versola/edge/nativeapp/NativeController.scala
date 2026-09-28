@@ -41,9 +41,18 @@ object NativeController extends Controller:
         .status(Status.BadRequest)
         .addHeader(Header.CacheControl.NoStore)
     error match
-      case NativeError.UnknownClient => Response.notFound
+      // Cached like every other answer here: a 404 names which client ids this edge fronts,
+      // and an intermediary holding one would go on answering it after the client is created.
+      case NativeError.UnknownClient => Response.notFound.addHeader(Header.CacheControl.NoStore)
       case NativeError.InvalidRequest(description) => oauth("invalid_request", Some(description))
       case NativeError.UnsupportedGrantType =>
         oauth("unsupported_grant_type", Some("only refresh_token is served here"))
       case NativeError.InvalidDpopProof(description) => oauth("invalid_dpop_proof", Some(description))
       case NativeError.InvalidGrant(description) => oauth("invalid_grant", Some(description))
+      // §9: the same challenge shape as the proxy's Outcome.UseDpopNonce -- a bare 401 here
+      // (EdgeController's own comment on that case applies unchanged).
+      case NativeError.NonceRequired(nonce) =>
+        Response.status(Status.Unauthorized)
+          .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))
+          .addHeader(Header.Custom("DPoP-Nonce", nonce))
+          .addHeader(Header.CacheControl.NoStore)
