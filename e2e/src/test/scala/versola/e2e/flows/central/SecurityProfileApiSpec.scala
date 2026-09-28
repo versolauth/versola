@@ -87,7 +87,11 @@ object SecurityProfileApiSpec extends CentralApiSpec:
                 ("redirectUris" -> Json.Arr(Json.Str("com.example.app://callback"))),
             ),
           )
-        yield assertTrue(refused.status == Status.BadRequest, refused.body.contains("https redirect URIs"))
+        // Refused by RedirectUri.validateForRegistration (the single check on a redirect
+        // URI's shape/scheme, see OAuthClientService.validateRedirectUris) before
+        // profileViolations is ever reached for this client -- same refusal, a more specific
+        // message than "https redirect URIs" naming the private-use-scheme rule directly.
+        yield assertTrue(refused.status == Status.BadRequest, refused.body.contains("private-use schemes are not accepted"))
     },
     test("a FAPI 2.0 tenant registers a private_key_jwt client with DPoP-bound tokens behind PAR") {
       withTenant: (central, tenantId) =>
