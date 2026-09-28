@@ -43,9 +43,29 @@ EXPOSE 8080 8082 9345
 # confirmed by hand these appear on startup without this flag; JDK docs
 # say restricted native calls get blocked outright in a future release
 # without it, not just warned about.
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
+#
+# InitialRAMPercentage matches MaxRAMPercentage so Xms == Xmx: without this
+# HotSpot starts heap at 1/64 of the container's memory and grows it under
+# allocation pressure, and G1 never uncommits, so RSS drifts upward for
+# hours after startup and every right-sizing measurement taken before it
+# plateaus is wrong. Xms == Xmx makes RSS reach its final value within
+# minutes, which is what capacity planning against MaxRAMPercentage assumes.
+#
+# MaxDirectMemorySize bounds Netty's pooled direct arenas, which otherwise
+# default their ceiling to -Xmx and are not visible in heap usage -- left
+# unset, direct buffer growth is a second, untracked way to blow the
+# container's memory limit. NativeMemoryTracking lets `jcmd VM.native_memory
+# summary` attribute RSS to heap/metaspace/code/thread/direct when sizing.
+#
+# HeapDumpOnOutOfMemoryError + ExitOnOutOfMemoryError + the GC log leave
+# something to diagnose an OOM with, instead of a silently restarted pod.
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:InitialRAMPercentage=75.0 -XX:MaxRAMPercentage=75.0 -XX:MaxDirectMemorySize=64m -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
 ENV CONFIG_PATH="/app/config/env.conf"
 
-# Run the application with config path
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
+# Run the application with config path. JAVA_OPTS is not repeated on the
+# command line here -- sbt-native-packager's launcher script already reads
+# the JAVA_OPTS env var itself. Passing it again routes tokens the script's
+# own arg-parser doesn't recognize (e.g. --enable-native-access=...) through
+# as a residual application argument instead of a JVM flag.
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH"]
 

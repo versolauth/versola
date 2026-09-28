@@ -43,8 +43,14 @@ EXPOSE 8080 9345
 # confirmed by hand these appear on startup without this flag; JDK docs
 # say restricted native calls get blocked outright in a future release
 # without it, not just warned about.
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
+#
+# See Dockerfile.auth's comment on InitialRAMPercentage, MaxDirectMemorySize,
+# NativeMemoryTracking, and the OOM diagnostics flags below. edge's
+# MaxDirectMemorySize is higher than auth/central's because edge proxies
+# response bodies through Netty's pooled direct buffers on every request.
+ENV JAVA_OPTS="-XX:+UseG1GC -XX:InitialRAMPercentage=75.0 -XX:MaxRAMPercentage=75.0 -XX:MaxDirectMemorySize=96m -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/tmp/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
 ENV CONFIG_PATH="/app/config/env.conf"
 
-# Run the application with config path
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
+# Run the application with config path. See Dockerfile.auth's comment on why
+# JAVA_OPTS is not repeated on the command line.
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH"]
