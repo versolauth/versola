@@ -279,7 +279,15 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               Observability.middleware
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
-          _ <- ZIO.when(warmupEnabled)(Warmup.run(warmup, warmupBudget))
+          // Warmup.run's fiber can still be running past its own budget -- that is the point,
+          // not a bug (see Warmup.run's scaladoc) -- so it has to be handed to this scope's
+          // finalizers exactly like `fibers`/`additionalFiber`/`mutualTlsFiber` above, or it
+          // outlives `dependencies` and leaks work into a closed pool across a restart.
+          _ <- ZIO.when(warmupEnabled) {
+            Warmup.run(warmup, warmupBudget).flatMap { warmupFiber =>
+              scope.addFinalizer(warmupFiber.interrupt *> warmupFiber.join.ignore)
+            }
+          }
           _ <- readinessService.setReady
           _ <- ZIO.never
         yield ()

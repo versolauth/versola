@@ -283,6 +283,13 @@ volumes:
   # replaces the moment the dump is written. Left in the container's own
   # filesystem the dump would be destroyed by the restart it exists to
   # explain.
+  #
+  # An ordinary `docker compose down` (no `-v`) does not remove these, same as
+  # any other managed volume -- so unlike the container they hold no quota of
+  # their own, and what bounds them is the JAVA_OPTS side: HeapDumpPath names
+  # a fixed file that every OOM overwrites, and the GC log rotates at
+  # filecount=5. An OOM loop therefore replaces the same handful of files
+  # rather than accumulating a new heap dump per crash (flagged in review).
   versola-central-diagnostics-local:
   versola-auth-diagnostics-local:
   versola-edge-diagnostics-local:
