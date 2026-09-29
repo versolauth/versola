@@ -2538,6 +2538,12 @@ components:
       properties:
         secret:
           $ref: '#/components/schemas/Secret'
+        createdAt:
+          type: string
+          format: date-time
+          description: |
+            When central recorded the registration, so a caller holding the client it just
+            sent can state its age without reading it back.
         privateKey:
           oneOf:
             - $ref: '#/components/schemas/PrivateJsonWebKey'
@@ -2549,6 +2555,7 @@ components:
             The only time it is readable: nothing stores it, so a caller that does not keep
             it registers another key rather than asking again. Handed back the way a client
             secret is, and to be treated the same way.
+      required: [createdAt]
     RotateSecretResponse:
       type: object
       properties:
