@@ -3,7 +3,7 @@ package versola
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientRecord, OAuthClientRepository, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
@@ -78,6 +78,32 @@ object BootstrapService:
           edgeClientCertificate = Some(certificate),
           requirePushedAuthorizationRequests = true,
         )
+
+  /** Refuses to boot rather than silently drop `central-admin`'s only credential.
+    *
+    * Reasserting `authMethod` on every boot (in `seedClient`'s update branch) is one-way
+    * safe: a deployment given a certificate moves an existing `client_secret` central-admin
+    * onto `tls_client_auth`, and the repository drops its secret with the method
+    * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
+    * `bootstrap.central-admin-mtls` is later removed, that same patch would set the method
+    * back to `client_secret` while nothing can mint one for it, leaving the console
+    * credential-less. `existing` is read from the repository, not the cache, for
+    * `OAuthClientService.validateSecurityProfile`'s reason: a downgrade just made by removing
+    * the config has to be caught before this boot's own patch would apply it.
+    *
+    * @return the reason to refuse booting, if `existing` already holds no secret and
+    *         `credential` would move it to a method that mints one.
+    */
+  private[versola] def authMethodDowngradeRefusal(
+      existing: Option[OAuthClientRecord],
+      credential: CentralAdminCredential,
+  ): Option[String] =
+    existing.collect:
+      case client if !credential.conformant && !client.usesSecret =>
+        s"bootstrap.central-admin-mtls was removed, but '${CentralConfig.centralClientId}' is already " +
+          s"registered as ${client.authMethod} with no client secret to fall back to -- reintroduce " +
+          "bootstrap.central-admin-mtls, or rotate a secret for it first with " +
+          "POST /configuration/clients/rotate-secret, before removing it"
 
   private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
     AuthFlow(
@@ -703,11 +729,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -721,6 +747,7 @@ object BootstrapService:
       themeRepo: ThemeRepository,
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
+      clientRepo: OAuthClientRepository,
       clientService: OAuthClientService,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
@@ -973,7 +1000,7 @@ object BootstrapService:
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
           case _: ClientAlreadyExists =>
-            clientService.updateClient(
+            refuseAuthMethodDowngrade(credential) *> clientService.updateClient(
               UpdateClientRequest(
                 clientId = CentralConfig.centralClientId,
                 clientName = None,
@@ -1119,6 +1146,23 @@ object BootstrapService:
         case e: InvalidRegistrationConfiguration =>
           new RuntimeException(s"Invalid registration configuration for central client: ${e.reason}")
         case e: Throwable => e
+
+    /** Refuses to boot rather than silently drop `central-admin`'s only credential.
+      *
+      * Reasserting `authMethod` on every boot (see the patch this guards) is one-way safe: a
+      * deployment given a certificate moves an existing `client_secret` central-admin onto
+      * `tls_client_auth`, and the repository drops its secret with the method
+      * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
+      * `bootstrap.central-admin-mtls` is later removed, this patch would set the method back
+      * to `client_secret` while nothing can mint one for it, leaving the console
+      * credential-less. Checked against the repository, not the cache, for
+      * `validateSecurityProfile`'s reason: a downgrade just made by removing the config has
+      * to be caught before this boot's own patch would apply it, not after the next refresh.
+      */
+    private def refuseAuthMethodDowngrade(credential: CentralAdminCredential): Task[Unit] =
+      clientRepo.find(CentralConfig.centralClientId).flatMap: existing =>
+        ZIO.foreachDiscard(BootstrapService.authMethodDowngradeRefusal(existing, credential)):
+          reason => ZIO.fail(RuntimeException(reason))
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
