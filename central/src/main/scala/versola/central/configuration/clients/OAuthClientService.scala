@@ -456,14 +456,6 @@ object OAuthClientService:
     override def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
       rejectSecretlessClient(clientId) *> clientRepository.deletePreviousClientSecret(clientId)
 
-    /** Refuses a client whose method is not `client_secret`, public or not: handing a
-      * `private_key_jwt` client a freshly rotated secret would print a credential the token
-      * endpoint refuses, and the operator would have no way to tell that from one it accepts.
-      *
-      * Reads the client from the repository rather than the cache: a client registered a
-      * moment ago may not have reached the cache yet, and a stale miss would let one through.
-      * An unknown client is left to the repository, which ignores it.
-      */
     /** The client as the patch will leave it, in the settings the security profile reads --
       * the rest is left as stored, since nothing the profile checks depends on it.
       *
@@ -484,6 +476,14 @@ object OAuthClientService:
         applicationType = request.applicationType.getOrElse(client.applicationType),
       )
 
+    /** Refuses a client whose method is not `client_secret`, public or not: handing a
+      * `private_key_jwt` client a freshly rotated secret would print a credential the token
+      * endpoint refuses, and the operator would have no way to tell that from one it accepts.
+      *
+      * Reads the client from the repository rather than the cache: a client registered a
+      * moment ago may not have reached the cache yet, and a stale miss would let one through.
+      * An unknown client is left to the repository, which ignores it.
+      */
     private def rejectSecretlessClient(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
       clientRepository.find(clientId).flatMap: client =>
         ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(!_.usesSecret)).unit
@@ -594,9 +594,13 @@ object OAuthClientService:
       *
       * A tenant on the `standard` security profile may additionally register a reverse-domain
       * private-use scheme (RFC 8252 §7.1) -- plain OAuth permits one for native apps, FAPI 2.0
-      * does not. The tenant's settings are read only when a URI actually needs that allowance,
-      * like [[validateMtlsTermination]]; a tenant with no settings, or a patch to a client that
-      * cannot be found, is held to the default profile (`fapi2`).
+      * does not. The profile is read only when a URI actually needs that allowance, like
+      * [[validateMtlsTermination]] reads its settings; a tenant with no settings, or a patch to
+      * a client that cannot be found, is held to the default profile (`fapi2`).
+      *
+      * Read through the repository, as [[validateSecurityProfile]] reads it and for its reason:
+      * a registration that follows a profile switch has to be held to the profile the switch
+      * just stored, which the cache may not carry yet.
       */
     private def validateRedirectUris(
         tenantId: Option[TenantId],
@@ -605,8 +609,8 @@ object OAuthClientService:
       val strictlyInvalid = uris.filter(RedirectUri.validateForRegistration(_).isLeft)
       ZIO.unless(strictlyInvalid.isEmpty):
         for
-          profile <- ZIO.foreach(tenantId)(challengeSettingsService.getSettings)
-            .map(_.flatten.fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile))
+          profile <- ZIO.foreach(tenantId)(challengeSettingsService.getSecurityProfile)
+            .map(_.getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile))
           allowPrivateUseSchemes = profile == SecurityProfile.standard
           _ <- ZIO.foreachDiscard(strictlyInvalid): uri =>
             ZIO.fromEither(RedirectUri.validateForRegistration(uri, allowPrivateUseSchemes))

@@ -1108,6 +1108,14 @@ paths:
           description: Settings stored.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            The switch to `fapi2` was refused: the tenant holds clients the profile would not
+            admit. Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityProfileConflict'
 
   /configuration/forms:
     get:
@@ -2103,6 +2111,8 @@ components:
           description: Whether a previous secret is still accepted.
         authMethod:
           $ref: '#/components/schemas/AuthMethod'
+        applicationType:
+          $ref: '#/components/schemas/ApplicationType'
         accessTokenTtl:
           type: integer
           format: int64
@@ -2315,6 +2325,14 @@ components:
             regardless; a value below it is refused at registration.
         authMethod:
           $ref: '#/components/schemas/AuthMethod'
+        applicationType:
+          oneOf:
+            - $ref: '#/components/schemas/ApplicationType'
+            - type: 'null'
+          description: |
+            Absent or `null` registers a `web` client. Held apart from `authMethod`: a native
+            app is public (`none`) when it calls this server itself, and confidential
+            (`tls_client_auth`) when an edge authenticates as it.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2474,6 +2492,13 @@ components:
             Absent or `null` leaves the stored method unchanged. A value moves the client to
             it, which is validated against the resulting `mtlsAuth`/`jwks` exactly as a
             registration is, and drops the stored secret when it leaves `client_secret`.
+        applicationType:
+          oneOf:
+            - $ref: '#/components/schemas/ApplicationType'
+            - type: 'null'
+          description: |
+            Absent or `null` leaves the stored value unchanged. A value is validated against
+            the client as the patch leaves it, exactly as a registration is.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2529,6 +2554,57 @@ components:
     ResponseType:
       type: string
       enum: [code, 'code id_token']
+    SecurityProfile:
+      type: string
+      description: |
+        Which profile a tenant's clients are held to, at registration and at runtime.
+        `fapi2` is the default for a new tenant; `standard` is plain OAuth 2.1, which also
+        admits a reverse-domain private-use redirect scheme (RFC 8252 §7.1).
+      enum: [standard, fapi2]
+    ClientProfileViolation:
+      type: object
+      description: One client the profile would not admit, and why.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        reasons:
+          type: array
+          items:
+            type: string
+      required:
+        - clientId
+        - reasons
+    SecurityProfileConflict:
+      type: object
+      description: |
+        Why a switch to a stricter profile was refused: every client the profile would not
+        admit. The request is well formed, and is accepted as it stands once those clients
+        are brought into conformance.
+      properties:
+        error:
+          type: string
+          enum: [security_profile_violations]
+        message:
+          type: string
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientProfileViolation'
+      required:
+        - error
+        - message
+        - securityProfile
+        - violations
+    ApplicationType:
+      type: string
+      description: |
+        OIDC Dynamic Client Registration §2 `application_type`: what kind of program the
+        client is, held apart from how it authenticates. Only a `native` client may register
+        a loopback `http` redirect URI (RFC 8252 §7.3), and only a `native` one is served by
+        an edge's native endpoints.
+      enum: [web, native]
     AuthMethod:
       type: string
       description: |
@@ -3553,6 +3629,8 @@ components:
             of this tenant's clients may set its `exp`. A `jti` is remembered against replay
             for as long as the assertion bearing it is acceptable, so this also sizes that
             retention. Between 30 and 900 seconds.
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
       required:
         - tenantId
         - allowedPrefixes
@@ -3621,6 +3699,14 @@ components:
         requireDpopNonce:
           type: [boolean, 'null']
           description: Keeps the stored value when omitted; defaults to false for a new tenant.
+        securityProfile:
+          oneOf:
+            - $ref: '#/components/schemas/SecurityProfile'
+            - type: 'null'
+          description: >-
+            Keeps the stored value when omitted; defaults to `fapi2` for a new tenant. A
+            switch to `fapi2` is refused with `409` while any of the tenant's clients would
+            violate it.
         mtlsCertificateHeader:
           type: [string, 'null']
           description: >-
