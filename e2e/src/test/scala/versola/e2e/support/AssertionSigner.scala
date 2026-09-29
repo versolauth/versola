@@ -107,6 +107,19 @@ object AssertionSigner:
   /** RFC 7523 §2.2: the fixed `client_assertion_type` a token request carries. */
   val Type = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
 
+  /** A signer for a key central generated at registration, rather than one made here and
+    * registered.
+    *
+    * The point of the distinction: [[make]] proves an assertion signed with a key the test
+    * already held is accepted, which says nothing about the key central hands back. Only a
+    * signer built from that document shows it arrives usable -- carrying its private half,
+    * naming a `kid` the stored set publishes, and signing something auth verifies.
+    */
+  def fromPrivateJwk(document: Json.Obj): Task[AssertionSigner] =
+    ZIO.attempt:
+      val key = ECKey.parse(document.toString).nn
+      AssertionSigner(key.toECPrivateKey.nn, key.toPublicJWK.nn)
+
   def make: Task[AssertionSigner] =
     ZIO.attempt:
       val generator = java.security.KeyPairGenerator.getInstance("EC").nn

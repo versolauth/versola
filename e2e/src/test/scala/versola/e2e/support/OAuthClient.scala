@@ -237,18 +237,23 @@ sealed trait RegisterClientResult:
       ZIO.fail(RuntimeException(s"Expected registerClient success but got: status=${resp.status} body=$body"))
 
 object RegisterClientResult:
-  /** `secret` is empty for a native (public) client - central issues none. */
-  case class Success(response: Response, secret: String) extends RegisterClientResult
+  /** `secret` is empty for a native (public) client - central issues none.
+    *
+    * `privateKey` is the key central generated where `generateJwks` asked for one, and is
+    * absent otherwise. Readable here and nowhere else: central stores only its public half.
+    */
+  case class Success(response: Response, secret: String, privateKey: Option[zio.json.ast.Json])
+      extends RegisterClientResult
   case class Failure(response: Response, body: String) extends RegisterClientResult
 
-  private case class Raw(secret: Option[String]) derives JsonDecoder
+  private case class Raw(secret: Option[String], privateKey: Option[zio.json.ast.Json]) derives JsonDecoder
 
   def parse(response: Response): Task[RegisterClientResult] =
     response.body.asString.map: body =>
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.secret.getOrElse("")),
+          raw => Success(response, raw.secret.getOrElse(""), raw.privateKey),
         )
       else Failure(response, body)
 
@@ -1102,6 +1107,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: the public keys this client signs its assertions with, instead of
         * authenticating by secret. Build it with `AssertionSigner.jwks`. */
       jwks: Option[zio.json.ast.Json] = None,
+      /** Ask central to generate the `private_key_jwt` key pair under this algorithm instead
+        * of registering one, for the caller that holds none. The private half comes back as
+        * `RegisterClientResult.Success.privateKey`. Mutually exclusive with `jwks`. */
+      generateJwks: Option[String] = None,
       /** RFC 9101 §10.5: the client states its authorization request in a request object it
         * signed. Needs `jwks`, which registration enforces. */
       requireSignedRequestObject: Boolean = false,
@@ -1152,6 +1161,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       certificateBoundAccessTokens = certificateBoundAccessTokens,
       dpopBoundAccessTokens = dpopBoundAccessTokens,
       jwks = jwks,
+      generateJwks = generateJwks,
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
       edgeSigningKey = edgeSigningKey,
@@ -1763,6 +1773,7 @@ object OAuthClient:
       certificateBoundAccessTokens: Boolean,
       dpopBoundAccessTokens: Boolean,
       jwks: Option[zio.json.ast.Json],
+      generateJwks: Option[String],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
       dpopSigningAlgs: Set[String],

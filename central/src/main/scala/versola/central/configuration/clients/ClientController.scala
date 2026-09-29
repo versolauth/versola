@@ -156,7 +156,11 @@ object ClientController extends Controller:
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         registered <- service.registerClient(body)
-        response = CreateClientResponse(registered.secret.map(Base64Url.encode), registered.createdAt)
+        response = CreateClientResponse(
+          registered.secret.map(Base64Url.encode),
+          registered.createdAt,
+          registered.privateKey,
+        )
       yield Response.json(response.toJson).status(Status.Created))
         .catchAll {
           case error: ClientAlreadyExists =>

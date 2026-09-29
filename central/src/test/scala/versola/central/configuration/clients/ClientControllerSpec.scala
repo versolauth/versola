@@ -88,6 +88,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    generateJwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
@@ -628,14 +629,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt)),
+        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt, None)),
       verify = (response, service, _) =>
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest, None, true)),
           // The registration time is the service's, handed back as it recorded it.
-          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt),
+          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt, None),
         ),
     ),
     controllerTestCase(
@@ -647,14 +648,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt)),
+        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None)),
       verify = (response, service, _) =>
         for
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
           service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None, true)),
-          body == CreateClientResponse(None, registeredAt),
+          body == CreateClientResponse(None, registeredAt, None),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
         ),
