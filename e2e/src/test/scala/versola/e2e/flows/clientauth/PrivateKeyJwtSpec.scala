@@ -357,6 +357,46 @@ object PrivateKeyJwtSpec extends E2ESpec:
       ).label("the key central generated is the whole credential: no secret was ever issued")
     },
 
+    test("generateJwks is refused together with a registered jwks") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          redirectUris = Set.empty,
+          authMethod = "private_key_jwt",
+          jwks = Some(signer.jwks),
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse a key set alongside generateJwks")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("a client registers the key it holds or asks for one, not both")
+    },
+
+    test("generateJwks is refused for a method other than private_key_jwt") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          Set(redirectUri),
+          // Default authMethod is client_secret, which reads no key set at all.
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse generateJwks under client_secret")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("generateJwks names the key an assertion is signed with, which client_secret never reads")
+    },
+
     test("the metadata document advertises the method and the algorithms it will accept") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
