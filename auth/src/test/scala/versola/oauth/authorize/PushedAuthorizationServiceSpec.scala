@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{ClientAssertion, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -411,6 +411,43 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         _ <- env.parser.validate.failsWith(Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment))
         service <- env.service
         result <- service.push(
+          validParams("response_type" -> Chunk("code id_token")),
+          credentials,
+          None,
+          request,
+        ).either
+      yield assertTrue(result == Left(PushedAuthorizationError.from(
+        Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
+      )))
+    },
+    test("rejects a hybrid flow request pushed without a nonce — parser not stubbed") {
+      val env = Env()
+      for
+        _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
+        _ <- env.repository.create.succeedsWith(())
+        _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+        _ <- env.configuration.getIpHeader.succeedsWith("X-Real-IP")
+        secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
+        hashingSemaphore <- Semaphore.make(1)
+        realParser = AuthorizeRequestParser.Impl(
+          config,
+          env.configuration,
+          env.repository,
+          RequestObjectService.Impl(config, env.configuration),
+          SecurityService.Impl(secureRandom, hashingSemaphore),
+          JsonSchemaValidator.Impl(),
+        )
+        hashingSemaphore2 <- Semaphore.make(1)
+        realService = PushedAuthorizationService.Impl(
+          config,
+          realParser,
+          env.repository,
+          ClientAuthentication.Impl(env.configuration, env.clientAssertionService, TestEnvConfig.coreConfig),
+          RequestObjectService.Impl(config, env.configuration),
+          secureRandom,
+          SecurityService.Impl(secureRandom, hashingSemaphore2),
+        )
+        result <- realService.push(
           validParams("response_type" -> Chunk("code id_token")),
           credentials,
           None,
