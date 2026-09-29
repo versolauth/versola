@@ -1,6 +1,6 @@
 package versola.loadgen.store
 
-import versola.loadgen.sut.{PoolerStats, SutStats}
+import versola.loadgen.sut.{PoolerStats, SutProcessStats, SutStats}
 
 import java.time.Instant
 
@@ -106,6 +106,24 @@ case class PoolerStatSnapshotRow(
     capturedAt: Instant,
     version: String,
     statistics: PoolerStats,
+)
+
+/** One `vu_sut_process_snapshots` row (migration V0007): what one SUT service's own `/metrics`
+  * said about its process at one boundary of one campaign.
+  *
+  * [[startedAtEpochSeconds]] is outside [[statistics]] for the reason [[SutStatSnapshotRow]]'s
+  * reset instants are outside its: every counter in the document is cumulative since the
+  * process started, so this column is what decides whether a pair may be differenced at all.
+  * `None` when the exposition omitted it.
+  */
+case class SutProcessSnapshotRow(
+    campaign: String,
+    /** The operator's label for the service, as `sut-process-stats.services[].name` states it. */
+    service: String,
+    phase: SutStatPhase,
+    capturedAt: Instant,
+    startedAtEpochSeconds: Option[Double],
+    statistics: SutProcessStats,
 )
 
 /** Which boundary of the campaign a [[SutStatSnapshotRow]] or [[PoolerStatSnapshotRow]] was taken

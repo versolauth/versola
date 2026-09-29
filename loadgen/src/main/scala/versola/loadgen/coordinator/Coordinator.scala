@@ -6,10 +6,17 @@ import versola.loadgen.store.{
   LoadgenMigrations,
   PostgresMetricSnapshotRepository,
   PostgresPoolerStatSnapshotRepository,
+  PostgresSutProcessSnapshotRepository,
   PostgresSutStatSnapshotRepository,
   PostgresVirtualUserRepository,
 }
-import versola.loadgen.sut.{PgBouncerStatsCapture, PoolerQueueRecorder, PostgresSutStatsCapture}
+import versola.loadgen.sut.{
+  HttpSutProcessStatsCapture,
+  PgBouncerStatsCapture,
+  PoolerQueueRecorder,
+  PostgresSutStatsCapture,
+}
+import zio.http.Client
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -23,9 +30,10 @@ import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
   */
 object Coordinator:
 
-  def make(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, CoordinatorService] =
+  def make(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Client, Throwable, CoordinatorService] =
     for
       xa <- storeTransactor
+      client <- ZIO.service[Client]
       poolerQueue <- PoolerQueueRecorder.make
       service <- CoordinatorService
         .make(
@@ -41,6 +49,10 @@ object Coordinator:
           // pooler, and 04-pgbouncer.md's target topology has both.
           poolerStats = config.poolerStats.map: stats =>
             PgBouncerStatsCapture(stats.poolers, PostgresPoolerStatSnapshotRepository(xa), poolerQueue),
+          // Independently absent again: this one is scraped over HTTP from the services'
+          // diagnostics ports, so it needs neither database credentials nor a pooler.
+          sutProcessStats = config.sutProcessStats.map: stats =>
+            HttpSutProcessStatsCapture(stats.services, PostgresSutProcessSnapshotRepository(xa), client),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run
@@ -62,6 +74,14 @@ object Coordinator:
               s"and SHOW POOLS will be sampled every ${PoolerQueueRecorder.sampleInterval.render} while it runs"
           case None =>
             "No 'pooler-stats' block; the campaign report will carry no pooler section",
+      )
+      _ <- ZIO.logInfo(
+        config.sutProcessStats match
+          case Some(stats) =>
+            s"/metrics scrapes will bracket the campaign for ${stats.services.map(_.name).mkString(", ")}, " +
+              "so the report can state CPU and heap per service"
+          case None =>
+            "No 'sut-process-stats' block; the campaign report will carry no per-service CPU or heap",
       )
       _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))):
         group =>
