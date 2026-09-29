@@ -59,6 +59,12 @@ global:
 preStopSleepSeconds: 5
 terminationGracePeriodSeconds: 30
 
+# Size of the emptyDir each pod gets at /diagnostics, where the JVM writes its
+# heap dump and GC log (docker/Dockerfile.*'s JAVA_OPTS). One dump is at most
+# about -Xmx (512m today) and the GC log is capped at 5 x 20M, so 1Gi holds a
+# dump and its logs. Per-service override: services.<name>.diagnosticsSizeLimit.
+diagnosticsSizeLimit: 1Gi
+
 # Secret values auth/central/edge's env.conf files reference as `${VAR}`
 # placeholders (see scripts/gen-env.scala's secretField/useOpenBao) -- e.g.
 # ACCESS_TOKENS_SECRET, EDGE_PRIVATE_KEY, POSTGRES_PASSWORD. Delivered as
@@ -114,12 +120,20 @@ services:
     # expose it as its own port -- see ingress.hosts' `settings` route
     # group for whether/how it's actually reachable.
     additionalPort: 8082
+    # Memory is request == limit and is derived from the image's JAVA_OPTS
+    # rather than guessed: heap 512m + direct 64m + metaspace 128m + code
+    # cache 64m + thread stacks and JVM internals ~80m is ~848m, so 1Gi leaves
+    # ~176Mi of headroom. All five are capped in docker/Dockerfile.auth --
+    # changing a cap without changing this (or the reverse) is how a container
+    # gets cgroup-OOM-killed instead of producing the heap dump that would
+    # explain it. Provisional until the 5M sizing campaign measures the real
+    # working set.
     resources:
       requests:
         cpu: 250m
-        memory: 512Mi
+        memory: 1Gi
       limits:
-        memory: 512Mi
+        memory: 1Gi
     config:
       # Name of a Secret that already contains an env.conf key (HOCON --
       # see deploy.md 3.2/3.3), mounted at CONFIG_PATH. Left empty by
@@ -148,12 +162,13 @@ services:
     replicaCount: 1
     port: 8090
     diagnosticsPort: 8091
+    # Same budget and same reasoning as auth's, from docker/Dockerfile.central.
     resources:
       requests:
         cpu: 250m
-        memory: 768Mi
+        memory: 1Gi
       limits:
-        memory: 768Mi
+        memory: 1Gi
     config:
       existingSecret: ""
       secretKey: env.conf
@@ -171,12 +186,21 @@ services:
     replicaCount: 1
     port: 8095
     diagnosticsPort: 8096
+    # heap 512m + direct 96m + metaspace 128m + code cache 64m + stacks and JVM
+    # internals ~80m is ~880m (docker/Dockerfile.edge; the direct-buffer ceiling
+    # is higher than auth's because edge proxies response bodies through
+    # Netty's pooled arenas on every request), so 1Gi leaves ~144Mi.
+    #
+    # This was 384Mi, which no JVM with those ceilings fits in -- the heap alone
+    # would have to be about 16m. It was never exercised: production runs on
+    # docker compose, which sets no memory limit at all, so nothing ever
+    # contradicted the figure.
     resources:
       requests:
         cpu: 250m
-        memory: 384Mi
+        memory: 1Gi
       limits:
-        memory: 384Mi
+        memory: 1Gi
     config:
       existingSecret: ""
       secretKey: env.conf

@@ -118,6 +118,7 @@ services:
       - ./central.secrets.env
     volumes:
       - ./central.conf:/app/config/env.conf:ro
+      - versola-central-diagnostics-vps:/diagnostics
 
   auth:
     image: ghcr.io/versolauth/versola-auth:${VERSION}
@@ -147,6 +148,7 @@ services:
       - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
+      - versola-auth-diagnostics-vps:/diagnostics
 
   edge:
     image: ghcr.io/versolauth/versola-edge:${VERSION}
@@ -168,6 +170,7 @@ services:
       - ./edge.secrets.env
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
+      - versola-edge-diagnostics-vps:/diagnostics
 
 # Same external-volume reasoning as compose.fragment.yml.template -- see
 # the comment there. Named "-vps", not shared with that file's own
@@ -177,3 +180,9 @@ services:
 volumes:
   versola-openbao-file-vps:
     external: true
+  # See compose.fragment.yml.template's comment on these -- heap dump and GC
+  # log, kept out of the container filesystem so ExitOnOutOfMemoryError's
+  # restart cannot destroy the evidence.
+  versola-central-diagnostics-vps:
+  versola-auth-diagnostics-vps:
+  versola-edge-diagnostics-vps:

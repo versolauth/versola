@@ -133,6 +133,29 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = false)
 
+  /** Optional readiness-gated warmup, run once between the application server binding and
+    * [[ReadinessService.setReady]] -- see [[Warmup.run]] for why that window is safe and why
+    * this must be fail-open. Defaults to a no-op, so overriding it is opt-in per service.
+    *
+    * Intended for read-only, non-mutating work that exercises a service's hot paths ahead of
+    * real traffic: opening pooled connections, precompiling caches that would otherwise compile
+    * lazily on first matching request, signing/verifying once to warm JCA provider lookups and
+    * codecs. Must never create, update, or delete anything a real request would -- a warmup step
+    * that mutates state is not warming up, it's traffic with no caller.
+    */
+  def warmup: ZIO[Dependencies, Nothing, Unit] = ZIO.unit
+
+  /** Whether [[warmup]] runs at all. WARMUP_ENABLED env var, default true. */
+  def warmupEnabled: Boolean = boolEnv("WARMUP_ENABLED", default = true)
+
+  /** Upper bound on how long [[warmup]] may run before it's abandoned and readiness proceeds
+    * anyway (see [[Warmup.run]]). WARMUP_BUDGET_SECONDS env var, default 20.
+    */
+  def warmupBudget: Duration =
+    Option(java.lang.System.getenv("WARMUP_BUDGET_SECONDS")).flatMap(_.toIntOption) match
+      case Some(seconds) => seconds.seconds
+      case None => 20.seconds
+
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)
 
@@ -256,6 +279,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               Observability.middleware
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
+          _ <- ZIO.when(warmupEnabled)(Warmup.run(warmup, warmupBudget))
           _ <- readinessService.setReady
           _ <- ZIO.never
         yield ()

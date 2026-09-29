@@ -171,6 +171,7 @@ services:
       - ./central.secrets.env
     volumes:
       - ./central.conf:/app/config/env.conf:ro
+      - versola-central-diagnostics-local:/diagnostics
     ports:
       # Only the diagnostic port (readiness) is published, not 8090 itself
       # -- nginx is still the only path to real traffic. "versola
@@ -209,6 +210,7 @@ services:
       - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
+      - versola-auth-diagnostics-local:/diagnostics
     ports:
       - "8081:8081"
 
@@ -228,6 +230,7 @@ services:
       - ./edge.secrets.env
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
+      - versola-edge-diagnostics-local:/diagnostics
     ports:
       - "8096:8096"
 
@@ -273,3 +276,13 @@ services:
 volumes:
   versola-openbao-file-local:
     external: true
+  # Where each JVM writes its heap dump and GC log (docker/Dockerfile.*'s
+  # JAVA_OPTS). Ordinary managed volumes, not `external: true`: unlike
+  # OpenBao's storage these hold nothing that must outlive `versola down`,
+  # they just have to outlive the *container*, which ExitOnOutOfMemoryError
+  # replaces the moment the dump is written. Left in the container's own
+  # filesystem the dump would be destroyed by the restart it exists to
+  # explain.
+  versola-central-diagnostics-local:
+  versola-auth-diagnostics-local:
+  versola-edge-diagnostics-local:
