@@ -592,7 +592,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       },
       test("defaults to fragment for a response type returning an id_token") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token", "nonce" -> "test-nonce")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
@@ -611,6 +611,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map(
           "response_type" -> "code id_token",
           "response_mode" -> "jwt",
+          "nonce" -> "test-nonce",
         )))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
@@ -1175,7 +1176,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     suite("response_type")(
       test("accepts code id_token") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token", "nonce" -> "test-nonce")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
