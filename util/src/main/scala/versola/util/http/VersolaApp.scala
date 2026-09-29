@@ -23,6 +23,7 @@ import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation,
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
 import zio.metrics.connectors.MetricsConfig
+import zio.metrics.jvm.{BufferPools, DefaultJvmMetrics, JvmMetricsSchedule}
 import zio.metrics.connectors.prometheus.{PrometheusPublisher, prometheusLayer, publisherLayer}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
@@ -394,8 +395,32 @@ object VersolaApp:
       yield zio.logging.consoleJsonLogger(config) >+> Slf4jBridge.initialize
     }.flatten
 
+  /** The JVM's own runtime metrics -- process CPU, heap and non-heap pools, GC, threads, class
+    * loading, buffer pools -- published on `/metrics` alongside the application's.
+    *
+    * Without this the endpoint carries application counters only, so the cost of serving a
+    * request is observable in a way the process serving it never is: no CPU, no heap, no GC.
+    * Everything that wants those falls back to the container runtime's view (cAdvisor), which
+    * knows the cgroup but not the process inside it, and cannot answer heap at all -- so "is the
+    * heap the reason RSS sits where it does" has no answer at the moment it is asked, which is
+    * what #430's heap ceilings were being chosen against.
+    *
+    * `liveV2` rather than `live`: the v2 naming is the one matching Prometheus' conventions
+    * (`jvm_memory_used_bytes`, not `jvm_memory_bytes_used`), which is what off-the-shelf JVM
+    * dashboards and the sizing campaign's queries select by. [[JvmRuntimeMetricsSpec]] pins the
+    * names, since swapping the two compiles and serves a populated `/metrics` either way.
+    *
+    * Sampled on `JvmMetricsSchedule.default` rather than per scrape, so scraping cannot make the
+    * process walk its own memory pools.
+    */
+  private[http] val jvmRuntimeMetrics: ZLayer[Any, Throwable, Reloadable[BufferPools]] =
+    JvmMetricsSchedule.default >>> DefaultJvmMetrics.liveV2
+
   private val prometheusMetricsService: ZLayer[MetricsConfig, Throwable, MetricsService] =
-    (publisherLayer >+> prometheusLayer) >+> ZLayer.fromZIO:
+    // Composed into the chain, not added to the `provide` below: this layer's value is the
+    // daemon fibers it starts, so nothing depends on it by type and a flat list lets ZIO prune
+    // it -- silently, leaving an endpoint that still looks populated.
+    (publisherLayer >+> prometheusLayer >+> jvmRuntimeMetrics) >+> ZLayer.fromZIO:
       ZIO.serviceWith[PrometheusPublisher]: publisher =>
         new MetricsService {
           override def get: UIO[String] = publisher.get

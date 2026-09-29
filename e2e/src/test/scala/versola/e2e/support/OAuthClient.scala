@@ -1622,6 +1622,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** Auth's public base URL — what the discovery document must advertise its endpoints on. */
   val authBaseUrl: String = config.authUrl
 
+  /** Auth's diagnostics base URL (`DPORT`) -- `/metrics`, `/liveness`, `/readiness`. */
+  val authDiagnosticsBaseUrl: String = config.authDiagnosticsUrl
+
   /** Issues an unauthenticated request at an arbitrary URL, so tests can check that an
     * endpoint a metadata document advertises is actually served (anything but a 404).
     */
