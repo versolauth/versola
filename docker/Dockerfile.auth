@@ -11,7 +11,31 @@
 # runs on, defeating the point of pinning the runtime at all. Bump this
 # deliberately when a new Java 25 patch/point release is wanted, not by
 # surprise on a rebuild.
+#
+# jcmd, for the NativeMemoryTracking diagnostic below (`jcmd 1 VM.native_memory
+# summary` under `docker exec`/`kubectl exec`): a `-jre` image is jlinked without
+# the jdk.jcmd module, so jcmd is absent from it entirely, not merely unable to
+# find a target. This stage draws jdk.jcmd and the jdk.attach module it needs
+# to reach another JVM's attach socket out of a full JDK's jmods, once, so the
+# runtime image below can gain the one binary without carrying the rest of the
+# JDK (javac, jshell, jlink itself, ...). Pinned independently of the runtime
+# image's digest below -- jcmd's attach protocol only has to match the target's
+# *feature* version (25 to 25), so tying two unrelated digests to the same
+# point release would be pure churn with no correctness benefit.
+FROM eclipse-temurin:25-jdk@sha256:119a3d18f160a3e7655a66034d0f43beee31cd7b3b9142d57a5de29772011de6 AS diagnostics-tools
+RUN "$JAVA_HOME/bin/jlink" \
+      --module-path "$JAVA_HOME/jmods" \
+      --add-modules jdk.jcmd,jdk.attach \
+      --strip-debug --no-man-pages --no-header-files --compress=2 \
+      --output /opt/diagnostics-jdk
+
 FROM eclipse-temurin:25-jre@sha256:f19dbf0a22d0b3658fda48ce7d7181df05ad14bda151dd5ad12cc09d1451c70e
+
+# Not merged into $JAVA_HOME: this JRE has no jdk.jcmd module of its own to
+# re-link against, so jcmd ships as the self-contained runtime `diagnostics-tools`
+# built it into, on its own PATH entry.
+COPY --from=diagnostics-tools /opt/diagnostics-jdk /opt/diagnostics-jdk
+ENV PATH="/opt/diagnostics-jdk/bin:${PATH}"
 
 WORKDIR /app
 
@@ -43,9 +67,65 @@ EXPOSE 8080 8082 9345
 # confirmed by hand these appear on startup without this flag; JDK docs
 # say restricted native calls get blocked outright in a future release
 # without it, not just warned about.
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
+#
+# Xms == Xmx, stated in absolute bytes rather than as a percentage of the
+# container. Without a fixed floor HotSpot starts heap at 1/64 of available
+# memory and grows it under allocation pressure, and G1 never uncommits, so
+# RSS drifts upward for hours and every right-sizing measurement taken before
+# it plateaus is wrong.
+#
+# Absolute rather than InitialRAMPercentage because *RAMPercentage resolves
+# against the cgroup limit only when there is one, and falls back to the
+# host's physical memory when there is not. The production deployment is
+# docker compose via versola-cli (deploy.md), whose service definitions set no
+# mem_limit -- so an InitialRAMPercentage of 75 there is not "75% of auth's
+# share", it is three JVMs each committing 75% of the whole VPS at startup.
+# A number that means two different things depending on where it runs is the
+# opposite of the deterministic sizing this is for.
+#
+# The non-heap ceilings exist for the same reason: heap is only one of the
+# five things in this container's RSS, and capping just heap leaves the total
+# unbounded. MaxDirectMemorySize bounds Netty's pooled direct arenas (default
+# ceiling: -Xmx, and invisible in heap usage). MaxMetaspaceSize bounds class
+# metadata. ReservedCodeCacheSize bounds JIT output. Xss halves the default
+# per-thread stack. Budget, which k8s/versola/values.yaml's memory limit is
+# then set from:
+#
+#   heap 512m + direct 64m + metaspace 128m + code 64m + stacks/JVM ~80m
+#     = ~848m, under a 1Gi limit with ~176Mi to spare
+#
+# NativeMemoryTracking lets `jcmd VM.native_memory summary` attribute RSS to
+# those five when the campaign replaces this arithmetic with measurements --
+# see the diagnostics-tools stage above for where jcmd itself comes from.
+#
+# HeapDumpOnOutOfMemoryError + ExitOnOutOfMemoryError + the GC log leave
+# something to diagnose an OOM with, instead of a silently restarted pod.
+# They write to /diagnostics, which is a volume in both deployments (an
+# emptyDir in the chart, a named volume in compose): the container's own
+# filesystem is replaced on the restart ExitOnOutOfMemoryError triggers, so a
+# dump written there is destroyed by the very event it documents -- and a
+# multi-hundred-MB dump in the writable layer fills the node's disk on the way
+# out. An emptyDir is pod-scoped, so it survives the container restart and the
+# dump is still there to `kubectl cp`.
+#
+# HeapDumpPath names the file itself, not just the directory: pointed at a
+# directory the JVM names each dump java_pid<pid>.hprof, and since
+# ExitOnOutOfMemoryError guarantees the next dump has a new pid, an OOM loop
+# would accumulate one multi-hundred-MB file per crash forever. Naming the
+# file makes every OOM overwrite the same one, so the volume holds at most the
+# most recent incident -- the GC log's filecount=5 rotation bounds the other
+# artifact the same way, for the same reason.
+ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=64m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
+
+# Present so the JVM can always write its dump and GC log even when nothing is
+# mounted here (a bare `docker run`); both deployments mount a volume over it.
+RUN mkdir -p /diagnostics
 ENV CONFIG_PATH="/app/config/env.conf"
 
-# Run the application with config path
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
+# Run the application with config path. JAVA_OPTS is not repeated on the
+# command line here -- sbt-native-packager's launcher script already reads
+# the JAVA_OPTS env var itself. Passing it again routes tokens the script's
+# own arg-parser doesn't recognize (e.g. --enable-native-access=...) through
+# as a residual application argument instead of a JVM flag.
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH"]
 

@@ -33,7 +33,7 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
-import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, JsonSchemaValidator, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -175,7 +175,7 @@ object OAuthConfigurationService:
   val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
 
   def live: ZLayer[
-    Client & SecurityService & Scope & CoreConfig,
+    Client & SecurityService & Scope & CoreConfig & JsonSchemaValidator,
     Throwable,
     OAuthConfigurationService,
   ] = {

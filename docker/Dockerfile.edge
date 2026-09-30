@@ -11,7 +11,23 @@
 # runs on, defeating the point of pinning the runtime at all. Bump this
 # deliberately when a new Java 25 patch/point release is wanted, not by
 # surprise on a rebuild.
+#
+# See Dockerfile.auth's comment on the diagnostics-tools stage below: jcmd is
+# absent from a `-jre` image entirely, and this draws it (and jdk.attach) out
+# of a full JDK's jmods once, independently pinned from the runtime image.
+FROM eclipse-temurin:25-jdk@sha256:119a3d18f160a3e7655a66034d0f43beee31cd7b3b9142d57a5de29772011de6 AS diagnostics-tools
+RUN "$JAVA_HOME/bin/jlink" \
+      --module-path "$JAVA_HOME/jmods" \
+      --add-modules jdk.jcmd,jdk.attach \
+      --strip-debug --no-man-pages --no-header-files --compress=2 \
+      --output /opt/diagnostics-jdk
+
 FROM eclipse-temurin:25-jre@sha256:f19dbf0a22d0b3658fda48ce7d7181df05ad14bda151dd5ad12cc09d1451c70e
+
+# See Dockerfile.auth: not merged into $JAVA_HOME, which has no jdk.jcmd of
+# its own to re-link against.
+COPY --from=diagnostics-tools /opt/diagnostics-jdk /opt/diagnostics-jdk
+ENV PATH="/opt/diagnostics-jdk/bin:${PATH}"
 
 WORKDIR /app
 
@@ -43,8 +59,32 @@ EXPOSE 8080 9345
 # confirmed by hand these appear on startup without this flag; JDK docs
 # say restricted native calls get blocked outright in a future release
 # without it, not just warned about.
-ENV JAVA_OPTS="-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -XX:+UseCompactObjectHeaders --enable-native-access=ALL-UNNAMED"
+#
+# See Dockerfile.auth's comment on why the heap is absolute rather than a
+# percentage, on the non-heap ceilings, and on /diagnostics. edge's
+# MaxDirectMemorySize is higher than auth/central's because edge proxies
+# response bodies through Netty's pooled direct buffers on every request:
+#
+#   heap 512m + direct 96m + metaspace 128m + code 64m + stacks/JVM ~80m
+#     = ~880m, under a 1Gi limit with ~144Mi to spare
+#
+# This is also why edge's chart limit moved from 384Mi. Percentage sizing hid
+# the arithmetic: 75% of 384Mi is a 288m heap, and 288m + 96m of direct
+# buffers is the entire limit with nothing left for metaspace, JIT output or
+# thread stacks -- a container that gets cgroup-OOM-killed before it can
+# produce any of the OOM diagnostics below. Solving for a heap that fits 384Mi
+# with the non-heap ceilings honoured leaves about 16m, which is not a heap.
+# HeapDumpPath names the file itself, not just the directory -- see
+# Dockerfile.auth's comment: pointed at a directory the JVM names each dump
+# java_pid<pid>.hprof, and ExitOnOutOfMemoryError guarantees each OOM gets a
+# new pid, so an OOM loop would accumulate one dump per crash forever. Naming
+# the file makes every OOM overwrite the same one.
+ENV JAVA_OPTS="-XX:+UseG1GC -Xms512m -Xmx512m -XX:MaxDirectMemorySize=96m -XX:MaxMetaspaceSize=128m -XX:ReservedCodeCacheSize=64m -Xss512k -XX:NativeMemoryTracking=summary -XX:+UseCompactObjectHeaders -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/diagnostics/heap.hprof -XX:+ExitOnOutOfMemoryError -Xlog:gc*:file=/diagnostics/gc.log:time,uptime,level,tags:filecount=5,filesize=20M --enable-native-access=ALL-UNNAMED"
+
+# See Dockerfile.auth.
+RUN mkdir -p /diagnostics
 ENV CONFIG_PATH="/app/config/env.conf"
 
-# Run the application with config path
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH $JAVA_OPTS"]
+# Run the application with config path. See Dockerfile.auth's comment on why
+# JAVA_OPTS is not repeated on the command line.
+ENTRYPOINT ["/bin/sh", "-c", "/app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH"]

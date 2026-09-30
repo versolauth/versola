@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{AuthorizationDetailType, AuthorizationDetailTypeRecord, TenantId}
+import versola.util.JsonSchemaValidator
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -13,24 +14,35 @@ object AuthorizationDetailTypeSyncClientSpec extends ZIOSpecDefault:
     override def getToken: UIO[String] = ZIO.dieMessage("Unused in test")
     override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] = client.request(request)
 
+  /** Records every schema it's asked to warm, instead of actually compiling -- this spec is
+    * about `getAll` calling it for each fetched type, not about compilation itself
+    * (JsonSchemaValidatorSpec covers that). */
+  private def recordingSchemaValidator(seen: Ref[Vector[Json.Obj]]): JsonSchemaValidator = new JsonSchemaValidator:
+    override def validate(schema: Json.Obj, instance: Json): UIO[List[String]] = ZIO.dieMessage("Unused in test")
+    override def validateSchema(schema: Json.Obj): UIO[List[String]] = ZIO.dieMessage("Unused in test")
+    override def warmCompile(schema: Json.Obj): UIO[Unit] = seen.update(_ :+ schema)
+
   def spec = suite("AuthorizationDetailTypeSyncClient")(
     test("fetches authorization detail types from central") {
       val record = AuthorizationDetailTypeRecord(TenantId.default, AuthorizationDetailType("payment"), Json.Obj())
       for
         seen <- Ref.make(Option.empty[Request])
+        warmed <- Ref.make(Vector.empty[Json.Obj])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(Response.json(AuthorizationDetailTypeSyncClient.TypesResponse(Vector(record)).toJson))
           }.toRoutes,
         )
         client <- ZIO.service[Client]
-        service = AuthorizationDetailTypeSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client))
+        service = AuthorizationDetailTypeSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client), recordingSchemaValidator(warmed))
         types <- service.getAll
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
+        warmedSchemas <- warmed.get
       yield assertTrue(
         request.method == Method.GET,
         request.url.path.encode.contains("configuration/authorization-detail-types/sync"),
         types == Vector(record),
+        warmedSchemas == Vector(record.schema),
       )
     },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

@@ -155,6 +155,12 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#ClaimsParameter"),
     )
 
+  case class NonceMissing(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = "Missing required parameter - nonce (required when response_type includes id_token)",
+      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#HybridAuthRequest"),
+    )
+
   case class UnsupportedUiLocales(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "None of the requested ui_locales are supported",

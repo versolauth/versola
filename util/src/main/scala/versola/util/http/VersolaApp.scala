@@ -23,6 +23,7 @@ import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation,
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
 import zio.metrics.connectors.MetricsConfig
+import zio.metrics.jvm.{BufferPools, DefaultJvmMetrics, JvmMetricsSchedule}
 import zio.metrics.connectors.prometheus.{PrometheusPublisher, prometheusLayer, publisherLayer}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
@@ -131,6 +132,29 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     * default that production can't safely share.
     */
   def runMigrations: Boolean = boolEnv("RUN_MIGRATIONS", default = false)
+
+  /** Optional readiness-gated warmup, run once between the application server binding and
+    * [[ReadinessService.setReady]] -- see [[Warmup.run]] for why that window is safe and why
+    * this must be fail-open. Defaults to a no-op, so overriding it is opt-in per service.
+    *
+    * Intended for read-only, non-mutating work that exercises a service's hot paths ahead of
+    * real traffic: opening pooled connections, precompiling caches that would otherwise compile
+    * lazily on first matching request, signing/verifying once to warm JCA provider lookups and
+    * codecs. Must never create, update, or delete anything a real request would -- a warmup step
+    * that mutates state is not warming up, it's traffic with no caller.
+    */
+  def warmup: ZIO[Dependencies, Nothing, Unit] = ZIO.unit
+
+  /** Whether [[warmup]] runs at all. WARMUP_ENABLED env var, default true. */
+  def warmupEnabled: Boolean = boolEnv("WARMUP_ENABLED", default = true)
+
+  /** Upper bound on how long [[warmup]] may run before it's abandoned and readiness proceeds
+    * anyway (see [[Warmup.run]]). WARMUP_BUDGET_SECONDS env var, default 20.
+    */
+  def warmupBudget: Duration =
+    Option(java.lang.System.getenv("WARMUP_BUDGET_SECONDS")).flatMap(_.toIntOption) match
+      case Some(seconds) => seconds.seconds
+      case None => 20.seconds
 
   def serverConfig: Server.Config =
     Server.Config.default.binding(bindHost, port)
@@ -255,6 +279,15 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               Observability.middleware
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
+          // Warmup.run's fiber can still be running past its own budget -- that is the point,
+          // not a bug (see Warmup.run's scaladoc) -- so it has to be handed to this scope's
+          // finalizers exactly like `fibers`/`additionalFiber`/`mutualTlsFiber` above, or it
+          // outlives `dependencies` and leaks work into a closed pool across a restart.
+          _ <- ZIO.when(warmupEnabled) {
+            Warmup.run(warmup, warmupBudget).flatMap { warmupFiber =>
+              scope.addFinalizer(warmupFiber.interrupt *> warmupFiber.join.ignore)
+            }
+          }
           _ <- readinessService.setReady
           _ <- ZIO.never
         yield ()
@@ -394,8 +427,32 @@ object VersolaApp:
       yield zio.logging.consoleJsonLogger(config) >+> Slf4jBridge.initialize
     }.flatten
 
+  /** The JVM's own runtime metrics -- process CPU, heap and non-heap pools, GC, threads, class
+    * loading, buffer pools -- published on `/metrics` alongside the application's.
+    *
+    * Without this the endpoint carries application counters only, so the cost of serving a
+    * request is observable in a way the process serving it never is: no CPU, no heap, no GC.
+    * Everything that wants those falls back to the container runtime's view (cAdvisor), which
+    * knows the cgroup but not the process inside it, and cannot answer heap at all -- so "is the
+    * heap the reason RSS sits where it does" has no answer at the moment it is asked, which is
+    * what #430's heap ceilings were being chosen against.
+    *
+    * `liveV2` rather than `live`: the v2 naming is the one matching Prometheus' conventions
+    * (`jvm_memory_used_bytes`, not `jvm_memory_bytes_used`), which is what off-the-shelf JVM
+    * dashboards and the sizing campaign's queries select by. [[JvmRuntimeMetricsSpec]] pins the
+    * names, since swapping the two compiles and serves a populated `/metrics` either way.
+    *
+    * Sampled on `JvmMetricsSchedule.default` rather than per scrape, so scraping cannot make the
+    * process walk its own memory pools.
+    */
+  private[http] val jvmRuntimeMetrics: ZLayer[Any, Throwable, Reloadable[BufferPools]] =
+    JvmMetricsSchedule.default >>> DefaultJvmMetrics.liveV2
+
   private val prometheusMetricsService: ZLayer[MetricsConfig, Throwable, MetricsService] =
-    (publisherLayer >+> prometheusLayer) >+> ZLayer.fromZIO:
+    // Composed into the chain, not added to the `provide` below: this layer's value is the
+    // daemon fibers it starts, so nothing depends on it by type and a flat list lets ZIO prune
+    // it -- silently, leaving an endpoint that still looks populated.
+    (publisherLayer >+> prometheusLayer >+> jvmRuntimeMetrics) >+> ZLayer.fromZIO:
       ZIO.serviceWith[PrometheusPublisher]: publisher =>
         new MetricsService {
           override def get: UIO[String] = publisher.get

@@ -242,7 +242,12 @@ object AuthorizeRequestParser:
 
         nonce <- getParam(params, "nonce")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "nonce", responseMode = responseMode))
-          .map(_.map(Nonce(_)))
+          .flatMap {
+            case None if responseTypeEntries.contains(ResponseTypeEntry.IdToken) =>
+              ZIO.fail(Error.NonceMissing(clientId, redirectUri, state, responseMode))
+            case other =>
+              ZIO.succeed(other.map(Nonce(_)))
+          }
 
         prompt <- getParam(params, "prompt")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "prompt", responseMode = responseMode))
