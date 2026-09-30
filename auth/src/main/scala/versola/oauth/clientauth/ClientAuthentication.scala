@@ -269,9 +269,5 @@ object ClientAuthentication:
       * authenticate. */
     private def refusedByProfile(client: OAuthClientRecord): UIO[Boolean] =
       if client.isPublic then
-        oauthClientService.getSecurityProfile(client.id)
-          .map(_ == SecurityProfile.fapi2)
-          .tap(refused =>
-            ZIO.logWarning(s"Refusing public client ${client.id}: its tenant is on the FAPI 2.0 profile").when(refused),
-          )
+        oauthClientService.getSecurityProfile(client.id).map(_ == SecurityProfile.fapi2)
       else ZIO.succeed(false)

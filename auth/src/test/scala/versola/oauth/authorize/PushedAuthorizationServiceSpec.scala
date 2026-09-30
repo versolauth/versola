@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{ClientAssertion, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{ClientAssertion, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import versola.oauth.client.model.SecurityProfile
 import zio.*
 import zio.http.{Request, URL}
@@ -250,8 +250,10 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
           None,
           request,
         ).flip
+      // The body says only that the object is invalid; which check it failed travels with the
+      // error for the log alone, so the expected value names it.
       yield assertTrue(
-        result == PushedAuthorizationError.from(Error.InvalidRequestObject),
+        result == PushedAuthorizationError.from(Error.InvalidRequestObject(RequestObject.Error.NotJWT.toString)),
         env.repository.create.calls.isEmpty,
       )
     },

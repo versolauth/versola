@@ -937,7 +937,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
           first <- env.parser.parse(request).either
           replay <- env.parser.parse(request).either
-        yield assertTrue(first.isRight, replay == Left(Error.InvalidRequestObject))
+        yield assertTrue(first.isRight, replay == Left(Error.InvalidRequestObject("jti replayed")))
           .label("a by-value object has no one-time request_uri, so its jti is what makes it single-use")
       },
       test("under fapi2, refuses a request object with no jti to guard against replay") {
@@ -952,7 +952,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.InvalidRequestObject))
+        yield assertTrue(result == Left(Error.InvalidRequestObject("no jti")))
       },
       test("a standard-profile tenant still admits a request object with no jti") {
         val env = Env()
@@ -994,7 +994,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.InvalidRequestObject))
+        yield assertTrue(result == Left(Error.InvalidRequestObject(RequestObject.Error.ClientIdMismatch.toString)))
       },
       test("rejects an object signed by a key the client never registered") {
         val env = Env()
@@ -1011,7 +1011,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.getClientAssertionMaxLifetime.succeedsWith(5.minutes)
           _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.InvalidRequestObject))
+        yield assertTrue(result == Left(Error.InvalidRequestObject(RequestObject.Error.InvalidSignature.toString)))
       },
       test("rejects a request object from a client that registered no key to sign one with") {
         val env = Env()
@@ -1022,7 +1022,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result == Left(Error.InvalidRequestObject))
+        yield assertTrue(result == Left(Error.InvalidRequestObject("the client has no usable registered JWK Set")))
       },
       test("a plain request is left alone by the request object step") {
         val env = Env()
