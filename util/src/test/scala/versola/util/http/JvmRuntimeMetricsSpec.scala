@@ -25,7 +25,19 @@ object JvmRuntimeMetricsSpec extends ZIOSpecDefault:
   private val scrape: ZIO[PrometheusPublisher, Nothing, String] =
     ZIO
       .serviceWithZIO[PrometheusPublisher](_.get)
-      .repeat(Schedule.spaced(200.millis) *> Schedule.identity[String].untilOutput(_.contains("process_cpu_seconds_total")))
+      // Every name this spec asserts on, not only `process_cpu_seconds_total`: `liveV2`'s
+      // metric groups populate on their own schedule, so a scrape carrying the first can still
+      // be one sample away from carrying the rest -- polling for one and asserting on several
+      // is exactly the race that made this spec flaky.
+      .repeat(
+        Schedule.spaced(200.millis) *> Schedule.identity[String].untilOutput { scraped =>
+          scraped.contains("process_cpu_seconds_total") &&
+          scraped.contains("jvm_memory_used_bytes") &&
+          scraped.contains("jvm_memory_committed_bytes") &&
+          scraped.contains("jvm_gc_collection_seconds") &&
+          scraped.contains("jvm_threads_current")
+        },
+      )
       .timeout(30.seconds)
       .map(_.getOrElse(""))
 
