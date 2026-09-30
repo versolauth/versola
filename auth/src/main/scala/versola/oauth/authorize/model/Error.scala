@@ -17,10 +17,18 @@ private[authorize] object Error:
     * Answered directly rather than redirected, unlike the parameter errors below: the only
     * `redirect_uri` a request object request carries is the one inside the object, and an
     * object that failed verification is exactly the one whose contents cannot be trusted to
-    * name where a response may be sent. Why it failed is logged rather than returned, for the
-    * same reason a failed client authentication does not say which check it failed.
+    * name where a response may be sent.
+    *
+    * `reason` names the check that failed. It reaches the request's error context and never
+    * the response: the body stays identical across every cause, for the same reason a failed
+    * client authentication does not say which check it failed.
     */
-  case object InvalidRequestObject extends Error:
+  case class InvalidRequestObject(reason: String) extends Error:
+    val error: ErrorCode = InvalidRequestObject.error
+    val description: String = InvalidRequestObject.description
+    def logDescription: Option[String] = Some(reason)
+
+  object InvalidRequestObject:
     val error: ErrorCode = ErrorCode.InvalidRequestObject
     val description = "The request parameter does not contain a valid Request Object for this client"
 

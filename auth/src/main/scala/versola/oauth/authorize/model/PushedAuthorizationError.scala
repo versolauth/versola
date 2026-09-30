@@ -11,6 +11,11 @@ sealed trait PushedAuthorizationError:
   def errorDescription: Option[String]
   def errorUri: Option[String]
 
+  /** Description recorded in the request's error context, which never leaves the server.
+    * Defaults to the client-facing [[errorDescription]]; errors whose response body is
+    * deliberately uniform across causes narrow this to the specific check that failed. */
+  def logDescription: Option[String] = errorDescription
+
 object PushedAuthorizationError:
   case object InvalidClient extends PushedAuthorizationError:
     val status = Status.Unauthorized
@@ -61,8 +66,12 @@ object PushedAuthorizationError:
       error: String,
       errorDescription: Option[String],
       errorUri: Option[String],
+      /** Set where the response body is the same for every cause, so the check that actually
+        * failed is readable in the log and nowhere else. */
+      reason: Option[String] = None,
   ) extends PushedAuthorizationError:
     val status = Status.BadRequest
+    override def logDescription: Option[String] = reason.orElse(errorDescription)
 
   /** RFC 9126 §2.3: a pushed request is validated as an authorization request, but its errors
     * are returned directly to the client rather than redirected back to it.
@@ -71,11 +80,12 @@ object PushedAuthorizationError:
     error match
       case Error.BadRequest =>
         Validation(ErrorCode.InvalidRequest, Some(Error.BadRequest.description), None)
-      case Error.InvalidRequestObject =>
+      case error: Error.InvalidRequestObject =>
         Validation(
           Error.InvalidRequestObject.error,
           Some(Error.InvalidRequestObject.description),
           Some("https://datatracker.ietf.org/doc/html/rfc9101#section-6.2"),
+          reason = error.logDescription,
         )
       case error: Error.RedirectError =>
         Validation(error.error, Some(error.errorDescription), error.errorUri)

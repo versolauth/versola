@@ -5,6 +5,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.clientauth.ClientAssertionRepository
 import versola.oauth.client.model.{ClientId, SecurityProfile}
 import versola.util.{CoreConfig, JwtAudience, RequestObject}
+import versola.util.http.Observability
 import zio.{Chunk, Clock, IO, ZIO, ZLayer}
 
 /** RFC 9101 §6: resolves a `request` parameter into the authorization request parameters it
@@ -46,23 +47,26 @@ object RequestObjectService:
       params.get(RequestObject.Parameter) match
         case None => ZIO.succeed(params)
         case Some(Chunk(token)) => verify(token, params)
-        case Some(_) => ZIO.fail(Error.InvalidRequestObject)
+        case Some(_) => ZIO.fail(Error.InvalidRequestObject("the request parameter was sent more than once"))
 
     private def verify(token: String, params: Map[String, Chunk[String]]): IO[Error, Map[String, Chunk[String]]] =
       for
         // §5: the outer client_id is required alongside a request object, and is what selects
         // the key set the signature is checked against.
         clientId <- ZIO.fromOption(params.get("client_id").collect { case Chunk(one) => ClientId(one) })
-          .orElseFail(Error.InvalidRequestObject)
+          .orElseFail(Error.InvalidRequestObject("no single client_id accompanies the request object"))
+        // `/authorize` has authenticated nobody, so this is the first point at which the
+        // request can be attributed to a client at all -- and every error below is reported
+        // without naming its cause, which leaves the log nothing to attribute it by.
+        _ <- Observability.setClientId(clientId)
 
-        client <- configurationService.find(clientId).someOrFail(Error.InvalidRequestObject)
+        client <- configurationService.find(clientId)
+          .someOrFail(Error.InvalidRequestObject("no such client"))
 
         keys <- ZIO.fromEither(client.jwks.toRight(()).flatMap(_.publicKeys.left.map(_ => ())))
-          .orElseFail(Error.InvalidRequestObject)
-          .tapError: _ =>
-            // A client with no usable key set cannot sign a request at all, which is a
-            // registration the operator has to fix rather than something the caller can.
-            ZIO.logWarning(s"Client $clientId sent a request object but has no usable registered JWK Set")
+          // A client with no usable key set cannot sign a request at all, which is a
+          // registration the operator has to fix rather than something the caller can.
+          .orElseFail(Error.InvalidRequestObject("the client has no usable registered JWK Set"))
 
         allowedAlgorithms <- configurationService.getRequestObjectSigningAlgorithms
         // The tenant's bound on how far ahead a client-signed JWT may expire. It is the same
@@ -82,8 +86,7 @@ object RequestObjectService:
           requireNotBefore = profile == SecurityProfile.fapi2,
           now = now,
           maxLifetime = maxLifetime,
-        ).tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))
-          .orElseFail(Error.InvalidRequestObject)
+        ).mapError(reason => Error.InvalidRequestObject(reason.toString))
         _ <- rejectReplay(clientId, claims, profile)
       yield RequestObject.parameters(claims)
 
@@ -103,10 +106,9 @@ object RequestObjectService:
     ): IO[Error, Unit] =
       for
         key <- RequestObject.replayKey(claims)
-          .tapError(reason => ZIO.logInfo(s"Rejected the request object of $clientId: $reason"))
-          .orElseFail(Error.InvalidRequestObject)
+          .mapError(reason => Error.InvalidRequestObject(reason.toString))
         _ <- ZIO.when(key.isEmpty && profile == SecurityProfile.fapi2):
-          ZIO.logInfo(s"Rejected the request object of $clientId: no jti") *> ZIO.fail(Error.InvalidRequestObject)
+          ZIO.fail(Error.InvalidRequestObject("no jti"))
         _ <- ZIO.foreachDiscard(key): key =>
           replayGuard.recordIfAbsent(clientId, key.jti, key.expiresAt)
             // A replay guard that cannot answer is this server's failure, not the client's: it
@@ -114,10 +116,7 @@ object RequestObjectService:
             // never admitted unchecked.
             .orDie
             .flatMap: fresh =>
-              ZIO.unless(fresh)(
-                ZIO.logInfo(s"Rejected the request object of $clientId: jti replayed") *>
-                  ZIO.fail(Error.InvalidRequestObject),
-              )
+              ZIO.unless(fresh)(ZIO.fail(Error.InvalidRequestObject("jti replayed")))
       yield ()
 
     /** RFC 9101 §4 names the issuer identifier; §10.3 recommends naming the endpoint the

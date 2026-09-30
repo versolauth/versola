@@ -104,7 +104,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         description    = "returns invalid_request_object in the body when the request object fails verification",
         request        = Request.get(URL.root / "authorize"),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject),
+        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
         verify         = resp =>
           resp.body.asString.map(body =>
             assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
@@ -156,7 +156,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
         description    = "returns invalid_request_object in the body when the request object fails verification",
         request        = Request.post(URL.root / "authorize", Body.empty),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject),
+        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
         verify         = resp =>
           resp.body.asString.map(body =>
             assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
