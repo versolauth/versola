@@ -1027,7 +1027,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+        _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
         result <- env.service
           .registerClient(createRequest.copy(redirectUris = Set(redirectUri1, RedirectUri("com.example.app://callback"))))
           .either
@@ -1043,20 +1043,36 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.challengeSettingsService.getSecurityProfile
+          .succeedsWith(ChallengeSettingsRecord.DefaultSecurityProfile)
         result <- env.service
           .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("com.example.app://callback"))))
           .either
       yield assertTrue(result.left.toOption.exists(_.isInstanceOf[InvalidConsentUri]))
+    },
+    // The profile is read from the repository, not the settings cache: a registration that
+    // follows a switch to fapi2 is held to the profile the switch just stored, even while the
+    // cache still carries the standard-profile settings it replaced.
+    test("registerClient holds a private-use scheme to the stored profile, not the cached settings") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
+          securityProfile = SecurityProfile.standard,
+        )))
+        _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("com.example.app://callback"))))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(result.left.toOption.exists(_.isInstanceOf[InvalidConsentUri]), createCalls == 0)
     },
     test("registerClient accepts a reverse-domain private-use scheme for a standard-profile tenant") {
       val env = new Env()
       val uris = Set(redirectUri1, RedirectUri("com.example.app://callback"))
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
-          securityProfile = SecurityProfile.standard,
-        )))
+        _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.standard)
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
@@ -1068,9 +1084,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
-          securityProfile = SecurityProfile.standard,
-        )))
+        _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.standard)
         result <- env.service
           .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("http://rp.example.com/callback"))))
           .either
@@ -1081,7 +1095,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.challengeSettingsService.getSecurityProfile
+          .succeedsWith(ChallengeSettingsRecord.DefaultSecurityProfile)
         result <- env.service
           .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("http://rp.example.com/callback"))))
           .either
@@ -1114,7 +1129,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env(Vector(cachedClient))
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+        _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
         result <- env.service
           .updateClient(updateRequest.copy(redirectUris =
             PatchClientRedirectUris(add = Set(RedirectUri("com.example.app://callback")), remove = Set.empty),
