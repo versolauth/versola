@@ -328,10 +328,10 @@ server {
 }
 ```
 
-- `Host $http_host` — `versola-proxy` and `auth` build absolute URLs from it.
+- `Host $http_host` — passed through as-is. Versola doesn't trust it: the issuer, redirect URLs and the DPoP `htu` come from configuration (`--auth-url`), and `versola-proxy`'s own redirects are relative.
 - `X-Forwarded-For $proxy_add_x_forwarded_for` — `versola-proxy` trusts it only from `127.0.0.1`
   and restores the real client address from it; `auth` uses that address for rate limiting.
-- `X-Forwarded-Proto $scheme` — passed through so the services know the browser used https.
+- `X-Forwarded-Proto $scheme` — the scheme the browser used; standard for a TLS-terminating proxy (the services themselves take the scheme from configuration).
 - `client_max_body_size 8m` — the host nginx must allow the same body size as `versola-proxy`
   (themes, JWKS and resource definitions are POSTed through the console).
 
