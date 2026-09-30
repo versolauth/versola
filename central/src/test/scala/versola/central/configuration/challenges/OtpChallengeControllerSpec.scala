@@ -214,6 +214,24 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         val checks = clients.profileViolations.times
         ZIO.succeed(assertTrue(checks == 0)),
     ),
+    // A request that never mentions securityProfile (it is patching something else entirely)
+    // must not revert a switch a concurrent request already committed: the cached `existing`
+    // this handler also reads may still report the profile the tenant held a moment ago.
+    controllerTestCase(
+      description = "PUT challenge-settings omitting securityProfile keeps the tenant's actual profile, not the cached one",
+      request = upsertWithProfile(None),
+      expectedStatus = Status.NoContent,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.standard))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      settingsVerify = (_, service) =>
+        val profiles = service.upsertSettings.calls.map(_.securityProfile)
+        ZIO.succeed(assertTrue(profiles == List(SecurityProfile.fapi2))),
+      clientsVerify = (_, clients) =>
+        val checks = clients.profileViolations.times
+        ZIO.succeed(assertTrue(checks == 0)),
+    ),
     controllerTestCase(
       description = "PUT challenge-settings never checks clients for a switch to standard",
       request = upsertWithProfile(Some(SecurityProfile.standard)),

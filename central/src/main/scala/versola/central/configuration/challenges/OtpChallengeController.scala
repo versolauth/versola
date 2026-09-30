@@ -107,9 +107,6 @@ object OtpChallengeController extends Controller:
         clientAssertionMaxLifetimeSeconds = body.clientAssertionMaxLifetimeSeconds
           .orElse(existing.map(_.clientAssertionMaxLifetimeSeconds))
           .getOrElse(ChallengeSettingsRecord.DefaultClientAssertionMaxLifetimeSeconds)
-        securityProfile = body.securityProfile
-          .orElse(existing.map(_.securityProfile))
-          .getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile)
         // #353: switching a tenant onto FAPI 2.0 is refused while any of its clients would
         // violate it, rather than applied and left for those clients to fail at their next
         // patch -- or, for public ones, at their next token request. Only on the switch: a
@@ -118,6 +115,12 @@ object OtpChallengeController extends Controller:
         // Read from the repository, not the cache `existing` came from: a switch back onto the
         // profile moments after leaving it must not be taken for no switch at all.
         stored <- service.getSecurityProfile(body.tenantId)
+        // Defaulted from `stored`, not `existing.securityProfile`: a request that omits
+        // `securityProfile` (it is patching something else entirely) must keep whatever profile
+        // the tenant actually holds right now, not whatever the cache last saw it holding --
+        // otherwise it silently reverts a switch a concurrent request just committed, with no
+        // error and no sign to either caller.
+        securityProfile = body.securityProfile.getOrElse(stored)
         violations <-
           if securityProfile == SecurityProfile.fapi2 && (existing.isEmpty || stored != SecurityProfile.fapi2) then
             ZIO.serviceWithZIO[OAuthClientService](_.profileViolations(body.tenantId, securityProfile))

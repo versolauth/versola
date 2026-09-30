@@ -335,6 +335,25 @@ object NativeServiceSpec extends ZIOSpecDefault:
         calls.map(_.endpoint) == List("par"),
       )
     },
+    // The nonce this edge's own policy demands is satisfied once, on the proof addressed to
+    // edge itself -- it must never be asked of a proof `complete`/`refresh`/`revoke` only
+    // forwards. Presenting one over the device's own nonce-less proof here would prove the
+    // opposite bug: edge's differently-salted nonce store standing in for auth's, which no
+    // proof from a real device could ever satisfy (auth's own `use_dpop_nonce` challenge is
+    // relayed to the device untouched, and answered with auth's nonce, not edge's).
+    test("does not ask its own nonce policy of a proof addressed to auth, once past start") {
+      val device = DeviceKey()
+      val path = s"/native/start/$NativeClientId"
+      for
+        h <- harness(requireNonce = true)
+        nonce <- Clock.instant.map(DpopNonce.issue(nonceSalt, _))
+        start <- h.service.start(NativeClientId, request(path, Map("scope" -> "openid offline_access"), Some(device.proof(s"$EdgeUrl$path", nonce = Some(nonce)))))
+          .flatMap(_.body.asString)
+          .flatMap(body => ZIO.fromEither(body.fromJson[NativeService.StartResponse]))
+        response <- h.service.complete(NativeClientId, completeRequest(start, Some(device.proof(TokenHtu))))
+        calls <- h.calls.get
+      yield assertTrue(response.status == Status.Ok, calls.map(_.endpoint) == List("par", "token"))
+    },
   )
 
   private val completeSuite = suite("complete")(

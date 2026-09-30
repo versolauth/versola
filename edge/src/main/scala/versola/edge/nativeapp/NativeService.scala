@@ -131,7 +131,7 @@ object NativeService:
     override def start(clientId: String, request: Request): IO[NativeError | Throwable, Response] =
       for
         client <- nativeClient(clientId)
-        proof <- verifyProof(request, htu = ownUri(request.path))
+        proof <- verifyProof(request, htu = ownUri(request.path), checkOwnNonce = true)
         // §4.3 step 12: a proof addressed to edge goes no further, so edge is the only party
         // that can refuse its second use. Before the form is read, so a replay costs nothing
         // past the verification it has already paid for.
@@ -151,7 +151,7 @@ object NativeService:
         form <- readForm(request)
         code <- required(form, "code")
         blob <- openBlob(form, client)
-        proof <- verifyProof(request, htu = authUri(client.native, "token"))
+        proof <- verifyProof(request, htu = authUri(client.native, "token"), checkOwnNonce = false)
         // RFC 9449 §10: auth refuses this too (the code is bound to `dpop_jkt`), but a proof by
         // another key is refused here without spending the call -- or the code.
         _ <- ZIO.fail(NativeError.InvalidGrant("DPoP proof is signed by a different key than the one the flow started with"))
@@ -178,7 +178,7 @@ object NativeService:
         refreshToken <- required(form, "refresh_token")
         scope <- optional(form, "scope")
         resources <- values(form, "resource")
-        _ <- verifyProof(request, htu = authUri(client.native, "token"))
+        _ <- verifyProof(request, htu = authUri(client.native, "token"), checkOwnNonce = false)
         relayed <- authClient.token(
           clientId,
           client.certificate,
@@ -196,7 +196,7 @@ object NativeService:
         form <- readForm(request)
         token <- required(form, "token")
         hint <- optional(form, "token_type_hint")
-        _ <- verifyProof(request, htu = authUri(client.native, "revoke"))
+        _ <- verifyProof(request, htu = authUri(client.native, "revoke"), checkOwnNonce = false)
         relayed <- authClient.revoke(
           clientId,
           client.certificate,
@@ -319,7 +319,16 @@ object NativeService:
           .unless(iss.stripSuffix("/") == client.native.issuer(config.versolaUrl).encode.stripSuffix("/"))
       yield blob
 
-    private def verifyProof(request: Request, htu: String): IO[NativeError, Dpop.Proof] =
+    /** @param checkOwnNonce whether this edge's own nonce policy applies to the proof. Only
+      * `start`'s proof is addressed to edge (`htu` is edge's own URI): edge is the only party
+      * that will ever see it, so it is the only party that can demand a nonce of it. A proof
+      * addressed to auth (`complete`, `refresh`, `revoke`) is forwarded byte for byte, and its
+      * `nonce` is auth's alone to judge -- one auth issued in an earlier `use_dpop_nonce` round
+      * trip would never satisfy edge's own, differently-salted nonce store, so applying this
+      * edge's policy to a forwarded proof would refuse every one of them with no way for the
+      * device to ever produce a proof both stores would accept.
+      */
+    private def verifyProof(request: Request, htu: String, checkOwnNonce: Boolean): IO[NativeError, Dpop.Proof] =
       for
         header <- DpopVerifier.proofHeader(request).mapError {
           case DpopVerifier.Error.MultipleProofs => NativeError.InvalidDpopProof("request must contain exactly one DPoP header")
@@ -335,7 +344,7 @@ object NativeService:
           now = now,
           iatLeeway = config.dpop.fold(defaultIatLeeway)(_.iatLeeway),
         ).mapError(reason => NativeError.InvalidDpopProof(reason.toString))
-        _ <- checkNonce(proof, now)
+        _ <- checkNonce(proof, now).when(checkOwnNonce)
       yield proof
 
     /** RFC 9449 §9 / §4.3 step 10, applied here the way [[DpopVerifier]] applies it to the
