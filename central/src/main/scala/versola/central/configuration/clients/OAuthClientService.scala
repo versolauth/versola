@@ -539,6 +539,12 @@ object OAuthClientService:
 
     /** Reads the tenant's challenge settings only when there is an `mtlsAuth` to justify it:
       * every other registration would pay for a lookup whose answer it has no use for.
+      *
+      * Read through the repository ([[ChallengeSettingsService.getMtlsCertificateHeader]]),
+      * not the cache: bootstrap sets this header and registers `central-admin` against it in
+      * the same process (`BootstrapService.seedMtlsTermination` then `seedClient`), and the
+      * cache's refresh interval does not run between the two. The cached [[getSettings]]
+      * would see no header yet and refuse the very registration that just set it.
       */
     private def validateMtlsTermination(
         clientId: ClientId,
@@ -546,11 +552,11 @@ object OAuthClientService:
         mtlsAuth: Option[MutualTlsAuth],
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       ZIO.when(mtlsAuth.nonEmpty):
-        challengeSettingsService.getSettings(tenantId).flatMap: settings =>
+        challengeSettingsService.getMtlsCertificateHeader(tenantId).flatMap: mtlsCertificateHeader =>
           ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateMtlsTermination(
             clientId,
             mtlsAuth,
-            settings.flatMap(_.mtlsCertificateHeader),
+            mtlsCertificateHeader,
           ))(ZIO.fail(_))
       .unit
 

@@ -25,6 +25,24 @@ object SecurityProfileApiSpec extends CentralApiSpec:
         .map(_.obj("settings").flatMap(_.str("securityProfile"))),
     )(_.isDefined)
 
+  /** Sets the tenant's mTLS termination without touching anything else it stores --
+    * `withTenant` already waited for the settings row to exist, so a single read is enough
+    * here, unlike [[SecurityProfiles.set]]'s own retry for a tenant that might not yet have
+    * one. */
+  private def setMtlsHeader(central: CentralApi, tenantId: String, header: String, encoding: String): Task[Unit] =
+    for
+      current <- central.get("/configuration/challenges/challenge-settings", "tenantId" -> tenantId).flatMap(_.obj)
+      settings <- ZIO.fromOption(current.obj("settings"))
+        .orElseFail(RuntimeException(s"Tenant '$tenantId' has no challenge settings: $current"))
+      fields = settings.fields.filterNot(f => f._1 == "mtlsCertificateHeader" || f._1 == "mtlsCertificateEncoding")
+      result <- central.put(
+        "/configuration/challenges/challenge-settings",
+        Json.Obj(fields :+ ("mtlsCertificateHeader" -> Json.Str(header)) :+ ("mtlsCertificateEncoding" -> Json.Str(encoding))),
+      )
+      _ <- ZIO.fail(RuntimeException(s"Could not set mtlsCertificateHeader for '$tenantId': ${result.status} ${result.body}"))
+        .unless(result.status == Status.NoContent)
+    yield ()
+
   private def withTenant[A](test: (CentralApi, String) => Task[A]): RIO[CentralApi, A] =
     for
       central <- api
@@ -99,6 +117,32 @@ object SecurityProfileApiSpec extends CentralApiSpec:
           signer <- AssertionSigner.make
           id <- CentralApi.id("e2e-client")
           accepted <- central.post(clients, conformantClient(id, tenantId, signer))
+          _ <- central.delete(clients, "clientId" -> id).ignore
+        yield assertTrue(accepted.status == Status.Created)
+    },
+    // Reproduces bootstrap's own sequence: PUT the tenant's mTLS termination, then register
+    // an mtlsAuth client against it in the very next request. Central's own registration
+    // path reads that header through ChallengeSettingsService.getMtlsCertificateHeader,
+    // straight off the repository -- not off the settings cache a background refresh
+    // populates on its own schedule, which would still see no header this soon after the
+    // write and refuse the registration bootstrap needs to succeed on every boot.
+    test("registers an mtlsAuth client right after the tenant's mTLS header is set, with no wait") {
+      withTenant: (central, tenantId) =>
+        for
+          _ <- setMtlsHeader(central, tenantId, "ssl-client-cert", "urlEncodedPem")
+          id <- CentralApi.id("e2e-mtls-client")
+          accepted <- central.post(
+            clients,
+            Fixtures.client(
+              id,
+              tenantId = tenantId,
+              redirectUris = Set("https://app.example.test/callback"),
+              authMethod = "tls_client_auth",
+              mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-mtls-client")),
+              certificateBoundAccessTokens = true,
+              requirePushedAuthorizationRequests = true,
+            ),
+          )
           _ <- central.delete(clients, "clientId" -> id).ignore
         yield assertTrue(accepted.status == Status.Created)
     },

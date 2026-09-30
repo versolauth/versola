@@ -16,6 +16,12 @@ trait ChallengeSettingsService:
     * switch just stored, not to the one the cache last saw. A tenant with no settings row reads
     * as [[ChallengeSettingsRecord.DefaultSecurityProfile]], what it would be created with. */
   def getSecurityProfile(tenantId: TenantId): Task[SecurityProfile]
+
+  /** The header an `mtlsAuth` registration is validated against, read from the repository
+    * rather than the cache -- for the same reason as [[getSecurityProfile]]: bootstrap sets
+    * this header and registers `central-admin` against it in the same process, and the
+    * registration has to see what bootstrap just stored, not what the cache last saw. */
+  def getMtlsCertificateHeader(tenantId: TenantId): Task[Option[String]]
   def upsertSettings(record: ChallengeSettingsRecord): Task[Unit]
   def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit]
 
@@ -83,6 +89,9 @@ object ChallengeSettingsService:
     override def getSecurityProfile(tenantId: TenantId): Task[SecurityProfile] =
       repository.findByTenant(tenantId)
         .map(_.fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile))
+
+    override def getMtlsCertificateHeader(tenantId: TenantId): Task[Option[String]] =
+      repository.findByTenant(tenantId).map(_.flatMap(_.mtlsCertificateHeader))
 
     override def upsertSettings(record: ChallengeSettingsRecord): Task[Unit] =
       validateSigningKey(record.signingKeyId) *> repository.upsert(record)

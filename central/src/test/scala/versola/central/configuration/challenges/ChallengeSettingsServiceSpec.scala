@@ -64,6 +64,26 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
       for result <- env.service.getSettings(otherTenantId)
       yield assertTrue(result.isEmpty)
     },
+    // #421/#428: bootstrap sets the tenant's mtlsCertificateHeader (through the repository)
+    // and registers central-admin against it (through OAuthClientService, which reads this
+    // method) in the same process, with no cache refresh in between. A read off the cache --
+    // like getSettings above -- would still see no header and refuse that registration.
+    suite("getMtlsCertificateHeader")(
+      test("reads through the repository, not the stale cache") {
+        val env = Env(Vector(settings)) // cache seeded with no header at all
+        for
+          _ <- env.repository.findByTenant.succeedsWith(Some(settings.copy(mtlsCertificateHeader = Some("ssl-client-cert"))))
+          result <- env.service.getMtlsCertificateHeader(tenantId)
+        yield assertTrue(result.contains("ssl-client-cert"))
+      },
+      test("is None for a tenant the repository has no row for") {
+        val env = Env()
+        for
+          _ <- env.repository.findByTenant.succeedsWith(None)
+          result <- env.service.getMtlsCertificateHeader(tenantId)
+        yield assertTrue(result.isEmpty)
+      },
+    ),
     test("upsertSettings delegates to repository") {
       val env = Env()
       for

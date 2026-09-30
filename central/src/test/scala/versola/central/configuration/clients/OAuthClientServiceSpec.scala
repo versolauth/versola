@@ -370,15 +370,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     /** The tenant terminates mTLS, so an `mtlsAuth` registration is not refused for the lack
       * of somewhere for a certificate to arrive from. */
     def terminatesMtls: UIO[Unit] =
-      challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings))
+      challengeSettingsService.getMtlsCertificateHeader.succeedsWith(mtlsTerminatingSettings.mtlsCertificateHeader)
 
     /** The tenant's proxy does not forward a certificate -- the case §6.5 registration has to
       * refuse. */
     def terminatesNoMtls: UIO[Unit] =
-      challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
-        mtlsCertificateHeader = None,
-        mtlsCertificateEncoding = None,
-      )))
+      challengeSettingsService.getMtlsCertificateHeader.succeedsWith(None)
 
   def spec = suite("OAuthClientService")(
     test("getTenantClients filters cache by tenant") {
@@ -951,7 +948,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.challengeSettingsService.getMtlsCertificateHeader.succeedsWith(None)
         result <- env.service.registerClient(createRequest.copy(
           authMethod = AuthMethod.self_signed_tls_client_auth,
           mtlsAuth = Some(MutualTlsAuth.SelfSignedTlsClientAuth()),
@@ -973,7 +970,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(createRequest)
-        lookups = env.challengeSettingsService.getSettings.times
+        lookups = env.challengeSettingsService.getMtlsCertificateHeader.times
         createCalls = env.repository.createClient.times
       yield assertTrue(lookups == 0, createCalls == 1)
         .label("every other registration would pay for a lookup whose answer it has no use for")
@@ -1084,9 +1081,6 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(mtlsTerminatingSettings.copy(
-          securityProfile = SecurityProfile.standard,
-        )))
         _ <- env.challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
         result <- env.service
           .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("com.example.app://callback"))))
@@ -1677,7 +1671,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createClient.succeedsWith(())
         result <- env.service.registerClient(edgeFrontedNativeRequest(certificate))
         created = env.repository.createClient.calls.head
-        lookups = env.challengeSettingsService.getSettings.times
+        lookups = env.challengeSettingsService.getMtlsCertificateHeader.times
       yield assertTrue(
         result.secret.isEmpty,
         created.applicationType == ApplicationType.native,
