@@ -353,7 +353,7 @@ tests but publishes nothing.
 3. **On the host**, keep the CLI current and back up the database:
    ```bash
    versola upgrade
-   sudo -u postgres pg_dump auth > ~/auth-backup-before-<version>-$(date +%Y%m%d-%H%M%S).sql
+   (umask 077; sudo -u postgres pg_dump auth > ~/auth-backup-before-<version>-$(date +%Y%m%d-%H%M%S).sql)
    ```
    Migrations cannot be rolled back — the dump is the rollback.
 4. **Configure, migrate, start** — same flags as the first time:
@@ -389,7 +389,7 @@ understands:
 versola down                                               # nothing may write while restoring
 sudo -u postgres psql -c "DROP DATABASE auth;"
 sudo -u postgres psql -c "CREATE DATABASE auth OWNER versola_app;"
-sudo -u postgres psql -d auth -f ~/auth-backup-before-<version>-<timestamp>.sql
+sudo -u postgres psql -d auth < ~/auth-backup-before-<version>-<timestamp>.sql   # your shell opens the file, not postgres
 versola configure vps <previous> --auth-url https://id.versola.kz \
   --postgres-host 127.0.0.1:5432 --proxy external
 versola migrate                                            # no-op: the dump already has the previous schema
@@ -458,7 +458,7 @@ still run misses whatever they write before they stop.
 
 ```bash
 versola down                 # stop writes and release the connections
-sudo -u postgres pg_dump auth > ~/auth-backup-$(date +%Y%m%d-%H%M%S).sql
+(umask 077; sudo -u postgres pg_dump auth > ~/auth-backup-$(date +%Y%m%d-%H%M%S).sql)
 sudo -u postgres psql
 ```
 
@@ -477,7 +477,7 @@ bootstrap and reseeds clients, roles, forms and the admin user.
 
 ```bash
 versola down
-sudo -u postgres pg_dump -Fc -n <schema> -f /tmp/versola-backup-<schema>-$(date +%Y%m%d-%H%M%S).dump auth
+(umask 077; sudo -u postgres pg_dump -Fc -n <schema> auth > ~/versola-backup-<schema>-$(date +%Y%m%d-%H%M%S).dump)
 sudo -u postgres psql -d auth -c "DROP SCHEMA <schema> CASCADE; CREATE SCHEMA <schema> AUTHORIZATION versola_app;"
 versola migrate
 versola up
