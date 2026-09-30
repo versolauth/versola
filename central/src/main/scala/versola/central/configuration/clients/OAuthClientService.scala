@@ -30,6 +30,9 @@ import javax.crypto.spec.SecretKeySpec
 case class RegisteredClient(
     secret: Option[Secret],
     createdAt: Instant,
+    /** The `private_key_jwt` key generated for this registration, where `generateJwks` asked
+      * for one. Returned rather than stored, so this is the only time it can be read. */
+    privateKey: Option[PrivateJsonWebKey],
 )
 
 /** One client that a tenant's security profile would not admit, and every reason why -- what
@@ -226,28 +229,39 @@ object OAuthClientService:
           Duration.fromSeconds(request.accessTokenTtl),
           request.dpopBoundAccessTokens,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateGeneratedJwks(
+          request.id,
+          request.authMethod,
+          request.jwks,
+          request.generateJwks,
+        ))(ZIO.fail(_))
+        // Generated before the checks that read a key set, so that a registration asking for
+        // a key is held to exactly the rules one supplying it is -- the request is short a
+        // credential only until here, and nothing below can tell the two apart.
+        generatedKey <- ZIO.foreach(request.generateJwks)(ClientKeyGeneration.generate(securityService, _))
+        jwks = generatedKey.map(_.publicKeys).orElse(request.jwks)
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
           request.id,
           request.authMethod,
           request.mtlsAuth,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
           request.id,
           request.requireSignedRequestObject,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeSigningKey(
           request.id,
           request.edgeSigningKey,
           request.mtlsAuth,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeClientCertificate(
           request.id,
           request.edgeClientCertificate,
           request.mtlsAuth.map(normaliseMtlsAuth),
-          request.jwks,
+          jwks,
           request.requireSignedRequestObject,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
@@ -310,7 +324,7 @@ object OAuthClientService:
           authMethod = request.authMethod,
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
-          jwks = request.jwks,
+          jwks = jwks,
           requireSignedRequestObject = request.requireSignedRequestObject,
           requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
           edgeSigningKey = encryptedEdgeSigningKey,
@@ -321,7 +335,7 @@ object OAuthClientService:
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
-      yield RegisteredClient(secret, registeredAt)
+      yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(
         request: UpdateClientRequest,

@@ -314,6 +314,89 @@ object PrivateKeyJwtSpec extends E2ESpec:
             .label("a credential the client could never use must fail at registration, not at /token")
     },
 
+    // #  A FAPI 2.0 tenant admits no `client_secret`, so a service client there has no
+    // credential this server issues -- unless registration generates its key. This is the
+    // only level that can show the generated key is usable: a unit test proves central
+    // stored the public half and returned the private one, not that auth verifies an
+    // assertion signed with it after the key set has been through the sync and the cache.
+    test("a service client registers with a key central generated and authenticates with it") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"generated-key-client-$s")
+        registered <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          // No redirect URIs: the client calls on its own behalf, so FAPI 2.0 asks no PAR of
+          // it, and a DPoP-bound token is the sender constraint left to a client that
+          // registers no certificate.
+          redirectUris = Set.empty,
+          allowedScopes = Set("openid"),
+          authMethod = "private_key_jwt",
+          generateJwks = Some("ES256"),
+          dpopBoundAccessTokens = true,
+        ).success
+        // Built from the document central handed back, not from a key the test already held.
+        generated <- ZIO.fromOption(registered.privateKey)
+          .orElseFail(RuntimeException("registration returned no private key for generateJwks"))
+        document <- ZIO.fromEither(generated.toString.fromJson[Json.Obj])
+          .mapError(error => RuntimeException(s"returned private key is not a JWK: $error"))
+        signer <- AssertionSigner.fromPrivateJwk(document)
+        _ <- auth.syncConfiguration()
+        assertion <- signer.assertion(id, auth.issuer)
+        prover <- DpopProver.make
+        token <- auth.clientCredentials(
+          id,
+          "",
+          useBasicAuth = false,
+          assertion = Some(assertion),
+          dpop = Some(prover),
+        ).success
+      yield assertTrue(
+        token.accessToken.nonEmpty,
+        token.tokenType == "DPoP",
+      ).label("the key central generated is the whole credential: no secret was ever issued")
+    },
+
+    test("generateJwks is refused together with a registered jwks") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          redirectUris = Set.empty,
+          authMethod = "private_key_jwt",
+          jwks = Some(signer.jwks),
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse a key set alongside generateJwks")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("a client registers the key it holds or asks for one, not both")
+    },
+
+    test("generateJwks is refused for a method other than private_key_jwt") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          Set(redirectUri),
+          // Default authMethod is client_secret, which reads no key set at all.
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse generateJwks under client_secret")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("generateJwks names the key an assertion is signed with, which client_secret never reads")
+    },
+
     test("the metadata document advertises the method and the algorithms it will accept") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

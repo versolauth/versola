@@ -19,7 +19,7 @@ import versola.central.configuration.{
 import versola.central.{CentralConfig, TestCentralConfig}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{Curve, ECKey}
-import versola.util.{EnvName, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{ClientAssertion, EcKeyPair, EnvName, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -27,7 +27,9 @@ import zio.json.ast.Json
 import zio.prelude.EqualOps
 import zio.test.*
 
-import java.security.interfaces.ECPublicKey
+import java.security.KeyPairGenerator
+import java.security.interfaces.{ECPrivateKey, ECPublicKey}
+import java.security.spec.ECGenParameterSpec
 import javax.crypto.spec.SecretKeySpec
 import java.time.Instant
 
@@ -201,12 +203,37 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    generateJwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
     edgeClientCertificate = None,
     template = None,
     applicationType = None,
+  )
+
+  /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is
+    * how registration builds a key set and hands the private half back, not `KeyPairGenerator`. */
+  private val generatedEcKeyPair: EcKeyPair =
+    val generator = KeyPairGenerator.getInstance("EC")
+    generator.initialize(ECGenParameterSpec("secp256r1"))
+    val pair = generator.generateKeyPair()
+    EcKeyPair(
+      keyId = "2026-09-29_10-00-00",
+      publicKey = pair.getPublic.asInstanceOf[ECPublicKey],
+      privateKey = pair.getPrivate.asInstanceOf[ECPrivateKey],
+    )
+
+  /** A service calling on its own behalf in a FAPI 2.0 tenant: no redirect URIs, so no PAR is
+    * asked of it, and a DPoP-bound token, which is the only sender constraint left to a client
+    * that registers no certificate. Its credential is the key registration generates. */
+  private val serviceClientRequest = createRequest.copy(
+    redirectUris = Set.empty,
+    authMethod = AuthMethod.private_key_jwt,
+    generateJwks = Some(ClientAssertion.Algorithm.ES256),
+    dpopBoundAccessTokens = true,
+    accessTokenTtl = 3600,
+    template = Some(ClientTemplate(ClientKind.service, AssuranceTier.high)),
   )
 
   /** What FAPI 2.0 asks of an edge-fronted web client: `tls_client_auth`, which also binds its
@@ -1910,6 +1937,75 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         violations.map(_.clientId) == Vector(ClientId("spa"), clientId),
         violations.forall(_.reasons.nonEmpty),
         underStandard.isEmpty,
+      )
+    },
+    // A FAPI 2.0 tenant admits no `client_secret`, so registration issuing one is no help
+    // there: without these, the caller has to arrive already holding a key, and obtaining one
+    // is exactly the step that has no answer inside the product.
+    test("registerClient generates the key a private_key_jwt client signs with, keeping only its public half") {
+      val env = new Env()
+
+      for
+        _ <- env.securityService.generateEcKeyPair.succeedsWith(generatedEcKeyPair)
+        _ <- env.repository.createClient.succeedsWith(())
+        registered <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
+          generateJwks = Some(ClientAssertion.Algorithm.ES256),
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        // The half that was handed back verifies against the half that was stored -- the
+        // client could not authenticate with it otherwise.
+        registered.privateKey.exists: key =>
+          created.jwks.exists(keySet => PrivateJsonWebKey.publishedIn(key, keySet).isRight),
+        // `JsonWebKeySet.validate` refuses private key material, so passing it is what says
+        // the stored set carries none.
+        created.jwks.exists(keySet => JsonWebKeySet.validateForAssertions(keySet.document).isRight),
+        created.authMethod == AuthMethod.private_key_jwt,
+        created.secret.isEmpty,
+      )
+    },
+    test("registerClient refuses generateJwks alongside jwks, or for a method that reads neither") {
+      val env = new Env()
+
+      for
+        _ <- env.repository.createClient.succeedsWith(())
+        both <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.private_key_jwt,
+          jwks = Some(publicKeySet),
+          generateJwks = Some(ClientAssertion.Algorithm.ES256),
+        )).either
+        wrongMethod <- env.service.registerClient(createRequest.copy(
+          generateJwks = Some(ClientAssertion.Algorithm.ES256),
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        both.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("cannot be combined with jwks")
+          case _ => false,
+        wrongMethod.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("which client_secret does not read")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("a service client whose key registration generated is admitted by FAPI 2.0") {
+      val env = new Env()
+
+      for
+        _ <- env.onFapi2
+        _ <- env.securityService.generateEcKeyPair.succeedsWith(generatedEcKeyPair)
+        _ <- env.repository.createClient.succeedsWith(())
+        registered <- env.service.registerClient(serviceClientRequest)
+        created = env.repository.createClient.calls.head
+        violations = InvalidRegistrationConfiguration.profileViolations(
+          SecurityProfile.fapi2,
+          InvalidRegistrationConfiguration.ProfileSubject.of(created),
+          allowHttpLoopback = false,
+        )
+      yield assertTrue(
+        violations.isEmpty,
+        registered.privateKey.isDefined,
       )
     },
   )

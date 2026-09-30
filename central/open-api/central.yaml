@@ -2357,7 +2357,25 @@ components:
             - type: 'null'
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
-            assertions with. `null` means the client does not use the method.
+            assertions with. `null` means the client does not use the method, or that
+            `generateJwks` asks this server for the keys instead.
+        generateJwks:
+          type: string
+          nullable: true
+          enum: [ES256, PS256, RS256]
+          description: |
+            Generate the `private_key_jwt` key pair here instead of registering one, signing
+            with this algorithm. The public half is stored as `jwks`; the private half is
+            returned as `CreateClientResponse.privateKey` and is kept nowhere.
+
+            For the caller that holds no key and no way to make one. A FAPI 2.0 tenant admits
+            no `client_secret`, so without this there is no method left whose credential this
+            server issues, and registering a service client there needs a key produced
+            outside the product.
+
+            Mutually exclusive with `jwks`, and refused for any method other than
+            `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
+            certificate a generated pair would not come with.
         requireSignedRequestObject:
           type: boolean
           description: |
@@ -2545,6 +2563,24 @@ components:
       properties:
         secret:
           $ref: '#/components/schemas/Secret'
+        createdAt:
+          type: string
+          format: date-time
+          description: |
+            When central recorded the registration, so a caller holding the client it just
+            sent can state its age without reading it back.
+        privateKey:
+          oneOf:
+            - $ref: '#/components/schemas/PrivateJsonWebKey'
+            - type: 'null'
+          description: |
+            The `private_key_jwt` key generated for this registration, present only where
+            `generateJwks` asked for one.
+
+            The only time it is readable: nothing stores it, so a caller that does not keep
+            it registers another key rather than asking again. Handed back the way a client
+            secret is, and to be treated the same way.
+      required: [createdAt]
     RotateSecretResponse:
       type: object
       properties:
@@ -2651,8 +2687,9 @@ components:
       type: object
       description: |
         An RFC 7517 JWK carrying its private material -- the exact document registered, not a
-        narrowed model of it. Only ever submitted, never listed back: a stored one leaves
-        central encrypted to the requesting edge's public key.
+        narrowed model of it. Never listed back: a stored one leaves central encrypted to the
+        requesting edge's public key. The one exception is a key this server generated itself,
+        returned once in the registration response that asked for it and stored nowhere.
 
         Registration refuses a document that is not an RSA or EC key, that is marked
         `"use": "enc"`, or that carries no private material -- a signer that cannot sign is

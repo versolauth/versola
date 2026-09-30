@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
-import versola.util.{Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
@@ -96,6 +96,34 @@ object InvalidRegistrationConfiguration:
       jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)
         .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason")),
     )
+
+  /** Asking this server to generate the key is an alternative to registering one, not an
+    * addition to it -- so the two are refused together, and refused for every method that
+    * would not read the result.
+    *
+    * Only `private_key_jwt` can be served this way. RFC 8705 §2.2 reads a key set too, but
+    * matches it against a certificate the client presents: a key pair generated here would
+    * come with no certificate to match, so accepting the request would register a client that
+    * cannot authenticate -- exactly what [[validateClientAuthentication]] exists to prevent.
+    *
+    * Checked before the key is generated: the work is small, but an error raised after it has
+    * already produced private key material is one that has to be careful about what it
+    * discards, and there is no reason to be in that position.
+    */
+  def validateGeneratedJwks(
+      clientId: ClientId,
+      authMethod: AuthMethod,
+      jwks: Option[JsonWebKeySet],
+      generateJwks: Option[ClientAssertion.Algorithm],
+  ): Option[InvalidRegistrationConfiguration] =
+    generateJwks.flatMap: _ =>
+      def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"generateJwks $reason"))
+
+      if jwks.nonEmpty then
+        invalid("cannot be combined with jwks - a client registers the key it holds or asks for one, not both")
+      else if authMethod != AuthMethod.private_key_jwt then
+        invalid(s"generates the key an assertion is signed with, which $authMethod does not read")
+      else None
 
   /** RFC 8705 §6.5 leaves it to the deployment to hand a terminated certificate to the
     * application, and this one does it per tenant: `auth` looks for a certificate only where

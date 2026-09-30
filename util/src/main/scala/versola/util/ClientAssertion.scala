@@ -5,6 +5,9 @@ import com.nimbusds.jose.crypto.{ECDSAVerifier, RSASSAVerifier}
 import com.nimbusds.jose.jwk.{Curve, ECKey, JWK, KeyUse, RSAKey}
 import com.nimbusds.jwt.SignedJWT
 import zio.json.ast.Json
+import zio.json.{JsonCodec, JsonDecoder, JsonEncoder}
+import zio.prelude.Equal
+import zio.schema.Schema
 import zio.{Duration, IO, Task, ZIO, durationInt}
 
 import java.security.PrivateKey
@@ -68,6 +71,21 @@ object ClientAssertion:
     def fromJws(alg: JWSAlgorithm): Option[Algorithm] = values.find(_.jwsAlgorithm == alg)
 
     def fromName(name: String): Option[Algorithm] = values.find(_.toString == name)
+
+    given JsonCodec[Algorithm] =
+      JsonCodec(
+        JsonEncoder[String].contramap(_.toString),
+        JsonDecoder[String].mapOrFail(fromName(_).toRight("unknown client assertion signing algorithm")),
+      )
+
+    given Schema[Algorithm] = Schema.primitive[String].transformOrFail(
+      fromName(_).toRight("unknown client assertion signing algorithm"),
+      algorithm => Right(algorithm.toString),
+    )
+
+    given Equal[Algorithm] = (a, b) => a == b
+
+    given CanEqual[Algorithm, Algorithm] = CanEqual.derived
 
     /** The set an incoming assertion's `alg` is checked against, read off the authorization
       * server metadata document. An algorithm the document names but this object has no

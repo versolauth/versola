@@ -7,7 +7,7 @@ import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -422,8 +422,17 @@ case class CreateClientRequest(
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
     certificateBoundAccessTokens: Boolean,
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
-      * assertions with; `None` when it does not use the method. */
+      * assertions with; `None` when it does not use the method, or when [[generateJwks]]
+      * asks this server for them instead. */
     jwks: Option[JsonWebKeySet],
+    /** Generate the `private_key_jwt` key pair here instead of registering one, signing with
+      * this algorithm. The public half is stored as [[jwks]]; the private half comes back in
+      * `CreateClientResponse.privateKey` and is kept nowhere.
+      *
+      * For the caller that has no key and no way to make one -- in a FAPI 2.0 tenant, which
+      * admits no `client_secret`, that is otherwise the end of the registration. Mutually
+      * exclusive with [[jwks]]. */
+    generateJwks: Option[ClientAssertion.Algorithm],
     /** RFC 9101 §10.5: whether this client states its authorization request in a signed
       * request object, rather than a plain parameter set staying acceptable from it. */
     requireSignedRequestObject: Boolean,
@@ -454,6 +463,13 @@ case class CreateClientResponse(
     /** When central recorded the registration, so a caller holding the client it just sent
       * can state its age without reading it back. */
     createdAt: Instant,
+    /** The `private_key_jwt` key generated for this registration, present only where
+      * `CreateClientRequest.generateJwks` asked for one.
+      *
+      * The only time it is ever readable: nothing stores it, so a caller that does not keep
+      * it registers another key rather than asking again. Handed back the way a client
+      * secret is, and to be treated the same way. */
+    privateKey: Option[PrivateJsonWebKey],
 ) derives Schema, JsonEncoder
 
 case class RotateSecretResponse(
