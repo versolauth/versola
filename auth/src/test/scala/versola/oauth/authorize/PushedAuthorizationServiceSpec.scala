@@ -100,18 +100,38 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     val clientAssertionService = stub[ClientAssertionService]
     val clientAuthentication = ClientAuthentication.Impl(configuration, clientAssertionService, TestEnvConfig.coreConfig)
 
-    def service: UIO[PushedAuthorizationService] =
+    val requestObjectService = RequestObjectService.Impl(config, configuration)
+
+    def service: UIO[PushedAuthorizationService] = build(_ => parser)
+
+    /** The same service wired with the real parser instead of the stub, for checks that
+      * live inside request parsing (e.g. OIDC Core §3.3.2.1 nonce requirement).
+      */
+    def serviceWithRealParser: UIO[PushedAuthorizationService] =
+      build { securityService =>
+        AuthorizeRequestParser.Impl(
+          config,
+          configuration,
+          repository,
+          requestObjectService,
+          securityService,
+          JsonSchemaValidator.Impl(),
+        )
+      }
+
+    private def build(makeParser: SecurityService => AuthorizeRequestParser): UIO[PushedAuthorizationService] =
       SecureRandom.live.build.flatMap { env =>
         val secureRandom = env.get[SecureRandom]
         Semaphore.make(1).map { hashingSemaphore =>
+          val securityService = SecurityService.Impl(secureRandom, hashingSemaphore)
           PushedAuthorizationService.Impl(
             config,
-            parser,
+            makeParser(securityService),
             repository,
             clientAuthentication,
-            RequestObjectService.Impl(config, configuration),
+            requestObjectService,
             secureRandom,
-            SecurityService.Impl(secureRandom, hashingSemaphore),
+            securityService,
           )
         }
       }.provideLayer(zio.Scope.default)
@@ -424,30 +444,10 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
-        _ <- env.repository.create.succeedsWith(())
         _ <- env.configuration.find.succeedsWith(Some(clientRecord))
         _ <- env.configuration.getIpHeader.succeedsWith("X-Real-IP")
-        secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
-        hashingSemaphore <- Semaphore.make(1)
-        realParser = AuthorizeRequestParser.Impl(
-          config,
-          env.configuration,
-          env.repository,
-          RequestObjectService.Impl(config, env.configuration),
-          SecurityService.Impl(secureRandom, hashingSemaphore),
-          JsonSchemaValidator.Impl(),
-        )
-        hashingSemaphore2 <- Semaphore.make(1)
-        realService = PushedAuthorizationService.Impl(
-          config,
-          realParser,
-          env.repository,
-          ClientAuthentication.Impl(env.configuration, env.clientAssertionService, TestEnvConfig.coreConfig),
-          RequestObjectService.Impl(config, env.configuration),
-          secureRandom,
-          SecurityService.Impl(secureRandom, hashingSemaphore2),
-        )
-        result <- realService.push(
+        service <- env.serviceWithRealParser
+        result <- service.push(
           validParams("response_type" -> Chunk("code id_token")),
           credentials,
           None,
