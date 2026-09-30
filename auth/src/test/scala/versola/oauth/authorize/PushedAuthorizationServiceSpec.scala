@@ -6,7 +6,7 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{ClientAssertion, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -100,18 +100,38 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
     val clientAssertionService = stub[ClientAssertionService]
     val clientAuthentication = ClientAuthentication.Impl(configuration, clientAssertionService, TestEnvConfig.coreConfig)
 
-    def service: UIO[PushedAuthorizationService] =
+    val requestObjectService = RequestObjectService.Impl(config, configuration)
+
+    def service: UIO[PushedAuthorizationService] = build(_ => parser)
+
+    /** The same service wired with the real parser instead of the stub, for checks that
+      * live inside request parsing (e.g. OIDC Core §3.3.2.1 nonce requirement).
+      */
+    def serviceWithRealParser: UIO[PushedAuthorizationService] =
+      build { securityService =>
+        AuthorizeRequestParser.Impl(
+          config,
+          configuration,
+          repository,
+          requestObjectService,
+          securityService,
+          JsonSchemaValidator.Impl(),
+        )
+      }
+
+    private def build(makeParser: SecurityService => AuthorizeRequestParser): UIO[PushedAuthorizationService] =
       SecureRandom.live.build.flatMap { env =>
         val secureRandom = env.get[SecureRandom]
         Semaphore.make(1).map { hashingSemaphore =>
+          val securityService = SecurityService.Impl(secureRandom, hashingSemaphore)
           PushedAuthorizationService.Impl(
             config,
-            parser,
+            makeParser(securityService),
             repository,
             clientAuthentication,
-            RequestObjectService.Impl(config, configuration),
+            requestObjectService,
             secureRandom,
-            SecurityService.Impl(secureRandom, hashingSemaphore),
+            securityService,
           )
         }
       }.provideLayer(zio.Scope.default)
@@ -403,5 +423,38 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
         // The registered method is the certificate, so no secret can stand in for it.
         env.configuration.verifySecret.calls.isEmpty,
       )
+    },
+    test("rejects a hybrid flow request pushed without a nonce") {
+      val env = Env()
+      for
+        _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
+        _ <- env.parser.validate.failsWith(Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment))
+        service <- env.service
+        result <- service.push(
+          validParams("response_type" -> Chunk("code id_token")),
+          credentials,
+          None,
+          request,
+        ).either
+      yield assertTrue(result == Left(PushedAuthorizationError.from(
+        Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
+      )))
+    },
+    test("rejects a hybrid flow request pushed without a nonce — parser not stubbed") {
+      val env = Env()
+      for
+        _ <- env.configuration.verifySecret.succeedsWith(Some(clientRecord))
+        _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+        _ <- env.configuration.getIpHeader.succeedsWith("X-Real-IP")
+        service <- env.serviceWithRealParser
+        result <- service.push(
+          validParams("response_type" -> Chunk("code id_token")),
+          credentials,
+          None,
+          request,
+        ).either
+      yield assertTrue(result == Left(PushedAuthorizationError.from(
+        Error.NonceMissing(clientId, redirectUri, None, ResponseMode.Fragment),
+      )))
     },
   )

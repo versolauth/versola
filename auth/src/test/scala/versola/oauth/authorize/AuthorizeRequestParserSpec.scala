@@ -602,7 +602,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       },
       test("defaults to fragment for a response type returning an id_token") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token", "nonce" -> "test-nonce")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
@@ -621,6 +621,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map(
           "response_type" -> "code id_token",
           "response_mode" -> "jwt",
+          "nonce" -> "test-nonce",
         )))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
@@ -1185,7 +1186,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     suite("response_type")(
       test("accepts code id_token") {
         val env = Env()
-        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token")))
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("response_type" -> "code id_token", "nonce" -> "test-nonce")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
@@ -1244,6 +1245,32 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.nonce == Some(Nonce("abc123")))
+      },
+      test("nonce is optional for the code flow") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.nonce.isEmpty)
+      },
+      test("nonce is required when response_type includes id_token") {
+        val env = Env()
+        val hybridParams = validParams ++ Map("response_type" -> "code id_token")
+        val request = Request.get(URL.root.addQueryParams(hybridParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.NonceMissing(clientId, redirectUri, Some(State("test-state")), ResponseMode.Fragment)))
+      },
+      test("nonce is accepted when response_type includes id_token") {
+        val env = Env()
+        val hybridParams = validParams ++ Map("response_type" -> "code id_token", "nonce" -> "n1")
+        val request = Request.get(URL.root.addQueryParams(hybridParams))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.nonce == Some(Nonce("n1")))
       },
     ),
     suite("dpop_jkt")(
