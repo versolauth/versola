@@ -82,6 +82,8 @@ object RequestObject:
     case AudienceMismatch
     case Expired
     case NotYetValid
+    case NotBeforeTooOld
+    case IssuedInFuture
     case LifetimeTooLong
     case NestedRequest
     case ImpersonatesClientAssertion
@@ -92,6 +94,12 @@ object RequestObject:
     * `maxLifetime` [[verify]] is called with.
     */
   val Ttl: Duration = 5.minutes
+
+  /** FAPI 2.0 Message Signing / FAPI 1.0 Advanced §5.2.2-17: `nbf` no more than 60 minutes in
+    * the past, and `exp` no more than 60 minutes after `nbf`. Independent of the tenant's
+    * `clientAssertionMaxLifetime`, which bounds `exp` against the clock rather than against
+    * the object's own start. */
+  val MaxValidityWindow: Duration = 60.minutes
 
   /** Signs an authorization request as a request object -- the counterpart of [[verify]], for
     * a caller acting as the client rather than as the server (`versola.edge.SSOClient`).
@@ -106,8 +114,8 @@ object RequestObject:
     *   requires to match the one sent alongside the object. Claims that carry the object
     *   rather than a parameter are set here and dropped from this map, so a caller cannot
     *   introduce an `iss` or `exp` of its own.
-    * @param audience what the receiving server accepts as `aud`: §4 names the issuer
-    *   identifier, and the authorization endpoint's URL is also taken in the wild.
+    * @param audience what the receiving server accepts as `aud`, sent as a single string: pass
+    *   the issuer identifier (§4), the one value every security profile accepts.
     */
   def sign(
       parameters: Map[String, Chunk[String]],
@@ -130,6 +138,8 @@ object RequestObject:
           .audience(audience)
           .jwtID(UUID.randomUUID().toString)
           .issueTime(Date.from(now))
+          // FAPI 2.0 Message Signing requires `nbf`; the object is valid from the moment it is signed.
+          .notBeforeTime(Date.from(now))
           .expirationTime(Date.from(now.plusSeconds(ttl.toSeconds)))
 
         parameters.iterator
@@ -163,20 +173,24 @@ object RequestObject:
     * @param allowedAlgorithms the algorithms this deployment advertises ([[Algorithm.MetadataField]])
     * @param clientId the client named by the `client_id` parameter outside the object, which
     *   RFC 9101 §6.3 requires the object's own `client_id` claim to match
-    * @param acceptedAudiences the issuer identifier and the authorization endpoint's URL; §4
-    *   names the issuer, and clients in the wild send either
+    * @param audience which `aud` values name this server: under FAPI 2.0 (§5.3.2.1-8) the
+    *   issuer identifier alone, as a string; otherwise the issuer (§4) or the authorization
+    *   endpoint's URL, which clients in the wild also send
     * @param now current time
     * @param maxLifetime furthest into the future `exp` may sit, bounding how long an observed
     *   object stays replayable
+    * @param requireNotBefore FAPI 2.0 Message Signing / FAPI 1.0 Advanced §5.2.2-13 require an
+    *   `nbf` claim, which RFC 9101 itself leaves optional -- set for a `fapi2` tenant
     */
   def verify(
       token: String,
       keys: JWT.PublicKeys,
       allowedAlgorithms: Set[ClientAssertion.Algorithm],
       clientId: String,
-      acceptedAudiences: Set[String],
+      audience: JwtAudience,
       now: Instant,
       maxLifetime: Duration,
+      requireNotBefore: Boolean,
   ): IO[Error, Json.Obj] =
     for
       jwt <- ZIO.attempt(SignedJWT.parse(token)).orElseFail(Error.NotJWT)
@@ -212,25 +226,80 @@ object RequestObject:
       // observed in a URL could be replayed as client authentication at the token endpoint.
       _ <- ZIO.fail(Error.ImpersonatesClientAssertion).when(claims.get("sub").isDefined)
 
-      audience <- requireAudience(claims)
-      _ <- ZIO.fail(Error.AudienceMismatch).when(audience.intersect(acceptedAudiences).isEmpty)
+      aud <- requireAudience(claims)
+      _ <- ZIO.fail(Error.AudienceMismatch).unless(audience.accepts(aud))
 
+      _ <- verifyValidityWindow(claims, now, maxLifetime, requireNotBefore)
+    yield claims
+
+  /** When the object is valid for, and for how long: `exp`, `nbf` and `iat` read together,
+    * since each bound is only meaningful against the others.
+    *
+    * The two roundings go opposite ways on purpose. A claim may carry a fraction finer than
+    * the nanosecond `Instant` holds, and dropping it must never widen the window: `exp` is
+    * floored towards the epoch, so the object cannot be reconstructed as expiring later than
+    * the client signed, and `nbf` is ceilinged away from it, so a moment less than a
+    * nanosecond from now cannot reconstruct as already past and be accepted immediately.
+    */
+  private def verifyValidityWindow(
+      claims: Json.Obj,
+      now: Instant,
+      maxLifetime: Duration,
+      requireNotBefore: Boolean,
+  ): IO[Error, Unit] =
+    for
       // RFC 9101 leaves `exp` optional. It is required here: an object with no expiry is a
       // signed instruction that stays valid for as long as the client's key does, and it
       // travels through a user agent's history and referrers.
-      // Floored: a sub-nanosecond remainder below what Instant can hold must be dropped
-      // towards the epoch here, not away from it, or exp would be reconstructed later than
-      // the client signed.
       expiresAt <- requireInstant(claims, "exp", BigDecimal.RoundingMode.FLOOR)
       _ <- ZIO.fail(Error.Expired).unless(expiresAt.isAfter(now))
       _ <- ZIO.fail(Error.LifetimeTooLong).when(expiresAt.isAfter(now.plus(maxLifetime)))
 
-      // Ceilinged, the opposite of exp above: a remainder Instant cannot hold must round nbf
-      // away from the epoch, or a claim naming a moment less than a nanosecond from now would
-      // reconstruct as already past and be accepted immediately.
-      notBefore <- optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
-      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now)))
-    yield claims
+      notBefore <-
+        if requireNotBefore then requireInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING).asSome
+        else optionalInstant(claims, "nbf", BigDecimal.RoundingMode.CEILING)
+      // §5.2.2-17: however recently it expires, an object that started more than an hour ago
+      // -- or that claims a validity window longer than an hour -- is refused.
+      _ <- ZIO.fail(Error.NotBeforeTooOld).when(notBefore.exists(_.isBefore(now.minus(MaxValidityWindow))))
+      _ <- ZIO.fail(Error.LifetimeTooLong).when(notBefore.exists(nbf => expiresAt.isAfter(nbf.plus(MaxValidityWindow))))
+      // FAPI 2.0 §5.3.2.1-13: up to a minute of clock skew is absorbed, as for an assertion
+      // (see [[ClientAssertion.FutureLeeway]]); further ahead than that is refused.
+      _ <- ZIO.fail(Error.NotYetValid).when(notBefore.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
+
+      issuedAt <- optionalInstant(claims, "iat", BigDecimal.RoundingMode.CEILING)
+      _ <- ZIO.fail(Error.IssuedInFuture).when(issuedAt.exists(_.isAfter(now.plus(ClientAssertion.FutureLeeway))))
+    yield ()
+
+  /** [[verify]] against a plain set of accepted audiences, i.e. [[JwtAudience.AnyOf]] -- kept
+    * source-compatible for callers outside auth (edge's tests); see [[ClientAssertion.verify]]. */
+  def verify(
+      token: String,
+      keys: JWT.PublicKeys,
+      allowedAlgorithms: Set[ClientAssertion.Algorithm],
+      clientId: String,
+      acceptedAudiences: Set[String],
+      now: Instant,
+      maxLifetime: Duration,
+  ): IO[Error, Json.Obj] =
+    verify(
+      token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime,
+      requireNotBefore = false,
+    )
+
+  /** What a replay guard needs from a verified object: its `jti`, and the signed `exp` that
+    * decides how long the record must be kept (past it the object is refused on `exp` alone).
+    * Mirrors [[ClientAssertion.Assertion]]. */
+  case class ReplayKey(jti: String, expiresAt: Instant)
+
+  /** The replay key of claims [[verify]] already accepted -- `None` when the object carries no
+    * `jti`, which RFC 9101 leaves optional. A `jti` that is present but not a string is
+    * malformed rather than absent. */
+  def replayKey(claims: Json.Obj): IO[Error, Option[ReplayKey]] =
+    claims.get("jti") match
+      case None => ZIO.none
+      case Some(Json.Str(jti)) =>
+        requireInstant(claims, "exp", BigDecimal.RoundingMode.FLOOR).map(exp => Some(ReplayKey(jti, exp)))
+      case Some(_) => ZIO.fail(Error.MalformedClaim("jti"))
 
   /** The authorization request parameters a verified object's claims stand for, in the shape
     * a plain query or form request would have produced.
@@ -270,14 +339,16 @@ object RequestObject:
     ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name))
       .flatMap(json => ZIO.fromEither(json.as[String]).orElseFail(Error.MalformedClaim(name)))
 
-  /** RFC 7519 §4.1.3 allows `aud` to be one string or an array of them. */
-  private def requireAudience(claims: Json.Obj): IO[Error, Set[String]] =
+  /** RFC 7519 §4.1.3 allows `aud` to be one string or an array of them; which of the two was
+    * sent is kept, since FAPI 2.0 accepts only the former. */
+  private def requireAudience(claims: Json.Obj): IO[Error, Either[String, Set[String]]] =
     ZIO.fromOption(claims.get("aud")).orElseFail(Error.MissingClaim("aud"))
       .flatMap:
-        case Json.Str(single) => ZIO.succeed(Set(single))
+        case Json.Str(single) => ZIO.succeed(Left(single))
         case json =>
           ZIO.fromEither(json.as[Set[String]]).orElseFail(Error.MalformedClaim("aud"))
-      .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
+            .filterOrFail(_.nonEmpty)(Error.MissingClaim("aud"))
+            .map(Right(_))
 
   private def requireInstant(claims: Json.Obj, name: String, rounding: BigDecimal.RoundingMode.Value): IO[Error, Instant] =
     ZIO.fromOption(claims.get(name)).orElseFail(Error.MissingClaim(name)).flatMap(instant(_, name, rounding))

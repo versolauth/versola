@@ -88,11 +88,13 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     mtlsAuth = None,
     certificateBoundAccessTokens = false,
     jwks = None,
+    generateJwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
     edgeSigningKey = None,
     edgeClientCertificate = None,
     template = None,
+    applicationType = None,
   )
 
   private val updateRequest = UpdateClientRequest(
@@ -134,6 +136,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    applicationType = None,
   )
 
   /** A fixed registration time, so the response carries the record's own rather than
@@ -357,6 +360,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 requirePushedAuthorizationRequests = false,
                 template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
                 createdAt = registeredAt,
+                applicationType = ApplicationType.web,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -389,6 +393,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 requirePushedAuthorizationRequests = false,
                 template = None,
                 createdAt = registeredAt,
+                applicationType = ApplicationType.web,
               ),
             ),
           ),
@@ -624,14 +629,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt)),
+        service.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt, None)),
       verify = (response, service, _) =>
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest, None)),
+          service.registerClient.calls == List((createRequest, None, true)),
           // The registration time is the service's, handed back as it recorded it.
-          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt),
+          body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt, None),
         ),
     ),
     controllerTestCase(
@@ -643,14 +648,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
-        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt)),
+        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None)),
       verify = (response, service, _) =>
         for
           raw <- response.body.asString
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None)),
-          body == CreateClientResponse(None, registeredAt),
+          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None, true)),
+          body == CreateClientResponse(None, registeredAt, None),
           // Absent rather than empty: a caller must not mistake "" for a usable secret.
           !raw.contains("secret"),
         ),
@@ -733,7 +738,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List(updateRequest)),
+          assertTrue(service.updateClient.calls == List((updateRequest, true))),
         ),
     ),
     controllerTestCase(
@@ -759,7 +764,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(
-            service.updateClient.calls == List(updateRequest.copy(registrationFlow = Some(Patch.Deleted))),
+            service.updateClient.calls == List((updateRequest.copy(registrationFlow = Some(Patch.Deleted)), true)),
           ),
         ),
     ),
@@ -813,7 +818,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List(updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)))),
+          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true))),
         ),
     ),
     controllerTestCase(

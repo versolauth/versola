@@ -561,7 +561,7 @@ object ProvisionFixtures:
     tenantId = "default",
     provisionerClientId = "utils",
     provisionerSecret = Config.Secret("provisioner-secret"),
-    mobileRedirectUri = "versola://callback",
+    mobileRedirectUri = "https://app.versola.test/callback",
     resources = ProvisionResourcesConfig(
       coreUri = "http://mockapi-core:8100",
       payUri = "http://mockapi-pay:8100",

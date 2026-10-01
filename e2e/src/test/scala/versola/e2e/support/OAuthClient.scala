@@ -237,18 +237,23 @@ sealed trait RegisterClientResult:
       ZIO.fail(RuntimeException(s"Expected registerClient success but got: status=${resp.status} body=$body"))
 
 object RegisterClientResult:
-  /** `secret` is empty for a native (public) client - central issues none. */
-  case class Success(response: Response, secret: String) extends RegisterClientResult
+  /** `secret` is empty for a native (public) client - central issues none.
+    *
+    * `privateKey` is the key central generated where `generateJwks` asked for one, and is
+    * absent otherwise. Readable here and nowhere else: central stores only its public half.
+    */
+  case class Success(response: Response, secret: String, privateKey: Option[zio.json.ast.Json])
+      extends RegisterClientResult
   case class Failure(response: Response, body: String) extends RegisterClientResult
 
-  private case class Raw(secret: Option[String]) derives JsonDecoder
+  private case class Raw(secret: Option[String], privateKey: Option[zio.json.ast.Json]) derives JsonDecoder
 
   def parse(response: Response): Task[RegisterClientResult] =
     response.body.asString.map: body =>
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.secret.getOrElse("")),
+          raw => Success(response, raw.secret.getOrElse(""), raw.privateKey),
         )
       else Failure(response, body)
 
@@ -472,6 +477,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
   private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
   private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
+
+  /** Central's management API, as the caller this client registers clients through -- for a
+    * spec that needs a tenant of its own, see [[SecurityProfiles.withFapi2Tenant]]. */
+  def central: CentralApi = CentralApi(client, config, Some("central" -> config.resourceSecret))
 
   /** Where the edge receives security event tokens — what a client registers as its
     * back-channel logout URI so that logouts and revocations reach it.
@@ -1102,6 +1111,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: the public keys this client signs its assertions with, instead of
         * authenticating by secret. Build it with `AssertionSigner.jwks`. */
       jwks: Option[zio.json.ast.Json] = None,
+      /** Ask central to generate the `private_key_jwt` key pair under this algorithm instead
+        * of registering one, for the caller that holds none. The private half comes back as
+        * `RegisterClientResult.Success.privateKey`. Mutually exclusive with `jwks`. */
+      generateJwks: Option[String] = None,
       /** RFC 9101 §10.5: the client states its authorization request in a request object it
         * signed. Needs `jwks`, which registration enforces. */
       requireSignedRequestObject: Boolean = false,
@@ -1125,6 +1138,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The modulus an RSA proof key from this client must reach; `None` leaves the RFC 7518
         * §3.3 floor auth applies to every client. */
       dpopMinRsaKeySize: Option[Int] = None,
+      /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
+        * with `tls_client_auth` is the app fronted by edge (#421). */
+      applicationType: Option[String] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1149,12 +1165,14 @@ final class OAuthClient(client: Client, config: E2EConfig):
       certificateBoundAccessTokens = certificateBoundAccessTokens,
       dpopBoundAccessTokens = dpopBoundAccessTokens,
       jwks = jwks,
+      generateJwks = generateJwks,
       requireSignedRequestObject = requireSignedRequestObject,
       requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
       edgeSigningKey = edgeSigningKey,
       edgeClientCertificate = edgeClientCertificate,
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
+      applicationType = applicationType,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1704,8 +1722,15 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
 object OAuthClient:
 
+  /** Puts the `default` tenant on the `standard` profile first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
-    ZLayer.fromFunction(OAuthClient(_, _))
+    ZLayer.fromZIO(
+      for
+        client <- ZIO.service[Client]
+        config <- ZIO.service[E2EConfig]
+        _ <- SecurityProfiles.ensureStandard(CentralApi(client, config, Some("central" -> config.resourceSecret))).orDie
+      yield OAuthClient(client, config),
+    )
 
   /** The header the bootstrap configures the default tenant to read a client certificate
     * from (see `Flows.layer`). ingress-nginx's name for it, so the fixture matches the
@@ -1755,10 +1780,12 @@ object OAuthClient:
       certificateBoundAccessTokens: Boolean,
       dpopBoundAccessTokens: Boolean,
       jwks: Option[zio.json.ast.Json],
+      generateJwks: Option[String],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
       dpopSigningAlgs: Set[String],
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
+      applicationType: Option[String] = None,
   ) derives JsonEncoder

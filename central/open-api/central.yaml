@@ -1108,6 +1108,14 @@ paths:
           description: Settings stored.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: |
+            The switch to `fapi2` was refused: the tenant holds clients the profile would not
+            admit. Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityProfileConflict'
 
   /configuration/forms:
     get:
@@ -1733,8 +1741,15 @@ components:
       type: string
       format: uri
       description: |
-        An absolute URI with no fragment. `http` is allowed only for `localhost` and
-        `127.0.0.1`; any other scheme, including custom native-app schemes, is accepted.
+        An absolute URI with no fragment. A value being registered (a new client, or a
+        patch's `add`) must be `https` with a host, or `http` to a loopback address
+        (`localhost`, `127.0.0.1`, `[::1]`) for a native app's local listener (FAPI 2.0
+        Security Profile §5.3.2.2, RFC 8252 §7.3). Private-use schemes
+        (`com.example.app://...`) are refused under the tenant's default `fapi2`
+        security profile -- native apps register a claimed `https` redirect (App Links /
+        Universal Links) instead; a `standard`-profile tenant may register a
+        reverse-domain private-use scheme (RFC 8252 §7.1). A patch's `remove` still accepts
+        any value already stored, so a client registered before this rule can be cleaned up.
       examples: ['https://app.example.com/callback']
     ResourceUri:
       type: string
@@ -2096,6 +2111,8 @@ components:
           description: Whether a previous secret is still accepted.
         authMethod:
           $ref: '#/components/schemas/AuthMethod'
+        applicationType:
+          $ref: '#/components/schemas/ApplicationType'
         accessTokenTtl:
           type: integer
           format: int64
@@ -2308,6 +2325,14 @@ components:
             regardless; a value below it is refused at registration.
         authMethod:
           $ref: '#/components/schemas/AuthMethod'
+        applicationType:
+          oneOf:
+            - $ref: '#/components/schemas/ApplicationType'
+            - type: 'null'
+          description: |
+            Absent or `null` registers a `web` client. Held apart from `authMethod`: a native
+            app is public (`none`) when it calls this server itself, and confidential
+            (`tls_client_auth`) when an edge authenticates as it.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2332,7 +2357,25 @@ components:
             - type: 'null'
           description: |
             RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
-            assertions with. `null` means the client does not use the method.
+            assertions with. `null` means the client does not use the method, or that
+            `generateJwks` asks this server for the keys instead.
+        generateJwks:
+          type: string
+          nullable: true
+          enum: [ES256, PS256, RS256]
+          description: |
+            Generate the `private_key_jwt` key pair here instead of registering one, signing
+            with this algorithm. The public half is stored as `jwks`; the private half is
+            returned as `CreateClientResponse.privateKey` and is kept nowhere.
+
+            For the caller that holds no key and no way to make one. A FAPI 2.0 tenant admits
+            no `client_secret`, so without this there is no method left whose credential this
+            server issues, and registering a service client there needs a key produced
+            outside the product.
+
+            Mutually exclusive with `jwks`, and refused for any method other than
+            `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
+            certificate a generated pair would not come with.
         requireSignedRequestObject:
           type: boolean
           description: |
@@ -2467,6 +2510,13 @@ components:
             Absent or `null` leaves the stored method unchanged. A value moves the client to
             it, which is validated against the resulting `mtlsAuth`/`jwks` exactly as a
             registration is, and drops the stored secret when it leaves `client_secret`.
+        applicationType:
+          oneOf:
+            - $ref: '#/components/schemas/ApplicationType'
+            - type: 'null'
+          description: |
+            Absent or `null` leaves the stored value unchanged. A value is validated against
+            the client as the patch leaves it, exactly as a registration is.
         mtlsAuth:
           oneOf:
             - $ref: '#/components/schemas/MutualTlsAuth'
@@ -2513,6 +2563,24 @@ components:
       properties:
         secret:
           $ref: '#/components/schemas/Secret'
+        createdAt:
+          type: string
+          format: date-time
+          description: |
+            When central recorded the registration, so a caller holding the client it just
+            sent can state its age without reading it back.
+        privateKey:
+          oneOf:
+            - $ref: '#/components/schemas/PrivateJsonWebKey'
+            - type: 'null'
+          description: |
+            The `private_key_jwt` key generated for this registration, present only where
+            `generateJwks` asked for one.
+
+            The only time it is readable: nothing stores it, so a caller that does not keep
+            it registers another key rather than asking again. Handed back the way a client
+            secret is, and to be treated the same way.
+      required: [createdAt]
     RotateSecretResponse:
       type: object
       properties:
@@ -2522,6 +2590,57 @@ components:
     ResponseType:
       type: string
       enum: [code, 'code id_token']
+    SecurityProfile:
+      type: string
+      description: |
+        Which profile a tenant's clients are held to, at registration and at runtime.
+        `fapi2` is the default for a new tenant; `standard` is plain OAuth 2.1, which also
+        admits a reverse-domain private-use redirect scheme (RFC 8252 §7.1).
+      enum: [standard, fapi2]
+    ClientProfileViolation:
+      type: object
+      description: One client the profile would not admit, and why.
+      properties:
+        clientId:
+          $ref: '#/components/schemas/ClientId'
+        reasons:
+          type: array
+          items:
+            type: string
+      required:
+        - clientId
+        - reasons
+    SecurityProfileConflict:
+      type: object
+      description: |
+        Why a switch to a stricter profile was refused: every client the profile would not
+        admit. The request is well formed, and is accepted as it stands once those clients
+        are brought into conformance.
+      properties:
+        error:
+          type: string
+          enum: [security_profile_violations]
+        message:
+          type: string
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
+        violations:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientProfileViolation'
+      required:
+        - error
+        - message
+        - securityProfile
+        - violations
+    ApplicationType:
+      type: string
+      description: |
+        OIDC Dynamic Client Registration §2 `application_type`: what kind of program the
+        client is, held apart from how it authenticates. Only a `native` client may register
+        a loopback `http` redirect URI (RFC 8252 §7.3), and only a `native` one is served by
+        an edge's native endpoints.
+      enum: [web, native]
     AuthMethod:
       type: string
       description: |
@@ -2568,8 +2687,9 @@ components:
       type: object
       description: |
         An RFC 7517 JWK carrying its private material -- the exact document registered, not a
-        narrowed model of it. Only ever submitted, never listed back: a stored one leaves
-        central encrypted to the requesting edge's public key.
+        narrowed model of it. Never listed back: a stored one leaves central encrypted to the
+        requesting edge's public key. The one exception is a key this server generated itself,
+        returned once in the registration response that asked for it and stored nowhere.
 
         Registration refuses a document that is not an RSA or EC key, that is marked
         `"use": "enc"`, or that carries no private material -- a signer that cannot sign is
@@ -3546,6 +3666,8 @@ components:
             of this tenant's clients may set its `exp`. A `jti` is remembered against replay
             for as long as the assertion bearing it is acceptable, so this also sizes that
             retention. Between 30 and 900 seconds.
+        securityProfile:
+          $ref: '#/components/schemas/SecurityProfile'
       required:
         - tenantId
         - allowedPrefixes
@@ -3614,6 +3736,14 @@ components:
         requireDpopNonce:
           type: [boolean, 'null']
           description: Keeps the stored value when omitted; defaults to false for a new tenant.
+        securityProfile:
+          oneOf:
+            - $ref: '#/components/schemas/SecurityProfile'
+            - type: 'null'
+          description: >-
+            Keeps the stored value when omitted; defaults to `fapi2` for a new tenant. A
+            switch to `fapi2` is refused with `409` while any of the tenant's clients would
+            violate it.
         mtlsCertificateHeader:
           type: [string, 'null']
           description: >-

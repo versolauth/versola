@@ -39,12 +39,12 @@ object AuthorizeEndpointController extends Controller:
               (Observability.setError("invalid_request", Some(Error.BadRequest.description))
                 .as(Response.badRequest(Error.BadRequest.description)))
 
-          case Error.InvalidRequestObject =>
+          case error: Error.InvalidRequestObject =>
             // RFC 9101 §6.2: an object that fails verification must be reported as
             // `invalid_request_object`, not as an undifferentiated 400 -- that is the only
             // thing that lets a client tell this apart from Error.BadRequest above.
             AuthMetrics.authorizeError(Error.InvalidRequestObject.error) *>
-              (Observability.setError(Error.InvalidRequestObject.error, Some(Error.InvalidRequestObject.description))
+              (Observability.setError(error.error, error.logDescription)
                 .as(Response.json(
                   AuthorizeErrorResponse(Error.InvalidRequestObject.error, Error.InvalidRequestObject.description).toJson,
                 ).status(Status.BadRequest)))

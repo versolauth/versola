@@ -1,13 +1,13 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{ApplicationType, AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.json.{DeriveJsonCodec, JsonCodec, JsonDecoder, JsonEncoder}
@@ -356,6 +356,8 @@ case class OAuthClientResponse(
     template: Option[ClientTemplate],
     /** When the registration was accepted, as an ISO-8601 instant. */
     createdAt: Instant,
+    /** OIDC Registration §2 `application_type`. */
+    applicationType: ApplicationType,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -420,8 +422,17 @@ case class CreateClientRequest(
     /** RFC 8705 §3.4: bind this client's access tokens to the certificate it presents. */
     certificateBoundAccessTokens: Boolean,
     /** RFC 7523 §2.2 `private_key_jwt`: the public keys the client signs its client
-      * assertions with; `None` when it does not use the method. */
+      * assertions with; `None` when it does not use the method, or when [[generateJwks]]
+      * asks this server for them instead. */
     jwks: Option[JsonWebKeySet],
+    /** Generate the `private_key_jwt` key pair here instead of registering one, signing with
+      * this algorithm. The public half is stored as [[jwks]]; the private half comes back in
+      * `CreateClientResponse.privateKey` and is kept nowhere.
+      *
+      * For the caller that has no key and no way to make one -- in a FAPI 2.0 tenant, which
+      * admits no `client_secret`, that is otherwise the end of the registration. Mutually
+      * exclusive with [[jwks]]. */
+    generateJwks: Option[ClientAssertion.Algorithm],
     /** RFC 9101 §10.5: whether this client states its authorization request in a signed
       * request object, rather than a plain parameter set staying acceptable from it. */
     requireSignedRequestObject: Boolean,
@@ -440,6 +451,10 @@ case class CreateClientRequest(
       * caller that names none -- a template is what the console picked, not something to
       * infer on its behalf from the settings it sent. */
     template: Option[ClientTemplate],
+    /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
+      * with `tls_client_auth` is the app fronted by edge (#421), which registration holds to
+      * the rules in `InvalidRegistrationConfiguration.validateEdgeFrontedNative`. */
+    applicationType: Option[ApplicationType],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -448,6 +463,13 @@ case class CreateClientResponse(
     /** When central recorded the registration, so a caller holding the client it just sent
       * can state its age without reading it back. */
     createdAt: Instant,
+    /** The `private_key_jwt` key generated for this registration, present only where
+      * `CreateClientRequest.generateJwks` asked for one.
+      *
+      * The only time it is ever readable: nothing stores it, so a caller that does not keep
+      * it registers another key rather than asking again. Handed back the way a client
+      * secret is, and to be treated the same way. */
+    privateKey: Option[PrivateJsonWebKey],
 ) derives Schema, JsonEncoder
 
 case class RotateSecretResponse(
@@ -488,6 +510,7 @@ case class UpdateClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    applicationType: Option[ApplicationType],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -692,6 +715,10 @@ case class SyncOAuthClientRecord(
     /** The PEM certificate and key an edge fronting this client presents, encrypted in transit
       * on the same terms as `edgeSigningKey`. */
     edgeClientCertificate: Option[String],
+    /** OIDC Registration §2 `application_type`. Auth reads it to leave an edge-fronted native
+      * client's tokens unbound from edge's certificate; edge reads it to decide which clients
+      * its native endpoints serve. */
+    applicationType: ApplicationType,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(

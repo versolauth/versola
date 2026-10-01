@@ -1,9 +1,9 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord, SecurityProfile}
 import versola.oauth.mtls.ClientCertificate
-import versola.util.CoreConfig
+import versola.util.{CoreConfig, JwtAudience}
 import versola.util.http.Observability
 import zio.*
 import zio.http.Request
@@ -93,6 +93,13 @@ trait ClientAuthentication:
     *                       reads or revokes tokens it would let anyone knowing a public id act
     *                       for that client. A certificate or an assertion still authenticates
     *                       one — the point is that no credential at all does not.
+    *
+    * #353: a public client of a tenant on the FAPI 2.0 profile is refused at every endpoint,
+    * whatever `secretRequired` says -- FAPI 2.0 §5.3.2.1 admits no public clients, and central
+    * refusing to register one does not reach a client registered before its tenant asserted
+    * the profile. On a `standard` tenant a public client is authenticated by its bare
+    * `client_id` exactly as before: at `/token` by the PKCE exchange, and at `/revoke` by the
+    * token it presents, which RFC 7009 §2.1 checks was issued to it.
     */
   def authenticate(
       credentials: ClientCredentials,
@@ -117,14 +124,17 @@ enum CertificateRelevance:
 
   def appliesTo(client: OAuthClientRecord): Boolean = this match
     case CertificateRelevance.Authentication => client.authenticatesWithCertificate
-    case CertificateRelevance.TokenIssuance  => client.bindsAccessTokens
+    // Both, not `bindsAccessTokens` alone: the two coincided until an edge-fronted native
+    // client, which authenticates with a certificate that deliberately binds nothing.
+    case CertificateRelevance.TokenIssuance  => client.authenticatesWithCertificate || client.bindsAccessTokens
 
 /** The endpoints that authenticate a client, and the path each is served at.
   *
   * RFC 7523 §3 requires an assertion's `aud` to name the server it is sent to. OpenID Connect
   * Core §9 reads that as the endpoint's own URL while the OAuth security BCP reads it as the
-  * issuer identifier, and clients in the wild send either -- so both are accepted, and this
-  * is what supplies the endpoint half.
+  * issuer identifier. FAPI 2.0 §5.3.2.1-8 settles it as the issuer alone, which is what a
+  * `fapi2` tenant is held to; a `standard` tenant still accepts either, and this is what
+  * supplies the endpoint half for it -- see [[audience]].
   */
 enum AuthenticatedEndpoint(val path: String):
   case Token extends AuthenticatedEndpoint("/token")
@@ -135,6 +145,11 @@ enum AuthenticatedEndpoint(val path: String):
   def acceptedAudiences(issuer: String): Set[String] =
     val base = issuer.stripSuffix("/")
     Set(issuer, base, base + path)
+
+  /** The `aud` an assertion sent here must carry under the given security profile. */
+  def audience(issuer: String, profile: SecurityProfile): JwtAudience = profile match
+    case SecurityProfile.fapi2 => JwtAudience.IssuerOnly(issuer)
+    case SecurityProfile.standard => JwtAudience.AnyOf(acceptedAudiences(issuer))
 
 object ClientAuthentication:
   def live: ZLayer[OAuthConfigurationService & ClientAssertionService & CoreConfig, Nothing, ClientAuthentication] =
@@ -213,8 +228,9 @@ object ClientAuthentication:
             // certificate, and accepting a signature from them would hand the client a
             // second credential it never registered.
             case Some(client) if client.authMethod == AuthMethod.private_key_jwt =>
-              clientAssertionService
-                .verify(client, assertion, endpoint.acceptedAudiences(config.jwt.issuer))
+              oauthClientService.getSecurityProfile(client.id)
+                .map(endpoint.audience(config.jwt.issuer, _))
+                .flatMap(clientAssertionService.verify(client, assertion, _))
                 .mapError {
                   case error: Throwable => error
                   case _: ClientAssertionService.Error => ()
@@ -246,4 +262,12 @@ object ClientAuthentication:
             case _ =>
               oauthClientService.verifySecret(clientId, clientSecret)
                 .someOrFail(())
-      )
+      ).tap(client => ZIO.fail(()).whenZIO(refusedByProfile(client)))
+
+    /** Only a public client can be refused here: every confidential method is one FAPI 2.0
+      * either admits or leaves to central to refuse at registration, since the client did
+      * authenticate. */
+    private def refusedByProfile(client: OAuthClientRecord): UIO[Boolean] =
+      if client.isPublic then
+        oauthClientService.getSecurityProfile(client.id).map(_ == SecurityProfile.fapi2)
+      else ZIO.succeed(false)

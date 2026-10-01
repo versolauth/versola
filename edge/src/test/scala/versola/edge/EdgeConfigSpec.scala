@@ -99,6 +99,13 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     versolaInternalTrustedCertificates = trustPath.map(_.toString),
     edgeUrl = URL.decode("http://edge:8095").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
+    dpop = Some(EdgeConfig.Dpop.default(Secret.Bytes32.fromBase64Url(secret32).toOption.get)),
+  )
+
+  private def nativeConfig(trustedCertificates: String) = EdgeConfig.Native(
+    authMutualTlsUrl = URL.decode("https://auth:8083").toOption.get,
+    trustedCertificates = trustedCertificates,
+    blobKey = Secret.Bytes32.fromBase64Url(secret32).toOption.get,
   )
 
   private def writeCertificate(directory: Path, name: String, pem: String): Task[Path] =
@@ -134,6 +141,22 @@ object EdgeConfigSpec extends ZIOSpecDefault:
       // must still parse — and versolaInternalUrl must fall back to
       // versolaUrl — or every existing deployment fails to start on
       // upgrade.
+      test("parses a native block, the external URL defaulting to the one edge dials") {
+        val block =
+          s"""native {
+             |  auth-mutual-tls-url = "https://localhost:9008"
+             |  trusted-certificates = "/tmp/server.crt"
+             |  blob-key = "$secret32"
+             |}""".stripMargin
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, dpopBlock = block))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(
+          config.native.map(_.externalUrl) == Some(URL.decode("https://localhost:9008").toOption.get),
+          config.native.map(_.blobTtl) == Some(10.minutes),
+        )
+      },
       test("internalUrl falls back to versolaUrl when versola-internal-url is absent") {
         for config <- TypesafeConfigProvider
             .fromHoconString(hocon(includeInternalUrl = false))
@@ -169,6 +192,45 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             path <- writeCertificate(directory, "leaf.pem", leaf.certificatePem)
             config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated)
           yield assertTrue(config.versolaInternalTrustedCertificates == Some(path.toString))
+      },
+      test("refuses a certificate authority pinned for auth's mutual-TLS listener") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            ca = TestCertificates.generate(subject = "CN=auth-mtls-ca,O=Versola,C=KZ", ca = true)
+            path <- writeCertificate(directory, "mtls-ca.pem", ca.certificatePem)
+            exit <- ZIO.service[EdgeConfig]
+              .provideLayer(
+                ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig(path.toString)))) >>>
+                  EdgeConfig.validated,
+              ).exit
+          yield assertTrue(exit.isFailure)
+      },
+      // Every native client is registered `dpopBoundAccessTokens`, `/native/start` verifies
+      // and replay-guards the device's proof on the `dpop` windows, and this same edge is
+      // what the app then calls its API through -- where a key-bound token with no `dpop`
+      // block is refused outright. The combination is a deployment that cannot work.
+      test("refuses a native block with no dpop block to verify device proofs against") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            leaf = TestCertificates.generate(subject = "CN=auth-mtls,O=Versola,C=KZ")
+            path <- writeCertificate(directory, "mtls-leaf.pem", leaf.certificatePem)
+            config = baseConfig(None).copy(native = Some(nativeConfig(path.toString)), dpop = None)
+            exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(config) >>> EdgeConfig.validated).exit
+          yield assertTrue(exit.isFailure)
+      },
+      test("accepts a native block pinned to a leaf, alongside a dpop block") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            leaf = TestCertificates.generate(subject = "CN=auth-mtls,O=Versola,C=KZ")
+            path <- writeCertificate(directory, "mtls-leaf.pem", leaf.certificatePem)
+            config <- ZIO.service[EdgeConfig].provideLayer(
+              ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig(path.toString)))) >>>
+                EdgeConfig.validated,
+            )
+          yield assertTrue(config.native.map(_.trustedCertificates) == Some(path.toString))
       },
       test("passes an absent trust anchor through unexamined") {
         for

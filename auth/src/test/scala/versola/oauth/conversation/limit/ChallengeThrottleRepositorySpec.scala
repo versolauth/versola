@@ -240,7 +240,11 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
         yield assertTrue(
           found.exists(_.attempts.contains(settle.getEpochSecond)),
           found.exists(_.attempts.forall(allowed.contains)),
-          found.exists(r => r.attempts.distinct.sizeIs == r.attempts.size),
+          // Not `r.attempts.distinct.sizeIs == r.attempts.size`: assertTrue's macro rewrites a
+          // top-level `==` into `equalTo`, comparing `sizeIs`'s SizeCompareOps wrapper against a
+          // plain Int and failing always. Harmless one level down inside this lambda -- the
+          // macro never reaches it -- but not a pattern worth keeping around to be lifted out.
+          found.exists(r => r.attempts.distinct.size == r.attempts.size),
         )
       },
     )

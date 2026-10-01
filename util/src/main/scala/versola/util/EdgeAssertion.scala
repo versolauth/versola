@@ -97,6 +97,19 @@ object EdgeAssertion:
     */
   case class Verified(jti: String, issuedAt: Instant)
 
+  /** What [[issue]] signs with: RSASSA-PSS over the edge's own RSA key (#359). FAPI 2.0
+    * permits PS256 and ES256 for signed objects, and PS256 needs no new key -- the edge's
+    * registered key is RSA, and the same key signs either. */
+  val SigningAlgorithm: JWT.Algorithm = JWT.Algorithm.PS256
+
+  /** What [[verify]] accepts: [[SigningAlgorithm]] and nothing else -- in particular no `RS256`,
+    * which FAPI 2.0 §5.3.2.1 does not permit for a signed object, and no `HS256`, which would
+    * have a key set speak for a secret it does not hold. An edge not yet upgraded to sign
+    * PS256 fails every bound token's `/userinfo` call rather than being grandfathered in: this
+    * is the client-facing enforcement #359 asks for everywhere else, and a rollout allowance
+    * here would be a hole in it with no expiry of its own. */
+  val AcceptedAlgorithms: Set[JWT.Algorithm] = Set(JWT.Algorithm.PS256)
+
   /** Mints an assertion for one specific access token. */
   def issue(
       edgeId: String,
@@ -114,7 +127,7 @@ object EdgeAssertion:
       ),
       ttl = ttl,
       signature = JWT.Signature.Asymmetric(
-        algorithm = JWT.Algorithm.RS256,
+        algorithm = SigningAlgorithm,
         keyId = keyId,
         privateKey = privateKey,
       ),
@@ -148,6 +161,9 @@ object EdgeAssertion:
       accessToken: String,
   ): IO[Error, Verified] =
     for
+      algorithm <- ZIO.attempt(com.nimbusds.jwt.SignedJWT.parse(assertion).getHeader.getAlgorithm.getName)
+        .orElseFail(Error.Malformed)
+      _ <- ZIO.fail(Error.Unsigned).unless(AcceptedAlgorithms.exists(_.jwsAlgorithm.getName == algorithm))
       claims <- JWT.deserialize[AssertionClaims](assertion, keys, JWT.Type.JWT)
         .mapError:
           case JWT.Error.InvalidSignature => Error.Unsigned

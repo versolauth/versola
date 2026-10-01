@@ -85,6 +85,18 @@ The script first asks for the environment **Name** (default `local`):
       only from a header. Start it before edge; without it every edge -> auth call
       is refused a connection.
     - `PORT=9005 DPORT=9006 RUN_MIGRATIONS=true sbt -Denv.path=edge/dev/env.conf "project edge-postgres-impl; run"` - Edge
+    - `central-admin` is registered as `tls_client_auth` by edge (#353: the `default` tenant is on
+      the FAPI 2.0 security profile, which admits no `client_secret` client). Its certificate
+      is `edge/dev/internal-tls/central-admin.{crt,key}`, signed by the terminator's CA and
+      carried in `central/dev/env.conf`'s `bootstrap.central-admin-mtls`; edge presents it to
+      the nginx terminator above, which forwards it to auth in `ssl-client-cert`. So the
+      terminator is not optional for the console login: without it edge cannot push
+      `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
+      `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
+      `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
+      docker-local/vps/interactive targets get no `central-admin-mtls` and no terminator, so
+      central keeps `central-admin` on its `client_secret` there and logs that it is outside the
+      tenant's profile.
     - go to http://localhost:9005/login/central-admin
     - enter admin/Admin1234!
     - enter otp code 123456
@@ -402,3 +414,12 @@ see `MutualTlsListenerSpec`. `docker-local`/`vps`/interactive get no such block,
 until whoever operates one decides what certificate it should present.
 
 The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
+### Native apps through edge (#420)
+
+`edge/dev/env.conf`'s `native { ... }` block (written by the `local` target) turns on edge's
+`POST /native/{start,complete,token,revoke}/{clientId}` endpoints: edge authenticates to auth
+as an edge-fronted native client (`applicationType = native`, `tls_client_auth`) straight on
+auth's `MPORT` listener, pinning `auth/dev/mtls/server.crt`. The client certificate edge
+presents is the `edgeClientCertificate` central syncs, and must be issued by a CA in auth's
+`mutual-tls.trusted-certificates` (`auth/dev/mtls/ca.crt` locally) -- zio-http hands auth the
+leaf only. Without the block every native endpoint answers 404.

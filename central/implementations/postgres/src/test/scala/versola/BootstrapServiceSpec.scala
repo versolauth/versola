@@ -1,13 +1,15 @@
 package versola
 
 import org.scalamock.stubs.ZIOStubs
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType}
+import versola.central.CentralConfig
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord}
 import versola.central.configuration.{InjectRule, InjectTarget}
-import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom}
+import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 import java.util.UUID
 
 object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -17,7 +19,83 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       UUID.nameUUIDFromBytes(s"$method $path".getBytes(StandardCharsets.UTF_8)),
     )
 
+  private def mtlsSeed(certificate: String) =
+    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(certificate, "ssl-client-cert", "urlEncodedPem")
+
+  /** The stored `central-admin` a previous boot left behind, varying only the one column
+    * [[BootstrapService.authMethodDowngradeRefusal]] reads. */
+  private def centralAdminRecord(authMethod: AuthMethod): OAuthClientRecord =
+    OAuthClientRecord(
+      id = ClientId(CentralConfig.centralClientId),
+      tenantId = CentralConfig.defaultTenantId,
+      clientName = Map("en" -> "Central Admin"),
+      redirectUris = Set.empty,
+      scope = Set.empty,
+      secret = None,
+      previousSecret = None,
+      accessTokenTtl = Duration.fromSeconds(3600),
+      refreshTokenTtl = Duration.fromSeconds(3600),
+      permissions = Set.empty,
+      theme = "default",
+      authFlow = None,
+      registrationFlow = None,
+      otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = None,
+      dpopBoundAccessTokens = false,
+      dpopSigningAlgs = Set.empty,
+      dpopMinRsaKeySize = None,
+      authMethod = authMethod,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = false,
+      jwks = None,
+      requireSignedRequestObject = false,
+      requirePushedAuthorizationRequests = false,
+      edgeSigningKey = None,
+      edgeClientCertificate = None,
+      template = None,
+      createdAt = Instant.EPOCH,
+    )
+
+  private val secretlessCredential =
+    BootstrapService.CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false)
+
+  private val mtlsCredential = BootstrapService.CentralAdminCredential(
+    AuthMethod.tls_client_auth,
+    Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=central-admin")),
+    None,
+    requirePushedAuthorizationRequests = true,
+  )
+
   def spec = suite("BootstrapService")(
+    // #353: the default tenant is FAPI 2.0, and tls_client_auth by edge is what it admits for
+    // an edge-fronted web client.
+    test("registers central-admin as tls_client_auth by its certificate's subject DN, behind PAR, when given one") {
+      val certificate = TestCertificates.generate(subject = "CN=central-admin,O=Versola")
+      val credential = BootstrapService.centralAdminCredential(Some(mtlsSeed(certificate.bundle)))
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
+        credential.map(_.mtlsAuth) == Right(Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn))),
+        credential.map(_.edgeClientCertificate.map(_.pem)) == Right(Some(certificate.bundle)),
+        credential.map(_.requirePushedAuthorizationRequests) == Right(true),
+        credential.exists(_.conformant),
+      )
+    },
+    test("keeps central-admin on client_secret, outside the profile, without a certificate") {
+      val credential = BootstrapService.centralAdminCredential(None)
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.client_secret),
+        credential.exists(!_.conformant),
+      )
+    },
+    test("refuses to boot on a certificate that could not be presented") {
+      assertTrue(BootstrapService.centralAdminCredential(Some(mtlsSeed("not a pem"))).isLeft)
+    },
     test("adds an OTP factor and phone outside production") {
       val envName = EnvName.Test("local")
 
@@ -126,5 +204,31 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .filterNot(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
             .forall(_.allowExpression.isEmpty),
         )
+      },
+      // Reasserting authMethod on every boot is one-way safe (client_secret -> tls_client_auth
+      // mints a secretless credential from a secret-bearing one); the other direction is not,
+      // and is what these refuse rather than silently apply.
+      test("refuses a boot that would downgrade central-admin off a method with no secret to mint") {
+        assertTrue(
+          BootstrapService.authMethodDowngradeRefusal(
+            Some(centralAdminRecord(AuthMethod.tls_client_auth)),
+            secretlessCredential,
+          ).exists(_.contains("bootstrap.central-admin-mtls was removed")),
+        )
+      },
+      test("does not refuse a boot that keeps or grants a secret-minting method") {
+        assertTrue(
+          BootstrapService.authMethodDowngradeRefusal(
+            Some(centralAdminRecord(AuthMethod.client_secret)),
+            secretlessCredential,
+          ).isEmpty,
+          BootstrapService.authMethodDowngradeRefusal(
+            Some(centralAdminRecord(AuthMethod.tls_client_auth)),
+            mtlsCredential,
+          ).isEmpty,
+        )
+      },
+      test("does not refuse a boot with no prior central-admin to downgrade") {
+        assertTrue(BootstrapService.authMethodDowngradeRefusal(None, secretlessCredential).isEmpty)
       },
   )

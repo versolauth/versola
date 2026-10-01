@@ -45,7 +45,7 @@ object PushedAuthorizationController extends Controller:
         .addHeader(Header.CacheControl.NoStore))
         .catchAll {
           case error: PushedAuthorizationError =>
-            Observability.setError(error.error, error.errorDescription).as(errorResponse(error))
+            Observability.setError(error.error, error.logDescription).as(errorResponse(error))
           case error: Throwable => ZIO.fail(error)
         }
     }

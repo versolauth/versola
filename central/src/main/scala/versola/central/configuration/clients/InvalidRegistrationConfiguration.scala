@@ -1,6 +1,8 @@
 package versola.central.configuration.clients
 
-import versola.util.{Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey}
+import versola.central.configuration.challenges.SecurityProfile
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
 
@@ -94,6 +96,34 @@ object InvalidRegistrationConfiguration:
       jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)
         .map(reason => InvalidRegistrationConfiguration(clientId, s"jwks $reason")),
     )
+
+  /** Asking this server to generate the key is an alternative to registering one, not an
+    * addition to it -- so the two are refused together, and refused for every method that
+    * would not read the result.
+    *
+    * Only `private_key_jwt` can be served this way. RFC 8705 §2.2 reads a key set too, but
+    * matches it against a certificate the client presents: a key pair generated here would
+    * come with no certificate to match, so accepting the request would register a client that
+    * cannot authenticate -- exactly what [[validateClientAuthentication]] exists to prevent.
+    *
+    * Checked before the key is generated: the work is small, but an error raised after it has
+    * already produced private key material is one that has to be careful about what it
+    * discards, and there is no reason to be in that position.
+    */
+  def validateGeneratedJwks(
+      clientId: ClientId,
+      authMethod: AuthMethod,
+      jwks: Option[JsonWebKeySet],
+      generateJwks: Option[ClientAssertion.Algorithm],
+  ): Option[InvalidRegistrationConfiguration] =
+    generateJwks.flatMap: _ =>
+      def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"generateJwks $reason"))
+
+      if jwks.nonEmpty then
+        invalid("cannot be combined with jwks - a client registers the key it holds or asks for one, not both")
+      else if authMethod != AuthMethod.private_key_jwt then
+        invalid(s"generates the key an assertion is signed with, which $authMethod does not read")
+      else None
 
   /** RFC 8705 §6.5 leaves it to the deployment to hand a terminated certificate to the
     * application, and this one does it per tenant: `auth` looks for a certificate only where
@@ -291,3 +321,184 @@ object InvalidRegistrationConfiguration:
           invalid("registration allows only one of set-password or passkey enrollment")
         case Some(_) =>
           None
+
+
+  // ── #353: the tenant's security profile ────────────────────────────────────────────────
+  //
+  // Kept apart from the per-setting checks above on purpose: those say whether a client's
+  // settings can work at all, whatever tenant it is in, while these say whether a client that
+  // works is one its tenant's asserted profile admits. A client can pass every check above and
+  // still be refused here, and the same client is accepted unchanged in a `standard` tenant.
+
+  /** What [[profileViolations]] reads off a client -- the registration after a create or a
+    * patch has been applied to it, never the request alone, since a patch that leaves a
+    * setting untouched still has to leave the client conformant.
+    *
+    * @param senderConstrained whether an access token issued to the client is bound to a key
+    *                          (RFC 9449 DPoP) or to a certificate (RFC 8705 §3) -- read off
+    *                          the record ([[OAuthClientRecord.dpopBoundAccessTokens]] or
+    *                          [[OAuthClientRecord.bindsAccessTokens]]) rather than recomputed
+    *                          from its columns, so a change to what binds a token changes
+    *                          what is conformant with it.
+    * @param native            the client was registered as a mobile or desktop binary, the
+    *                          one kind FAPI 2.0 lets redirect to a loopback `http` URI. Read
+    *                          off [[ApplicationType]] (#421), which is where a registration
+    *                          states this; the console's `device` template is still honoured
+    *                          for clients registered before that field existed.
+    */
+  case class ProfileSubject(
+      authMethod: AuthMethod,
+      senderConstrained: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      redirectUris: Set[RedirectUri],
+      native: Boolean,
+  )
+
+  object ProfileSubject:
+    def of(client: OAuthClientRecord): ProfileSubject =
+      ProfileSubject(
+        authMethod = client.authMethod,
+        senderConstrained = client.dpopBoundAccessTokens || client.bindsAccessTokens,
+        requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+        redirectUris = client.redirectUris,
+        native = client.applicationType == ApplicationType.native ||
+          client.template.exists(_.kind == ClientKind.device),
+      )
+
+  /** The authentication methods FAPI 2.0 §5.3.2.1 leaves a client: confidential ones, with a
+    * credential that is not a shared secret. */
+  val Fapi2AuthMethods: Set[AuthMethod] =
+    Set(AuthMethod.private_key_jwt, AuthMethod.tls_client_auth, AuthMethod.self_signed_tls_client_auth)
+
+  /** Every way `subject` falls short of `profile`, in a stable order -- empty for a client the
+    * profile admits, and always empty under [[SecurityProfile.standard]].
+    *
+    * All of them rather than the first: the same list answers an operator switching a tenant
+    * to FAPI 2.0, who needs to know everything to fix in each client, not the first thing.
+    *
+    * FAPI 2.0 Security Profile:
+    *  - §5.3.2.1: no public clients, and client authentication by `private_key_jwt` or mTLS
+    *    only -- a `client_secret` is out as well as `none`;
+    *  - §5.3.2.2: sender-constrained access tokens, by DPoP or by certificate;
+    *  - §5.3.2.2: PAR for every authorization request, so for every client that makes them --
+    *    which is every client with a redirect URI;
+    *  - §5.3.2.2 / #361: `https` redirect URIs, except a native client's loopback `http` one
+    *    (RFC 8252 §7.3).
+    *
+    * @param allowHttpLoopback admits a loopback `http` redirect URI for any client, not only a
+    *                          native one. Only outside production, where the local stack's edge
+    *                          is itself served at `http://localhost` and could otherwise not
+    *                          front a single web client of a FAPI 2.0 tenant.
+    */
+  def profileViolations(
+      profile: SecurityProfile,
+      subject: ProfileSubject,
+      allowHttpLoopback: Boolean,
+  ): List[String] =
+    profile match
+      case SecurityProfile.standard => Nil
+      case SecurityProfile.fapi2 =>
+        List(
+          Option.when(!Fapi2AuthMethods.contains(subject.authMethod))(
+            s"FAPI 2.0 admits confidential clients only (private_key_jwt, tls_client_auth or " +
+              s"self_signed_tls_client_auth), not ${subject.authMethod}",
+          ),
+          Option.when(!subject.senderConstrained)(
+            "FAPI 2.0 requires sender-constrained access tokens: set dpopBoundAccessTokens, or " +
+              "authenticate with or bind tokens to a certificate",
+          ),
+          Option.when(subject.redirectUris.nonEmpty && !subject.requirePushedAuthorizationRequests)(
+            "FAPI 2.0 requires pushed authorization requests for a client with redirect URIs: " +
+              "set requirePushedAuthorizationRequests",
+          ),
+        ).flatten ++
+          subject.redirectUris.toList.sortBy(uri => uri: String)
+            .filterNot(uri => admittedRedirectUri(uri, subject.native || allowHttpLoopback))
+            .map(uri =>
+              s"FAPI 2.0 requires https redirect URIs (loopback http only for a native client), not '$uri'",
+            )
+
+  /** [[profileViolations]] as a registration failure: every reason, in one message. */
+  def validateSecurityProfile(
+      clientId: ClientId,
+      profile: SecurityProfile,
+      subject: ProfileSubject,
+      allowHttpLoopback: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    profileViolations(profile, subject, allowHttpLoopback) match
+      case Nil => None
+      case reasons => Some(InvalidRegistrationConfiguration(clientId, reasons.mkString("; ")))
+
+  /** [[RedirectUri.isLoopback]] rather than a second list: the two decide the same question
+    * -- whether plain HTTP is tolerated for this host -- and a copy here would let the
+    * structural check and the profile check drift apart on what counts as loopback. */
+  private def admittedRedirectUri(uri: RedirectUri, loopbackAllowed: Boolean): Boolean =
+    URL.decode(uri).toOption.exists: url =>
+      url.scheme.contains(Scheme.HTTPS) ||
+        (loopbackAllowed && url.scheme.contains(Scheme.HTTP) && url.host.exists(RedirectUri.isLoopback))
+
+  // ── #421: applicationType (web/native) for an edge-fronted native client ───────────────
+
+  /** #421: a native app is either public ([[AuthMethod.none]], calling auth directly) or
+    * fronted by edge, which authenticates as the client with `tls_client_auth` on auth's own
+    * mutual-TLS listener while the device holds the DPoP key (#420). Nothing in between: the
+    * app cannot keep a secret or a signing key, and `self_signed_tls_client_auth` cannot use
+    * the listener, which rejects a certificate no trusted anchor issued in the handshake.
+    *
+    * For the edge-fronted case, what makes the split safe has to be registered, not assumed:
+    *   - `edgeClientCertificate`, because edge is the only party that can authenticate;
+    *   - `requirePushedAuthorizationRequests`, because the authorization request -- and the
+    *     `dpop_jkt` binding the code to the device key -- is only trustworthy when edge
+    *     pushed it over the authenticated back channel;
+    *   - `dpopBoundAccessTokens`, because the device key is the only sender constraint;
+    *   - no `certificateBoundAccessTokens`: edge's certificate is shared by every install,
+    *     so `cnf` must carry only the device's `jkt` (`OAuthClientRecord.bindsAccessTokens`);
+    *   - https redirect URIs only: App Links / Universal Links are bound to a verified
+    *     domain, a custom scheme can be claimed by any app on the device.
+    *
+    * A `web` client is left entirely alone.
+    */
+  def validateEdgeFrontedNative(
+      clientId: ClientId,
+      applicationType: ApplicationType,
+      authMethod: AuthMethod,
+      hasEdgeClientCertificate: Boolean,
+      requirePushedAuthorizationRequests: Boolean,
+      dpopBoundAccessTokens: Boolean,
+      certificateBoundAccessTokens: Boolean,
+      redirectUris: Set[String],
+  ): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(clientId, s"native client $reason"))
+
+    applicationType match
+      case ApplicationType.web => None
+      case ApplicationType.native =>
+        authMethod match
+          case AuthMethod.none => None
+          case AuthMethod.tls_client_auth =>
+            if !hasEdgeClientCertificate then
+              invalid("fronted by edge needs edgeClientCertificate - the app keeps no credential, edge authenticates as it")
+            else if !requirePushedAuthorizationRequests then
+              invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request binds the code to the device key")
+            else if !dpopBoundAccessTokens then
+              invalid("fronted by edge needs dpopBoundAccessTokens - the device's DPoP key is its only sender constraint")
+            else if certificateBoundAccessTokens then
+              invalid("fronted by edge cannot set certificateBoundAccessTokens - edge's certificate is shared by every installation")
+            else if redirectUris.isEmpty then
+              invalid("fronted by edge needs at least one https redirect URI (App Link / Universal Link)")
+            else
+              // Sorted so a client with several bad ones is always told about the same one.
+              redirectUris.toList.sorted.find(!isHttpsWithHost(_)).flatMap(uri =>
+                invalid(s"fronted by edge accepts only https redirect URIs (App Links / Universal Links), not '$uri'"),
+              )
+          case other =>
+            invalid(
+              s"cannot authenticate with $other - a native app is public (none) or fronted by edge (tls_client_auth)",
+            )
+
+  /** An `https` URI naming a host -- an App Link / Universal Link, the only redirect an
+    * edge-fronted native client may register. Anything that does not parse at all is not one
+    * either, so it is refused with the same reason rather than passed through. */
+  private def isHttpsWithHost(uri: String): Boolean =
+    scala.util.Try(java.net.URI(uri)).toOption.exists: parsed =>
+      Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) && parsed.getHost != null

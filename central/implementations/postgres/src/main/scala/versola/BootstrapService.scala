@@ -1,9 +1,9 @@
 package versola
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientRecord, OAuthClientRepository, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
@@ -17,7 +17,7 @@ import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchAudience, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
-import versola.util.{EnvName, Patch, Phone, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{EnvName, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, UIO, ZIO, ZLayer}
@@ -42,6 +42,68 @@ object BootstrapService:
     Option
       .when(envName.isTest)(AuthFactor(`type` = AuthFactorType.otp, required = true))
       .toList :+ AuthFactor(`type` = AuthFactorType.passkeyEnroll, required = true)
+
+  /** How `central-admin` authenticates, decided by whether bootstrap was given a certificate
+    * for the edge fronting it (#353).
+    *
+    * With one: RFC 8705 §2.1 `tls_client_auth` by edge, recognised by the certificate's own
+    * subject DN, with PAR required -- what the default tenant's FAPI 2.0 profile asks of an
+    * edge-fronted web client. Its tokens are certificate-bound by the method itself
+    * (`OAuthClientRecord.bindsAccessTokens`), so no DPoP is asked for.
+    *
+    * Without one: the `client_secret` it has always had, seeded outside the profile.
+    */
+  private[versola] case class CentralAdminCredential(
+      authMethod: AuthMethod,
+      mtlsAuth: Option[MutualTlsAuth],
+      edgeClientCertificate: Option[PrivateClientCertificate],
+      requirePushedAuthorizationRequests: Boolean,
+  ):
+    def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
+
+  private[versola] def centralAdminCredential(
+      seed: Option[CentralConfig.BootstrapConfig.CentralAdminMtlsSeed],
+  ): Either[String, CentralAdminCredential] =
+    seed match
+      case None =>
+        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
+      case Some(mtls) =>
+        for
+          certificate <- PrivateClientCertificate.validate(mtls.certificate)
+            .left.map(reason => s"bootstrap.central-admin-mtls.certificate $reason")
+          material <- certificate.material
+        yield CentralAdminCredential(
+          authMethod = AuthMethod.tls_client_auth,
+          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
+          edgeClientCertificate = Some(certificate),
+          requirePushedAuthorizationRequests = true,
+        )
+
+  /** Refuses to boot rather than silently drop `central-admin`'s only credential.
+    *
+    * Reasserting `authMethod` on every boot (in `seedClient`'s update branch) is one-way
+    * safe: a deployment given a certificate moves an existing `client_secret` central-admin
+    * onto `tls_client_auth`, and the repository drops its secret with the method
+    * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
+    * `bootstrap.central-admin-mtls` is later removed, that same patch would set the method
+    * back to `client_secret` while nothing can mint one for it, leaving the console
+    * credential-less. `existing` is read from the repository, not the cache, for
+    * `OAuthClientService.validateSecurityProfile`'s reason: a downgrade just made by removing
+    * the config has to be caught before this boot's own patch would apply it.
+    *
+    * @return the reason to refuse booting, if `existing` already holds no secret and
+    *         `credential` would move it to a method that mints one.
+    */
+  private[versola] def authMethodDowngradeRefusal(
+      existing: Option[OAuthClientRecord],
+      credential: CentralAdminCredential,
+  ): Option[String] =
+    existing.collect:
+      case client if !credential.conformant && !client.usesSecret =>
+        s"bootstrap.central-admin-mtls was removed, but '${CentralConfig.centralClientId}' is already " +
+          s"registered as ${client.authMethod} with no client secret to fall back to -- reintroduce " +
+          "bootstrap.central-admin-mtls, or rotate a secret for it first with " +
+          "POST /configuration/clients/rotate-secret, before removing it"
 
   private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
     AuthFlow(
@@ -667,11 +729,11 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
@@ -685,6 +747,7 @@ object BootstrapService:
       themeRepo: ThemeRepository,
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
+      clientRepo: OAuthClientRepository,
       clientService: OAuthClientService,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
@@ -713,6 +776,7 @@ object BootstrapService:
           _ <- seedPasswordTemplate(tenantId)
           _ <- seedJwks(config)
           _ <- seedChallengeSettings(tenantId, config.passkey)
+          _ <- seedMtlsTermination(tenantId, config.centralAdminMtls)
           _ <- seedSystemSettings()
           _ <- seedTheme()
           _ <- seedLocales()
@@ -857,9 +921,48 @@ object BootstrapService:
               _ => ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index"),
             )
 
+    /** RFC 8705 §6.5: `central-admin`'s certificate reaches auth through the default tenant's
+      * TLS terminator, in the header that tenant names -- which central also requires before it
+      * registers any `mtlsAuth`. Set only while the tenant names none. */
+    private def seedMtlsTermination(
+        tenantId: TenantId,
+        seed: Option[CentralConfig.BootstrapConfig.CentralAdminMtlsSeed],
+    ): Task[Unit] =
+      ZIO.foreachDiscard(seed): mtls =>
+        for
+          encoding <- ZIO.fromOption(MtlsCertificateEncoding.values.find(_.toString == mtls.certificateEncoding))
+            .orElseFail(RuntimeException(
+              s"bootstrap.central-admin-mtls.certificate-encoding '${mtls.certificateEncoding}' is none of " +
+                MtlsCertificateEncoding.values.mkString(", "),
+            ))
+          settings <- challengeSettingsRepo.findByTenant(tenantId)
+          _ <- ZIO.foreachDiscard(settings.filter(_.mtlsCertificateHeader.isEmpty)): current =>
+            challengeSettingsRepo.upsert(current.copy(
+              mtlsCertificateHeader = Some(mtls.certificateHeader),
+              mtlsCertificateEncoding = Some(encoding),
+            ))
+        yield ()
+
     private def seedClient(config: CentralConfig.BootstrapConfig): Task[Unit] =
       val redirectUris = config.redirectUris.map(RedirectUri(_)).toSet
       val authFlow = BootstrapService.adminAuthFlow(envName)
+      ZIO.fromEither(BootstrapService.centralAdminCredential(config.centralAdminMtls))
+        .mapError(RuntimeException(_))
+        .flatMap(seedClient(config, redirectUris, authFlow, _))
+
+    private def seedClient(
+        config: CentralConfig.BootstrapConfig,
+        redirectUris: Set[RedirectUri],
+        authFlow: AuthFlow,
+        credential: BootstrapService.CentralAdminCredential,
+    ): Task[Unit] =
+      val warnNonConformant = ZIO.unless(credential.conformant)(
+        ZIO.logWarning(
+          s"'${CentralConfig.centralClientId}' is seeded with client_secret, which the FAPI 2.0 profile of tenant " +
+            s"'${CentralConfig.defaultTenantId}' does not admit -- configure bootstrap.central-admin-mtls to have " +
+            "edge authenticate as it with tls_client_auth instead",
+        ),
+      )
       val request = CreateClientRequest(
         tenantId       = CentralConfig.defaultTenantId,
         id             = CentralConfig.centralClientId,
@@ -883,20 +986,22 @@ object BootstrapService:
         dpopBoundAccessTokens = false,
         dpopSigningAlgs = Set.empty,
         dpopMinRsaKeySize = None,
-        authMethod = AuthMethod.client_secret,
-        mtlsAuth = None,
+        authMethod = credential.authMethod,
+        mtlsAuth = credential.mtlsAuth,
         certificateBoundAccessTokens = false,
         jwks = None,
+        generateJwks = None,
         requireSignedRequestObject = false,
-        requirePushedAuthorizationRequests = false,
+        requirePushedAuthorizationRequests = credential.requirePushedAuthorizationRequests,
         edgeSigningKey = None,
-        edgeClientCertificate = None,
+        edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
+        applicationType = None,
       )
-      clientService.registerClient(request).foldZIO(
+      warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
           case _: ClientAlreadyExists =>
-            clientService.updateClient(
+            refuseAuthMethodDowngrade(credential) *> clientService.updateClient(
               UpdateClientRequest(
                 clientId = CentralConfig.centralClientId,
                 clientName = None,
@@ -919,15 +1024,21 @@ object BootstrapService:
                 dpopBoundAccessTokens = None,
                 dpopSigningAlgs = None,
                 dpopMinRsaKeySize = None,
-                authMethod = None,
-                mtlsAuth = None,
+                // Reasserted on every boot, like the auth flow: a deployment given a
+                // certificate moves an existing `client_secret` central-admin onto it (the
+                // repository drops the secret with the method), and one whose certificate was
+                // replaced has edge present the new one.
+                authMethod = Some(credential.authMethod),
+                mtlsAuth = Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
                 certificateBoundAccessTokens = None,
                 jwks = None,
                 requireSignedRequestObject = None,
-                requirePushedAuthorizationRequests = None,
+                requirePushedAuthorizationRequests = Some(credential.requirePushedAuthorizationRequests),
                 edgeSigningKey = None,
-                edgeClientCertificate = None,
+                edgeClientCertificate = Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
+                applicationType = None,
               ),
+              enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
           case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
           case e: Throwable           => ZIO.fail(e)
@@ -971,13 +1082,21 @@ object BootstrapService:
           mtlsAuth = None,
           certificateBoundAccessTokens = false,
           jwks = None,
+          generateJwks = None,
           requireSignedRequestObject = false,
           requirePushedAuthorizationRequests = false,
           edgeSigningKey = None,
           edgeClientCertificate = None,
           template = None,
+          applicationType = None,
         )
-        clientService.registerClient(request, presetSecret = Some(seed.secret)).foldZIO(
+        // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
+        // does not admit. Seeded outside the profile until the tooling that authenticates as
+        // it (`loadgen provision`) can sign a client assertion and a DPoP proof instead.
+        ZIO.logWarning(
+          s"'${seed.clientId}' is seeded with client_secret, which the FAPI 2.0 profile of tenant " +
+            s"'${CentralConfig.defaultTenantId}' does not admit",
+        ) *> clientService.registerClient(request, presetSecret = Some(seed.secret), enforceSecurityProfile = false).foldZIO(
           {
             // Already seeded by an earlier boot: the secret stays whatever central holds, since
             // rotating it here would break a loadgen configured with the previous value, but the
@@ -1014,7 +1133,9 @@ object BootstrapService:
                   requirePushedAuthorizationRequests = None,
                   edgeSigningKey = None,
                   edgeClientCertificate = None,
+                  applicationType = None,
                 ),
+                enforceSecurityProfile = false,
               ).mapError(registrationConfigurationError)
             case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
             case e: Throwable => ZIO.fail(e)
@@ -1027,6 +1148,23 @@ object BootstrapService:
         case e: InvalidRegistrationConfiguration =>
           new RuntimeException(s"Invalid registration configuration for central client: ${e.reason}")
         case e: Throwable => e
+
+    /** Refuses to boot rather than silently drop `central-admin`'s only credential.
+      *
+      * Reasserting `authMethod` on every boot (see the patch this guards) is one-way safe: a
+      * deployment given a certificate moves an existing `client_secret` central-admin onto
+      * `tls_client_auth`, and the repository drops its secret with the method
+      * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
+      * `bootstrap.central-admin-mtls` is later removed, this patch would set the method back
+      * to `client_secret` while nothing can mint one for it, leaving the console
+      * credential-less. Checked against the repository, not the cache, for
+      * `validateSecurityProfile`'s reason: a downgrade just made by removing the config has
+      * to be caught before this boot's own patch would apply it, not after the next refresh.
+      */
+    private def refuseAuthMethodDowngrade(credential: CentralAdminCredential): Task[Unit] =
+      clientRepo.find(CentralConfig.centralClientId).flatMap: existing =>
+        ZIO.foreachDiscard(BootstrapService.authMethodDowngradeRefusal(existing, credential)):
+          reason => ZIO.fail(RuntimeException(reason))
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>

@@ -1,6 +1,6 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
+import versola.oauth.client.model.{ApplicationType, AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
 import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
@@ -59,6 +59,7 @@ object OAuthClientSyncClient:
             jwks = client.jwks,
             requireSignedRequestObject = client.requireSignedRequestObject,
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
+            applicationType = client.applicationType,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -103,6 +104,9 @@ object OAuthClientSyncClient:
           * behaviour it already had, rather than failing to decode the sync response. */
         requireSignedRequestObject: Boolean = false,
         requirePushedAuthorizationRequests: Boolean = false,
+        /** Defaulted on the same terms: a central that predates the field only has `web`
+          * clients. */
+        applicationType: ApplicationType = ApplicationType.web,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

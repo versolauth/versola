@@ -69,6 +69,7 @@ object ClientController extends Controller:
               requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
               template = client.template,
               createdAt = client.createdAt,
+              applicationType = client.applicationType,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -139,6 +140,7 @@ object ClientController extends Controller:
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKey,
             edgeClientCertificate = edgeClientCertificate,
+            applicationType = client.applicationType,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
@@ -154,7 +156,11 @@ object ClientController extends Controller:
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
         registered <- service.registerClient(body)
-        response = CreateClientResponse(registered.secret.map(Base64Url.encode), registered.createdAt)
+        response = CreateClientResponse(
+          registered.secret.map(Base64Url.encode),
+          registered.createdAt,
+          registered.privateKey,
+        )
       yield Response.json(response.toJson).status(Status.Created))
         .catchAll {
           case error: ClientAlreadyExists =>

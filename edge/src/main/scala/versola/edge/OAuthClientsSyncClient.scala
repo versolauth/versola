@@ -1,6 +1,6 @@
 package versola.edge
 
-import versola.edge.model.{ClientCredential, ClientId, OAuthClient, PermissionId}
+import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
 import versola.util.{Base64, CacheSource, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
 import zio.json.ast.Json
 import zio.http.{Client, Header, Request}
@@ -63,6 +63,8 @@ object OAuthClientsSyncClient:
           client.accessTokenTtl,
           client.requireSignedRequestObject,
           client.requirePushedAuthorizationRequests,
+          client.applicationType,
+          client.redirectUris,
         ),
       )
 
@@ -114,6 +116,8 @@ object OAuthClientsSyncClient:
         requirePushedAuthorizationRequests: Boolean = false,
         edgeSigningKey: Option[String] = None,
         edgeClientCertificate: Option[String] = None,
+        applicationType: ApplicationType = ApplicationType.web,
+        redirectUris: Set[String] = Set.empty,
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

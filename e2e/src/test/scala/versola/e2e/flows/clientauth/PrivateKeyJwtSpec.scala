@@ -50,6 +50,26 @@ object PrivateKeyJwtSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield (id, result.secret)
 
+  /** The same client, registered in a FAPI 2.0 tenant -- see [[SecurityProfiles.withFapi2Tenant]]
+    * for why `default` cannot be that tenant. FAPI 2.0 admits it only as `private_key_jwt`
+    * with DPoP-bound tokens, PAR and an `https` redirect URI; a test that only has it refuse
+    * an assertion never reaches any of those. */
+  private def fapi2AssertionClient(auth: OAuthClient, signer: AssertionSigner, tenantId: String): Task[String] =
+    for
+      id <- uid.map(s => s"jwt-fapi-client-$s")
+      _ <- auth.registerClient(
+        id,
+        "Private Key JWT FAPI 2.0 Test Client",
+        Set("https://app.example.test/callback"),
+        tenantId = tenantId,
+        authMethod = "private_key_jwt",
+        jwks = Some(signer.jwks),
+        dpopBoundAccessTokens = true,
+        requirePushedAuthorizationRequests = true,
+      ).success
+      _ <- auth.syncConfiguration()
+    yield id
+
   /** A well-formed JWK Set holding a key no algorithm auth verifies with can use: `ES256`
     * names P-256 (RFC 7518 §3.4), so nothing here could ever check a signature made with
     * this one. */
@@ -82,21 +102,40 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         // No secret at all: the assertion is the whole credential.
         token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
       yield assertTrue(token.accessToken.nonEmpty)
         .label("RFC 7523 §2.2: a key the client registered is the credential, so no secret is needed")
     },
 
-    test("the issuer identifier is accepted as the audience, not only the endpoint URL") {
+    test("FAPI 2.0 §5.3.2.1-8: an assertion addressed to the token endpoint URL is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, auth.issuer)
-        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
-      yield assertTrue(token.accessToken.nonEmpty)
+        error <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            clientId <- fapi2AssertionClient(auth, signer, tenantId)
+            assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+            result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+            (_, error) <- rejection(result)
+          yield error
+      yield assertTrue(error == "invalid_client")
+        .label("under the fapi2 profile only the issuer identifier names this server")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-8: an audience sent as an array is refused, even naming only the issuer") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        error <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            clientId <- fapi2AssertionClient(auth, signer, tenantId)
+            assertion <- signer.assertion(clientId, auth.issuer, audienceAsArray = true)
+            result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+            (_, error) <- rejection(result)
+          yield error
+      yield assertTrue(error == "invalid_client")
     },
 
     test("a client that registered keys is refused its own secret") {
@@ -117,7 +156,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", jti = Some(s"replayed-${clientId}"))
+        assertion <- signer.assertion(clientId, auth.issuer, jti = Some(s"replayed-${clientId}"))
         first <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
         replay <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(replay)
@@ -131,7 +170,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
         foreign <- signer.foreignKey
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", signWith = Some(foreign))
+        assertion <- signer.assertion(clientId, auth.issuer, signWith = Some(foreign))
         result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -149,6 +188,30 @@ object PrivateKeyJwtSpec extends E2ESpec:
         .label("RFC 7523 §3: an assertion is only good for the server its aud names")
     },
 
+    test("FAPI 2.0 §5.3.2.1-13: an assertion from a clock a few seconds fast is accepted") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(10)
+        assertion <- signer.assertion(clientId, auth.issuer, notBefore = Some(ahead), issuedAt = Some(ahead))
+        token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion)).success
+      yield assertTrue(token.accessToken.nonEmpty)
+        .label("nbf/iat up to 10s in the future must be accepted to absorb clock skew")
+    },
+
+    test("FAPI 2.0 §5.3.2.1-13: an assertion issued more than 60 seconds in the future is refused") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        (clientId, _) <- assertionClient(auth, signer)
+        ahead = java.time.Instant.now().plusSeconds(120)
+        assertion <- signer.assertion(clientId, auth.issuer, lifetime = 3.minutes, issuedAt = Some(ahead))
+        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+        (_, error) <- rejection(result)
+      yield assertTrue(error == "invalid_client")
+    },
+
     test("an assertion valid for longer than the tenant allows is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -157,7 +220,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         // The default tenant's ceiling is five minutes, and a `jti` is only remembered for as
         // long as the assertion carrying it is acceptable -- an hour-long one would outlive
         // the replay guard's memory of it.
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token", lifetime = 1.hour)
+        assertion <- signer.assertion(clientId, auth.issuer, lifetime = 1.hour)
         result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -170,7 +233,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         id <- uid.map(s => s"secret-client-$s")
         _ <- auth.registerClient(id, "Secret Client", Set(redirectUri), allowedScopes = Set("openid")).success
         _ <- auth.syncConfiguration()
-        assertion <- signer.assertion(id, s"${auth.issuer}/token")
+        assertion <- signer.assertion(id, auth.issuer)
         result <- auth.clientCredentials(id, "", useBasicAuth = false, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client", setupResult.clientId.nonEmpty)
@@ -182,7 +245,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, clientSecret) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.clientCredentials(clientId, clientSecret, assertion = Some(assertion))
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
@@ -197,7 +260,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         resource = s"https://$clientId.example.test"
         _ <- auth.registerResource(s"res-$clientId", resource, audience = Set(clientId))
         _ <- auth.syncConfiguration()
-        tokenAssertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(clientId, auth.issuer)
         token <- auth.clientCredentials(
           clientId,
           "",
@@ -207,7 +270,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         ).success
         // A fresh assertion, addressed to the endpoint this one reaches: the first one's jti
         // is spent, and `/introspect` is not `/token`.
-        introspectAssertion <- signer.assertion(clientId, s"${auth.issuer}/introspect")
+        introspectAssertion <- signer.assertion(clientId, auth.issuer)
         introspection <- auth.introspect(
           token.accessToken,
           Some(clientId),
@@ -221,7 +284,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/par")
+        assertion <- signer.assertion(clientId, auth.issuer)
         result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion)).success
       yield assertTrue(result.requestUri.nonEmpty)
         .label("RFC 9126 authenticates the pusher the same way /token does")
@@ -246,13 +309,13 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        tokenAssertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+        tokenAssertion <- signer.assertion(clientId, auth.issuer)
         token <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(tokenAssertion)).success
         // A fresh assertion, addressed to the endpoint this one reaches: the first one's jti
         // is spent, and `/revoke` is not `/token`.
-        revokeAssertion <- signer.assertion(clientId, s"${auth.issuer}/revoke")
+        revokeAssertion <- signer.assertion(clientId, auth.issuer)
         response <- auth.revoke(token.accessToken, clientId, "", assertion = Some(revokeAssertion))
-        introspectAssertion <- signer.assertion(clientId, s"${auth.issuer}/introspect")
+        introspectAssertion <- signer.assertion(clientId, auth.issuer)
         introspection <- auth.introspect(token.accessToken, Some(clientId), assertion = Some(introspectAssertion)).success
       yield assertTrue(response.status.isSuccess, !introspection.active)
         .label("RFC 7009 accepts the same credential /token and /introspect do")
@@ -275,6 +338,89 @@ object PrivateKeyJwtSpec extends E2ESpec:
         case RegisterClientResult.Failure(response, _) =>
           assertTrue(response.status == Status.BadRequest)
             .label("a credential the client could never use must fail at registration, not at /token")
+    },
+
+    // #  A FAPI 2.0 tenant admits no `client_secret`, so a service client there has no
+    // credential this server issues -- unless registration generates its key. This is the
+    // only level that can show the generated key is usable: a unit test proves central
+    // stored the public half and returned the private one, not that auth verifies an
+    // assertion signed with it after the key set has been through the sync and the cache.
+    test("a service client registers with a key central generated and authenticates with it") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"generated-key-client-$s")
+        registered <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          // No redirect URIs: the client calls on its own behalf, so FAPI 2.0 asks no PAR of
+          // it, and a DPoP-bound token is the sender constraint left to a client that
+          // registers no certificate.
+          redirectUris = Set.empty,
+          allowedScopes = Set("openid"),
+          authMethod = "private_key_jwt",
+          generateJwks = Some("ES256"),
+          dpopBoundAccessTokens = true,
+        ).success
+        // Built from the document central handed back, not from a key the test already held.
+        generated <- ZIO.fromOption(registered.privateKey)
+          .orElseFail(RuntimeException("registration returned no private key for generateJwks"))
+        document <- ZIO.fromEither(generated.toString.fromJson[Json.Obj])
+          .mapError(error => RuntimeException(s"returned private key is not a JWK: $error"))
+        signer <- AssertionSigner.fromPrivateJwk(document)
+        _ <- auth.syncConfiguration()
+        assertion <- signer.assertion(id, auth.issuer)
+        prover <- DpopProver.make
+        token <- auth.clientCredentials(
+          id,
+          "",
+          useBasicAuth = false,
+          assertion = Some(assertion),
+          dpop = Some(prover),
+        ).success
+      yield assertTrue(
+        token.accessToken.nonEmpty,
+        token.tokenType == "DPoP",
+      ).label("the key central generated is the whole credential: no secret was ever issued")
+    },
+
+    test("generateJwks is refused together with a registered jwks") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        signer <- AssertionSigner.make
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          redirectUris = Set.empty,
+          authMethod = "private_key_jwt",
+          jwks = Some(signer.jwks),
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse a key set alongside generateJwks")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("a client registers the key it holds or asks for one, not both")
+    },
+
+    test("generateJwks is refused for a method other than private_key_jwt") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        id <- uid.map(s => s"generated-key-client-$s")
+        result <- auth.registerClient(
+          id,
+          "Generated Key Service Client",
+          Set(redirectUri),
+          // Default authMethod is client_secret, which reads no key set at all.
+          generateJwks = Some("ES256"),
+        )
+      yield result match
+        case _: RegisterClientResult.Success =>
+          throw RuntimeException("Expected registration to refuse generateJwks under client_secret")
+        case RegisterClientResult.Failure(response, _) =>
+          assertTrue(response.status == Status.BadRequest)
+            .label("generateJwks names the key an assertion is signed with, which client_secret never reads")
     },
 
     test("the metadata document advertises the method and the algorithms it will accept") {

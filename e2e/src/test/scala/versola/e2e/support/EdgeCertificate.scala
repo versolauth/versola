@@ -51,7 +51,14 @@ final class EdgeCertificate private (
 
 object EdgeCertificate:
 
-  def make(commonName: String = s"e2e-edge-mtls-${UUID.randomUUID().toString.take(8)}"): Task[EdgeCertificate] =
+  /** @param caDirectory where the issuing CA's `ca.crt`/`ca.key` live, relative to the repo
+    *   root. The default is nginx's CA (the header path); `auth/dev/mtls` is the CA auth's own
+    *   mutual-TLS listener trusts, which a certificate presented straight to that listener has
+    *   to chain to -- see [[forAuthListener]]. */
+  def make(
+      commonName: String = s"e2e-edge-mtls-${UUID.randomUUID().toString.take(8)}",
+      caDirectory: String = "edge/dev/internal-tls",
+  ): Task[EdgeCertificate] =
     ZIO.attempt:
       val generator = java.security.KeyPairGenerator.getInstance("RSA").nn
       generator.initialize(2048)
@@ -64,7 +71,7 @@ object EdgeCertificate:
       // gives the e2e module's forked JVM a cwd of `e2e/` itself, not the repo root every
       // other relative path here (and gen-env.scala's own output) assumes. Found by walking
       // up from wherever that happens to be to the one directory that has `build.sbt`.
-      val internalTls = repoRoot.resolve("edge/dev/internal-tls").nn
+      val internalTls = repoRoot.resolve(caDirectory).nn
       val caCert = internalTls.resolve("ca.crt").nn
       val caKey = internalTls.resolve("ca.key").nn
       if !Files.exists(caCert) || !Files.exists(caKey) then
@@ -100,6 +107,13 @@ object EdgeCertificate:
         )
       finally
         deleteRecursively(directory)
+
+  /** A `tls_client_auth` certificate for auth's own mutual-TLS listener (#417/#420): issued by
+    * the CA in auth's `mutual-tls.trusted-certificates`, since the listener validates the chain
+    * in the handshake and zio-http hands auth the leaf only. Its subject DN is
+    * `CN=<commonName>`, which is what a `subject_dn` registration names. */
+  def forAuthListener(commonName: String): Task[EdgeCertificate] =
+    make(commonName, caDirectory = "auth/dev/mtls")
 
   private def pem(label: String, der: Array[Byte]): String =
     val body = Base64.getMimeEncoder(64, "\n".getBytes).encodeToString(der)

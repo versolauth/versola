@@ -207,6 +207,34 @@ def genAuthMutualTlsCertificate(dir: File): Unit =
   run("x509", "-req", "-in", clientCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
     "-out", clientCert, "-days", "3650", "-copy_extensions", "copy")
 
+/** The certificate edge presents as `central-admin` (#353): RFC 8705 §2.1 `tls_client_auth`,
+  * which is what the default tenant's FAPI 2.0 profile admits for an edge-fronted web client.
+  * Written to `dir/central-admin.{crt,key}` and returned as the one PEM (certificate, then its
+  * PKCS#8 key) `bootstrap.central-admin-mtls.certificate` takes.
+  *
+  * Signed by [[genInternalTlsCertificate]]'s CA, so `dir` must already hold it: that CA is the
+  * one issuer nginx advertises, and a JDK TLS client (edge) offers no certificate whose issuer
+  * is not on that list. `genpkey` rather than `req -newkey`, since it writes PKCS#8 under both
+  * OpenSSL and LibreSSL, and PKCS#8 is the only key form `PrivateClientCertificate` accepts.
+  * Central registers the client by this certificate's own subject DN, so nothing else needs to
+  * agree with the subject chosen here.
+  */
+def genCentralAdminCertificate(dir: File): String =
+  def run(args: String*): Unit =
+    val exit = Process(Seq("openssl") ++ args).!
+    if exit != 0 then
+      throw RuntimeException(s"openssl failed (exit $exit): ${args.mkString(" ")}")
+
+  val key = File(dir, "central-admin.key").getPath
+  val csr = File(dir, "central-admin.csr").getPath
+  val cert = File(dir, "central-admin.crt").getPath
+  run("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", key)
+  run("req", "-new", "-key", key, "-out", csr, "-subj", "/O=Versola/CN=central-admin")
+  run("x509", "-req", "-in", csr, "-CA", File(dir, "ca.crt").getPath, "-CAkey", File(dir, "ca.key").getPath,
+    "-CAcreateserial", "-out", cert, "-days", "3650")
+  def read(path: String) = scala.io.Source.fromFile(path).mkString.trim
+  s"${read(cert)}\n${read(key)}\n"
+
 /** `dir` and its certificate must already exist (see [[genInternalTlsCertificate]]) -- this
   * only renders the conf that points at them. Absolute paths throughout: nginx resolves a
   * relative one against its own prefix, not this process's working directory, which would
@@ -408,6 +436,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
   val edgeDpopNonceSalt         = rand(rng, 32)
+  val edgeNativeBlobKey         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
   val centralResourceSecretGenerated = rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
   val utilityClientSecretGenerated   = rand(rng, 32) // central: seeds bootstrap.utility-client; must match whatever configures loadgen's own provision.provisioner-secret
@@ -594,6 +623,25 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
   val edgeInternalTrustPath: Option[String] =
     if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
+  // #353: `central-admin` is authenticated by edge with `tls_client_auth` through that same
+  // terminator, which is the only credential the default tenant's FAPI 2.0 profile admits for
+  // it. isLocal alone, for the same reason: docker-local/vps/interactive have no terminator in
+  // front of auth, so central-admin stays on its client_secret there (bootstrap seeds it
+  // outside the profile, with a warning -- see BootstrapService). The CA has to exist before
+  // central's config is rendered, because the certificate it signs goes into that config; it
+  // is generated here, once, and not again when the files are written below -- a second CA
+  // would leave this certificate signed by an issuer nginx no longer advertises.
+  val centralAdminMtlsLines =
+    if isLocal then
+      genInternalTlsCertificate(edgeInternalTlsDir)
+      val pem = genCentralAdminCertificate(edgeInternalTlsDir)
+      val tripleQuote = "\"" * 3
+      "  central-admin-mtls {\n" +
+        s"    certificate = $tripleQuote$pem$tripleQuote\n" +
+        "    certificate-header = \"ssl-client-cert\"\n" +
+        "    certificate-encoding = \"urlEncodedPem\"\n" +
+        "  }\n"
+    else ""
   val edgeInternalTrustLine =
     edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = "$path"\n""")
   val authAdditionalDefault =
@@ -620,6 +668,20 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  private-key            = "${File(authMutualTlsDir, "server.key").getAbsolutePath}"
          |  trusted-certificates   = "${File(authMutualTlsDir, "ca.crt").getAbsolutePath}"
          |  external-url           = "$authMutualTlsUrl"
+         |}
+         |""".stripMargin
+    else ""
+
+  // #420: edge's native-app back channel, straight to the listener above -- no terminator in
+  // between. `trusted-certificates` pins the listener's own server certificate (a leaf, which
+  // EdgeConfig.validated insists on). Local-only, like the listener itself.
+  val edgeNativeBlock =
+    if isLocal then
+      s"""
+         |native {
+         |  auth-mutual-tls-url   = "$authMutualTlsUrl"
+         |  trusted-certificates  = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  blob-key              = "$edgeNativeBlobKey"
          |}
          |""".stripMargin
     else ""
@@ -1005,7 +1067,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  }
        |  auth-additional-url = "$authAdditionalUrl"
        |  auth-resource-secret = ${secretField(useOpenBao, accountResourceSecret, "ACCOUNT_RESOURCE_SECRET")}
-       |${bootstrapUtilityClientLines}${bootstrapResourceSecretLine}|}
+       |${centralAdminMtlsLines}${bootstrapUtilityClientLines}${bootstrapResourceSecretLine}|}
        |
        |secret-key = ${secretField(useOpenBao, centralSecretKey, "CENTRAL_SECRET_KEY")}
        |client-secrets-secret = ${secretField(useOpenBao, clientSecretsSecret, "CLIENT_SECRETS_SECRET")}
@@ -1140,7 +1202,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |${edgeInternalTrustLine}# The origin clients reach this edge on -- what a DPoP proof's htu is
        |# rebuilt against (DpopVerifier), not trusting a forwarded Host header.
        |edge-url = "$edgeUrl"
-       |""".stripMargin
+       |$edgeNativeBlock""".stripMargin
 
   // ── Write files ───────────────────────────────────────────────────────────────
   println("\nGenerating config files...")
@@ -1148,7 +1210,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     writeFile(File("auth/dev"),     "env.conf", authConf)
     writeFile(File("central/dev"),  "env.conf", centralConf)
     writeFile(File("edge/dev"),     "env.conf", edgeConf)
-    genInternalTlsCertificate(edgeInternalTlsDir)
+    // The CA and server certificate were generated with central-admin's certificate, above.
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
     println(
@@ -1157,7 +1219,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  - auth/dev/env.conf
          |  - central/dev/env.conf
          |  - edge/dev/env.conf
-         |  - edge/dev/internal-tls/{ca.*,server.*,nginx.conf} (the TLS terminator
+         |  - edge/dev/internal-tls/{ca.*,server.*,central-admin.*,nginx.conf} (the TLS terminator
          |    edge's RFC 8705 mutual-TLS calls go through -- start with
          |    `nginx -c $$(pwd)/edge/dev/internal-tls/nginx.conf` before edge)
          |  - auth/dev/mtls/{ca.*,server.*,client.*} (auth's own RFC 8705 §5 listener --

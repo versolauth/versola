@@ -49,6 +49,7 @@ case class OAuthClientPatch(
     /** The PEM certificate and key, already re-encrypted for storage by the caller, on the
       * same terms as [[edgeSigningKey]]. */
     edgeClientCertificate: Option[Patch[Secret]],
+    applicationType: Option[ApplicationType],
 )
 
 object OAuthClientPatch:
@@ -81,4 +82,5 @@ object OAuthClientPatch:
     requirePushedAuthorizationRequests = None,
     edgeSigningKey = None,
     edgeClientCertificate = None,
+    applicationType = None,
   )

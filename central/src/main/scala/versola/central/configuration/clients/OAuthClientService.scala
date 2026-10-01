@@ -1,7 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.roles.RoleRepository
@@ -9,7 +9,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, EnvName, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Scheme, URL}
 
@@ -30,7 +30,18 @@ import javax.crypto.spec.SecretKeySpec
 case class RegisteredClient(
     secret: Option[Secret],
     createdAt: Instant,
+    /** The `private_key_jwt` key generated for this registration, where `generateJwks` asked
+      * for one. Returned rather than stored, so this is the only time it can be read. */
+    privateKey: Option[PrivateJsonWebKey],
 )
+
+/** One client that a tenant's security profile would not admit, and every reason why -- what
+  * refusing a switch of the tenant to that profile answers with, so an operator sees the whole
+  * list of clients to fix rather than learning of them one refused switch at a time. */
+case class ClientProfileViolation(
+    clientId: ClientId,
+    reasons: List[String],
+) derives zio.json.JsonCodec
 
 trait OAuthClientService:
 
@@ -53,11 +64,22 @@ trait OAuthClientService:
   def registerClient(
       request: CreateClientRequest,
       presetSecret: Option[Secret] = None,
+      enforceSecurityProfile: Boolean = true,
   ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient]
 
+  /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
+    *                               [[SecurityProfile]]. Only bootstrap turns it off, and only
+    *                               for a seeded client it cannot yet make conformant -- every
+    *                               API caller is held to the profile. */
   def updateClient(
       request: UpdateClientRequest,
+      enforceSecurityProfile: Boolean = true,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
+
+  /** #353: every client of `tenantId` that `profile` would not admit, read from the
+    * repository rather than the cache so a client registered a moment ago is not missed by a
+    * switch that is about to be refused or applied on the strength of this answer. */
+  def profileViolations(tenantId: TenantId, profile: SecurityProfile): Task[Vector[ClientProfileViolation]]
 
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
@@ -74,14 +96,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig & EnvName, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -127,7 +149,41 @@ object OAuthClientService:
       secureRandom: SecureRandom,
       securityService: SecurityService,
       config: CentralConfig,
+      envName: EnvName,
   ) extends OAuthClientService:
+
+    /** Outside production the local stack's own edge is served at `http://localhost`, and so is
+      * every web client it fronts -- see [[InvalidRegistrationConfiguration.profileViolations]]. */
+    private val allowHttpLoopback: Boolean = envName.isTest
+
+    /** Last of the registration checks, so a client that could not work at all is told why
+      * before it is told that its tenant would not admit it. */
+    private def validateSecurityProfile(
+        client: OAuthClientRecord,
+    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
+      challengeSettingsService.getSecurityProfile(client.tenantId).flatMap: profile =>
+        ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateSecurityProfile(
+          client.id,
+          profile,
+          InvalidRegistrationConfiguration.ProfileSubject.of(client),
+          allowHttpLoopback,
+        ))(ZIO.fail(_))
+
+    override def profileViolations(
+        tenantId: TenantId,
+        profile: SecurityProfile,
+    ): Task[Vector[ClientProfileViolation]] =
+      clientRepository.getAll.map:
+        _.filter(_.tenantId == tenantId)
+          .sortBy(_.id: String)
+          .flatMap: client =>
+            InvalidRegistrationConfiguration.profileViolations(
+              profile,
+              InvalidRegistrationConfiguration.ProfileSubject.of(client),
+              allowHttpLoopback,
+            ) match
+              case Nil => None
+              case reasons => Some(ClientProfileViolation(client.id, reasons))
 
     override def getAllClients: Task[Vector[OAuthClientRecord]] =
       cache.get
@@ -156,6 +212,7 @@ object OAuthClientService:
     override def registerClient(
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
+        enforceSecurityProfile: Boolean = true,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
         _ <- validateConsentUris(
@@ -163,6 +220,7 @@ object OAuthClientService:
           "policyUri" -> request.policyUri,
           "tosUri" -> request.tosUri,
         )
+        _ <- validateRedirectUris(Some(request.tenantId), request.redirectUris)
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
@@ -171,35 +229,63 @@ object OAuthClientService:
           Duration.fromSeconds(request.accessTokenTtl),
           request.dpopBoundAccessTokens,
         ))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateGeneratedJwks(
+          request.id,
+          request.authMethod,
+          request.jwks,
+          request.generateJwks,
+        ))(ZIO.fail(_))
+        // Generated before the checks that read a key set, so that a registration asking for
+        // a key is held to exactly the rules one supplying it is -- the request is short a
+        // credential only until here, and nothing below can tell the two apart.
+        generatedKey <- ZIO.foreach(request.generateJwks)(ClientKeyGeneration.generate(securityService, _))
+        jwks = generatedKey.map(_.publicKeys).orElse(request.jwks)
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
           request.id,
           request.authMethod,
           request.mtlsAuth,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
           request.id,
           request.requireSignedRequestObject,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeSigningKey(
           request.id,
           request.edgeSigningKey,
           request.mtlsAuth,
-          request.jwks,
+          jwks,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeClientCertificate(
           request.id,
           request.edgeClientCertificate,
           request.mtlsAuth.map(normaliseMtlsAuth),
-          request.jwks,
+          jwks,
           request.requireSignedRequestObject,
         ))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
           request.id,
           request.dpopMinRsaKeySize,
         ))(ZIO.fail(_))
-        _ <- validateMtlsTermination(request.id, request.tenantId, request.mtlsAuth)
+        applicationType = request.applicationType.getOrElse(ApplicationType.web)
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+          clientId = request.id,
+          applicationType = applicationType,
+          authMethod = request.authMethod,
+          hasEdgeClientCertificate = request.edgeClientCertificate.isDefined,
+          requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
+          dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+          certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+          redirectUris = request.redirectUris.map(uri => uri: String),
+        ))(ZIO.fail(_))
+        // An edge-fronted native client reaches auth on its own mutual-TLS listener (#417),
+        // which reads the certificate off the handshake -- the tenant header is never consulted.
+        _ <- validateMtlsTermination(
+          request.id,
+          request.tenantId,
+          request.mtlsAuth.filterNot(_ => isEdgeFrontedNative(applicationType, request.authMethod)),
+        )
         secret <- request.authMethod match
           case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
           case _                        => ZIO.none
@@ -238,19 +324,22 @@ object OAuthClientService:
           authMethod = request.authMethod,
           mtlsAuth = request.mtlsAuth.map(normaliseMtlsAuth),
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,
-          jwks = request.jwks,
+          jwks = jwks,
           requireSignedRequestObject = request.requireSignedRequestObject,
           requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
           edgeSigningKey = encryptedEdgeSigningKey,
           edgeClientCertificate = encryptedEdgeCertificate,
           template = request.template,
           createdAt = registeredAt,
+          applicationType = applicationType,
         )
+        _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
-      yield RegisteredClient(secret, registeredAt)
+      yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(
         request: UpdateClientRequest,
+        enforceSecurityProfile: Boolean = true,
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
         _ <- validateConsentUris(
@@ -266,9 +355,16 @@ object OAuthClientService:
         current <- cache.get.map(_.find(_.id == request.clientId)).flatMap:
           case some @ Some(_) => ZIO.succeed(some)
           case None => clientRepository.find(request.clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+        // Only what the patch adds: a URI registered before this rule existed stays removable.
+        _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
         edgeCertificate = current.flatMap(effectiveEdgeClientCertificate(request, _))
         _ <- ZIO.foreachDiscard(current): client =>
+          // What the client would be once the patch is applied, for the two checks that read
+          // both fields at once. Everything below reads `applyTo`/`getOrElse` the same way:
+          // a patch that leaves a setting alone still has to leave the client valid.
+          val applicationType = request.applicationType.getOrElse(client.applicationType)
+          val authMethod = request.authMethod.getOrElse(client.authMethod)
           validateRegistration(
             clientId = request.clientId,
             tenantId = client.tenantId,
@@ -303,11 +399,24 @@ object OAuthClientService:
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateDpopKeyPolicy(
             clientId = request.clientId,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize),
+          ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateEdgeFrontedNative(
+            clientId = request.clientId,
+            applicationType = applicationType,
+            authMethod = authMethod,
+            hasEdgeClientCertificate = edgeCertificate.isDefined,
+            requirePushedAuthorizationRequests =
+              request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+            dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+            certificateBoundAccessTokens =
+              request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+            redirectUris = (client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add)
+              .map(uri => uri: String),
           ))(ZIO.fail(_)) *> validateMtlsTermination(
             request.clientId,
             client.tenantId,
-            request.mtlsAuth.applyTo(client.mtlsAuth),
-          )
+            request.mtlsAuth.applyTo(client.mtlsAuth)
+              .filterNot(_ => isEdgeFrontedNative(applicationType, authMethod)),
+          ) *> validateSecurityProfile(patchedForProfile(request, client)).when(enforceSecurityProfile)
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
           case Patch.Deleted => ZIO.succeed(Patch.Deleted)
@@ -345,6 +454,7 @@ object OAuthClientService:
             requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
             edgeSigningKey = edgeSigningKeyPatch,
             edgeClientCertificate = edgeCertificatePatch,
+            applicationType = request.applicationType,
           ),
         )
       yield ()
@@ -359,6 +469,26 @@ object OAuthClientService:
 
     override def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit] =
       rejectSecretlessClient(clientId) *> clientRepository.deletePreviousClientSecret(clientId)
+
+    /** The client as the patch will leave it, in the settings the security profile reads --
+      * the rest is left as stored, since nothing the profile checks depends on it.
+      *
+      * `redirectUris` is folded in the order the repository folds it (`-- remove ++ add`, see
+      * `PostgresOAuthClientRepository.updateClient`), not the reverse: a URI named in both
+      * sets is stored, so it has to be a URI the profile was held to. Applying the two the
+      * other way round dropped it from the check while the row kept it.
+      */
+    private def patchedForProfile(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
+      client.copy(
+        authMethod = request.authMethod.getOrElse(client.authMethod),
+        mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
+        certificateBoundAccessTokens = request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
+        dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
+        requirePushedAuthorizationRequests =
+          request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
+        redirectUris = client.redirectUris -- request.redirectUris.remove ++ request.redirectUris.add,
+        applicationType = request.applicationType.getOrElse(client.applicationType),
+      )
 
     /** Refuses a client whose method is not `client_secret`, public or not: handing a
       * `private_key_jwt` client a freshly rotated secret would print a credential the token
@@ -404,8 +534,17 @@ object OAuthClientService:
               InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
       yield ()
 
+    private def isEdgeFrontedNative(applicationType: ApplicationType, authMethod: AuthMethod): Boolean =
+      applicationType == ApplicationType.native && authMethod == AuthMethod.tls_client_auth
+
     /** Reads the tenant's challenge settings only when there is an `mtlsAuth` to justify it:
       * every other registration would pay for a lookup whose answer it has no use for.
+      *
+      * Read through the repository ([[ChallengeSettingsService.getMtlsCertificateHeader]]),
+      * not the cache: bootstrap sets this header and registers `central-admin` against it in
+      * the same process (`BootstrapService.seedMtlsTermination` then `seedClient`), and the
+      * cache's refresh interval does not run between the two. The cached [[getSettings]]
+      * would see no header yet and refuse the very registration that just set it.
       */
     private def validateMtlsTermination(
         clientId: ClientId,
@@ -413,11 +552,11 @@ object OAuthClientService:
         mtlsAuth: Option[MutualTlsAuth],
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       ZIO.when(mtlsAuth.nonEmpty):
-        challengeSettingsService.getSettings(tenantId).flatMap: settings =>
+        challengeSettingsService.getMtlsCertificateHeader(tenantId).flatMap: mtlsCertificateHeader =>
           ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateMtlsTermination(
             clientId,
             mtlsAuth,
-            settings.flatMap(_.mtlsCertificateHeader),
+            mtlsCertificateHeader,
           ))(ZIO.fail(_))
       .unit
 
@@ -467,6 +606,37 @@ object OAuthClientService:
                 if !url.isAbsolute || url.scheme != Some(Scheme.HTTPS) || url.host.isEmpty =>
               ZIO.fail(InvalidConsentUri(field, "must be an absolute HTTPS URL"))
             case Right(_) => ZIO.unit
+
+    /** FAPI 2.0 Security Profile §5.3.2.2-8: a redirect URI is registered only as `https://`, or
+      * `http://` to a loopback address (RFC 8252 §7.3). The request body's decoder has already
+      * applied the structural check ([[RedirectUri.parse]]); this is the registration policy on
+      * top of it. See [[RedirectUri.validateForRegistration]].
+      *
+      * A tenant on the `standard` security profile may additionally register a reverse-domain
+      * private-use scheme (RFC 8252 §7.1) -- plain OAuth permits one for native apps, FAPI 2.0
+      * does not. The profile is read only when a URI actually needs that allowance, like
+      * [[validateMtlsTermination]] reads its settings; a tenant with no settings, or a patch to
+      * a client that cannot be found, is held to the default profile (`fapi2`).
+      *
+      * Read through the repository, as [[validateSecurityProfile]] reads it and for its reason:
+      * a registration that follows a profile switch has to be held to the profile the switch
+      * just stored, which the cache may not carry yet.
+      */
+    private def validateRedirectUris(
+        tenantId: Option[TenantId],
+        uris: Set[RedirectUri],
+    ): IO[InvalidConsentUri | Throwable, Unit] =
+      val strictlyInvalid = uris.filter(RedirectUri.validateForRegistration(_).isLeft)
+      ZIO.unless(strictlyInvalid.isEmpty):
+        for
+          profile <- ZIO.foreach(tenantId)(challengeSettingsService.getSecurityProfile)
+            .map(_.getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile))
+          allowPrivateUseSchemes = profile == SecurityProfile.standard
+          _ <- ZIO.foreachDiscard(strictlyInvalid): uri =>
+            ZIO.fromEither(RedirectUri.validateForRegistration(uri, allowPrivateUseSchemes))
+              .mapError(reason => InvalidConsentUri("redirectUris", s"'$uri': $reason"))
+        yield ()
+      .unit
 
     /** Unlike `logoUri`/`policyUri`/`tosUri` (browser-loaded consent links, HTTPS-only), a
       * logout notification URI may target `http://localhost` for local development - matching

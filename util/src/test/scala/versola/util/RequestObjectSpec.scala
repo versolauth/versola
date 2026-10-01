@@ -32,7 +32,8 @@ object RequestObjectSpec extends ZIOSpecDefault:
   private val ClientId = "client-1"
   private val Issuer = "https://auth.example.com"
   private val AuthorizeEndpoint = "https://auth.example.com/authorize"
-  private val Audiences = Set(Issuer, AuthorizeEndpoint)
+  private val Fapi2 = JwtAudience.IssuerOnly(Issuer)
+  private val Standard = JwtAudience.AnyOf(Set(Issuer, AuthorizeEndpoint))
 
   private val now = Instant.parse("2024-01-01T00:00:00Z")
   private val maxLifetime = 5.minutes
@@ -49,6 +50,7 @@ object RequestObjectSpec extends ZIOSpecDefault:
       "iss" -> Json.Str(ClientId),
       "aud" -> Json.Str(Issuer),
       "exp" -> Json.Num(now.plusSeconds(60).getEpochSecond),
+      "nbf" -> Json.Num(now.getEpochSecond),
       "client_id" -> Json.Str(ClientId),
       "response_type" -> Json.Str("code"),
       "redirect_uri" -> Json.Str("https://client.example.com/callback"),
@@ -80,8 +82,10 @@ object RequestObjectSpec extends ZIOSpecDefault:
       publicKeys: JWT.PublicKeys = keys(ecJwk),
       clientId: String = ClientId,
       allowedAlgorithms: Set[ClientAssertion.Algorithm] = AllAlgorithms,
+      audience: JwtAudience = Fapi2,
+      requireNotBefore: Boolean = true,
   ) =
-    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, Audiences, now, maxLifetime)
+    RequestObject.verify(token, publicKeys, allowedAlgorithms, clientId, audience, now, maxLifetime, requireNotBefore)
 
   def spec = suite("RequestObject")(
     suite("verify")(
@@ -99,9 +103,22 @@ object RequestObjectSpec extends ZIOSpecDefault:
           ).either
         yield assertTrue(result.isRight)
       },
-      test("accepts the authorization endpoint as the audience, not only the issuer identifier") {
+      test("FAPI 2.0 §5.3.2.1-8: rejects the authorization endpoint as the audience") {
         for result <- verify(requestObject(claims("aud" -> Json.Str(AuthorizeEndpoint)))).either
-        yield assertTrue(result.isRight)
+        yield assertTrue(result == Left(RequestObject.Error.AudienceMismatch))
+      },
+      test("FAPI 2.0 §5.3.2.1-8: rejects an audience array, even one naming only the issuer") {
+        for result <- verify(requestObject(claims("aud" -> Json.Arr(Json.Str(Issuer))))).either
+        yield assertTrue(result == Left(RequestObject.Error.AudienceMismatch))
+      },
+      test("a standard-profile tenant still accepts the authorization endpoint, or an array naming the issuer") {
+        for
+          endpoint <- verify(requestObject(claims("aud" -> Json.Str(AuthorizeEndpoint))), audience = Standard).either
+          array <- verify(
+            requestObject(claims("aud" -> Json.Arr(Json.Str(Issuer), Json.Str("https://elsewhere.example")))),
+            audience = Standard,
+          ).either
+        yield assertTrue(endpoint.isRight, array.isRight)
       },
       test("rejects an audience naming some other server") {
         for result <- verify(requestObject(claims("aud" -> Json.Str("https://elsewhere.example")))).either
@@ -153,20 +170,82 @@ object RequestObjectSpec extends ZIOSpecDefault:
         for result <- verify(requestObject(withoutExp)).either
         yield assertTrue(result == Left(RequestObject.Error.MissingClaim("exp")))
       },
+      test("FAPI 2.0 Message Signing: rejects an object with no nbf under a fapi2 tenant") {
+        val withoutNbf = Json.Obj(claims().fields.filterNot(_._1 == "nbf"))
+        for
+          fapi2 <- verify(requestObject(withoutNbf)).either
+          standard <- verify(requestObject(withoutNbf), audience = Standard, requireNotBefore = false).either
+        yield assertTrue(
+          fapi2 == Left(RequestObject.Error.MissingClaim("nbf")),
+          standard.isRight,
+        )
+      },
+      test("FAPI 1.0 Advanced §5.2.2-17: rejects an nbf more than 60 minutes in the past") {
+        for
+          stale <- verify(requestObject(claims("nbf" -> Json.Num(now.minusSeconds(3601).getEpochSecond)))).either
+          // Inside the hour, and with exp still within an hour of it.
+          recent <- verify(requestObject(claims("nbf" -> Json.Num(now.minusSeconds(3500).getEpochSecond)))).either
+        yield assertTrue(
+          stale == Left(RequestObject.Error.NotBeforeTooOld),
+          recent.isRight,
+        )
+      },
+      test("FAPI 1.0 Advanced §5.2.2-17: rejects an exp more than 60 minutes after nbf") {
+        val nbf = now.minusSeconds(3500)
+        for result <- verify(
+            requestObject(claims(
+              "nbf" -> Json.Num(nbf.getEpochSecond),
+              "exp" -> Json.Num(nbf.plusSeconds(3601).getEpochSecond),
+            )),
+          ).either
+        yield assertTrue(result == Left(RequestObject.Error.LifetimeTooLong))
+      },
+      test("an object minted by sign() carries the nbf a fapi2 tenant requires") {
+        for
+          token <- RequestObject.sign(
+            parameters = Map("client_id" -> Chunk(ClientId), "response_type" -> Chunk("code")),
+            clientId = ClientId,
+            audience = Issuer,
+            algorithm = ClientAssertion.Algorithm.ES256,
+            keyId = "ec-1",
+            privateKey = ecPrivateKey,
+          )
+          signedAt <- Clock.instant
+          result <- RequestObject.verify(token, keys(ecJwk), AllAlgorithms, ClientId, Fapi2, signedAt, maxLifetime, requireNotBefore = true).either
+        yield assertTrue(result.isRight)
+      },
       test("rejects an expiry further ahead than the tenant allows") {
         for result <- verify(requestObject(claims("exp" -> Json.Num(now.plusSeconds(3600).getEpochSecond)))).either
         yield assertTrue(result == Left(RequestObject.Error.LifetimeTooLong))
       },
-      test("rejects an object that is not valid yet") {
-        for result <- verify(requestObject(claims("nbf" -> Json.Num(now.plusSeconds(30).getEpochSecond)))).either
-        yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
+      test("FAPI 2.0 §5.3.2.1-13: accepts nbf/iat up to 60s in the future, refuses them beyond") {
+        def at(seconds: Long) = Json.Num(now.plusSeconds(seconds).getEpochSecond)
+        def withExp(extra: (String, Json)*) = requestObject(claims((extra :+ ("exp" -> at(120)))*))
+        for
+          nbf9 <- verify(withExp("nbf" -> at(9))).either
+          nbf10 <- verify(withExp("nbf" -> at(10))).either
+          nbf11 <- verify(withExp("nbf" -> at(11))).either
+          nbf60 <- verify(withExp("nbf" -> at(60))).either
+          nbf61 <- verify(withExp("nbf" -> at(61))).either
+          iat10 <- verify(withExp("iat" -> at(10))).either
+          iat60 <- verify(withExp("iat" -> at(60))).either
+          iat61 <- verify(withExp("iat" -> at(61))).either
+        yield assertTrue(
+          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf61 == Left(RequestObject.Error.NotYetValid),
+          iat10.isRight, iat60.isRight,
+          iat61 == Left(RequestObject.Error.IssuedInFuture),
+        )
       },
       // RFC 7519 §2 allows a fractional NumericDate. Truncating one to whole seconds would
       // start an object's validity up to a second before the client said it began, and end it
       // up to a second after -- so both edges are checked against a fraction.
       test("reads a fractional date as the instant it names rather than the second it sits in") {
         for
-          notYetValid <- verify(requestObject(claims("nbf" -> Json.Num(BigDecimal(now.getEpochSecond) + 0.5)))).either
+          notYetValid <- verify(requestObject(claims(
+            "nbf" -> Json.Num(BigDecimal(now.plus(ClientAssertion.FutureLeeway).getEpochSecond) + 0.5),
+            "exp" -> Json.Num(now.plusSeconds(120).getEpochSecond),
+          ))).either
           expired <- verify(requestObject(claims("exp" -> Json.Num(BigDecimal(now.getEpochSecond) - 0.5)))).either
         yield assertTrue(
           notYetValid == Left(RequestObject.Error.NotYetValid),
@@ -177,8 +256,13 @@ object RequestObjectSpec extends ZIOSpecDefault:
       // away from the epoch: a claim naming a moment a tenth of a nanosecond from now must not
       // be reconstructed as exactly now and accepted immediately.
       test("rejects an nbf whose remainder is finer than a nanosecond, rounding towards not-yet-valid") {
-        val aTenthOfANanosecondFromNow = BigDecimal(now.getEpochSecond) + BigDecimal("0.0000000001")
-        for result <- verify(requestObject(claims("nbf" -> Json.Num(aTenthOfANanosecondFromNow)))).either
+        // At the edge of the clock-skew leeway, which is where "not yet valid" now starts.
+        val aTenthOfANanosecondPastTheLeeway =
+          BigDecimal(now.plus(ClientAssertion.FutureLeeway).getEpochSecond) + BigDecimal("0.0000000001")
+        for result <- verify(requestObject(claims(
+            "nbf" -> Json.Num(aTenthOfANanosecondPastTheLeeway),
+            "exp" -> Json.Num(now.plusSeconds(120).getEpochSecond),
+          ))).either
         yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
       },
 
@@ -188,6 +272,19 @@ object RequestObjectSpec extends ZIOSpecDefault:
           plain <- verify(requestObject(typ = Some("JWT"))).either
           foreign <- verify(requestObject(typ = Some("dpop+jwt"))).either
         yield assertTrue(typed.isRight, plain.isRight, foreign == Left(RequestObject.Error.UnexpectedType))
+      },
+    ),
+    suite("replayKey")(
+      test("pairs the jti with the signed exp, and is absent without a jti") {
+        for
+          present <- RequestObject.replayKey(claims("jti" -> Json.Str("jti-1")))
+          absent <- RequestObject.replayKey(claims())
+          malformed <- RequestObject.replayKey(claims("jti" -> Json.Num(1))).either
+        yield assertTrue(
+          present == Some(RequestObject.ReplayKey("jti-1", now.plusSeconds(60))),
+          absent.isEmpty,
+          malformed == Left(RequestObject.Error.MalformedClaim("jti")),
+        )
       },
     ),
     suite("parameters")(

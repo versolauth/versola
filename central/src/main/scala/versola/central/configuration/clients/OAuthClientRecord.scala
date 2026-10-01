@@ -113,7 +113,16 @@ case class OAuthClientRecord(
     /** When the registration was accepted. Set once, by the service that accepted it, and
       * never patched: an update states what the client is now, not when it appeared. */
     createdAt: Instant,
+    /** OIDC Registration §2 `application_type`. Last and defaulted so that a record built
+      * without naming it is the `web` client every row before the column was. */
+    applicationType: ApplicationType = ApplicationType.web,
 ) derives Schema, CanEqual, Equal:
+
+  /** A native app whose client authentication is done by the edge fronting it (#420/#421):
+    * the app runs on the device and holds the DPoP key, edge holds the `tls_client_auth`
+    * certificate and presents it on auth's mutual-TLS listener. */
+  def isEdgeFrontedNative: Boolean =
+    applicationType == ApplicationType.native && authMethod == AuthMethod.tls_client_auth
 
   /** Whether this client holds a secret at all, which only [[AuthMethod.client_secret]]
     * does -- every other method registers its credential elsewhere, and a secret sitting
@@ -129,8 +138,13 @@ case class OAuthClientRecord(
     * The registered flag therefore only decides the case the RFC separates §3 for — a
     * client authenticating by secret or (once it exists) `private_key_jwt` that still
     * presents a certificate purely to have its tokens bound.
+    *
+    * An edge-fronted native client is the one exception: the certificate is edge's, shared
+    * by every installation of the app, so binding a token to it would bind it to nothing the
+    * device holds -- its tokens are bound to the device's DPoP key (`cnf.jkt`) instead.
     */
-  def bindsAccessTokens: Boolean = mtlsAuth.nonEmpty || certificateBoundAccessTokens
+  def bindsAccessTokens: Boolean =
+    (mtlsAuth.nonEmpty && !isEdgeFrontedNative) || certificateBoundAccessTokens
 
   def isPublic: Boolean = !isConfidential
 

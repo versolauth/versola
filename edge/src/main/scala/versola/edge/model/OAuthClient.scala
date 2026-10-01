@@ -15,4 +15,16 @@ case class OAuthClient(
     /** RFC 9126 §6.2: the authorization request must be pushed to `/par` first, so edge
       * redirects the browser to a `request_uri` rather than to the request itself. */
     requirePushedAuthorizationRequests: Boolean = false,
-)
+    /** OIDC Registration §2 `application_type`. */
+    applicationType: ApplicationType = ApplicationType.web,
+    /** The redirect URIs the client registered, which a native start may choose among. */
+    redirectUris: Set[String] = Set.empty,
+):
+  /** A native app whose client authentication this edge does (#420): a `native` client edge
+    * holds a certificate for. Central only allows a native client that certificate with
+    * `tls_client_auth`, so holding one is the whole test. */
+  def isEdgeFrontedNative: Boolean =
+    applicationType == ApplicationType.native && (credential match
+      case _: ClientCredential.MutualTls => true
+      case _ => false
+    )
