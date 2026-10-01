@@ -181,8 +181,10 @@ admin accounts can't receive a password.
 - `versola-cli` on the host:
   ```bash
   curl -fsSL https://raw.githubusercontent.com/versolauth/versola-cli/main/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"   # the installer can't change the current shell
   ```
-  (installs to `~/.local/bin`; `versola upgrade` updates it later).
+  (installs to `~/.local/bin`; if that isn't on `PATH` yet, also add the `export` line to
+  `~/.profile` as the installer suggests. `versola upgrade` updates the CLI later).
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
   `versola-edge`) — all public, so the host needs no `docker login`. `versola-tools` of the release
   must ship the admin console (every release since the console moved into it does; `configure vps`
@@ -374,8 +376,11 @@ tests but publishes nothing.
    ```
 
 **Before migrating**, check that the release doesn't *edit* a migration that production has already
-applied — only adding new ones is safe. `git diff --name-status <old>..<new> --
-'*/postgres/migrations'` must show only `A` lines. An edited one fails Flyway's checksum validation
+applied — only adding new ones is safe. In a `versola` clone with both tags (your workstation —
+the host has none; `git fetch --tags` first), `git diff --name-status <old>..<new> --
+'*/postgres/migrations'` must show only `A` lines. Without a clone, open
+`https://github.com/versolauth/versola/compare/<old>...<new>` → *Files changed* and check that every
+file under `postgres/migrations` is new. An edited one fails Flyway's checksum validation
 and leaves no safe way forward except recreating that schema
 ([6](#6-recreating-the-database-from-scratch)).
 
