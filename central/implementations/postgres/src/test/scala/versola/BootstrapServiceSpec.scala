@@ -2,7 +2,8 @@ package versola
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord}
+import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.{InjectRule, InjectTarget}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
@@ -73,6 +74,22 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
   )
 
   def spec = suite("BootstrapService")(
+    // The client and challenge-settings caches load before bootstrap seeds central-admin, and
+    // the seed's notifications are lost: without this reload edge's first sync misses it.
+    test("refreshCachesAfterBootstrap reloads the client and challenge-settings caches") {
+      val clients = stub[OAuthClientService]
+      val settings = stub[ChallengeSettingsService]
+      for
+        _ <- clients.refreshNow.succeedsWith(())
+        _ <- settings.refreshNow.succeedsWith(())
+        _ <- BootstrapService.refreshCachesAfterBootstrap.provide(
+          ZLayer.succeed[OAuthClientService](clients),
+          ZLayer.succeed[ChallengeSettingsService](settings),
+        )
+        clientRefreshes = clients.refreshNow.times
+        settingsRefreshes = settings.refreshNow.times
+      yield assertTrue(clientRefreshes == 1, settingsRefreshes == 1)
+    },
     // #353: the default tenant is FAPI 2.0, and tls_client_auth by edge is what it admits for
     // an edge-fronted web client.
     test("registers central-admin as tls_client_auth by its certificate's subject DN, behind PAR, when given one") {
