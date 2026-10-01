@@ -1,5 +1,8 @@
 package versola.oauth.introspect
 
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
+import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
@@ -13,6 +16,9 @@ import zio.http.*
 import zio.test.*
 import zio.test.TestAspect
 
+import java.time.Instant
+import java.util.Date
+
 object IntrospectionControllerSpec extends UnitSpecBase:
 
   private val clientId     = ClientId("test-client")
@@ -20,6 +26,30 @@ object IntrospectionControllerSpec extends UnitSpecBase:
 
   def authHeader(id: ClientId, secret: Secret): Header.Authorization =
     Header.Authorization.Basic(id, Base64.urlEncode(secret))
+
+  /** An opaque refresh token whose first byte is `{`: base64url-decoded whole, it reads like the
+    * start of a JWT header, which one random token in 256 does. */
+  private val braceLeadingRefreshToken = Base64.urlEncode(Array('{'.toByte) ++ Array.fill(31)(2.toByte))
+
+  private def accessToken(): String =
+    val now = Instant.now()
+    val claims = new JWTClaimsSet.Builder()
+      .subject("f077fb08-9935-4a6d-8643-bf97c073bf0f")
+      .claim("client_id", clientId.toString)
+      .claim("scope", "read")
+      .claim("jti", Base64.urlEncode(Array.fill(32)(20.toByte)))
+      .audience("resource://edge")
+      .issuer(TestEnvConfig.coreConfig.jwt.issuer)
+      .issueTime(Date.from(now))
+      .expirationTime(Date.from(now.plusSeconds(3600)))
+      .build()
+    val header = new JWSHeader.Builder(JWSAlgorithm.RS256)
+      .keyID("test-key-id")
+      .`type`(new JOSEObjectType("at+jwt"))
+      .build()
+    val jwt = new SignedJWT(header, claims)
+    jwt.sign(new RSASSASigner(TestEnvConfig.privateKey))
+    jwt.serialize()
 
   def controllerTestCase(
       description: String,
@@ -100,6 +130,46 @@ object IntrospectionControllerSpec extends UnitSpecBase:
         verify = response =>
           for body <- response.body.asString
           yield assertTrue(body.contains("\"active\":true")),
+      ),
+      controllerTestCase(
+        description = "introspects an opaque token whose bytes decode to a leading '{' as a refresh token",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> braceLeadingRefreshToken)),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.Ok,
+        setup = svc =>
+          svc.introspectRefreshToken.succeedsWith(IntrospectionResponse.Inactive.copy(active = true)),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("\"active\":true")),
+        verifyService = svc => ZIO.succeed(assertTrue(svc.introspectRefreshToken.calls.size == 1)),
+      ),
+      // RFC 7662 §2.3: a caller that fails to authenticate is refused, whichever kind of token it
+      // presents; only a token the authenticated caller is not entitled to is merely inactive.
+      controllerTestCase(
+        description = "returns 401 invalid_client for an access token when the client fails to authenticate",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> accessToken())),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.Unauthorized,
+        setup = svc => svc.introspectAccessToken.failsWith(IntrospectionError.InvalidClient),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("\"error\":\"invalid_client\"")),
+      ),
+      controllerTestCase(
+        description = "returns 200 inactive for an access token the authenticated client may not introspect",
+        request = Request.post(
+          url = URL.root / "introspect",
+          body = Body.fromURLEncodedForm(Form.fromStrings("token" -> accessToken())),
+        ).addHeader(authHeader(clientId, clientSecret)),
+        expectedStatus = Status.Ok,
+        setup = svc => svc.introspectAccessToken.failsWith(IntrospectionError.Unauthenticated),
+        verify = response =>
+          for body <- response.body.asString
+          yield assertTrue(body.contains("\"active\":false")),
       ),
       controllerTestCase(
         description = "authenticates the client with client_secret_post",

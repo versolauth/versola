@@ -24,12 +24,16 @@ trait Controller:
       request.body.asJsonFromCodec[A].mapError(e => BadRequest(e.getMessage))
 
   extension (s: String)
-    /** A JWT's first dot-separated segment is a base64url-encoded JSON header. A value that does
-      * not decode at all is simply not a JWT, so this answers `false` rather than letting the
-      * decoder's `IllegalArgumentException` escape - callers use it inside plain expressions
-      * (e.g. a `FormDecoder` parse function) where there is no error channel to catch it. */
-    def isJWT = s.split("\\.").headOption
-      .exists(str => scala.util.Try(Base64Url.decodeStr(str)).toOption.exists(_.startsWith("{")))
+    /** A JWT is three dot-separated segments (five for a JWE), the first a base64url-encoded JSON
+      * header. The segment count comes first: an opaque base64url token has no dot, and one in
+      * 256 random ones decodes to a leading `{`. A value that does not decode at all is simply
+      * not a JWT, so this answers `false` rather than letting the decoder's
+      * `IllegalArgumentException` escape - callers use it inside plain expressions (e.g. a
+      * `FormDecoder` parse function) where there is no error channel to catch it. */
+    def isJWT =
+      val segments = s.split("\\.", -1)
+      (segments.length == 3 || segments.length == 5) &&
+        scala.util.Try(Base64Url.decodeStr(segments.head)).toOption.exists(_.startsWith("{"))
 
   given Schema[URL] = Schema.primitive[String].transformOrFail(
     string => URL.decode(string).left.map(_.getMessage),
