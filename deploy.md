@@ -408,7 +408,8 @@ right before `migrate`.
 
 The image tag is the git tag verbatim (`version=${{ github.event.release.tag_name }}` in
 `ci-cd.yml`, no normalisation). Versola's releases carry **no** `v` prefix (`0.6.2`), and that is
-the `<version>` `versola configure` takes. `versola-cli`'s own releases do use one (`v0.2.5`).
+the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
+older releases, up to `v0.2.5`, had the prefix).
 
 ### `RUN_MIGRATIONS`
 
