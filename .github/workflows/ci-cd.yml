@@ -254,7 +254,14 @@ jobs:
 
       - name: Stage services for e2e tests
         if: github.event_name != 'release'
-        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage" "edge-postgres-impl/stage"
+        run: sbt "central-postgres-impl/stage" "auth-postgres-impl/stage" "edge-postgres-impl/stage" "migrateTool/stage"
+
+      # `versola migrate --dry-run` against a database with pending migrations -- the case it
+      # exists for, and the one it used to fail on. Own database on the job's Postgres, so the
+      # e2e services below still start against an untouched `auth`.
+      - name: Check migrate-tool dry run
+        if: github.event_name != 'release'
+        run: bash .github/scripts/check-migrate-dry-run.sh
 
       # The e2e staging step above is skipped on release (see its `if:`),
       # so a separate stage is needed here to produce the artifacts
