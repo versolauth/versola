@@ -64,6 +64,16 @@ object SecurityProfiles:
       .flatMap(_.obj)
       .map(_.obj("settings").flatMap(_.str("securityProfile")))
 
+  /** Waits for central's cache to report `profile` for the tenant, which is what a write that
+    * bypassed central's API (see [[CentralDatabase]]) has to wait for before auth is synced. */
+  def awaitProfile(api: CentralApi, tenantId: String, profile: String): Task[Unit] =
+    profileOf(api, tenantId)
+      .repeat(Schedule.spaced(100.millis) *> Schedule.recurUntil[Option[String]](_.contains(profile)))
+      .timeout(10.seconds)
+      .withClock(Clock.ClockLive)
+      .someOrFail(RuntimeException(s"Central does not report '$profile' for tenant '$tenantId'"))
+      .unit
+
   /** Writes `profile` over the tenant's stored settings, answering whatever central answers --
     * a `409` listing the violating clients for a refused switch to `fapi2`. */
   def set(api: CentralApi, tenantId: String, profile: String): Task[ApiResult] =
