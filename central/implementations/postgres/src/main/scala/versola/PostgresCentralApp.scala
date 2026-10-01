@@ -168,7 +168,6 @@ object PostgresCentralApp extends VersolaApp("central"):
       EdgeService.live >+>
       LocaleCompletenessValidator.live >+> LocaleService.live >+>
       JwksService.live >+>
-      BootstrapService.live >+>
       FormService.live >+>
       ThemeService.live >+>
       OtpChallengeService.live >+>
