@@ -89,6 +89,15 @@ trait OAuthClientService:
 
   def sync(event: SyncEvent.ClientsUpdated): Task[Unit]
 
+  /** Reloads the whole cache from the repository now, instead of at the next scheduled
+    * refresh. For bootstrap: this cache is loaded before bootstrap seeds `central-admin`, and
+    * the `client_change` notifications the seed fires go out before central starts listening
+    * for them -- so without a reload the seeded client is missing from `/configuration/clients/sync`,
+    * and its presets from the edge-filtered `/configuration/auth-request-presets/sync`, until
+    * that refresh: `/login/central-admin` answers 404 for up to an interval after a fresh deploy.
+    */
+  def refreshNow: Task[Unit]
+
   /** Verifies that `provided` matches the current or previous secret of the
     * `central-admin` OAuth client (for secret rotation support). Both comparisons
     * are constant-time to prevent timing attacks.
@@ -510,6 +519,11 @@ object OAuthClientService:
         cache,
         clientRepository.find(event.id).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey))),
       )
+
+    override def refreshNow: Task[Unit] =
+      clientRepository.getAll
+        .flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+        .flatMap(cache.set(_))
 
     override def verifySecret(provided: Secret): Task[Boolean] =
       cache.get.map: clients =>
