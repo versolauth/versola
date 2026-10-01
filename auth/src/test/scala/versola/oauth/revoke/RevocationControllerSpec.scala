@@ -167,6 +167,22 @@ object RevocationControllerSpec extends UnitSpecBase:
         setup = revocationService =>
           revocationService.revokeRefreshToken.succeedsWith(()),
       ),
+      // One random refresh token in 256 decodes, read whole, to a leading `{`; taking it for a JWT
+      // would answer 200 without revoking anything.
+      controllerTestCase(
+        description = "revokes an opaque token whose bytes decode to a leading '{' as a refresh token",
+        request = Request.post(
+          url = URL.root / "revoke",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "token" -> Base64.urlEncode(Array('{'.toByte) ++ Array.fill(31)(10.toByte)),
+          )),
+        ).addHeader(authHeader(clientId1, clientSecret1)),
+        expectedStatus = Status.Ok,
+        setup = revocationService =>
+          revocationService.revokeRefreshToken.succeedsWith(()),
+        verifyService = revocationService =>
+          ZIO.succeed(assertTrue(revocationService.revokeRefreshToken.calls.size == 1)),
+      ),
       controllerTestCase(
         description = "return 200 OK when access token (JWT) revocation succeeds",
         request = Request.post(

@@ -42,7 +42,7 @@ object IntrospectionController extends Controller:
           case Right(token) =>
             JWT.deserialize[AccessTokenPayload](token, publicKeys, JWT.Type.AccessToken)
               .flatMap(introspectionService.introspectAccessToken(_, credentials, certificate))
-              .catchSome { case _: IntrospectionError => ZIO.succeed(IntrospectionResponse.Inactive) }
+              .catchSome { case IntrospectionError.Unauthenticated => ZIO.succeed(IntrospectionResponse.Inactive) }
 
           case Left(refreshToken) =>
             introspectionService.introspectRefreshToken(refreshToken, credentials, certificate)
