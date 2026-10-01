@@ -82,10 +82,19 @@ object CentralConfig:
   object BootstrapConfig:
     case class EdgeSeed(id: EdgeId, publicKeyJwk: Json.Obj)
 
-    /** The secret is operator-supplied rather than generated, for the reason `authResourceSecret`
-      * is: central hands a client secret back once, at registration, and a caller such as loadgen
-      * has to be configured with the same value out of band. */
-    case class UtilityClientSeed(clientId: ClientId, secret: Secret)
+    /** The credential is operator-supplied rather than generated, for the reason
+      * `authResourceSecret` is: a caller such as loadgen has to be configured with its other half
+      * out of band.
+      *
+      * `publicKeyJwk` registers the client as RFC 7523 `private_key_jwt` with DPoP-bound tokens,
+      * which the default tenant's FAPI 2.0 profile admits; loadgen signs with the private half.
+      * Without it, `secret` seeds the `client_secret` the client has always had, outside the
+      * profile. One of the two is required; given both, the key wins. */
+    case class UtilityClientSeed(
+        clientId: ClientId,
+        secret: Option[Secret] = None,
+        publicKeyJwk: Option[Json.Obj] = None,
+    )
 
     /** The certificate (with its PKCS#8 private key, one PEM) an edge presents as
       * `central-admin`, and where the default tenant's TLS terminator forwards it to auth.

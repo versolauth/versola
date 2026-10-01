@@ -237,6 +237,8 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.provision.flatMap(_.preset.cookieDomain) == Some("bank.example.test"),
           config.provision.map(_.passkey.rpId) == Some("bank.example.test"),
           config.provision.map(_.paymentAmountThreshold) == Some(1000000L),
+          config.provision.exists(_.provisionerSecret.nonEmpty),
+          config.provision.exists(_.provisionerPrivateKey.isEmpty),
           config.seed.map(_.auth.url) == Some("jdbc:postgresql://auth-db:5432/auth"),
           config.seed.map(_.central.user) == Some("central"),
           config.seed.map(_.tenantId) == Some("default"),

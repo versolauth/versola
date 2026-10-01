@@ -123,7 +123,12 @@ Two of central's generated values need a matching home outside these files entir
 `bootstrap.utility-client`'s secret must equal whatever configures `loadgen`'s own
 `provision.provisioner-secret` (`loadgen provision` authenticates as this client to reach
 central's admin API — see [§8](#8-the-load-emulator)), the same kind of out-of-band match a
-Postgres password is. `bootstrap.resource-secret` has no such counterpart to match — central is
+Postgres password is. That `client_secret` is not a credential the default tenant's FAPI 2.0
+profile admits, so central seeds it with a warning. To conform, replace the generated secret in
+`central.conf` with `bootstrap.utility-client.public-key-jwk` (a P-256/ES256 public JWK) and give
+`loadgen` the private half as `provision.provisioner-private-key`: it then signs an RFC 7523
+assertion and DPoP proofs instead (versolauth/versola#424). `gen-env` does not generate that pair
+yet. `bootstrap.resource-secret` has no such counterpart to match — central is
 the only reader — but it still has to be present at central's *first* boot: central seeds each
 of the two exactly once, the first time it finds neither configured, and a value added to the
 config later has no effect on one already seeded (versolauth/versola#380).

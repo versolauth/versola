@@ -1,6 +1,7 @@
 package versola.loadgen.protocol
 
 import versola.loadgen.config.{ProvisionConfig, TargetsConfig}
+import versola.util.{ClientAssertion, PrivateJsonWebKey}
 import zio.*
 import zio.http.*
 import zio.http.Header.Authorization
@@ -30,9 +31,10 @@ final class HttpAdminClient(
     authUrl: URL,
     edgeUrl: URL,
     provisionerClientId: String,
-    provisionerSecret: String,
+    credential: ProvisionerCredential,
     tenantId: String,
-    token: Ref.Synchronized[Option[Authorization]],
+    token: Ref.Synchronized[Option[AccessToken]],
+    edgeNonce: Ref[Option[String]],
 ) extends AdminClient:
 
   import HttpAdminClient.*
@@ -412,26 +414,55 @@ final class HttpAdminClient(
       url: URL,
       body: Option[String],
   ): Task[AdminResponse] =
-    def attempt(authorization: Authorization): Task[AdminResponse] =
-      val base = Request(method = method, url = url, body = body.fold(Body.empty)(Body.fromString(_)))
-        .addHeader(authorization)
-      val request = body.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
-      ZIO.scoped:
-        client.request(request).flatMap: response =>
-          response.body.asString.map(AdminResponse(response.status, _))
+    def attempt(accessToken: AccessToken, nonce: Option[String]): Task[Received] =
+      for
+        authorization <- authorize(accessToken, method, url, nonce)
+        base = Request(method = method, url = url, body = body.fold(Body.empty)(Body.fromString(_)))
+          .addHeaders(authorization)
+        request = body.fold(base)(_ => base.addHeader(Header.ContentType(MediaType.application.json)))
+        received <- exchange(request)
+      yield received
+
+    // RFC 9449 §9: edge may demand a nonce of a DPoP-bound call, and hands one back on any
+    // response. One is held for the run and retried with once, as `EdgeActionClient` does.
+    def withNonce(accessToken: AccessToken): Task[AdminResponse] =
+      for
+        held <- edgeNonce.get
+        first <- attempt(accessToken, held)
+        received <- first.nonceChallenge(Status.Unauthorized) match
+          case Some(issued) => edgeNonce.set(Some(issued)) *> attempt(accessToken, Some(issued))
+          case None => ZIO.succeed(first)
+        _ <- ZIO.foreachDiscard(received.nonce)(issued => edgeNonce.set(Some(issued)))
+      yield received.response
 
     // A campaign's provisioning outlives a token whose TTL the deployment chose, so an expiry
     // is re-authenticated once rather than failing the run. Anything else 401 means is a
     // configuration problem the retry would repeat, and the second response is what surfaces.
     for
-      authorization <- accessToken
-      response <- attempt(authorization)
+      accessToken <- currentAccessToken
+      response <- withNonce(accessToken)
       retried <-
-        if response.status == Status.Unauthorized then token.set(None) *> accessToken.flatMap(attempt)
+        if response.status == Status.Unauthorized then token.set(None) *> currentAccessToken.flatMap(withNonce)
         else ZIO.succeed(response)
     yield retried
 
-  private def accessToken: Task[Authorization] =
+  /** Edge picks the path off the `Authorization` scheme, so a DPoP-bound token is sent under
+    * `DPoP` with a proof naming it (`ath`) -- presented as a bearer token, edge refuses it as a
+    * downgrade. `htu` is the URL dialled, the caveat `EdgeActionClient.sign` carries.
+    */
+  private def authorize(accessToken: AccessToken, method: Method, url: URL, nonce: Option[String]): Task[Headers] =
+    credential match
+      case ProvisionerCredential.ClientSecret(_) => ZIO.succeed(Headers(Authorization.Bearer(accessToken.value)))
+      case ProvisionerCredential.PrivateKeyJwt(_, key) =>
+        key.proof(method, url.copy(queryParams = QueryParams.empty, fragment = None).encode, Some(accessToken), nonce)
+          .mapError(signingFailed)
+          .map: proof =>
+            Headers(
+              Header.Custom(Authorization.name, s"$dpopScheme ${accessToken.value}"),
+              Header.Custom(HttpAuthClient.dpopHeader, proof),
+            )
+
+  private def currentAccessToken: Task[AccessToken] =
     token.modifyZIO:
       case Some(existing) => ZIO.succeed((existing, Some(existing)))
       case None => requestAccessToken.map(fresh => (fresh, Some(fresh)))
@@ -439,21 +470,62 @@ final class HttpAdminClient(
   /** RFC 8707 `resource`: the token is bound to `resource://central` specifically, so a leaked
     * one opens central's admin API and nothing else edge fronts.
     */
-  private def requestAccessToken: Task[Authorization] =
-    val form = Form(
+  private def requestAccessToken: Task[AccessToken] =
+    val grant = Form(
       FormField.simpleField("grant_type", "client_credentials"),
       FormField.simpleField("resource", centralResourceUri),
     )
-    val request = Request
-      .post(authUrl.addPath(Path.root / "token"), Body.fromURLEncodedForm(form))
-      .addHeader(Authorization.Basic(provisionerClientId, provisionerSecret))
+    val endpoint = authUrl.addPath(Path.root / "token")
+    val received = credential match
+      case ProvisionerCredential.ClientSecret(secret) =>
+        exchange(
+          Request
+            .post(endpoint, Body.fromURLEncodedForm(grant))
+            .addHeader(Authorization.Basic(provisionerClientId, secret)),
+        )
+      case ProvisionerCredential.PrivateKeyJwt(signing, key) =>
+        // A fresh assertion per attempt: auth remembers every `jti` it accepted, so the retry a
+        // nonce challenge asks for cannot resend the first one.
+        def attempt(nonce: Option[String]): Task[Received] =
+          for
+            assertion <- ClientAssertion.issue(
+              clientId = provisionerClientId,
+              audience = issuer,
+              algorithm = signing.algorithm,
+              keyId = signing.keyId,
+              privateKey = signing.privateKey,
+            )
+            proof <- key.proof(Method.POST, endpoint.encode, None, nonce).mapError(signingFailed)
+            form = grant
+              .append(FormField.simpleField("client_id", provisionerClientId))
+              .append(FormField.simpleField("client_assertion_type", ClientAssertion.Type))
+              .append(FormField.simpleField("client_assertion", assertion))
+            received <- exchange(
+              Request
+                .post(endpoint, Body.fromURLEncodedForm(form))
+                .addHeader(Header.Custom(HttpAuthClient.dpopHeader, proof)),
+            )
+          yield received
+
+        attempt(None).flatMap: first =>
+          first.nonceChallenge(Status.BadRequest).fold(ZIO.succeed(first))(issued => attempt(Some(issued)))
+    received.flatMap: received =>
+      expectSuccess("authenticate", received.response)
+        *> decode[TokenResponseBody]("authenticate", received.response).map(token => AccessToken(token.accessToken))
+
+  /** FAPI 2.0 §5.3.2.1-8: an assertion's `aud` is the issuer alone. Taken to be the auth URL
+    * dialled, under the same assumption `HttpAuthClient.tokenHtu` makes. */
+  private def issuer: String = authUrl.encode.stripSuffix("/")
+
+  private def exchange(request: Request): Task[Received] =
     ZIO.scoped:
       client.request(request).flatMap: response =>
-        response.body.asString.flatMap: body =>
-          val received = AdminResponse(response.status, body)
-          expectSuccess("authenticate", received)
-            *> decode[TokenResponseBody]("authenticate", received)
-              .map(token => Authorization.Bearer(token.accessToken))
+        response.body.asString.map: body =>
+          Received(
+            AdminResponse(response.status, body),
+            response.rawHeader(HttpAuthClient.dpopNonceHeader),
+            response.rawHeader("WWW-Authenticate"),
+          )
 
   /** Finishes a create central refused, by re-reading and applying the desired-state update when
     * the id turns out to be there after all.
@@ -488,16 +560,46 @@ object HttpAdminClient:
     for
       auth <- parseUrl("auth-url", targets.authUrl)
       edge <- parseUrl("edge-url", targets.edgeUrl)
-      token <- Ref.Synchronized.make(Option.empty[Authorization])
+      credential <- credentialOf(provision)
+      token <- Ref.Synchronized.make(Option.empty[AccessToken])
+      edgeNonce <- Ref.make(Option.empty[String])
     yield HttpAdminClient(
       client = client,
       authUrl = auth,
       edgeUrl = edge,
       provisionerClientId = provision.provisionerClientId,
-      provisionerSecret = provision.provisionerSecret.stringValue,
+      credential = credential,
       tenantId = provision.tenantId,
       token = token,
+      edgeNonce = edgeNonce,
     )
+
+  /** The private key when one is configured, the secret otherwise -- see [[ProvisionConfig]].
+    *
+    * The DPoP key is generated per run rather than derived like [[DpopKeyPool]]'s: the tokens it
+    * binds live no longer than this process, so nothing has to reproduce it.
+    */
+  private[protocol] def credentialOf(provision: ProvisionConfig): Task[ProvisionerCredential] =
+    (provision.provisionerPrivateKey, provision.provisionerSecret) match
+      case (Some(privateKey), _) =>
+        for
+          signing <- ZIO
+            .fromEither:
+              privateKey.stringValue.fromJson[Json.Obj]
+                .left.map(error => s"must be a JWK: $error")
+                .flatMap(PrivateJsonWebKey.validate)
+                .flatMap(_.signing)
+            .mapError(reason => InvalidProvisionerCredential(s"provision.provisioner-private-key $reason"))
+          pool <- DpopKeyPool.derive(UUID.randomUUID().toString, size = 1).mapError(signingFailed)
+        yield ProvisionerCredential.PrivateKeyJwt(signing, pool.keyFor(0))
+      case (None, Some(secret)) => ZIO.succeed(ProvisionerCredential.ClientSecret(secret.stringValue))
+      case (None, None) =>
+        ZIO.fail(InvalidProvisionerCredential("provision needs a provisioner-private-key or a provisioner-secret"))
+
+  private def signingFailed(error: ProtocolError): Throwable =
+    InvalidProvisionerCredential(s"could not sign as the provisioner: $error")
+
+  private val dpopScheme = "DPoP"
 
   private def parseUrl(setting: String, url: String): Task[URL] =
     ZIO.fromEither(URL.decode(url)).mapError(cause => InvalidAdminUrl(setting, url, cause))
@@ -523,6 +625,15 @@ object HttpAdminClient:
   private val edgeCacheTimeout = 6.minutes
 
   private case class AdminResponse(status: Status, body: String)
+
+  private case class Received(response: AdminResponse, nonce: Option[String], challenge: Option[String]):
+    /** RFC 9449 §9's demand, and the nonce to retry with: a `400` `use_dpop_nonce` body at auth's
+      * `/token`, a `401` `WWW-Authenticate: DPoP error="use_dpop_nonce"` at edge. */
+    def nonceChallenge(status: Status): Option[String] =
+      val demanded = response.status == status &&
+        (challenge.exists(_.contains(s"error=\"${HttpAuthClient.useDpopNonce}\"")) ||
+          response.body.contains(s"\"${HttpAuthClient.useDpopNonce}\""))
+      if demanded then nonce else None
 
   private case class TokenResponseBody(@jsonField("access_token") accessToken: String) derives JsonDecoder
 
@@ -740,6 +851,14 @@ object HttpAdminClient:
 
 final case class InvalidAdminUrl(setting: String, url: String, cause: Throwable)
     extends RuntimeException(s"targets.$setting is not a valid URL: $url", cause)
+
+final case class InvalidProvisionerCredential(reason: String) extends RuntimeException(reason)
+
+/** How the provisioner authenticates at auth's `/token`, and how it then presents the token. */
+enum ProvisionerCredential:
+  case ClientSecret(secret: String)
+  /** RFC 7523 `private_key_jwt`, with the token DPoP-bound (RFC 9449) to `key`. */
+  case PrivateKeyJwt(signing: PrivateJsonWebKey.Signing, key: DpopKey)
 
 /** A central/edge admin call that did not succeed. Carries the operation rather than the URL so
   * that a `provision` failure names the step to re-run.

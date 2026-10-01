@@ -64,7 +64,8 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
     val bearer = request.header(Header.Authorization).exists {
       case Header.Authorization.Bearer(token) => token.stringValue.startsWith(issuedTokenPrefix)
       case _ => false
-    }
+    } || (request.rawHeader("Authorization").exists(_.startsWith(s"DPoP $issuedTokenPrefix")) &&
+      request.rawHeader("DPoP").nonEmpty)
     if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
     else missingMember(request.method, path, body) match
       case Some(refusal) => record.as(refusal)
@@ -103,7 +104,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
         val credentialed = request.header(Header.Authorization).exists {
           case Header.Authorization.Basic(user, _) => user.nonEmpty
           case _ => false
-        }
+        } || (form.get("client_assertion").flatMap(_.stringValue).nonEmpty && request.rawHeader("DPoP").nonEmpty)
         if !credentialed || requested.contains("resource://central") == false then
           ZIO.succeed(json(Json.Obj("error" -> Json.Str("invalid_target")), Status.BadRequest))
         else
@@ -560,7 +561,7 @@ object ProvisionFixtures:
   val provision: ProvisionConfig = ProvisionConfig(
     tenantId = "default",
     provisionerClientId = "utils",
-    provisionerSecret = Config.Secret("provisioner-secret"),
+    provisionerSecret = Some(Config.Secret("provisioner-secret")),
     mobileRedirectUri = "https://app.versola.test/callback",
     resources = ProvisionResourcesConfig(
       coreUri = "http://mockapi-core:8100",

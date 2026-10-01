@@ -1,14 +1,23 @@
 package versola.loadgen.protocol
 
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.crypto.ECDSAVerifier
+import com.nimbusds.jose.jwk.gen.ECKeyGenerator
+import com.nimbusds.jose.jwk.{Curve, ECKey}
+import com.nimbusds.jwt.SignedJWT
+import versola.loadgen.config.ProvisionConfig
 import versola.loadgen.provision.FakeCentral.*
 import versola.loadgen.provision.{CampaignBlueprint, FakeCentral, ProvisionFixtures}
+import versola.util.{ClientAssertion, Dpop}
 import zio.*
+
 import zio.http.*
 import zio.json.ast.Json
 import zio.test.*
 import zio.test.Assertion.*
 
 import java.util.UUID
+import scala.jdk.CollectionConverters.*
 
 /** Asserts the wire shape of every admin call and the create-or-update choice behind it.
   *
@@ -450,4 +459,126 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         yield assert(error)(isSubtype[AdminCallFailed](hasField("operation", _.operation, Assertion.equalTo("listClients"))))
       },
     ),
+    // #424: the provisioner on a FAPI 2.0 tenant -- RFC 7523 at auth, RFC 9449 at both hops.
+    suite("provisioner credential")(
+      test("authenticates with an assertion for the issuer and a DPoP proof, and presents the token under DPoP") {
+        for
+          seen <- capturing(_ => ZIO.none)
+          admin <- keyedAdmin
+          _ <- admin.syncConfiguration()
+          captured <- seen.get
+          tokenRequest = captured.head
+          call = captured(1)
+          form = Form.fromURLEncoded(tokenRequest.body, Charsets.Utf8).toOption.get
+          assertion = SignedJWT.parse(form.get("client_assertion").flatMap(_.stringValue).get)
+          tokenProof = SignedJWT.parse(tokenRequest.headers("dpop"))
+          callProof = SignedJWT.parse(call.headers("dpop"))
+        yield assertTrue(
+          tokenRequest.path == "/token",
+          !tokenRequest.headers.contains("authorization"),
+          form.get("client_id").flatMap(_.stringValue).contains("utils"),
+          form.get("client_assertion_type").flatMap(_.stringValue).contains(ClientAssertion.Type),
+          assertion.verify(ECDSAVerifier(provisionerKey.toPublicJWK)),
+          assertion.getJWTClaimsSet.getIssuer == "utils",
+          assertion.getJWTClaimsSet.getSubject == "utils",
+          assertion.getJWTClaimsSet.getAudience.asScala.toList == List("http://auth:8080"),
+          tokenProof.getJWTClaimsSet.getStringClaim("htm") == "POST",
+          tokenProof.getJWTClaimsSet.getStringClaim("htu") == "http://auth:8080/token",
+          tokenProof.getJWTClaimsSet.getClaim("ath") == null,
+          call.headers("authorization") == "DPoP dpop-bound-token",
+          callProof.getJWTClaimsSet.getStringClaim("htu") == "http://edge:8095/resources/central/service/configuration/sync",
+          callProof.getJWTClaimsSet.getStringClaim("ath") == Dpop.ath("dpop-bound-token"),
+          callProof.getHeader.getJWK.computeThumbprint() == tokenProof.getHeader.getJWK.computeThumbprint(),
+        )
+      },
+      test("answers auth's and edge's nonce challenges once each, and carries edge's nonce on the next call") {
+        for
+          seen <- capturing: request =>
+            ZIO.succeed:
+              if request.path == "/token" && !request.dpopNonce.contains("auth-nonce") then
+                Some(Response.json("""{"error":"use_dpop_nonce"}""").status(Status.BadRequest)
+                  .addHeader(Header.Custom("DPoP-Nonce", "auth-nonce")))
+              else if request.path != "/token" && !request.dpopNonce.contains("edge-nonce") then
+                Some(Response.status(Status.Unauthorized)
+                  .addHeader(Header.Custom("WWW-Authenticate", """DPoP error="use_dpop_nonce""""))
+                  .addHeader(Header.Custom("DPoP-Nonce", "edge-nonce")))
+              else None
+          admin <- keyedAdmin
+          _ <- admin.syncConfiguration()
+          _ <- admin.syncConfiguration()
+          captured <- seen.get
+          assertions = captured.filter(_.path == "/token").map(r =>
+            Form.fromURLEncoded(r.body, Charsets.Utf8).toOption.get.get("client_assertion").flatMap(_.stringValue).get,
+          )
+        yield assertTrue(
+          captured.map(r => (r.path == "/token", r.dpopNonce)) == Chunk(
+            (true, None),
+            (true, Some("auth-nonce")),
+            (false, None),
+            (false, Some("edge-nonce")),
+            (false, Some("edge-nonce")),
+          ),
+          assertions.distinct.size == 2,
+        )
+      },
+      test("provisions against central with the key alone") {
+        for
+          fake <- FakeCentral.make().flatMap(_.withRoles(Set(CampaignBlueprint.retailUserRoleId)))
+          _ <- TestClient.addRoutes(fake.handler.toRoutes)
+          admin <- keyedAdmin
+          creds <- admin.registerClient(webClient)
+        yield assertTrue(creds.clientId == webClient.clientId)
+      },
+      test("refuses to start with neither a key nor a secret") {
+        for
+          client <- ZIO.service[Client]
+          error <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision.copy(provisionerSecret = None)).flip
+        yield assert(error)(isSubtype[InvalidProvisionerCredential](anything))
+      },
+      test("refuses a key that carries no private half") {
+        for
+          client <- ZIO.service[Client]
+          error <- HttpAdminClient.make(client, ProvisionFixtures.targets, keyed(provisionerKey.toPublicJWK)).flip
+        yield assert(error)(
+          isSubtype[InvalidProvisionerCredential](hasField("reason", _.reason, containsString("provisioner-private-key"))),
+        )
+      },
+    ),
   ).provide(TestClient.layer) @@ TestAspect.silentLogging
+
+  private val provisionerKey: ECKey =
+    ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
+
+  private def keyed(key: ECKey): ProvisionConfig =
+    ProvisionFixtures.provision.copy(provisionerSecret = None, provisionerPrivateKey = Some(Config.Secret(key.toJSONString)))
+
+  private def keyedAdmin: ZIO[Client, Throwable, AdminClient] =
+    ZIO.serviceWithZIO[Client](HttpAdminClient.make(_, ProvisionFixtures.targets, keyed(provisionerKey)))
+
+  private case class Captured(path: String, headers: Map[String, String], body: String):
+    def dpopNonce: Option[String] =
+      headers.get("dpop").flatMap(proof => Option(SignedJWT.parse(proof).getJWTClaimsSet.getStringClaim("nonce")))
+
+  /** Records every request, answering each with `override` when it has one, and otherwise as
+    * auth and edge would: a DPoP-bound token at `/token`, an empty `200` everywhere else. */
+  private def capturing(`override`: Captured => UIO[Option[Response]]): ZIO[TestClient, Nothing, Ref[Chunk[Captured]]] =
+    for
+      seen <- Ref.make(Chunk.empty[Captured])
+      _ <- TestClient.addRoutes(
+        Handler
+          .fromFunctionZIO[Request]: request =>
+            for
+              body <- request.body.asString.orDie
+              captured = Captured(
+                request.url.path.encode,
+                request.headers.toList.map(h => h.headerName.toLowerCase -> h.renderedValue).toMap,
+                body,
+              )
+              _ <- seen.update(_ :+ captured)
+              answer <- `override`(captured)
+            yield answer.getOrElse:
+              if captured.path == "/token" then Response.json("""{"access_token":"dpop-bound-token","token_type":"DPoP"}""")
+              else Response.ok
+          .toRoutes,
+      )
+    yield seen
