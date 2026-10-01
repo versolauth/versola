@@ -57,6 +57,36 @@ object JarFlowSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield Flows.Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
+  /** The same client, registered in a FAPI 2.0 tenant -- see [[SecurityProfiles.withFapi2Tenant]]
+    * for why `default` cannot be that tenant. It is made to the profile (DPoP-bound tokens,
+    * PAR, an `https` redirect URI) rather than to what a login flow needs, since a test that
+    * only has its request object refused never gets as far as one: `/authorize` verifies the
+    * object before it asks whether the client had to push it. The user is `base`'s, not
+    * registered in this tenant, and need not be.
+    */
+  private def fapi2JarClient(
+      auth: OAuthClient,
+      signer: AssertionSigner,
+      tenantId: String,
+      base: Flows.Setup,
+  ): Task[Flows.Setup] =
+    for
+      suffix <- uid
+      clientId = s"jar-fapi-client-$suffix"
+      fapiRedirectUri = "https://app.example.test/callback"
+      clientResult <- auth.registerClient(
+        clientId,
+        "JAR FAPI 2.0 Client",
+        Set(fapiRedirectUri),
+        tenantId = tenantId,
+        authMethod = "private_key_jwt",
+        jwks = Some(signer.jwks),
+        dpopBoundAccessTokens = true,
+        requirePushedAuthorizationRequests = true,
+      ).success
+      _ <- auth.syncConfiguration()
+    yield base.copy(clientId = clientId, clientSecret = clientResult.secret, redirectUri = fapiRedirectUri)
+
   /** The same client, registered as one that may only state its request in a signed object
     * (RFC 9101 §10.5).
     */
@@ -211,19 +241,22 @@ object JarFlowSpec extends E2ESpec:
     test("FAPI 2.0 §5.3.2.1-8: an object addressed to the authorization endpoint URL is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
-        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (base, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        client <- jarClient(auth, signer)
-        requestObject <- signer.requestObject(
-          requestClaims(client, auth, codeChallenge, "aud" -> Json.Str(s"${auth.issuer}/authorize"))*,
-        )()
-        result <- auth.authorizeRaw(
-          clientId = client.clientId,
-          redirectUri = client.redirectUri,
-          request = Some(requestObject),
-        )
+        result <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            client <- fapi2JarClient(auth, signer, tenantId, base)
+            requestObject <- signer.requestObject(
+              requestClaims(client, auth, codeChallenge, "aud" -> Json.Str(s"${auth.issuer}/authorize"))*,
+            )()
+            result <- auth.authorizeRaw(
+              clientId = client.clientId,
+              redirectUri = client.redirectUri,
+              request = Some(requestObject),
+            )
+          yield result
       yield assertTrue(result.response.status == Status.BadRequest)
-        .label(s"under the default fapi2 profile only the issuer names this server, got ${result.response.status}")
+        .label(s"under the fapi2 profile only the issuer names this server, got ${result.response.status}")
     },
 
     test("FAPI 2.0 §5.3.2.1-13: an object from a clock a few seconds fast is accepted") {
@@ -271,19 +304,22 @@ object JarFlowSpec extends E2ESpec:
     test("FAPI 2.0 Message Signing: an object without nbf is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
-        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (base, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        client <- jarClient(auth, signer)
-        requestObject <- signer.requestObject(
-          requestClaims(client, auth, codeChallenge).filterNot(_._1 == "nbf")*,
-        )()
-        result <- auth.authorizeRaw(
-          clientId = client.clientId,
-          redirectUri = client.redirectUri,
-          request = Some(requestObject),
-        )
+        result <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            client <- fapi2JarClient(auth, signer, tenantId, base)
+            requestObject <- signer.requestObject(
+              requestClaims(client, auth, codeChallenge).filterNot(_._1 == "nbf")*,
+            )()
+            result <- auth.authorizeRaw(
+              clientId = client.clientId,
+              redirectUri = client.redirectUri,
+              request = Some(requestObject),
+            )
+          yield result
       yield assertTrue(result.response.status == Status.BadRequest)
-        .label("the default fapi2 profile requires nbf on a request object")
+        .label("the fapi2 profile requires nbf on a request object")
     },
 
     test("the same request object sent straight to /authorize twice is refused the second time (#358)") {
@@ -310,17 +346,20 @@ object JarFlowSpec extends E2ESpec:
     test("FAPI 2.0: an object without a jti is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
-        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (base, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        client <- jarClient(auth, signer)
-        requestObject <- signer.requestObject(
-          requestClaims(client, auth, codeChallenge).filterNot(_._1 == "jti")*,
-        )()
-        result <- auth.authorizeRaw(
-          clientId = client.clientId,
-          redirectUri = client.redirectUri,
-          request = Some(requestObject),
-        )
+        result <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            client <- fapi2JarClient(auth, signer, tenantId, base)
+            requestObject <- signer.requestObject(
+              requestClaims(client, auth, codeChallenge).filterNot(_._1 == "jti")*,
+            )()
+            result <- auth.authorizeRaw(
+              clientId = client.clientId,
+              redirectUri = client.redirectUri,
+              request = Some(requestObject),
+            )
+          yield result
       yield assertTrue(result.response.status == Status.BadRequest)
     },
 

@@ -478,6 +478,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
   private val centralAuthorization = Authorization.Basic("central", config.resourceSecret)
   private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
 
+  /** Central's management API, as the caller this client registers clients through -- for a
+    * spec that needs a tenant of its own, see [[SecurityProfiles.withFapi2Tenant]]. */
+  def central: CentralApi = CentralApi(client, config, Some("central" -> config.resourceSecret))
+
   /** Where the edge receives security event tokens — what a client registers as its
     * back-channel logout URI so that logouts and revocations reach it.
     */

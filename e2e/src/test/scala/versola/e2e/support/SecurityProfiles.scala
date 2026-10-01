@@ -35,6 +35,30 @@ object SecurityProfiles:
         .withClock(Clock.ClockLive)
     yield ()
 
+  /** Runs `use` against a tenant of its own, on FAPI 2.0, and deletes it afterwards.
+    *
+    * [[ensureStandard]] leaves `default` on `standard` for the whole suite, and it cannot be
+    * put back: central refuses the switch to `fapi2` while `default` holds the `client_secret`
+    * and public clients the rest of the suite registers there. A spec that asserts what only
+    * FAPI 2.0 refuses -- a stricter `aud`, a required `jti` or `nbf`, a private-use redirect
+    * scheme -- registers its client in a tenant created here instead, which starts on the
+    * profile and so has to be given a conformant client (`private_key_jwt`, DPoP-bound tokens,
+    * PAR, an `https` redirect URI). */
+  def withFapi2Tenant[A](api: CentralApi)(use: String => Task[A]): Task[A] =
+    for
+      tenantId <- CentralApi.id("e2e-fapi")
+      created <- api.post("/configuration/tenants", Fixtures.tenant(tenantId))
+      _ <- ZIO.fail(RuntimeException(s"Could not create tenant '$tenantId': ${created.status} ${created.body}"))
+        .unless(created.status.isSuccess)
+      // Central answers reads from a cache a Postgres notification refreshes: wait until it
+      // shows the new tenant's settings, so the profile asserted on is the one it started on.
+      _ <- profileOf(api, tenantId)
+        .repeat(Schedule.spaced(100.millis) *> Schedule.recurUntil[Option[String]](_.contains("fapi2")))
+        .timeout(10.seconds)
+        .withClock(Clock.ClockLive)
+      result <- use(tenantId).ensuring(api.delete("/configuration/tenants", "tenantId" -> tenantId).ignore)
+    yield result
+
   def profileOf(api: CentralApi, tenantId: String): Task[Option[String]] =
     api.get("/configuration/challenges/challenge-settings", "tenantId" -> tenantId)
       .flatMap(_.obj)

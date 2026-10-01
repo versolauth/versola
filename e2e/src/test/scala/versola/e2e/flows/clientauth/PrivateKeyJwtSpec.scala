@@ -50,6 +50,26 @@ object PrivateKeyJwtSpec extends E2ESpec:
       _ <- auth.syncConfiguration()
     yield (id, result.secret)
 
+  /** The same client, registered in a FAPI 2.0 tenant -- see [[SecurityProfiles.withFapi2Tenant]]
+    * for why `default` cannot be that tenant. FAPI 2.0 admits it only as `private_key_jwt`
+    * with DPoP-bound tokens, PAR and an `https` redirect URI; a test that only has it refuse
+    * an assertion never reaches any of those. */
+  private def fapi2AssertionClient(auth: OAuthClient, signer: AssertionSigner, tenantId: String): Task[String] =
+    for
+      id <- uid.map(s => s"jwt-fapi-client-$s")
+      _ <- auth.registerClient(
+        id,
+        "Private Key JWT FAPI 2.0 Test Client",
+        Set("https://app.example.test/callback"),
+        tenantId = tenantId,
+        authMethod = "private_key_jwt",
+        jwks = Some(signer.jwks),
+        dpopBoundAccessTokens = true,
+        requirePushedAuthorizationRequests = true,
+      ).success
+      _ <- auth.syncConfiguration()
+    yield id
+
   /** A well-formed JWK Set holding a key no algorithm auth verifies with can use: `ES256`
     * names P-256 (RFC 7518 §3.4), so nothing here could ever check a signature made with
     * this one. */
@@ -93,22 +113,28 @@ object PrivateKeyJwtSpec extends E2ESpec:
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
-        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
-        (_, error) <- rejection(result)
+        error <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            clientId <- fapi2AssertionClient(auth, signer, tenantId)
+            assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
+            result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+            (_, error) <- rejection(result)
+          yield error
       yield assertTrue(error == "invalid_client")
-        .label("under the default fapi2 profile only the issuer identifier names this server")
+        .label("under the fapi2 profile only the issuer identifier names this server")
     },
 
     test("FAPI 2.0 §5.3.2.1-8: an audience sent as an array is refused, even naming only the issuer") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
-        (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, auth.issuer, audienceAsArray = true)
-        result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
-        (_, error) <- rejection(result)
+        error <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          for
+            clientId <- fapi2AssertionClient(auth, signer, tenantId)
+            assertion <- signer.assertion(clientId, auth.issuer, audienceAsArray = true)
+            result <- auth.clientCredentials(clientId, "", useBasicAuth = false, assertion = Some(assertion))
+            (_, error) <- rejection(result)
+          yield error
       yield assertTrue(error == "invalid_client")
     },
 
@@ -269,7 +295,7 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, auth) <- setup(Flows.Id.LoginPassword)
         signer <- AssertionSigner.make
         (clientId, _) <- assertionClient(auth, signer)
-        assertion <- signer.assertion(clientId, auth.issuer)
+        assertion <- signer.assertion(clientId, s"${auth.issuer}/token")
         result <- auth.pushAuthorization(clientId, "", redirectUri, assertion = Some(assertion))
       yield result match
         case _: PushedAuthorizationResult.Success =>
