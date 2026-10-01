@@ -184,7 +184,7 @@ admin accounts can't receive a password.
   export PATH="$HOME/.local/bin:$PATH"   # the installer can't change the current shell
   ```
   (installs to `~/.local/bin`; if that isn't on `PATH` yet, also add the `export` line to
-  `~/.profile` as the installer suggests. `versola upgrade` updates the CLI later).
+  `~/.bashrc` (or `~/.zshrc`) as the installer suggests. `versola upgrade` updates the CLI later).
 - Published images in `ghcr.io/versolauth/` (`versola-tools`, `versola-auth`, `versola-central`,
   `versola-edge`) — all public, so the host needs no `docker login`. `versola-tools` of the release
   must ship the admin console (every release since the console moved into it does; `configure vps`
