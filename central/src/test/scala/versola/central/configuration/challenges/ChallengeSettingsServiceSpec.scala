@@ -49,20 +49,39 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     val service = ChallengeSettingsService.Impl(cache, repository, jwksRepository)
 
   def spec = suite("ChallengeSettingsService")(
-    test("getSettings returns None when cache is empty") {
+    test("getSettings returns None when cache is empty and the repository has no row either") {
       val env = Env()
-      for result <- env.service.getSettings(tenantId)
+      for
+        _ <- env.repository.findByTenant.succeedsWith(None)
+        result <- env.service.getSettings(tenantId)
       yield assertTrue(result.isEmpty)
     },
-    test("getSettings returns matching settings for tenant") {
+    test("getSettings returns matching settings for tenant straight from the cache, without consulting the repository") {
       val env = Env(Vector(settings))
-      for result <- env.service.getSettings(tenantId)
-      yield assertTrue(result.contains(settings))
+      for
+        result <- env.service.getSettings(tenantId)
+        lookups = env.repository.findByTenant.times
+      yield assertTrue(result.contains(settings), lookups == 0)
     },
-    test("getSettings returns None for unknown tenant") {
+    test("getSettings returns None for an unknown tenant the repository holds no row for either") {
       val env = Env(Vector(settings))
-      for result <- env.service.getSettings(otherTenantId)
+      for
+        _ <- env.repository.findByTenant.succeedsWith(None)
+        result <- env.service.getSettings(otherTenantId)
       yield assertTrue(result.isEmpty)
+    },
+    // A tenant the cache missed -- seeded after the cache's last load, or simply not yet
+    // picked up by its next one -- must not read as having no settings at all: bootstrap
+    // seeds the default tenant's settings and registers a client against them moments later,
+    // in the same process, well inside the cache's multi-minute refresh interval in a real
+    // deployment.
+    test("getSettings falls through to the repository on a cache miss") {
+      val env = Env() // cache empty -- as it is before its first scheduled refresh
+      for
+        _ <- env.repository.findByTenant.succeedsWith(Some(settings))
+        result <- env.service.getSettings(tenantId)
+        calls = env.repository.findByTenant.calls
+      yield assertTrue(result.contains(settings), calls == List(tenantId))
     },
     // #421/#428: bootstrap sets the tenant's mtlsCertificateHeader (through the repository)
     // and registers central-admin against it (through OAuthClientService, which reads this

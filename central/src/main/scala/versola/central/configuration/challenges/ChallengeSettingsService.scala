@@ -8,6 +8,16 @@ import versola.util.{JWT, ReloadingCache}
 import zio.{Scope, Task, UIO, ZIO, ZLayer}
 
 trait ChallengeSettingsService:
+  /** A cache miss falls through to the repository rather than reading as "no settings for this
+    * tenant": the cache is seeded once and refreshed on a fixed interval (minutes, in a real
+    * deployment), so a tenant whose settings were written after that load -- bootstrap seeding
+    * its own tenant at startup, a tenant created moments ago, a GET right after a PUT that
+    * raced the next refresh -- would otherwise read as having none at all until the interval
+    * next elapses. A cache *hit* is still served from the cache unconditionally: this closes
+    * the false negative, not the staleness a hit can still carry (same tradeoff
+    * [[getSecurityProfile]] and [[getMtlsCertificateHeader]] opt out of entirely, for the
+    * narrower set of callers that cannot tolerate even that).
+    */
   def getSettings(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]]
   def getAllSettings: Task[Vector[ChallengeSettingsRecord]]
 
@@ -81,7 +91,9 @@ object ChallengeSettingsService:
   ) extends ChallengeSettingsService:
 
     override def getSettings(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
-      cache.get.map(_.find(_.tenantId == tenantId))
+      cache.get.map(_.find(_.tenantId == tenantId)).flatMap:
+        case found: Some[ChallengeSettingsRecord] => ZIO.succeed(found)
+        case None => repository.findByTenant(tenantId)
 
     override def getAllSettings: Task[Vector[ChallengeSettingsRecord]] =
       cache.get
