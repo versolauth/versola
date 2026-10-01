@@ -1077,6 +1077,54 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createCalls == 0,
       )
     },
+    test("registerClient accepts an https:// redirect URI") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(redirectUris = Set(RedirectUri("https://example.com/callback"))))
+      yield assertCompletes
+    },
+    test("registerClient accepts an http://localhost redirect URI") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(redirectUris = Set(RedirectUri("http://localhost:8080/callback"))))
+      yield assertCompletes
+    },
+    test("registerClient accepts a custom scheme redirect URI for a native client") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.none,
+          redirectUris = Set(RedirectUri("com.example.app://callback")),
+        ))
+      yield assertCompletes
+    },
+    test("registerClient rejects a custom scheme redirect URI for a confidential client") {
+      val env = new Env()
+
+      for
+        result <- env.service
+          .registerClient(createRequest.copy(redirectUris = Set(RedirectUri("com.example.app://callback"))))
+          .either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidConsentUri => error.field == "redirectUris"
+          case _ => false,
+        createCalls == 0,
+      )
+    },
     test("updateClient clears frontChannelLogoutUri and consentFlow when the patch is an explicit deletion") {
       val env = new Env()
 

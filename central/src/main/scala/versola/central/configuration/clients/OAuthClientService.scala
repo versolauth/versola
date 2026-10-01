@@ -10,6 +10,7 @@ import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
 import versola.util.{CacheSource, Patch, PrivateClientCertificate, PrivateJsonWebKey, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.RedirectUri
 import zio.*
 import zio.http.{Scheme, URL}
 
@@ -163,6 +164,7 @@ object OAuthClientService:
           "policyUri" -> request.policyUri,
           "tosUri" -> request.tosUri,
         )
+        _ <- validateRedirectUris(request.redirectUris, request.authMethod)
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
         _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
@@ -307,6 +309,9 @@ object OAuthClientService:
             request.clientId,
             client.tenantId,
             request.mtlsAuth.applyTo(client.mtlsAuth),
+          ) *> validateRedirectUris(
+            request.redirectUris.add,
+            request.authMethod.getOrElse(client.authMethod),
           )
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
           case Patch.Modified(key) => encryptEdgeSigningKey(key).map(Patch.Modified(_))
@@ -483,6 +488,18 @@ object OAuthClientService:
           case Right(url) if url.scheme == Some(Scheme.HTTPS) => ZIO.some(url)
           case Right(url) if url.scheme == Some(Scheme.HTTP) && url.host.exists(h => h == "localhost" || h == "127.0.0.1") => ZIO.some(url)
           case Right(_) => invalid
+
+    private def validateRedirectUris(
+        uris: Set[RedirectUri],
+        authMethod: AuthMethod,
+    ): IO[InvalidConsentUri | Throwable, Unit] =
+      ZIO.foreachDiscard(uris): uri =>
+        val invalid = ZIO.fail(InvalidConsentUri("redirectUris", "must be an absolute https:// URL, http://localhost, or a custom scheme for native clients"))
+        uri.toUrl.scheme match
+          case Some(Scheme.HTTPS) => ZIO.unit
+          case Some(Scheme.HTTP) if uri.toUrl.host.exists(h => h == "localhost" || h == "127.0.0.1") => ZIO.unit
+          case _ if authMethod == AuthMethod.none => ZIO.unit
+          case _ => invalid
 
     private val clientSecretsKey: SecretKey = OAuthClientService.clientSecretsKey(config)
 
