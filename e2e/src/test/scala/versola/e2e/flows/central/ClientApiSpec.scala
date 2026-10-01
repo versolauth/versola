@@ -455,7 +455,13 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Fixtures.client(id, redirectUris = Set("com.example.app://callback")))
+        // `default` is on `standard` for the whole suite, which admits the scheme: the
+        // refusal is FAPI 2.0's, so it is asked of a tenant on that profile.
+        rejected <- SecurityProfiles.withFapi2Tenant(central): tenantId =>
+          central.post(
+            path,
+            Fixtures.client(id, tenantId = tenantId, redirectUris = Set("com.example.app://callback")),
+          )
         _ <- central.delete(path, "clientId" -> id).ignore
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("redirectUris"))
