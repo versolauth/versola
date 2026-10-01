@@ -667,6 +667,22 @@ object ClientApiSpec extends CentralApiSpec:
         }
       yield assertTrue(rejected.status == Status.BadRequest)
     },
+    test("a custom scheme redirect URI is refused for a confidential client") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        rejected <- central.post(path, Fixtures.client(id, redirectUris = Set("com.example.app://callback")))
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(rejected.body.contains("redirectUris"))
+          .label("the error has to name the offending member, or the operator cannot fix it")
+    },
+    test("a custom scheme redirect URI is accepted for a native client") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        _ <- withClient(central, Fixtures.client(id, authMethod = "none", redirectUris = Set("com.example.app://callback")))(_ => ZIO.unit)
+      yield assertCompletes
+    },
     test("an update without the required patch members is refused") {
       for
         central <- api

@@ -310,7 +310,13 @@ object OAuthClientService:
             client.tenantId,
             request.mtlsAuth.applyTo(client.mtlsAuth),
           ) *> validateRedirectUris(
-            request.redirectUris.add,
+            {
+              val effectiveMethod = request.authMethod.getOrElse(client.authMethod)
+              if client.authMethod == AuthMethod.none && effectiveMethod != AuthMethod.none then
+                (client.redirectUris ++ request.redirectUris.add) -- request.redirectUris.remove
+              else
+                request.redirectUris.add
+            },
             request.authMethod.getOrElse(client.authMethod),
           )
         edgeSigningKeyPatch <- ZIO.foreach(request.edgeSigningKey):
