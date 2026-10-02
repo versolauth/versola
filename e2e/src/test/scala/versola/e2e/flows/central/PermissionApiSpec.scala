@@ -30,7 +30,7 @@ object PermissionApiSpec extends CentralApiSpec:
   private def read(
       central: CentralApi,
       permission: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
       expect: Json.Obj => Boolean = _ => true,
   ): Task[Option[Json.Obj]] =
     eventually(find(central, permission, tenantId))(_.exists(expect))
@@ -39,11 +39,11 @@ object PermissionApiSpec extends CentralApiSpec:
   private def gone(
       central: CentralApi,
       permission: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
   ): Task[Option[Json.Obj]] =
     eventually(find(central, permission, tenantId))(_.isEmpty)
 
-  private def cleanup(central: CentralApi, permission: String, tenantId: String = Fixtures.defaultTenant): UIO[Unit] =
+  private def cleanup(central: CentralApi, permission: String, tenantId: String = Fixtures.suiteTenant): UIO[Unit] =
     central.delete(path, "tenantId" -> tenantId, "permission" -> permission).ignore.unit
 
   /** Registers a resource with one endpoint and answers that endpoint's id, so a permission
@@ -147,7 +147,7 @@ object PermissionApiSpec extends CentralApiSpec:
         permission <- CentralApi.permission("probe")
         rejected <- central.post(
           path,
-          Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "permission" -> Json.Str(permission)),
+          Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "permission" -> Json.Str(permission)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
     },
@@ -282,7 +282,7 @@ object PermissionApiSpec extends CentralApiSpec:
         central <- api
         permission <- CentralApi.permission("probe")
         _ <- central.post(path, Fixtures.permission(permission))
-        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("permissions")))(_.nonEmpty)
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.suiteTenant, "limit" -> "1").flatMap(_.items("permissions")))(_.nonEmpty)
         _ <- cleanup(central, permission)
       yield assertTrue(listed.size == 1)
     },
@@ -291,7 +291,7 @@ object PermissionApiSpec extends CentralApiSpec:
         central <- api
         permission <- CentralApi.permission("probe")
         _ <- central.post(path, Fixtures.permission(permission))
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "permission" -> permission)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "permission" -> permission)
         record <- gone(central, permission)
       yield assertTrue(deleted.status == Status.NoContent) && assertTrue(record.isEmpty)
     },
@@ -302,11 +302,11 @@ object PermissionApiSpec extends CentralApiSpec:
         roleId <- CentralApi.id("e2e-role")
         _ <- central.post(path, Fixtures.permission(permission))
         _ <- central.post("/configuration/roles", Fixtures.role(roleId, permissions = Set(permission)))
-        _ <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "permission" -> permission)
-        roles <- eventually(central.get("/configuration/roles", "tenantId" -> Fixtures.defaultTenant).flatMap(_.items("roles")))(
+        _ <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "permission" -> permission)
+        roles <- eventually(central.get("/configuration/roles", "tenantId" -> Fixtures.suiteTenant).flatMap(_.items("roles")))(
           _.exists(_.str("id").contains(roleId)),
         )
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> roleId)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> roleId)
         role = roles.find(_.str("id").contains(roleId))
       yield assertTrue(role.nonEmpty) &&
         assertTrue(role.flatMap(_.bool("active")).contains(true))
@@ -316,20 +316,20 @@ object PermissionApiSpec extends CentralApiSpec:
       for
         central <- api
         permission <- CentralApi.permission("probe")
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "permission" -> permission)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "permission" -> permission)
       yield assertTrue(deleted.status == Status.NoContent)
     },
     test("deleting without naming the permission is refused") {
       for
         central <- api
-        rejected <- central.delete(path, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.delete(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("permission"))
     },
     test("an anonymous caller cannot list permissions") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
         .label("the listing maps every permission to the endpoints it opens; that is an attack map")
     },

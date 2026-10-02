@@ -40,6 +40,10 @@ final case class E2EConfig(
     authMutualTlsClientCertificate: String,
     authMutualTlsClientKey: String,
     authMutualTlsTrustedCertificates: String,
+    /** The staged central launcher and the `env.conf` the running one was started with, for the
+      * specs that start a second central to see what its bootstrap does. */
+    centralLauncher: String,
+    centralEnvConf: String,
 )
 
 object E2EConfig:
@@ -74,6 +78,8 @@ object E2EConfig:
       authMutualTlsClientCertificate <- env("AUTH_MTLS_CLIENT_CERT", "../auth/dev/mtls/client.crt")
       authMutualTlsClientKey <- env("AUTH_MTLS_CLIENT_KEY", "../auth/dev/mtls/client.key")
       authMutualTlsTrustedCertificates <- env("AUTH_MTLS_CA", "../auth/dev/mtls/ca.crt")
+      centralLauncher <- env("CENTRAL_LAUNCHER", "../central/implementations/postgres/target/universal/stage/bin/central-postgres-impl")
+      centralEnvConf <- env("CENTRAL_ENV_CONF", "../central/dev/env.conf")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -94,6 +100,8 @@ object E2EConfig:
       authMutualTlsClientCertificate,
       authMutualTlsClientKey,
       authMutualTlsTrustedCertificates,
+      centralLauncher,
+      centralEnvConf,
     )
 
   private def env(name: String, default: String): Task[String] =

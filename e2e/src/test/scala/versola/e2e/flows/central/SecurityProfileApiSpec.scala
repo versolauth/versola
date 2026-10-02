@@ -7,11 +7,11 @@ import zio.json.ast.Json
 import zio.test.*
 
 /** #353: the FAPI 2.0 tenant profile as central's admin API enforces it -- the default for a new
-  * tenant, the registrations and patches it refuses, and a switch onto it that is refused while
-  * any client of the tenant would violate it.
+  * tenant, the registrations and patches it refuses, and a profile that is fixed once the tenant
+  * is created.
   *
-  * Each test creates its own tenant: `default` is put on `standard` for the rest of the suite
-  * (see [[SecurityProfiles]]), and a tenant is created on FAPI 2.0.
+  * Each test creates its own tenant, so none depends on the suite's own (`standard`, see
+  * [[SecurityProfiles]]); one created without naming a profile is on FAPI 2.0.
   */
 object SecurityProfileApiSpec extends CentralApiSpec:
 
@@ -26,9 +26,7 @@ object SecurityProfileApiSpec extends CentralApiSpec:
     )(_.isDefined)
 
   /** Sets the tenant's mTLS termination without touching anything else it stores --
-    * `withTenant` already waited for the settings row to exist, so a single read is enough
-    * here, unlike [[SecurityProfiles.set]]'s own retry for a tenant that might not yet have
-    * one. */
+    * `withTenant` already waited for the settings row to exist, so a single read is enough. */
   private def setMtlsHeader(central: CentralApi, tenantId: String, header: String, encoding: String): Task[Unit] =
     for
       current <- central.get("/configuration/challenges/challenge-settings", "tenantId" -> tenantId).flatMap(_.obj)
@@ -162,31 +160,56 @@ object SecurityProfileApiSpec extends CentralApiSpec:
           accepted.status == Status.NoContent,
         )
     },
-    test("switching to FAPI 2.0 is refused with every violating client, and applied once none is left") {
+    test("a tenant created on standard admits client_secret and public clients") {
+      for
+        central <- api
+        result <- SecurityProfiles.withTenant(central, "standard"): tenantId =>
+          for
+            secretClient <- CentralApi.id("e2e-secret")
+            publicClient <- CentralApi.id("e2e-public")
+            secret <- central.post(clients, Fixtures.client(secretClient, tenantId = tenantId))
+            public <- central.post(clients, Fixtures.client(publicClient, tenantId = tenantId, authMethod = "none"))
+            _ <- central.delete(clients, "clientId" -> secretClient).ignore
+            _ <- central.delete(clients, "clientId" -> publicClient).ignore
+          yield (secret.status, public.status)
+      yield assertTrue(result == (Status.Created, Status.Created))
+    },
+    test("a tenant's profile cannot be changed through its challenge settings, in either direction") {
+      for
+        central <- api
+        toStandard <- SecurityProfiles.withTenant(central, "fapi2"): tenantId =>
+          SecurityProfiles.set(central, tenantId, "standard").zip(profileOf(central, tenantId))
+        toFapi2 <- SecurityProfiles.withTenant(central, "standard"): tenantId =>
+          SecurityProfiles.set(central, tenantId, "fapi2").zip(profileOf(central, tenantId))
+      yield assertTrue(
+        toStandard._1.status == Status.BadRequest,
+        toStandard._1.body.contains("cannot be changed"),
+        toStandard._2.contains("fapi2"),
+        toFapi2._1.status == Status.BadRequest,
+        toFapi2._2.contains("standard"),
+      )
+    },
+    test("challenge settings that restate the tenant's profile are accepted") {
       withTenant: (central, tenantId) =>
         for
-          _ <- SecurityProfiles.ensureStandard(central, tenantId)
-          _ <- eventually(profileOf(central, tenantId))(_.contains("standard"))
-          secretClient <- CentralApi.id("e2e-secret")
-          publicClient <- CentralApi.id("e2e-public")
-          _ <- central.post(clients, Fixtures.client(secretClient, tenantId = tenantId))
-          _ <- central.post(clients, Fixtures.client(publicClient, tenantId = tenantId, authMethod = "none"))
-          refused <- SecurityProfiles.set(central, tenantId, "fapi2")
-          body <- refused.obj
-          violators = body.objs("violations").flatMap(_.str("clientId")).toSet
-          stillStandard <- profileOf(central, tenantId)
-          _ <- central.delete(clients, "clientId" -> secretClient)
-          _ <- central.delete(clients, "clientId" -> publicClient)
-          applied <- eventually(SecurityProfiles.set(central, tenantId, "fapi2"))(_.status == Status.NoContent)
-          nowFapi2 <- eventually(profileOf(central, tenantId))(_.contains("fapi2"))
-        yield assertTrue(
-          refused.status == Status.Conflict,
-          body.str("error").contains("security_profile_violations"),
-          violators == Set(secretClient, publicClient),
-          body.objs("violations").forall(_.strings("reasons").nonEmpty),
-          stillStandard.contains("standard"),
-          applied.status == Status.NoContent,
-          nowFapi2.contains("fapi2"),
-        )
+          current <- central.get("/configuration/challenges/challenge-settings", "tenantId" -> tenantId).flatMap(_.obj)
+          settings <- ZIO.fromOption(current.obj("settings")).orElseFail(RuntimeException(s"No settings: $current"))
+          written <- central.put("/configuration/challenges/challenge-settings", settings)
+        yield assertTrue(settings.str("securityProfile").contains("fapi2"), written.status == Status.NoContent)
+    },
+    test("posting an existing tenant again with another profile is refused") {
+      for
+        central <- api
+        result <- SecurityProfiles.withTenant(central, "fapi2"): tenantId =>
+          for
+            refused <- central.post(tenants, Fixtures.tenant(tenantId, securityProfile = Some("standard")))
+            profile <- profileOf(central, tenantId)
+          yield (refused, profile)
+        (refused, profile) = result
+      yield assertTrue(
+        refused.status == Status.BadRequest,
+        refused.body.contains("cannot be changed"),
+        profile.contains("fapi2"),
+      )
     },
   )

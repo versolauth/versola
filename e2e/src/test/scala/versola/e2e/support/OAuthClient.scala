@@ -479,7 +479,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   private val edgeAuthorization = Authorization.Basic("edge", config.edgeInternalSecret)
 
   /** Central's management API, as the caller this client registers clients through -- for a
-    * spec that needs a tenant of its own, see [[SecurityProfiles.withFapi2Tenant]]. */
+    * spec that needs a tenant of its own, see [[SecurityProfiles.withTenant]]. */
   def central: CentralApi = CentralApi(client, config, Some("central" -> config.resourceSecret))
 
   /** Where the edge receives security event tokens — what a client registers as its
@@ -1068,7 +1068,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** PATCH /users/roles — grants tenant roles to a user. The update travels through the
     * Central user outbox, so call [[flushUserOutbox]] before signing the user in.
     */
-  def assignUserRoles(userId: java.util.UUID, roles: Set[String], tenantId: String = "default"): Task[Unit] =
+  def assignUserRoles(userId: java.util.UUID, roles: Set[String], tenantId: String = Fixtures.suiteTenant): Task[Unit] =
     val body = Body.fromString(
       Json.Obj(
         "userId" -> Json.Str(userId.toString),
@@ -1093,7 +1093,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       clientId: String,
       clientName: String,
       redirectUris: Set[String],
-      tenantId: String = "default",
+      tenantId: String = Fixtures.suiteTenant,
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
       registrationFlow: Option[zio.json.ast.Json] = None,
@@ -1202,7 +1202,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       resourceId: String,
       resource: String,
       audience: Set[String],
-      tenantId: String = "default",
+      tenantId: String = Fixtures.suiteTenant,
       internal: Boolean = false,
   ): Task[Unit] =
     val body = Body.fromString(
@@ -1231,7 +1231,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   def registerAuthorizationDetailType(
       typeName: String,
       schema: String,
-      tenantId: String = "default",
+      tenantId: String = Fixtures.suiteTenant,
   ): Task[RegisterAuthorizationDetailTypeResult] =
     val body = Body.fromString(
       // Field names/shape mirror central's CreateAuthorizationDetailTypeRequest DTO.
@@ -1246,7 +1246,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   /** DELETE /configuration/authorization-detail-types — removes an RFC 9396 authorization detail type. */
   def deleteAuthorizationDetailType(
       typeName: String,
-      tenantId: String = "default",
+      tenantId: String = Fixtures.suiteTenant,
   ): Task[Unit] =
     val req = Request.delete(
       s"${config.centralUrl}/configuration/authorization-detail-types?tenantId=$tenantId&type=$typeName",
@@ -1341,7 +1341,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * Call [[syncConfiguration]] afterwards to make Auth reload the cache.
     */
   def upsertChallengeSettings(
-      tenantId: String = "default",
+      tenantId: String = Fixtures.suiteTenant,
       acrVocabulary: Map[String, List[String]] = Map.empty,
       /** RFC 8705 §6.5: the header this tenant's reverse proxy puts the client certificate
         * it terminated mTLS for into. `None` is a tenant behind a proxy that terminates
@@ -1722,13 +1722,13 @@ final class OAuthClient(client: Client, config: E2EConfig):
 
 object OAuthClient:
 
-  /** Puts the `default` tenant on the `standard` profile first -- see [[SecurityProfiles]]. */
+  /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
     ZLayer.fromZIO(
       for
         client <- ZIO.service[Client]
         config <- ZIO.service[E2EConfig]
-        _ <- SecurityProfiles.ensureStandard(CentralApi(client, config, Some("central" -> config.resourceSecret))).orDie
+        _ <- SecurityProfiles.ensureSuiteTenant(CentralApi(client, config, Some("central" -> config.resourceSecret))).orDie
       yield OAuthClient(client, config),
     )
 

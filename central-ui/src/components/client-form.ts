@@ -1711,6 +1711,9 @@ export class VersolaClientForm extends LitElement {
   }
 
   private setClientCredentialMode(mode: ClientCredentialMode) {
+    // The method is the client's own from registration on; the cards are disabled when
+    // editing, and this keeps any other caller from moving it either.
+    if (this.client) return;
     this.clientCredentialMode = mode;
   }
 
@@ -3944,11 +3947,12 @@ export class VersolaClientForm extends LitElement {
                 )}
               </div>
               <div class="cred-mode-cards">
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'secret' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('secret')}>secret</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('mtls')}>mTLS certificate</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls-self-signed' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('mtls-self-signed')}>mTLS self-signed</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'private-key-jwt' ? 'selected' : ''}`} @click=${() => this.setClientCredentialMode('private-key-jwt')}>private_key_jwt</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'secret' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('secret')}>secret</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('mtls')}>mTLS certificate</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls-self-signed' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('mtls-self-signed')}>mTLS self-signed</button>
+                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'private-key-jwt' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('private-key-jwt')}>private_key_jwt</button>
               </div>
+              ${this.client ? html`<div class="hint">The authentication method is fixed when the client is created. To use another one, delete the client and register it again.</div>` : ''}
 
               ${this.clientCredentialMode === 'mtls' ? html`
                 <div class="cred-options">

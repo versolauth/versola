@@ -35,14 +35,6 @@ case class RegisteredClient(
     privateKey: Option[PrivateJsonWebKey],
 )
 
-/** One client that a tenant's security profile would not admit, and every reason why -- what
-  * refusing a switch of the tenant to that profile answers with, so an operator sees the whole
-  * list of clients to fix rather than learning of them one refused switch at a time. */
-case class ClientProfileViolation(
-    clientId: ClientId,
-    reasons: List[String],
-) derives zio.json.JsonCodec
-
 trait OAuthClientService:
 
   def getAllClients: Task[Vector[OAuthClientRecord]]
@@ -75,11 +67,6 @@ trait OAuthClientService:
       request: UpdateClientRequest,
       enforceSecurityProfile: Boolean = true,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
-
-  /** #353: every client of `tenantId` that `profile` would not admit, read from the
-    * repository rather than the cache so a client registered a moment ago is not missed by a
-    * switch that is about to be refused or applied on the strength of this answer. */
-  def profileViolations(tenantId: TenantId, profile: SecurityProfile): Task[Vector[ClientProfileViolation]]
 
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
@@ -177,22 +164,6 @@ object OAuthClientService:
           InvalidRegistrationConfiguration.ProfileSubject.of(client),
           allowHttpLoopback,
         ))(ZIO.fail(_))
-
-    override def profileViolations(
-        tenantId: TenantId,
-        profile: SecurityProfile,
-    ): Task[Vector[ClientProfileViolation]] =
-      clientRepository.getAll.map:
-        _.filter(_.tenantId == tenantId)
-          .sortBy(_.id: String)
-          .flatMap: client =>
-            InvalidRegistrationConfiguration.profileViolations(
-              profile,
-              InvalidRegistrationConfiguration.ProfileSubject.of(client),
-              allowHttpLoopback,
-            ) match
-              case Nil => None
-              case reasons => Some(ClientProfileViolation(client.id, reasons))
 
     override def getAllClients: Task[Vector[OAuthClientRecord]] =
       cache.get
@@ -364,6 +335,11 @@ object OAuthClientService:
         current <- cache.get.map(_.find(_.id == request.clientId)).flatMap:
           case some @ Some(_) => ZIO.succeed(some)
           case None => clientRepository.find(request.clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
+        // Before anything reads the patch against the stored method, so that an attempt to move
+        // it is refused as that, rather than as whichever credential check it would also fail.
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod),
+        )(ZIO.fail(_))
         // Only what the patch adds: a URI registered before this rule existed stays removable.
         _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
@@ -373,7 +349,7 @@ object OAuthClientService:
           // both fields at once. Everything below reads `applyTo`/`getOrElse` the same way:
           // a patch that leaves a setting alone still has to leave the client valid.
           val applicationType = request.applicationType.getOrElse(client.applicationType)
-          val authMethod = request.authMethod.getOrElse(client.authMethod)
+          val authMethod = client.authMethod
           validateRegistration(
             clientId = request.clientId,
             tenantId = client.tenantId,
@@ -385,7 +361,7 @@ object OAuthClientService:
             dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
             clientId = request.clientId,
-            authMethod = request.authMethod.getOrElse(client.authMethod),
+            authMethod = client.authMethod,
             mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
             jwks = request.jwks.applyTo(client.jwks),
           ))(ZIO.fail(_)) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateRequestObjectRequirement(
@@ -455,7 +431,6 @@ object OAuthClientService:
             dpopBoundAccessTokens = request.dpopBoundAccessTokens,
             dpopSigningAlgs = request.dpopSigningAlgs,
             dpopMinRsaKeySize = request.dpopMinRsaKeySize,
-            authMethod = request.authMethod,
             mtlsAuth = request.mtlsAuth.map(toMtlsAuthPatch),
             certificateBoundAccessTokens = request.certificateBoundAccessTokens,
             jwks = request.jwks,
@@ -489,7 +464,6 @@ object OAuthClientService:
       */
     private def patchedForProfile(request: UpdateClientRequest, client: OAuthClientRecord): OAuthClientRecord =
       client.copy(
-        authMethod = request.authMethod.getOrElse(client.authMethod),
         mtlsAuth = request.mtlsAuth.applyTo(client.mtlsAuth),
         certificateBoundAccessTokens = request.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens),
         dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),

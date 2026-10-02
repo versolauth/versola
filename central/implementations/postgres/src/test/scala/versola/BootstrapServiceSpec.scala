@@ -29,7 +29,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(certificate, "ssl-client-cert", "urlEncodedPem")
 
   /** The stored `central-admin` a previous boot left behind, varying only the one column
-    * [[BootstrapService.authMethodDowngradeRefusal]] reads. */
+    * [[BootstrapService.authMethodMismatch]] reads. */
   private def centralAdminRecord(authMethod: AuthMethod): OAuthClientRecord =
     OAuthClientRecord(
       id = ClientId(CentralConfig.centralClientId),
@@ -68,28 +68,12 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       createdAt = Instant.EPOCH,
     )
 
-  private val secretlessCredential =
-    BootstrapService.CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false)
-
-  private val mtlsCredential = BootstrapService.CentralAdminCredential(
-    AuthMethod.tls_client_auth,
-    Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=central-admin")),
-    None,
-    requirePushedAuthorizationRequests = true,
-  )
-
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
 
   private def jwkOf(key: JWK): Json.Obj = key.toJSONString.fromJson[Json.Obj].toOption.get
 
   private def utilitySeed(secret: Option[Secret] = None, publicKeyJwk: Option[Json.Obj] = None) =
     CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
-
-  private val utilitySecretCredential =
-    BootstrapService.UtilityClientCredential(AuthMethod.client_secret, Some(Secret(Array[Byte](1, 2, 3))), None)
-
-  private val utilityKeyCredential =
-    BootstrapService.UtilityClientCredential(AuthMethod.private_key_jwt, None, None)
 
   def spec = suite("BootstrapService")(
     // The client and challenge-settings caches load before bootstrap seeds central-admin, and
@@ -240,31 +224,49 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .forall(_.allowExpression.isEmpty),
         )
       },
-      // Reasserting authMethod on every boot is one-way safe (client_secret -> tls_client_auth
-      // mints a secretless credential from a secret-bearing one); the other direction is not,
-      // and is what these refuse rather than silently apply.
-      test("refuses a boot that would downgrade central-admin off a method with no secret to mint") {
+      // A client's method is fixed when it is created, so a boot whose configuration calls for
+      // another one refuses -- in either direction -- rather than apply it or carry on unchanged.
+      test("refuses a boot whose configuration calls for another method than the client holds") {
         assertTrue(
-          BootstrapService.authMethodDowngradeRefusal(
+          BootstrapService.authMethodMismatch(
             Some(centralAdminRecord(AuthMethod.tls_client_auth)),
-            secretlessCredential,
-          ).exists(_.contains("bootstrap.central-admin-mtls was removed")),
-        )
-      },
-      test("does not refuse a boot that keeps or grants a secret-minting method") {
-        assertTrue(
-          BootstrapService.authMethodDowngradeRefusal(
+            AuthMethod.client_secret,
+            "bootstrap.central-admin-mtls",
+          ).exists(reason =>
+            reason.contains("'central-admin' is registered with tls_client_auth") &&
+              reason.contains("bootstrap.central-admin-mtls calls for client_secret") &&
+              reason.contains("fixed when it is created"),
+          ),
+          BootstrapService.authMethodMismatch(
             Some(centralAdminRecord(AuthMethod.client_secret)),
-            secretlessCredential,
+            AuthMethod.tls_client_auth,
+            "bootstrap.central-admin-mtls",
+          ).exists(_.contains("registered with client_secret")),
+          BootstrapService.authMethodMismatch(
+            Some(centralAdminRecord(AuthMethod.private_key_jwt)),
+            AuthMethod.client_secret,
+            "bootstrap.utility-client",
+          ).exists(_.contains("bootstrap.utility-client calls for client_secret")),
+        )
+      },
+      test("does not refuse a boot that calls for the method the client already holds") {
+        assertTrue(
+          BootstrapService.authMethodMismatch(
+            Some(centralAdminRecord(AuthMethod.client_secret)),
+            AuthMethod.client_secret,
+            "bootstrap.central-admin-mtls",
           ).isEmpty,
-          BootstrapService.authMethodDowngradeRefusal(
+          BootstrapService.authMethodMismatch(
             Some(centralAdminRecord(AuthMethod.tls_client_auth)),
-            mtlsCredential,
+            AuthMethod.tls_client_auth,
+            "bootstrap.central-admin-mtls",
           ).isEmpty,
         )
       },
-      test("does not refuse a boot with no prior central-admin to downgrade") {
-        assertTrue(BootstrapService.authMethodDowngradeRefusal(None, secretlessCredential).isEmpty)
+      test("does not refuse a boot with no prior client to hold a method") {
+        assertTrue(
+          BootstrapService.authMethodMismatch(None, AuthMethod.client_secret, "bootstrap.central-admin-mtls").isEmpty,
+        )
       },
     // #424: the default tenant is FAPI 2.0, and private_key_jwt with DPoP-bound tokens is what
     // it admits for a service client with no redirect URIs.
@@ -294,23 +296,6 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       assertTrue(
         BootstrapService.utilityClientCredential(utilitySeed(publicKeyJwk = Some(jwkOf(utilityKey))))
           .left.exists(_.contains("public keys only")),
-      )
-    },
-    test("refuses a boot that would move utils back to client_secret when it holds no secret") {
-      assertTrue(
-        BootstrapService.utilityClientDowngradeRefusal(
-          Some(centralAdminRecord(AuthMethod.private_key_jwt)),
-          utilitySecretCredential,
-        ).exists(_.contains("bootstrap.utility-client.public-key-jwk was removed")),
-        BootstrapService.utilityClientDowngradeRefusal(
-          Some(centralAdminRecord(AuthMethod.client_secret)),
-          utilitySecretCredential,
-        ).isEmpty,
-        BootstrapService.utilityClientDowngradeRefusal(
-          Some(centralAdminRecord(AuthMethod.client_secret)),
-          utilityKeyCredential,
-        ).isEmpty,
-        BootstrapService.utilityClientDowngradeRefusal(None, utilitySecretCredential).isEmpty,
       )
     },
   )

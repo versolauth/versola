@@ -63,7 +63,7 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
           auth,
           body = Some(Fixtures.resource(resourceId, s"https://$resourceId.example.test")),
         )
-        listed <- edgeApi.proxy(Method.GET, "central", "/configuration/resources", auth, query = List("tenantId" -> "default"))
+        listed <- edgeApi.proxy(Method.GET, "central", "/configuration/resources", auth, query = List("tenantId" -> Fixtures.suiteTenant))
         body <- listed.obj
         removed <- edgeApi.proxy(Method.DELETE, "central", "/configuration/resources", auth, query = List("resourceId" -> resourceId))
         present = resources(body).contains(resourceId)

@@ -2,7 +2,6 @@ package versola.central.configuration.challenges
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.clients.{ClientId, ClientProfileViolation, OAuthClientService}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -90,8 +89,6 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify: (Response, Stub[OtpChallengeService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
       settingsSetup: Stub[ChallengeSettingsService] => UIO[Unit] = _ => ZIO.unit,
       settingsVerify: (Response, Stub[ChallengeSettingsService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
-      clientsSetup: Stub[OAuthClientService] => UIO[Unit] = _ => ZIO.unit,
-      clientsVerify: (Response, Stub[OAuthClientService]) => Task[TestResult] = (_, _) => ZIO.succeed(assertTrue(true)),
   ) =
     test(description) {
       for
@@ -100,9 +97,6 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         challengeSettingsService = stub[ChallengeSettingsService]
         edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
-        clientService = stub[OAuthClientService]
-        // No client violates anything unless a test says otherwise.
-        _ = clientService.profileViolations.returnsWith(ZIO.succeed(Vector.empty))
         _ = challengeSettingsService.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.fapi2))
         tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
@@ -111,23 +105,20 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
               ZEnvironment[OtpChallengeService](service) ++
                 ZEnvironment[ChallengeSettingsService](challengeSettingsService) ++
                 tracing ++ ZEnvironment[CentralConfig](config) ++ ZEnvironment[EdgeService](edgeService) ++
-                ZEnvironment[ResourceService](resourceService) ++
-                ZEnvironment[OAuthClientService](clientService),
+                ZEnvironment[ResourceService](resourceService),
             ),
           ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         _ <- settingsSetup(challengeSettingsService)
-        _ <- clientsSetup(clientService)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
           case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
         settingsVerifyResult <- settingsVerify(response, challengeSettingsService)
-        clientsVerifyResult <- clientsVerify(response, clientService)
-      yield assertTrue(response.status == expectedStatus) && verifyResult && settingsVerifyResult && clientsVerifyResult
+      yield assertTrue(response.status == expectedStatus) && verifyResult && settingsVerifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   private def upsertWithProfile(profile: Option[SecurityProfile]): Request =
@@ -159,64 +150,49 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
     ).addHeader(Header.ContentType(MediaType.application.json))
 
-  private val violation = ClientProfileViolation(
-    ClientId("legacy-spa"),
-    List("FAPI 2.0 admits confidential clients only (private_key_jwt, tls_client_auth or self_signed_tls_client_auth), not none"),
-  )
-
   def spec = suite("OtpChallengeController")(
-    // #353: a switch onto FAPI 2.0 answers every client that would violate it, and changes nothing.
+    // A tenant's profile is fixed when the tenant is created.
     controllerTestCase(
-      description = "PUT challenge-settings refuses a switch to fapi2 while clients violate it, listing them",
+      description = "PUT challenge-settings refuses a switch from fapi2 to standard",
+      request = upsertWithProfile(Some(SecurityProfile.standard)),
+      expectedStatus = Status.BadRequest,
+      settingsSetup = service =>
+        service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.fapi2))) *>
+          service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
+          service.upsertSettings.succeedsWith(()),
+      verify = (response, _) =>
+        response.body.asString.map(body => assertTrue(body.contains("cannot be changed after the tenant is created"))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
+    ),
+    controllerTestCase(
+      description = "PUT challenge-settings refuses a switch from standard to fapi2",
       request = upsertWithProfile(Some(SecurityProfile.fapi2)),
-      expectedStatus = Status.Conflict,
+      expectedStatus = Status.BadRequest,
       settingsSetup = service =>
         service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.standard))) *>
           service.getSecurityProfile.succeedsWith(SecurityProfile.standard) *>
           service.upsertSettings.succeedsWith(()),
-      settingsVerify = (response, service) =>
-        response.body.asString.map: body =>
-          val json = body.fromJson[Json.Obj].toOption
-          val upserts = service.upsertSettings.times
-          assertTrue(
-            upserts == 0,
-            json.flatMap(_.get("error")).contains(Json.Str("security_profile_violations")),
-            json.flatMap(_.get("violations")).map(_.toJson).contains(Vector(violation).toJson),
-          ),
-      clientsSetup = clients => clients.profileViolations.succeedsWith(Vector(violation)),
-      clientsVerify = (_, clients) =>
-        val calls = clients.profileViolations.calls
-        ZIO.succeed(assertTrue(calls == List((tenantId, SecurityProfile.fapi2)))),
+      settingsVerify = (_, service) =>
+        val upserts = service.upsertSettings.times
+        ZIO.succeed(assertTrue(upserts == 0)),
     ),
+    // The settings read back from GET carry the profile, so a client that sends them back
+    // unchanged has to be accepted.
     controllerTestCase(
-      description = "PUT challenge-settings applies a switch to fapi2 once no client violates it",
-      request = upsertWithProfile(Some(SecurityProfile.fapi2)),
+      description = "PUT challenge-settings accepts the profile the tenant already has",
+      request = upsertWithProfile(Some(SecurityProfile.standard)),
       expectedStatus = Status.NoContent,
       settingsSetup = service =>
         service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.standard))) *>
           service.getSecurityProfile.succeedsWith(SecurityProfile.standard) *>
           service.upsertSettings.succeedsWith(()),
       settingsVerify = (_, service) =>
-        val profiles = service.upsertSettings.calls.map(_.securityProfile)
-        ZIO.succeed(assertTrue(profiles == List(SecurityProfile.fapi2))),
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.securityProfile) == List(SecurityProfile.standard))),
     ),
-    // A tenant already on the profile -- every tenant after the migration -- has to stay editable
-    // while it fixes the clients it was holding when it got there.
-    controllerTestCase(
-      description = "PUT challenge-settings does not re-check clients of a tenant already on fapi2",
-      request = upsertWithProfile(None),
-      expectedStatus = Status.NoContent,
-      settingsSetup = service =>
-        service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.fapi2))) *>
-          service.upsertSettings.succeedsWith(()),
-      clientsSetup = clients => clients.profileViolations.succeedsWith(Vector(violation)),
-      clientsVerify = (_, clients) =>
-        val checks = clients.profileViolations.times
-        ZIO.succeed(assertTrue(checks == 0)),
-    ),
-    // A request that never mentions securityProfile (it is patching something else entirely)
-    // must not revert a switch a concurrent request already committed: the cached `existing`
-    // this handler also reads may still report the profile the tenant held a moment ago.
+    // The profile written is the one in the repository, not the one in the cache `existing` came
+    // from, which can lag a tenant created a moment ago.
     controllerTestCase(
       description = "PUT challenge-settings omitting securityProfile keeps the tenant's actual profile, not the cached one",
       request = upsertWithProfile(None),
@@ -226,22 +202,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           service.getSecurityProfile.succeedsWith(SecurityProfile.fapi2) *>
           service.upsertSettings.succeedsWith(()),
       settingsVerify = (_, service) =>
-        val profiles = service.upsertSettings.calls.map(_.securityProfile)
-        ZIO.succeed(assertTrue(profiles == List(SecurityProfile.fapi2))),
-      clientsVerify = (_, clients) =>
-        val checks = clients.profileViolations.times
-        ZIO.succeed(assertTrue(checks == 0)),
-    ),
-    controllerTestCase(
-      description = "PUT challenge-settings never checks clients for a switch to standard",
-      request = upsertWithProfile(Some(SecurityProfile.standard)),
-      expectedStatus = Status.NoContent,
-      settingsSetup = service =>
-        service.getSettings.succeedsWith(Some(settings(securityProfile = SecurityProfile.fapi2))) *>
-          service.upsertSettings.succeedsWith(()),
-      clientsVerify = (_, clients) =>
-        val checks = clients.profileViolations.times
-        ZIO.succeed(assertTrue(checks == 0)),
+        ZIO.succeed(assertTrue(service.upsertSettings.calls.map(_.securityProfile) == List(SecurityProfile.fapi2))),
     ),
     controllerTestCase(
       description = "GET otp-templates returns tenant templates",

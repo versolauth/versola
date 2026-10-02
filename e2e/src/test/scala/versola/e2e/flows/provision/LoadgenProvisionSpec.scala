@@ -43,7 +43,7 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
 
   private def provision(c: E2EConfig): ProvisionConfig =
     ProvisionConfig(
-      tenantId = "default",
+      tenantId = Fixtures.suiteTenant,
       provisionerClientId = c.provisionerClientId,
       provisionerSecret = Some(Config.Secret(c.provisionerSecret)),
       mobileRedirectUri = "https://app.versola.test/e2e-callback",
@@ -105,7 +105,7 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
           "central",
           "/configuration/clients",
           EdgeAuth.Bearer(token.accessToken),
-          query = List("tenantId" -> "default"),
+          query = List("tenantId" -> Fixtures.suiteTenant),
         )
         body <- listed.obj
         ids = body.get("clients").toList.flatMap:

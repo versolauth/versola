@@ -6,6 +6,7 @@ import versola.central.configuration.challenges.{ChallengeSettingsRecord, Challe
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.util.ReloadingCache
+import versola.util.http.BadRequest
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 
 trait TenantService:
@@ -54,6 +55,21 @@ object TenantService:
         request: CreateTenantRequest,
     ): Task[Unit] =
       for
+        // The upsert below lets a retry finish a creation that failed half way, which also
+        // makes this call a way to re-seed a tenant that already exists. The profile is the one
+        // thing that must not move that way: it is fixed at creation, so a request that names a
+        // different one for a tenant that already has settings is refused, and one that names
+        // none keeps the one it has. The check is repeated by the write itself, which leaves a
+        // stored profile alone: a creation racing this one under another profile is refused there.
+        existing <- challengeSettingsService.getSettings(request.id)
+        profile = request.securityProfile
+          .orElse(existing.map(_.securityProfile))
+          .getOrElse(ChallengeSettingsRecord.DefaultSecurityProfile)
+        _ <- ZIO.foreachDiscard(existing.filter(_.securityProfile != profile)): current =>
+          ZIO.fail(BadRequest(
+            s"tenant '${request.id}' already exists with securityProfile ${current.securityProfile}, " +
+              "which cannot be changed after the tenant is created",
+          ))
         _ <- tenantRepository.createTenant(request.id, request.description, request.edgeId.map(EdgeId(_)))
         // A new tenant starts on the same key the rest of the deployment prefers. Left unset
         // it would instead fall back to auth's legacy configured key, quietly signing under
@@ -61,8 +77,10 @@ object TenantService:
         keys <- jwksRepository.getAll
         _ <- challengeSettingsService.upsertSettings(
           defaultChallengeSettings(request.id, SubmissionLimits.recommended)
-            .copy(signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid)),
-        )
+            .copy(signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid), securityProfile = profile),
+        ).mapError:
+          case error: ChallengeSettingsService.ValidationError.SecurityProfileFixed => BadRequest(error.message)
+          case other => other
       yield ()
 
     override def updateTenant(

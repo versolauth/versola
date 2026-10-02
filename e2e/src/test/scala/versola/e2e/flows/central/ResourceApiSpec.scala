@@ -18,7 +18,7 @@ object ResourceApiSpec extends CentralApiSpec:
   private val path = "/configuration/resources"
 
   private def find(central: CentralApi, resourceId: String): Task[Option[Json.Obj]] =
-    central.get(path, "tenantId" -> Fixtures.defaultTenant)
+    central.get(path, "tenantId" -> Fixtures.suiteTenant)
       .flatMap(_.items("resources"))
       .map(_.find(_.str("resourceId").contains(resourceId)))
 
@@ -652,7 +652,7 @@ object ResourceApiSpec extends CentralApiSpec:
     test("an anonymous caller cannot list resources") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
         .label("the listing exposes the internal topology of every upstream behind the edge")
     },

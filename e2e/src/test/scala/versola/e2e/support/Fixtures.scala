@@ -13,6 +13,12 @@ import zio.json.ast.Json
   */
 object Fixtures:
 
+  /** The tenant the suite registers its clients in: created on `standard` before any spec runs
+    * (see [[SecurityProfiles.ensureSuiteTenant]]), because the `default` tenant is on FAPI 2.0
+    * like every tenant created without naming a profile, and refuses what most specs register. */
+  val suiteTenant = "e2e"
+
+  /** The tenant bootstrap seeds, on FAPI 2.0. */
   val defaultTenant = "default"
 
   private def strings(values: Iterable[String]): Json.Arr =
@@ -39,18 +45,20 @@ object Fixtures:
         passkeyAssertion = List(rateLimit(5, 300)),
         banDurationSeconds = 1800,
       ),
+      securityProfile: Option[String] = None,
   ): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
         "id" -> Json.Str(id),
         "description" -> Json.Str(description),
         "submissionLimits" -> submissionLimits,
-      ) ++ Chunk.fromIterable(edgeId.map(value => "edgeId" -> Json.Str(value))),
+      ) ++ Chunk.fromIterable(edgeId.map(value => "edgeId" -> Json.Str(value))) ++
+        Chunk.fromIterable(securityProfile.map(value => "securityProfile" -> Json.Str(value))),
     )
 
   def client(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       name: String = "e2e client",
       redirectUris: Set[String] = Set("http://localhost:3000"),
       allowedScopes: Set[String] = Set("openid"),
@@ -381,7 +389,7 @@ object Fixtures:
   def resource(
       resourceId: String,
       resource: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       audience: Set[String] = Set.empty,
       endpoints: List[Json] = Nil,
       internal: Boolean = false,
@@ -427,7 +435,7 @@ object Fixtures:
 
   def scope(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: String = "e2e scope",
       claims: List[Json] = Nil,
   ): Json.Obj =
@@ -440,7 +448,7 @@ object Fixtures:
 
   def scopeUpdate(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       add: List[Json] = Nil,
       update: List[Json] = Nil,
       delete: Set[String] = Set.empty,
@@ -459,7 +467,7 @@ object Fixtures:
 
   def permission(
       permission: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: String = "e2e permission",
       endpointIds: Set[String] = Set.empty,
   ): Json.Obj =
@@ -472,7 +480,7 @@ object Fixtures:
 
   def permissionUpdate(
       permission: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: Json.Obj = patchText(),
       endpointIds: Option[Set[String]] = None,
   ): Json.Obj =
@@ -486,7 +494,7 @@ object Fixtures:
 
   def role(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: String = "e2e role",
       permissions: Set[String] = Set.empty,
   ): Json.Obj =
@@ -499,7 +507,7 @@ object Fixtures:
 
   def roleUpdate(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: Json.Obj = patchText(),
       permissions: Json.Obj = patch(),
   ): Json.Obj =
@@ -522,7 +530,7 @@ object Fixtures:
 
   def detailType(
       typeName: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       description: String = "e2e detail type",
       schema: Json = amountSchema,
   ): Json.Obj =
@@ -550,7 +558,7 @@ object Fixtures:
 
   def otpTemplate(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       purpose: String = "otp",
       channel: String = "sms",
       body: String = "Your code is {{code}}",
@@ -565,7 +573,7 @@ object Fixtures:
 
   def otpTemplateKey(
       id: String,
-      tenantId: String = defaultTenant,
+      tenantId: String = suiteTenant,
       purpose: String = "otp",
       channel: String = "sms",
   ): Json.Obj =

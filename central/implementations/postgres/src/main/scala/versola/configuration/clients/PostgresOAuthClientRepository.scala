@@ -122,11 +122,6 @@ class PostgresOAuthClientRepository(
       val newDpopBoundAccessTokens = patch.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens)
       val newDpopSigningAlgs = patch.dpopSigningAlgs.getOrElse(client.dpopSigningAlgs)
       val newDpopMinRsaKeySize = patch.dpopMinRsaKeySize.applyTo(client.dpopMinRsaKeySize)
-      val newAuthMethod = patch.authMethod.getOrElse(client.authMethod)
-      // Written in the same statement as the method that makes them dead, so that no window
-      // exists in which the client's method says one credential and its columns hold another.
-      val newSecret = Option.when(newAuthMethod == AuthMethod.client_secret)(client.secret).flatten
-      val newPreviousSecret = Option.when(newAuthMethod == AuthMethod.client_secret)(client.previousSecret).flatten
       val newMtlsAuth = patch.mtlsAuth.applyTo(client.mtlsAuth)
       val newCertificateBound = patch.certificateBoundAccessTokens.getOrElse(client.certificateBoundAccessTokens)
       val newJwks = patch.jwks.applyTo(client.jwks)
@@ -158,9 +153,6 @@ class PostgresOAuthClientRepository(
           dpop_bound_access_tokens = $newDpopBoundAccessTokens,
           dpop_signing_algs = $newDpopSigningAlgs,
           dpop_min_rsa_key_size = $newDpopMinRsaKeySize,
-          auth_method = $newAuthMethod,
-          secret = $newSecret,
-          previous_secret = $newPreviousSecret,
           mtls_auth = $newMtlsAuth,
           certificate_bound_access_tokens = $newCertificateBound,
           jwks = $newJwks,

@@ -33,7 +33,7 @@ object AuthRequestPresetApiSpec extends CentralApiSpec:
       clientId <- CentralApi.id("e2e-preset-client")
       _ <- central.post(clients, Fixtures.client(clientId, redirectUris = redirectUris, allowedScopes = scopes))
       _ <- eventually(
-        central.get(clients, "tenantId" -> Fixtures.defaultTenant).flatMap(_.items("clients")),
+        central.get(clients, "tenantId" -> Fixtures.suiteTenant).flatMap(_.items("clients")),
       )(_.exists(_.str("id").contains(clientId)))
       result <- use(clientId).ensuring(
         (central.post(path, Fixtures.presets(clientId)) *> central.delete(clients, "clientId" -> clientId)).ignore,

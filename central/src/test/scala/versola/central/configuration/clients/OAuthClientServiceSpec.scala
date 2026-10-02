@@ -631,16 +631,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(!created.bindsAccessTokens)
     },
     test("updateClient trims an mtlsAuth subject value and passes a deletion through untouched") {
-      val env = new Env(Vector(cachedClient))
+      // The method is the client's own, as registered: a patch cannot move it onto one.
+      val mtlsClient = cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "old.example.com")),
+      )
+      val env = new Env(Vector(mtlsClient, cachedClient.copy(id = ClientId("secret-client"))))
 
       for
         _ <- env.terminatesMtls
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(updateRequest.copy(
-          authMethod = Some(AuthMethod.tls_client_auth),
           mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, " client.example.com "))),
         ))
-        _ <- env.service.updateClient(updateRequest.copy(mtlsAuth = Some(Patch.Deleted)))
+        _ <- env.service.updateClient(updateRequest.copy(clientId = ClientId("secret-client"), mtlsAuth = Some(Patch.Deleted)))
         calls = env.repository.updateClient.calls
       yield assertTrue(
         calls.head._2.mtlsAuth == Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
@@ -996,12 +1000,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         .label("every other registration would pay for a lookup whose answer it has no use for")
     },
     test("updateClient refuses mtlsAuth added under a tenant whose proxy forwards no certificate") {
-      val env = new Env(Vector(cachedClient))
+      val env = new Env(Vector(cachedClient.copy(authMethod = AuthMethod.tls_client_auth)))
 
       for
         _ <- env.terminatesNoMtls
         result <- env.service.updateClient(updateRequest.copy(
-          authMethod = Some(AuthMethod.tls_client_auth),
           mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "client.example.com"))),
         )).either
         updateCalls = env.repository.updateClient.times
@@ -1011,6 +1014,30 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           case _ => false,
         updateCalls == 0,
       )
+    },
+    test("updateClient refuses a patch that names another method than the client registered with") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        result <- env.service.updateClient(updateRequest.copy(authMethod = Some(AuthMethod.private_key_jwt))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration =>
+            error.reason.contains("authMethod is client_secret and cannot be changed to private_key_jwt")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
+    test("updateClient accepts a patch that restates the method the client registered with") {
+      val env = new Env(Vector(cachedClient))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(updateRequest.copy(authMethod = Some(cachedClient.authMethod)))
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(updateCalls == 1)
     },
     test("updateClient refuses mtlsAuth added without moving the method that would read it") {
       val env = new Env(Vector(cachedClient))
@@ -1094,9 +1121,9 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           .either
       yield assertTrue(result.left.toOption.exists(_.isInstanceOf[InvalidConsentUri]))
     },
-    // The profile is read from the repository, not the settings cache: a registration that
-    // follows a switch to fapi2 is held to the profile the switch just stored, even while the
-    // cache still carries the standard-profile settings it replaced.
+    // The profile is read from the repository, not the settings cache: a registration into a
+    // tenant created a moment ago is held to the profile it was created with, even while the
+    // cache still carries no settings, or stale ones, for it.
     test("registerClient holds a private-use scheme to the stored profile, not the cached settings") {
       val env = new Env()
 
@@ -1854,16 +1881,19 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("updateClient accepts the patch that brings a client into conformance") {
-      val env = new Env(Vector(cachedClient))
+      // The client already authenticates by certificate -- the method it was registered with --
+      // and is only short of the PAR the profile asks of it.
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com")),
+        requirePushedAuthorizationRequests = false,
+      )))
 
       for
         _ <- env.onFapi2
         _ <- env.repository.updateClient.succeedsWith(())
-        _ <- env.service.updateClient(noopUpdate.copy(
-          authMethod = Some(AuthMethod.tls_client_auth),
-          mtlsAuth = Some(Patch.Modified(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "web.example.com"))),
-          requirePushedAuthorizationRequests = Some(true),
-        ))
+        _ <- env.service.updateClient(noopUpdate.copy(requirePushedAuthorizationRequests = Some(true)))
         updatedTimes = env.repository.updateClient.times
       yield assertTrue(updatedTimes == 1)
     },
@@ -1911,46 +1941,25 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // #421 made `applicationType` where a registration states it is a mobile binary; before
     // this the profile read it off the console's `device` template instead, so a native client
     // registered through the API was refused the loopback redirect RFC 8252 §7.3 grants it.
-    test("profileViolations reads native off applicationType, not only the console template") {
+    test("registerClient reads native off applicationType, not only the console template") {
       val env = new Env()
-      val nativeApp = cachedClient.copy(
-        id = ClientId("mobile"),
-        authMethod = AuthMethod.none,
-        secret = None,
-        applicationType = ApplicationType.native,
-        redirectUris = Set(RedirectUri("http://127.0.0.1:9005/complete")),
-      )
 
       for
-        _ <- env.repository.getAll.succeedsWith(Vector(nativeApp))
-        violations <- env.service.profileViolations(tenantId, SecurityProfile.fapi2)
+        _ <- env.onFapi2
+        result <- env.service.registerClient(fapi2Request.copy(
+          authMethod = AuthMethod.none,
+          mtlsAuth = None,
+          dpopBoundAccessTokens = true,
+          accessTokenTtl = 3600,
+          applicationType = Some(ApplicationType.native),
+          redirectUris = Set(RedirectUri("http://127.0.0.1:9005/complete")),
+        )).either
+        reason = result.left.toOption.collect { case error: InvalidRegistrationConfiguration => error.reason }
       yield assertTrue(
-        violations.map(_.clientId) == Vector(ClientId("mobile")),
-        // Public and not sender-constrained, both of which it is -- but not the redirect URI.
-        violations.head.reasons.exists(_.contains("not none")),
-        !violations.head.reasons.exists(_.contains("https redirect URIs")),
-      )
-    },
-    test("profileViolations lists every violating client of the tenant, from the repository") {
-      val env = new Env()
-      val conformant = cachedClient.copy(
-        id = ClientId("conformant"),
-        authMethod = AuthMethod.private_key_jwt,
-        secret = None,
-        jwks = Some(publicKeySet),
-        dpopBoundAccessTokens = true,
-        requirePushedAuthorizationRequests = true,
-      )
-      val publicClient = cachedClient.copy(id = ClientId("spa"), authMethod = AuthMethod.none, secret = None)
-
-      for
-        _ <- env.repository.getAll.succeedsWith(Vector(publicClient, conformant, cachedClient, otherTenantClient))
-        violations <- env.service.profileViolations(tenantId, SecurityProfile.fapi2)
-        underStandard <- env.service.profileViolations(tenantId, SecurityProfile.standard)
-      yield assertTrue(
-        violations.map(_.clientId) == Vector(ClientId("spa"), clientId),
-        violations.forall(_.reasons.nonEmpty),
-        underStandard.isEmpty,
+        // Public, which a fapi2 tenant refuses -- but not for the loopback redirect URI,
+        // which RFC 8252 §7.3 grants a native app.
+        reason.exists(_.contains("not none")),
+        !reason.exists(_.contains("https redirect URIs")),
       )
     },
     // A FAPI 2.0 tenant admits no `client_secret`, so registration issuing one is no help

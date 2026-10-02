@@ -63,6 +63,11 @@ object ChallengeSettingsService:
         s"Key '$kid' signs RS256, whose PKCS#1 v1.5 padding FAPI 1.0 Advanced §8.6 and FAPI 2.0 both " +
           "disallow. Select a PS256 or ES256 key instead.",
       )
+    case SecurityProfileFixed(tenantId: String)
+      extends ValidationError(
+        s"tenant '$tenantId' already has settings under another securityProfile, " +
+          "which cannot be changed after the tenant is created",
+      )
 
   def live: ZLayer[
     ChallengeSettingsRepository & JwksRepository & Scope & CentralConfig,
@@ -111,7 +116,8 @@ object ChallengeSettingsService:
       repository.findByTenant(tenantId).map(_.flatMap(_.mtlsCertificateHeader))
 
     override def upsertSettings(record: ChallengeSettingsRecord): Task[Unit] =
-      validateSigningKey(record.signingKeyId) *> repository.upsert(record)
+      validateSigningKey(record.signingKeyId) *> repository.upsert(record).flatMap: written =>
+        ZIO.fail(ValidationError.SecurityProfileFixed(record.tenantId.toString)).unless(written).unit
 
     override def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(

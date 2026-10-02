@@ -31,7 +31,7 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
         .query[ChallengeSettingsRecord].run()
         .headOption
 
-  override def upsert(record: ChallengeSettingsRecord): Task[Unit] =
+  override def upsert(record: ChallengeSettingsRecord): Task[Boolean] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
         INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile)
@@ -53,10 +53,9 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
           mtls_certificate_header = EXCLUDED.mtls_certificate_header,
           mtls_certificate_encoding = EXCLUDED.mtls_certificate_encoding,
           signing_key_id = EXCLUDED.signing_key_id,
-          client_assertion_max_lifetime_seconds = EXCLUDED.client_assertion_max_lifetime_seconds,
-          security_profile = EXCLUDED.security_profile
-      """.update.run()
-    .unit
+          client_assertion_max_lifetime_seconds = EXCLUDED.client_assertion_max_lifetime_seconds
+        WHERE challenge_settings.security_profile = EXCLUDED.security_profile
+      """.update.run() > 0
 
 object PostgresChallengeSettingsRepository:
   def live: ZLayer[TransactorZIO, Nothing, ChallengeSettingsRepository] =

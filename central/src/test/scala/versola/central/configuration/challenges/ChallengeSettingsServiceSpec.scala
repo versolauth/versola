@@ -106,9 +106,18 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
     test("upsertSettings delegates to repository") {
       val env = Env()
       for
-        _ <- env.repository.upsert.succeedsWith(())
+        _ <- env.repository.upsert.succeedsWith(true)
         _ <- env.service.upsertSettings(settings)
       yield assertTrue(env.repository.upsert.calls == List(settings))
+    },
+    test("upsertSettings refuses when the repository kept a tenant's other stored profile") {
+      val env = Env()
+      for
+        _ <- env.repository.upsert.succeedsWith(false)
+        result <- env.service.upsertSettings(settings).either
+      yield assertTrue(
+        result == Left(ChallengeSettingsService.ValidationError.SecurityProfileFixed(settings.tenantId.toString)),
+      )
     },
     // A tenant pointing at a key that cannot sign would not fail at write time and then not
     // fail at sign time either: auth would quietly fall back to its legacy configured key,
@@ -119,7 +128,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val selected = settings.copy(signingKeyId = Some("ps-kid"))
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("ps-kid", "PS256")))
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           _ <- env.service.upsertSettings(selected)
         yield assertTrue(env.repository.upsert.calls == List(selected))
       },
@@ -127,7 +136,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.jwksRepository.find.succeedsWith(None)
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("missing"))).exit
         yield assertTrue(
           result.isFailure,
@@ -139,7 +148,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val verifyOnly = signableKey("bootstrap-kid", "PS256").copy(privateKey = None)
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(verifyOnly))
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("bootstrap-kid"))).exit
         yield assertTrue(
           result.isFailure,
@@ -155,7 +164,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         )
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(noAlg))
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("no-alg"))).exit
         yield assertTrue(
           result.isFailure,
@@ -166,7 +175,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("rs-kid", "RS256")))
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("rs-kid"))).exit
         yield assertTrue(
           result.isFailure,
@@ -176,7 +185,7 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
       test("a cleared selection is not validated -- it is the legacy fallback, not a key") {
         val env = Env()
         for
-          _ <- env.repository.upsert.succeedsWith(())
+          _ <- env.repository.upsert.succeedsWith(true)
           _ <- env.service.upsertSettings(settings.copy(signingKeyId = None))
         yield assertTrue(env.jwksRepository.find.calls.isEmpty)
       },
