@@ -1,7 +1,7 @@
 package versola
 
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
 import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientRecord, OAuthClientRepository, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
 import versola.central.configuration.edges.{EdgeId, EdgeRepository}
@@ -729,22 +729,12 @@ object BootstrapService:
         try source.mkString finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
-      ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >+>
-      ZLayer(refreshCachesAfterBootstrap)
-
-  /** Reloads the two caches built before bootstrap -- it registers central-admin through
-    * OAuthClientService, which reads challenge settings -- so they loaded before the seed, and
-    * the seed's change notifications fired before CacheSyncService listens. Run after
-    * bootstrap, before central reports ready; otherwise edge and auth sync without
-    * central-admin until the next scheduled refresh (404 on /login/central-admin). */
-  def refreshCachesAfterBootstrap: ZIO[OAuthClientService & ChallengeSettingsService, Throwable, Unit] =
-    ZIO.serviceWithZIO[OAuthClientService](_.refreshNow) *>
-      ZIO.serviceWithZIO[ChallengeSettingsService](_.refreshNow)
+      ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap))
 
   private final class Impl(
       tenantRepo: TenantRepository,
