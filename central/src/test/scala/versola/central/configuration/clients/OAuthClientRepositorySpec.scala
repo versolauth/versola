@@ -298,40 +298,18 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           found.map(_.dpopMinRsaKeySize) === Some(None),
         )
       },
-      test("update client should drop both secrets when the method stops reading them") {
+      test("update client should leave the method and both secrets alone") {
         val rotated = client.copy(previousSecret = Some(secret2))
 
         for
           _ <- env.repository.createClient(rotated)
-          _ <- env.repository.updateClient(
-            clientId,
-            OAuthClientPatch.empty.copy(authMethod = Some(AuthMethod.private_key_jwt)),
-          )
-          moved <- env.repository.find(clientId)
           _ <- env.repository.updateClient(
             clientId,
             OAuthClientPatch.empty.copy(accessTokenTtl = Some(10.minutes)),
           )
-          untouched <- env.repository.find(clientId)
-        yield assertTrue(
-          moved.map(_.authMethod) === Some(AuthMethod.private_key_jwt),
-          moved.flatMap(_.secret) === None,
-          moved.flatMap(_.previousSecret) === None,
-          untouched.map(_.accessTokenTtl) === Some(10.minutes),
-        )
-          .label("the secrets go in the same statement as the method, not in a later one")
-      },
-      test("update client should leave the secrets alone when the method stays client_secret") {
-        val rotated = client.copy(previousSecret = Some(secret2))
-
-        for
-          _ <- env.repository.createClient(rotated)
-          _ <- env.repository.updateClient(
-            clientId,
-            OAuthClientPatch.empty.copy(authMethod = Some(AuthMethod.client_secret), accessTokenTtl = Some(10.minutes)),
-          )
           found <- env.repository.find(clientId)
         yield assertTrue(found === Some(rotated.copy(accessTokenTtl = 10.minutes)))
+          .label("a patch has no field for the method, so it can neither change it nor drop what it reads")
       },
       test("rotate secrets and delete client") {
         for

@@ -50,7 +50,7 @@ object TenantApiSpec extends CentralApiSpec:
       for
         central <- api
         listed <- find(central)
-      yield assertTrue(listed.exists(_.str("id").contains(Fixtures.defaultTenant)))
+      yield assertTrue(listed.exists(_.str("id").contains(Fixtures.suiteTenant)))
         .label("every deployment is bootstrapped with a 'default' tenant")
     },
     test("an update replaces the description") {

@@ -78,13 +78,11 @@ object SecurityProfileRuntimeSpec extends E2ESpec:
     test("a public client of a tenant moved to fapi2 is refused with invalid_client at /token, /par, /introspect and /revoke") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        results <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+        results <- SecurityProfiles.withTenant(auth.central, "standard"): tenantId =>
           for
             clientId <- CentralApi.id("e2e-public")
             outcome <- (
               for
-                // A new tenant starts on fapi2, which refuses to register a public client.
-                _ <- SecurityProfiles.ensureStandard(auth.central, tenantId)
                 _ <- auth.registerClient(
                   clientId,
                   "Public client",

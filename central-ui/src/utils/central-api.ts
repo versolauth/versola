@@ -1208,7 +1208,6 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       dpopMinRsaKeySize: (existing.dpopMinRsaKeySize ?? null) === (client.dpopMinRsaKeySize ?? null)
         ? undefined
         : client.dpopMinRsaKeySize ?? null,
-      authMethod: existing.authMethod !== client.authMethod ? client.authMethod : undefined,
       // Patch semantics: omitted leaves the stored credential alone, null clears it.
       mtlsAuth: sameJsonValue(existing.mtlsAuth, client.mtlsAuth) ? undefined : (client.mtlsAuth ?? null),
       certificateBoundAccessTokens: existing.certificateBoundAccessTokens !== client.certificateBoundAccessTokens

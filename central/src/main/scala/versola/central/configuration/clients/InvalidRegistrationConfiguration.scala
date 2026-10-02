@@ -23,6 +23,22 @@ object InvalidRegistrationConfiguration:
     */
   val MaxAccessTokenTtl: Duration = Duration.fromSeconds(86400)
 
+  /** A client's method is the one it registered with: it decides whether a secret exists at
+    * all, and what an update's `mtlsAuth` and `jwks` are read against, so moving it would
+    * mean minting or dropping a credential behind a patch. `requested` may be left out, or
+    * restate the stored method (a client that sends back what it read does so unchanged). */
+  def validateAuthMethodUnchanged(
+      clientId: ClientId,
+      requested: Option[AuthMethod],
+      stored: AuthMethod,
+  ): Option[InvalidRegistrationConfiguration] =
+    requested.filter(_ != stored).map: method =>
+      InvalidRegistrationConfiguration(
+        clientId,
+        s"authMethod is $stored and cannot be changed to $method after the client is registered; " +
+          "delete the client and register it again to use another method",
+      )
+
   def validateAccessTokenTtl(
       clientId: ClientId,
       accessTokenTtl: Duration,

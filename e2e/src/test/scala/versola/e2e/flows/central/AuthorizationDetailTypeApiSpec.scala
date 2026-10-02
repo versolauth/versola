@@ -29,16 +29,16 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
   private def read(
       central: CentralApi,
       name: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
       expect: Json.Obj => Boolean = _ => true,
   ): Task[Option[Json.Obj]] =
     eventually(find(central, name, tenantId))(_.exists(expect))
 
   /** Waits for the type to be gone, for the tests that assert an absence. */
-  private def gone(central: CentralApi, name: String, tenantId: String = Fixtures.defaultTenant): Task[Option[Json.Obj]] =
+  private def gone(central: CentralApi, name: String, tenantId: String = Fixtures.suiteTenant): Task[Option[Json.Obj]] =
     eventually(find(central, name, tenantId))(_.isEmpty)
 
-  private def cleanup(central: CentralApi, name: String, tenantId: String = Fixtures.defaultTenant): UIO[Unit] =
+  private def cleanup(central: CentralApi, name: String, tenantId: String = Fixtures.suiteTenant): UIO[Unit] =
     central.delete(path, "tenantId" -> tenantId, "type" -> name).ignore.unit
 
   private val ibanSchema: Json.Obj =
@@ -116,7 +116,7 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
         rejected <- central.post(
           path,
           Json.Obj(
-            "tenantId" -> Json.Str(Fixtures.defaultTenant),
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
             "type" -> Json.Str(name),
             "description" -> Fixtures.text("no schema"),
           ),
@@ -218,7 +218,7 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
         central <- api
         name <- CentralApi.token("probe_detail")
         _ <- central.post(path, Fixtures.detailType(name))
-        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("types")))(_.nonEmpty)
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.suiteTenant, "limit" -> "1").flatMap(_.items("types")))(_.nonEmpty)
         _ <- cleanup(central, name)
       yield assertTrue(listed.size == 1)
     },
@@ -227,7 +227,7 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
         central <- api
         name <- CentralApi.token("probe_detail")
         _ <- central.post(path, Fixtures.detailType(name))
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "type" -> name)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "type" -> name)
         record <- gone(central, name)
       yield assertTrue(deleted.status == Status.NoContent) && assertTrue(record.isEmpty)
     },
@@ -235,20 +235,20 @@ object AuthorizationDetailTypeApiSpec extends CentralApiSpec:
       for
         central <- api
         name <- CentralApi.token("probe_absent")
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "type" -> name)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "type" -> name)
       yield assertTrue(deleted.status == Status.NoContent)
     },
     test("deleting without naming the type is refused") {
       for
         central <- api
-        rejected <- central.delete(path, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.delete(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("type"))
     },
     test("an anonymous caller cannot list types") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
     },
     test("an anonymous caller cannot create a type") {

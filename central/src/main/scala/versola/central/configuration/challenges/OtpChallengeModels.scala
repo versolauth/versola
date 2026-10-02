@@ -62,7 +62,8 @@ case class UpsertChallengeSettingsRequest(
     /** RFC 7523 §3: furthest into the future a client assertion's `exp` may sit; absent
       * keeps the stored value. */
     clientAssertionMaxLifetimeSeconds: Option[Int],
-    /** Which FAPI profile this tenant's clients are held to; absent keeps the stored value
-      * (or `ChallengeSettingsRecord.DefaultSecurityProfile` for a tenant with none yet). */
+    /** Which FAPI profile this tenant's clients are held to. Chosen when the tenant is
+      * created ([[versola.central.configuration.CreateTenantRequest]]) and fixed from then on:
+      * absent, or naming the stored profile, leaves it as it is; any other value is refused. */
     securityProfile: Option[SecurityProfile],
 ) derives Schema, JsonCodec

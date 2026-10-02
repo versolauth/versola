@@ -17,7 +17,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantRecord1 = TenantRecord(tenant1, "Tenant A", None)
   private val tenantRecord2 = TenantRecord(tenant2, "Tenant B", None)
 
-  private val createRequest = CreateTenantRequest(tenant1, "Tenant A", None)
+  private val createRequest = CreateTenantRequest(tenant1, "Tenant A", None, None)
 
   private def signableKey(kid: String, alg: String) = JwksRecord(
     kid = kid,
@@ -25,6 +25,28 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
     privateKey = Some(Secret.fromString("encrypted-pkcs8")),
   )
   private val updateRequest = UpdateTenantRequest(tenant1, "Updated Tenant A", None)
+
+  private def settingsOf(profile: SecurityProfile) = ChallengeSettingsRecord(
+    tenantId = tenant1,
+    allowedPrefixes = Nil,
+    submissionLimits = SubmissionLimits.recommended,
+    otpLength = 6,
+    otpResendAfter = 60,
+    passkeySettings = PasskeySettings("", "Versola", Nil, "preferred"),
+    authConversationTtlSeconds = 900,
+    sessionTtlSeconds = 86400,
+    sessionIdleTtlSeconds = None,
+    userAgentTtlSeconds = 15552000,
+    ipHeader = "X-Real-IP",
+    acrVocabulary = None,
+    postLogoutRedirectUris = Nil,
+    requireDpopNonce = false,
+    mtlsCertificateHeader = None,
+    mtlsCertificateEncoding = None,
+    signingKeyId = None,
+    clientAssertionMaxLifetimeSeconds = 300,
+    securityProfile = profile,
+  )
 
   class Env(initial: Vector[TenantRecord] = Vector.empty):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
@@ -46,6 +68,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
@@ -80,6 +103,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
@@ -99,6 +123,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
 
       for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.jwksRepository.getAll.succeedsWith(keys)
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
@@ -114,12 +139,56 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val verifyOnly = signableKey("ps-kid", "PS256").copy(privateKey = None)
 
       for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
         _ <- env.repository.createTenant.succeedsWith(())
         _ <- env.jwksRepository.getAll.succeedsWith(Vector(verifyOnly))
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
       yield assertTrue(
         env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(None),
+      )
+    },
+    // The profile is chosen here and nowhere after: it is the one thing a tenant's challenge
+    // settings can never be edited to.
+    test("createTenant seeds the profile the request names") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest.copy(securityProfile = Some(SecurityProfile.standard)))
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.securityProfile) == List(SecurityProfile.standard),
+      )
+    },
+    test("createTenant refuses a different profile for a tenant that already has settings, changing nothing") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(settingsOf(SecurityProfile.fapi2)))
+        result <- env.service.createTenant(createRequest.copy(securityProfile = Some(SecurityProfile.standard))).either
+        tenantWrites = env.repository.createTenant.times
+        settingsWrites = env.challengeSettingsService.upsertSettings.times
+      yield assertTrue(
+        result.left.toOption.exists(_.getMessage.contains("cannot be changed after the tenant is created")),
+        tenantWrites == 0,
+        settingsWrites == 0,
+      )
+    },
+    // A retry that finishes a half-made tenant names the profile again, or nothing at all.
+    test("createTenant keeps the profile of a tenant that already has settings when the request names none") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(Some(settingsOf(SecurityProfile.standard)))
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
+        _ <- env.service.createTenant(createRequest)
+      yield assertTrue(
+        env.challengeSettingsService.upsertSettings.calls.map(_.securityProfile) == List(SecurityProfile.standard),
       )
     },
     test("updateTenant delegates request fields to repository") {

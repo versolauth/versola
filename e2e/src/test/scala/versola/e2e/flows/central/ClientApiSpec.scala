@@ -21,7 +21,7 @@ object ClientApiSpec extends CentralApiSpec:
     * rather than indexing into a response by position.
     */
   private def find(central: CentralApi, clientId: String): Task[Option[Json.Obj]] =
-    central.get(path, "tenantId" -> Fixtures.defaultTenant)
+    central.get(path, "tenantId" -> Fixtures.suiteTenant)
       .flatMap(_.items("clients"))
       .map(_.find(_.str("id").contains(clientId)))
 
@@ -308,9 +308,8 @@ object ClientApiSpec extends CentralApiSpec:
         id <- CentralApi.id("e2e-client")
         // A freshly created tenant has no challenge settings naming a certificate header, so
         // auth would never look for this client's certificate (RFC 8705 §6.5).
-        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
         // A new tenant is on FAPI 2.0, which this test's client_secret client is not about.
-        _ <- SecurityProfiles.ensureStandard(central, tenantId)
+        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, securityProfile = Some("standard")))
         rejected <- central.post(
           path,
           Fixtures.client(
@@ -339,27 +338,23 @@ object ClientApiSpec extends CentralApiSpec:
         _ <- central.delete(path, "clientId" -> id)
       yield assertTrue(rejected.status == Status.BadRequest)
     },
-    test("an update sets mtlsAuth on a client that had none") {
+    test("an update replaces the mtlsAuth of a client that authenticates by certificate") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
+        body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
+        outcome <- withClient(central, body) { clientId =>
           central.put(
             path,
-            Fixtures.clientUpdate(
-              clientId,
-              "authMethod" -> Json.Str("tls_client_auth"),
-              "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example"),
-            ),
-          ).zip(read(central, id, _.obj("mtlsAuth").isDefined))
+            Fixtures.clientUpdate(clientId, "mtlsAuth" -> Fixtures.mutualTlsAuth("subject_dn", "CN=updated,O=Example")),
+          ).zip(read(central, id, _.obj("mtlsAuth").flatMap(_.str("subjectValue")).contains("CN=updated,O=Example")))
         }
         (updated, record) = outcome
       yield assertTrue(updated.status == Status.NoContent) &&
         assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=updated,O=Example")) &&
         assertTrue(record.flatMap(_.str("authMethod")).contains("tls_client_auth"))
-          .label("the credential and the method it is read under move in one call")
     },
-    test("an update adding mtlsAuth without moving the method is refused") {
+    test("an update adding mtlsAuth to a client_secret client is refused") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
@@ -374,23 +369,44 @@ object ClientApiSpec extends CentralApiSpec:
         .label("a client_secret client keeps authenticating by secret, so nothing would ever match the certificate") &&
         assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
     },
-    test("an update clears mtlsAuth with an explicit null") {
+    test("an update cannot clear the mtlsAuth a tls_client_auth client authenticates by") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         body = Fixtures.client(id, authMethod = "tls_client_auth", mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=e2e-client,O=Example")))
         outcome <- withClient(central, body) { clientId =>
-          // The method goes back with the credential: a tls_client_auth client whose subject
-          // value is deleted has nothing left to be matched against.
+          central.put(path, Fixtures.clientUpdate(clientId, "mtlsAuth" -> Json.Null))
+            .zip(read(central, id))
+        }
+        (rejected, record) = outcome
+      yield assertTrue(rejected.status == Status.BadRequest)
+        .label("the method is fixed, and a certificate method with nothing to be matched against is one nobody can use") &&
+        assertTrue(record.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains("CN=e2e-client,O=Example"))
+    },
+    test("an update naming another authMethod is refused, and the client keeps the one it registered with") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        outcome <- withClient(central, Fixtures.client(id)) { clientId =>
           central.put(
             path,
-            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("client_secret"), "mtlsAuth" -> Json.Null),
-          ).zip(read(central, id, r => !r.has("mtlsAuth") || r.isNull("mtlsAuth")))
+            Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("private_key_jwt"), "accessTokenTtl" -> Json.Num(60)),
+          ).zip(read(central, id))
         }
-        (updated, record) = outcome
-      yield assertTrue(updated.status == Status.NoContent) &&
-        assertTrue(record.exists(!_.has("mtlsAuth")) || record.exists(_.isNull("mtlsAuth")))
-          .label("a `null` patch is how this API spells deleting an optional member, same as consentFlow")
+        (rejected, record) = outcome
+      yield assertTrue(rejected.status == Status.BadRequest) &&
+        assertTrue(record.flatMap(_.str("authMethod")).contains("client_secret")) &&
+        assertTrue(!record.flatMap(_.int("accessTokenTtl")).contains(60))
+          .label("the refused update changed nothing, not even the setting that was valid")
+    },
+    test("an update restating the authMethod the client registered with is accepted") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        updated <- withClient(central, Fixtures.client(id)) { clientId =>
+          central.put(path, Fixtures.clientUpdate(clientId, "authMethod" -> Json.Str("client_secret")))
+        }
+      yield assertTrue(updated.status == Status.NoContent)
     },
     test("an update leaving mtlsAuth unmentioned does not disturb it") {
       for
@@ -455,8 +471,8 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        // `default` is on `standard` for the whole suite, which admits the scheme: the
-        // refusal is FAPI 2.0's, so it is asked of a tenant on that profile.
+        // The suite's own tenant is on `standard`, which admits the scheme: the refusal is
+        // FAPI 2.0's, so it is asked of a tenant on that profile.
         rejected <- SecurityProfiles.withFapi2Tenant(central): tenantId =>
           central.post(
             path,
@@ -472,11 +488,7 @@ object ClientApiSpec extends CentralApiSpec:
         central <- api
         tenantId <- CentralApi.id("e2e-standard")
         id <- CentralApi.id("e2e-client")
-        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
-        _ <- central.put(
-          "/configuration/challenges/challenge-settings",
-          Fixtures.challengeSettings(tenantId, extras = List("securityProfile" -> Json.Str("standard"))),
-        )
+        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, securityProfile = Some("standard")))
         // Central's settings cache catches up asynchronously; a refused attempt stores nothing.
         created <- eventually(
           central.post(path, Fixtures.client(id, tenantId = tenantId, redirectUris = Set("com.example.app://callback"))),
@@ -515,7 +527,7 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "id" -> Json.Str(id)))
+        rejected <- central.post(path, Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "id" -> Json.Str(id)))
       yield assertTrue(rejected.status == Status.BadRequest)
     },
     test("a body that is not JSON is refused") {
@@ -545,8 +557,7 @@ object ClientApiSpec extends CentralApiSpec:
         central <- api
         tenantId <- CentralApi.id("e2e-tenant")
         id <- CentralApi.id("e2e-client")
-        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId))
-        _ <- SecurityProfiles.ensureStandard(central, tenantId)
+        _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, securityProfile = Some("standard")))
         _ <- central.post(path, Fixtures.client(id, tenantId = tenantId))
         inOwnTenant <- eventually(central.get(path, "tenantId" -> tenantId).flatMap(_.items("clients")))(
           _.exists(_.str("id").contains(id)),
@@ -560,7 +571,7 @@ object ClientApiSpec extends CentralApiSpec:
     test("limit caps the number of clients returned") {
       for
         central <- api
-        listed <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1")
+        listed <- central.get(path, "tenantId" -> Fixtures.suiteTenant, "limit" -> "1")
         clients <- listed.items("clients")
       yield assertTrue(clients.size <= 1)
         .label("the console pages this listing, so limit has to be honoured server-side")
@@ -575,9 +586,9 @@ object ClientApiSpec extends CentralApiSpec:
             for
               _ <- read(central, idA)
               _ <- read(central, idB)
-              first <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "0", "limit" -> "1")
+              first <- central.get(path, "tenantId" -> Fixtures.suiteTenant, "offset" -> "0", "limit" -> "1")
                 .flatMap(_.items("clients"))
-              second <- central.get(path, "tenantId" -> Fixtures.defaultTenant, "offset" -> "1", "limit" -> "1")
+              second <- central.get(path, "tenantId" -> Fixtures.suiteTenant, "offset" -> "1", "limit" -> "1")
                 .flatMap(_.items("clients"))
             yield (first, second)
           }
@@ -854,7 +865,7 @@ object ClientApiSpec extends CentralApiSpec:
     test("an anonymous caller cannot list clients") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
     },
     test("an anonymous caller cannot register a client") {

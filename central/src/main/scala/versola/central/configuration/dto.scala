@@ -1,5 +1,6 @@
 package versola.central.configuration
 
+import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.clients.{ApplicationType, AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
@@ -300,6 +301,10 @@ case class CreateTenantRequest(
     id: TenantId,
     description: String,
     edgeId: Option[String],
+    /** Which FAPI profile the tenant's clients are held to; absent takes
+      * `ChallengeSettingsRecord.DefaultSecurityProfile`. Settled here and never changed:
+      * the challenge-settings endpoint refuses any other value afterwards. */
+    securityProfile: Option[SecurityProfile],
 ) derives Schema, JsonCodec
 
 case class UpdateTenantRequest(
@@ -414,6 +419,9 @@ case class CreateClientRequest(
       * held to agree with [[mtlsAuth]] and [[jwks]]: a method names the credential, and a
       * credential registered for a method that does not read it is one nothing would ever
       * check.
+      *
+      * Fixed here, for the life of the client: [[UpdateClientRequest]] refuses any other value.
+      * A client that has to change method is deleted and registered again.
       */
     authMethod: AuthMethod,
     /** RFC 8705 §2.1 mutual-TLS client authentication; `None` when the client
@@ -498,10 +506,9 @@ case class UpdateClientRequest(
     dpopBoundAccessTokens: Option[Boolean],
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
-    /** Moving a client to another method is a change of credential, not of transport, so it
-      * is validated against the resulting [[mtlsAuth]] and [[jwks]] exactly as a registration
-      * is. Leaving `client_secret` drops the stored secret: a credential the client no longer
-      * authenticates with is one nobody can be told has stopped working. */
+    /** The method the client was registered with, which an update cannot change: absent, or
+      * naming the stored one, it leaves it as it is, and any other value is refused. A client
+      * that has to change method is deleted and registered again. */
     authMethod: Option[AuthMethod],
     mtlsAuth: Option[Patch[MutualTlsAuth]],
     certificateBoundAccessTokens: Option[Boolean],

@@ -27,6 +27,7 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
     id = tenantId1,
     description = "Tenant A",
     edgeId = None,
+    securityProfile = None,
   )
 
   private val updateRequest = UpdateTenantRequest(

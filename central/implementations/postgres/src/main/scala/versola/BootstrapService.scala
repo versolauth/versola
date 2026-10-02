@@ -79,31 +79,28 @@ object BootstrapService:
           requirePushedAuthorizationRequests = true,
         )
 
-  /** Refuses to boot rather than silently drop `central-admin`'s only credential.
+  /** `central-admin` and `utils` are registered with the method bootstrap's configuration calls
+    * for, and keep it: a client's authentication method is fixed when it is created. A boot
+    * whose configuration calls for another method than the client already holds therefore
+    * refuses to start, rather than carry on with a client that no longer matches what was
+    * configured -- or apply the change and leave it without the credential it had.
     *
-    * Reasserting `authMethod` on every boot (in `seedClient`'s update branch) is one-way
-    * safe: a deployment given a certificate moves an existing `client_secret` central-admin
-    * onto `tls_client_auth`, and the repository drops its secret with the method
-    * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
-    * `bootstrap.central-admin-mtls` is later removed, that same patch would set the method
-    * back to `client_secret` while nothing can mint one for it, leaving the console
-    * credential-less. `existing` is read from the repository, not the cache, for
-    * `OAuthClientService.validateSecurityProfile`'s reason: a downgrade just made by removing
-    * the config has to be caught before this boot's own patch would apply it.
+    * `existing` is read from the repository, not the cache, which a client seeded a moment ago
+    * may not have reached yet.
     *
-    * @return the reason to refuse booting, if `existing` already holds no secret and
-    *         `credential` would move it to a method that mints one.
+    * @param setting the configuration that decides `wanted`, named in the reason
+    * @return the reason to refuse booting, if `existing` holds a method other than `wanted`.
     */
-  private[versola] def authMethodDowngradeRefusal(
+  private[versola] def authMethodMismatch(
       existing: Option[OAuthClientRecord],
-      credential: CentralAdminCredential,
+      wanted: AuthMethod,
+      setting: String,
   ): Option[String] =
     existing.collect:
-      case client if !credential.conformant && !client.usesSecret =>
-        s"bootstrap.central-admin-mtls was removed, but '${CentralConfig.centralClientId}' is already " +
-          s"registered as ${client.authMethod} with no client secret to fall back to -- reintroduce " +
-          "bootstrap.central-admin-mtls, or rotate a secret for it first with " +
-          "POST /configuration/clients/rotate-secret, before removing it"
+      case client if client.authMethod != wanted =>
+        s"'${client.id}' is registered with ${client.authMethod}, but $setting calls for $wanted. " +
+          "A client's authentication method is fixed when it is created: restore the configuration " +
+          "it was created under, or delete the client so that this boot registers it again"
 
   /** How the `utils` service client authenticates, decided by whether bootstrap was given a
     * public key for it (#424).
@@ -131,19 +128,6 @@ object BootstrapService:
         Right(UtilityClientCredential(AuthMethod.client_secret, Some(secret), None))
       case (None, None) =>
         Left("bootstrap.utility-client needs a public-key-jwk or a secret")
-
-  /** [[authMethodDowngradeRefusal]]'s rule for `utils`: a config that falls back to a secret
-    * cannot move a client that already holds none back to `client_secret`, since the secret it
-    * names was never registered for it. */
-  private[versola] def utilityClientDowngradeRefusal(
-      existing: Option[OAuthClientRecord],
-      credential: UtilityClientCredential,
-  ): Option[String] =
-    existing.collect:
-      case client if !credential.conformant && !client.usesSecret =>
-        s"bootstrap.utility-client.public-key-jwk was removed, but '${client.id}' is already registered " +
-          s"as ${client.authMethod} with no client secret to fall back to -- reintroduce the key, or " +
-          "rotate a secret for it first with POST /configuration/clients/rotate-secret"
 
   private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
     AuthFlow(
@@ -897,7 +881,10 @@ object BootstrapService:
               OtpTemplateRecord(passwordTemplateId, tenantId, localizations, purpose = OtpTemplatePurpose.password, channel = channel),
             )
 
-    private def seedChallengeSettings(tenantId: TenantId, passkeyConfig: CentralConfig.PasskeyConfig): Task[Unit] =
+    private def seedChallengeSettings(
+        tenantId: TenantId,
+        passkeyConfig: CentralConfig.PasskeyConfig,
+    ): Task[Unit] =
       challengeSettingsRepo.findByTenant(tenantId).flatMap:
         case Some(_) => ZIO.unit
         case None =>
@@ -905,7 +892,9 @@ object BootstrapService:
             keys <- jwksRepo.getAll
             signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid)
             _ <- challengeSettingsRepo.upsert(
-              defaultChallengeSettings(tenantId, passkeyConfig).copy(signingKeyId = signingKeyId),
+              defaultChallengeSettings(tenantId, passkeyConfig).copy(
+                signingKeyId = signingKeyId,
+              ),
             )
           yield ()
 
@@ -1051,7 +1040,7 @@ object BootstrapService:
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
           case _: ClientAlreadyExists =>
-            refuseAuthMethodDowngrade(credential) *> clientService.updateClient(
+            refuseAuthMethodMismatch(CentralConfig.centralClientId, credential.authMethod, "bootstrap.central-admin-mtls") *> clientService.updateClient(
               UpdateClientRequest(
                 clientId = CentralConfig.centralClientId,
                 clientName = None,
@@ -1074,11 +1063,11 @@ object BootstrapService:
                 dpopBoundAccessTokens = None,
                 dpopSigningAlgs = None,
                 dpopMinRsaKeySize = None,
-                // Reasserted on every boot, like the auth flow: a deployment given a
-                // certificate moves an existing `client_secret` central-admin onto it (the
-                // repository drops the secret with the method), and one whose certificate was
-                // replaced has edge present the new one.
-                authMethod = Some(credential.authMethod),
+                authMethod = None,
+                // Reasserted on every boot, like the auth flow: a deployment whose certificate
+                // was replaced has edge present the new one. The method itself is not -- it is
+                // fixed at creation, and `refuseAuthMethodMismatch` has already refused a boot
+                // that calls for another.
                 mtlsAuth = Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
                 certificateBoundAccessTokens = None,
                 jwks = None,
@@ -1163,9 +1152,9 @@ object BootstrapService:
             // Already seeded by an earlier boot: a secret stays whatever central holds, since
             // rotating it here would break a loadgen configured with the previous value, but the
             // permission set is reasserted so a catalog change reaches an existing deployment --
-            // and so is a configured key, which moves a `client_secret` client onto it.
+            // and so is a configured key, so that a rotated one reaches central.
             case _: ClientAlreadyExists =>
-              refuseUtilityClientDowngrade(seed.clientId, credential) *> clientService.updateClient(
+              refuseAuthMethodMismatch(seed.clientId, credential.authMethod, "bootstrap.utility-client") *> clientService.updateClient(
                 UpdateClientRequest(
                   clientId = seed.clientId,
                   clientName = None,
@@ -1188,7 +1177,7 @@ object BootstrapService:
                   dpopBoundAccessTokens = Option.when(credential.conformant)(true),
                   dpopSigningAlgs = None,
                   dpopMinRsaKeySize = None,
-                  authMethod = Option.when(credential.conformant)(credential.authMethod),
+                  authMethod = None,
                   mtlsAuth = None,
                   certificateBoundAccessTokens = None,
                   jwks = credential.jwks.map(Patch.Modified(_)),
@@ -1206,32 +1195,15 @@ object BootstrapService:
           _ => ZIO.unit,
         )
 
-    private def refuseUtilityClientDowngrade(clientId: ClientId, credential: UtilityClientCredential): Task[Unit] =
-      clientRepo.find(clientId).flatMap: existing =>
-        ZIO.foreachDiscard(BootstrapService.utilityClientDowngradeRefusal(existing, credential)):
-          reason => ZIO.fail(RuntimeException(reason))
-
     private def registrationConfigurationError(error: InvalidRegistrationConfiguration | Throwable): Throwable =
       error match
         case e: InvalidRegistrationConfiguration =>
           new RuntimeException(s"Invalid registration configuration for central client: ${e.reason}")
         case e: Throwable => e
 
-    /** Refuses to boot rather than silently drop `central-admin`'s only credential.
-      *
-      * Reasserting `authMethod` on every boot (see the patch this guards) is one-way safe: a
-      * deployment given a certificate moves an existing `client_secret` central-admin onto
-      * `tls_client_auth`, and the repository drops its secret with the method
-      * (`PostgresOAuthClientRepository.updateClient`). The other direction is not -- if
-      * `bootstrap.central-admin-mtls` is later removed, this patch would set the method back
-      * to `client_secret` while nothing can mint one for it, leaving the console
-      * credential-less. Checked against the repository, not the cache, for
-      * `validateSecurityProfile`'s reason: a downgrade just made by removing the config has
-      * to be caught before this boot's own patch would apply it, not after the next refresh.
-      */
-    private def refuseAuthMethodDowngrade(credential: CentralAdminCredential): Task[Unit] =
-      clientRepo.find(CentralConfig.centralClientId).flatMap: existing =>
-        ZIO.foreachDiscard(BootstrapService.authMethodDowngradeRefusal(existing, credential)):
+    private def refuseAuthMethodMismatch(clientId: ClientId, wanted: AuthMethod, setting: String): Task[Unit] =
+      clientRepo.find(clientId).flatMap: existing =>
+        ZIO.foreachDiscard(BootstrapService.authMethodMismatch(existing, wanted, setting)):
           reason => ZIO.fail(RuntimeException(reason))
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =

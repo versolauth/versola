@@ -18,13 +18,13 @@ object UserRoleApiSpec extends CentralApiSpec:
   private val sessions = "/users/sessions"
   private val limits = "/users/limits/reset"
 
-  private def assigned(central: CentralApi, userId: String, tenantId: String = Fixtures.defaultTenant): Task[Set[String]] =
+  private def assigned(central: CentralApi, userId: String, tenantId: String = Fixtures.suiteTenant): Task[Set[String]] =
     central.get(roles, "id" -> userId, "tenantId" -> tenantId).flatMap(_.obj).map(_.strings("roles"))
 
   private def eventuallyAssigned(
       central: CentralApi,
       userId: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
   )(condition: Set[String] => Boolean): Task[Set[String]] =
     assigned(central, userId, tenantId)
       .repeat(Schedule.spaced(100.millis) *> Schedule.recurUntil[Set[String]](condition))
@@ -36,7 +36,7 @@ object UserRoleApiSpec extends CentralApiSpec:
       userId: String,
       add: Set[String] = Set.empty,
       remove: Set[String] = Set.empty,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
   ): Task[ApiResult] =
     central.patch(
       roles,
@@ -58,7 +58,7 @@ object UserRoleApiSpec extends CentralApiSpec:
       roleId <- CentralApi.id("e2e-role")
       _ <- central.post("/configuration/roles", Fixtures.role(roleId))
       result <- use(roleId).ensuring(
-        central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> roleId).ignore,
+        central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> roleId).ignore,
       )
     yield result
 
@@ -100,8 +100,8 @@ object UserRoleApiSpec extends CentralApiSpec:
         _ <- eventuallyAssigned(central, userId)(_.contains(first))
         _ <- patch(central, userId, add = Set(second))
         held <- eventuallyAssigned(central, userId)(_.contains(second))
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> first)
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> second)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> first)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> second)
       yield assertTrue(held == Set(first, second))
         .label("granting a second role must not quietly revoke the first")
     },
@@ -115,8 +115,8 @@ object UserRoleApiSpec extends CentralApiSpec:
         _ <- central.post("/configuration/roles", Fixtures.role(second))
         _ <- patch(central, userId, add = Set(first, second))
         held <- eventuallyAssigned(central, userId)(_ == Set(first, second))
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> first)
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> second)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> first)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> second)
       yield assertTrue(held == Set(first, second))
     },
     test("a revoked role stops showing up on the user") {
@@ -144,8 +144,8 @@ object UserRoleApiSpec extends CentralApiSpec:
         _ <- eventuallyAssigned(central, userId)(_.contains(before))
         _ <- patch(central, userId, add = Set(after), remove = Set(before))
         held <- eventuallyAssigned(central, userId)(_ == Set(after))
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> before)
-        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.defaultTenant, "roleId" -> after)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> before)
+        _ <- central.delete("/configuration/roles", "tenantId" -> Fixtures.suiteTenant, "roleId" -> after)
       yield assertTrue(held == Set(after))
     },
     test("granting a role the user already holds changes nothing") {
@@ -187,7 +187,7 @@ object UserRoleApiSpec extends CentralApiSpec:
         userId <- user(central)
         rejected <- central.patch(
           roles,
-          Json.Obj("userId" -> Json.Str(userId), "tenantId" -> Json.Str(Fixtures.defaultTenant)),
+          Json.Obj("userId" -> Json.Str(userId), "tenantId" -> Json.Str(Fixtures.suiteTenant)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
     },
@@ -214,7 +214,7 @@ object UserRoleApiSpec extends CentralApiSpec:
     test("reading roles without a user is refused") {
       for
         central <- api
-        rejected <- central.get(roles, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.get(roles, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("id"))
     },
@@ -282,7 +282,7 @@ object UserRoleApiSpec extends CentralApiSpec:
         userId <- user(central)
         reset <- central.post(
           limits,
-          Json.Obj("userId" -> Json.Str(userId), "tenantId" -> Json.Str(Fixtures.defaultTenant)),
+          Json.Obj("userId" -> Json.Str(userId), "tenantId" -> Json.Str(Fixtures.suiteTenant)),
         )
       yield assertTrue(reset.status == Status.Accepted)
     },
@@ -295,7 +295,7 @@ object UserRoleApiSpec extends CentralApiSpec:
           limits,
           Json.Obj(
             "userId" -> Json.Str(userId),
-            "tenantId" -> Json.Str(Fixtures.defaultTenant),
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
             "email" -> Json.Str(email),
           ),
         )
@@ -313,7 +313,7 @@ object UserRoleApiSpec extends CentralApiSpec:
       for
         central <- api
         userId <- user(central)
-        rejected <- central.anonymous.get(roles, "id" -> userId, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.anonymous.get(roles, "id" -> userId, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.Unauthorized)
     },
     test("an anonymous caller cannot grant a role") {
@@ -326,7 +326,7 @@ object UserRoleApiSpec extends CentralApiSpec:
               roles,
               Json.Obj(
                 "userId" -> Json.Str(userId),
-                "tenantId" -> Json.Str(Fixtures.defaultTenant),
+                "tenantId" -> Json.Str(Fixtures.suiteTenant),
                 "add" -> Json.Arr(Chunk(Json.Str(roleId))),
                 "remove" -> Json.Arr(),
               ),
@@ -354,7 +354,7 @@ object UserRoleApiSpec extends CentralApiSpec:
               roles,
               Json.Obj(
                 "userId" -> Json.Str(userId),
-                "tenantId" -> Json.Str(Fixtures.defaultTenant),
+                "tenantId" -> Json.Str(Fixtures.suiteTenant),
                 "add" -> Json.Arr(Chunk(Json.Str(roleId))),
                 "remove" -> Json.Arr(),
               ),

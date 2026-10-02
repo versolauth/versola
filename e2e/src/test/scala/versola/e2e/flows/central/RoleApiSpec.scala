@@ -30,16 +30,16 @@ object RoleApiSpec extends CentralApiSpec:
   private def read(
       central: CentralApi,
       roleId: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
       expect: Json.Obj => Boolean = _ => true,
   ): Task[Option[Json.Obj]] =
     eventually(find(central, roleId, tenantId))(_.exists(expect))
 
   /** Waits for the role to be gone, for the tests that assert an absence. */
-  private def gone(central: CentralApi, roleId: String, tenantId: String = Fixtures.defaultTenant): Task[Option[Json.Obj]] =
+  private def gone(central: CentralApi, roleId: String, tenantId: String = Fixtures.suiteTenant): Task[Option[Json.Obj]] =
     eventually(find(central, roleId, tenantId))(_.isEmpty)
 
-  private def cleanup(central: CentralApi, roleId: String, tenantId: String = Fixtures.defaultTenant): UIO[Unit] =
+  private def cleanup(central: CentralApi, roleId: String, tenantId: String = Fixtures.suiteTenant): UIO[Unit] =
     central.delete(path, "tenantId" -> tenantId, "roleId" -> roleId).ignore.unit
 
   /** Declares a permission for the duration of the test body: a role granting one that does
@@ -50,7 +50,7 @@ object RoleApiSpec extends CentralApiSpec:
       permission <- CentralApi.permission("probe")
       _ <- central.post(permissions, Fixtures.permission(permission))
       result <- use(permission).ensuring(
-        central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> permission).ignore,
+        central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> permission).ignore,
       )
     yield result
 
@@ -109,8 +109,8 @@ object RoleApiSpec extends CentralApiSpec:
         _ <- central.post(path, Fixtures.role(roleId, permissions = Set(first, second)))
         record <- read(central, roleId)
         _ <- cleanup(central, roleId)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> first)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> second)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> first)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> second)
       yield assertTrue(record.map(_.strings("permissions")).contains(Set(first, second)))
     },
     test("a role id outside the documented alphabet is refused") {
@@ -126,7 +126,7 @@ object RoleApiSpec extends CentralApiSpec:
         roleId <- CentralApi.id("e2e-role")
         rejected <- central.post(
           path,
-          Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "id" -> Json.Str(roleId)),
+          Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "id" -> Json.Str(roleId)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
     },
@@ -148,8 +148,8 @@ object RoleApiSpec extends CentralApiSpec:
         updated <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(add = Set(added))))
         record <- read(central, roleId, expect = _.strings("permissions") == Set(existing, added))
         _ <- cleanup(central, roleId)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> existing)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> added)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> existing)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> added)
       yield assertTrue(updated.status == Status.NoContent) &&
         assertTrue(record.map(_.strings("permissions")).contains(Set(existing, added)))
           .label("granting one permission must not drop the ones the role already carried")
@@ -166,8 +166,8 @@ object RoleApiSpec extends CentralApiSpec:
         _ <- central.put(path, Fixtures.roleUpdate(roleId, permissions = Fixtures.patch(remove = Set(revoked))))
         record <- read(central, roleId, expect = _.strings("permissions") == Set(kept))
         _ <- cleanup(central, roleId)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> kept)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> revoked)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> kept)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> revoked)
       yield assertTrue(record.map(_.strings("permissions")).contains(Set(kept)))
         .label("revocation is the security-critical direction: it has to take effect")
     },
@@ -186,8 +186,8 @@ object RoleApiSpec extends CentralApiSpec:
         )
         record <- read(central, roleId, expect = _.strings("permissions") == Set(after))
         _ <- cleanup(central, roleId)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> before)
-        _ <- central.delete(permissions, "tenantId" -> Fixtures.defaultTenant, "permission" -> after)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> before)
+        _ <- central.delete(permissions, "tenantId" -> Fixtures.suiteTenant, "permission" -> after)
       yield assertTrue(record.map(_.strings("permissions")).contains(Set(after)))
         .label("swapping a permission in two calls would leave a window with both or neither")
     },
@@ -264,7 +264,7 @@ object RoleApiSpec extends CentralApiSpec:
         roleId <- CentralApi.id("e2e-role")
         rejected <- central.put(
           path,
-          Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "id" -> Json.Str(roleId)),
+          Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "id" -> Json.Str(roleId)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
     },
@@ -312,7 +312,7 @@ object RoleApiSpec extends CentralApiSpec:
         central <- api
         roleId <- CentralApi.id("e2e-role")
         _ <- central.post(path, Fixtures.role(roleId))
-        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("roles")))(_.nonEmpty)
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.suiteTenant, "limit" -> "1").flatMap(_.items("roles")))(_.nonEmpty)
         _ <- cleanup(central, roleId)
       yield assertTrue(listed.size == 1)
     },
@@ -321,7 +321,7 @@ object RoleApiSpec extends CentralApiSpec:
         central <- api
         roleId <- CentralApi.id("e2e-role")
         _ <- central.post(path, Fixtures.role(roleId))
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "roleId" -> roleId)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "roleId" -> roleId)
         record <- gone(central, roleId)
       yield assertTrue(deleted.status == Status.NoContent) && assertTrue(record.isEmpty)
     },
@@ -329,13 +329,13 @@ object RoleApiSpec extends CentralApiSpec:
       for
         central <- api
         roleId <- CentralApi.id("e2e-absent")
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "roleId" -> roleId)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "roleId" -> roleId)
       yield assertTrue(deleted.status == Status.NoContent)
     },
     test("deleting without a roleId is refused") {
       for
         central <- api
-        rejected <- central.delete(path, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.delete(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("roleId"))
     },
@@ -344,7 +344,7 @@ object RoleApiSpec extends CentralApiSpec:
         central <- api
         roleId <- CentralApi.id("e2e-role")
         _ <- central.post(path, Fixtures.role(roleId, description = "First"))
-        _ <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "roleId" -> roleId)
+        _ <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "roleId" -> roleId)
         again <- central.post(path, Fixtures.role(roleId, description = "Second"))
         record <- read(central, roleId, expect = _.obj("description").exists(_.str("en").contains("Second")))
         _ <- cleanup(central, roleId)
@@ -356,7 +356,7 @@ object RoleApiSpec extends CentralApiSpec:
     test("an anonymous caller cannot list roles") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
     },
     test("an anonymous caller cannot create a role") {

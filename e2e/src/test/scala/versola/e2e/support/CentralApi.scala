@@ -88,14 +88,14 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
 
 object CentralApi:
 
-  /** Puts the `default` tenant on the `standard` profile first -- see [[SecurityProfiles]]. */
+  /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, CentralApi] =
     ZLayer.fromZIO(
       for
         client <- ZIO.service[Client]
         config <- ZIO.service[E2EConfig]
         api = CentralApi(client, config, Some("central" -> config.resourceSecret))
-        _ <- SecurityProfiles.ensureStandard(api).orDie
+        _ <- SecurityProfiles.ensureSuiteTenant(api).orDie
       yield api,
     )
 

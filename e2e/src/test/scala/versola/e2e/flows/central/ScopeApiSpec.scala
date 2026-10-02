@@ -29,13 +29,13 @@ object ScopeApiSpec extends CentralApiSpec:
   private def read(
       central: CentralApi,
       scopeId: String,
-      tenantId: String = Fixtures.defaultTenant,
+      tenantId: String = Fixtures.suiteTenant,
       expect: Json.Obj => Boolean = _ => true,
   ): Task[Option[Json.Obj]] =
     eventually(find(central, scopeId, tenantId))(_.exists(expect))
 
   /** Waits for the scope to be gone, for the tests that assert an absence. */
-  private def gone(central: CentralApi, scopeId: String, tenantId: String = Fixtures.defaultTenant): Task[Option[Json.Obj]] =
+  private def gone(central: CentralApi, scopeId: String, tenantId: String = Fixtures.suiteTenant): Task[Option[Json.Obj]] =
     eventually(find(central, scopeId, tenantId))(_.isEmpty)
 
   private def claimsOf(record: Option[Json.Obj]): Chunk[Json.Obj] =
@@ -44,7 +44,7 @@ object ScopeApiSpec extends CentralApiSpec:
   private def claimNames(record: Option[Json.Obj]): Set[String] =
     claimsOf(record).flatMap(_.str("claim")).toSet
 
-  private def cleanup(central: CentralApi, scopeId: String, tenantId: String = Fixtures.defaultTenant): UIO[Unit] =
+  private def cleanup(central: CentralApi, scopeId: String, tenantId: String = Fixtures.suiteTenant): UIO[Unit] =
     central.delete(path, "tenantId" -> tenantId, "scopeId" -> scopeId).ignore.unit
 
   def spec = suite("Central API: scopes")(
@@ -92,7 +92,7 @@ object ScopeApiSpec extends CentralApiSpec:
         _ <- central.post(
           path,
           Json.Obj(
-            "tenantId" -> Json.Str(Fixtures.defaultTenant),
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
             "id" -> Json.Str(id),
             "description" -> Json.Obj("en" -> Json.Str("Profile"), "ru" -> Json.Str("Профиль")),
             "claims" -> Json.Arr(Chunk.empty),
@@ -127,7 +127,7 @@ object ScopeApiSpec extends CentralApiSpec:
         id <- CentralApi.token("probe_scope")
         rejected <- central.post(
           path,
-          Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "id" -> Json.Str(id)),
+          Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "id" -> Json.Str(id)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("an undescribed scope cannot be rendered on a consent screen")
@@ -306,7 +306,7 @@ object ScopeApiSpec extends CentralApiSpec:
         id <- CentralApi.token("probe_scope")
         rejected <- central.put(
           path,
-          Json.Obj("tenantId" -> Json.Str(Fixtures.defaultTenant), "id" -> Json.Str(id)),
+          Json.Obj("tenantId" -> Json.Str(Fixtures.suiteTenant), "id" -> Json.Str(id)),
         )
       yield assertTrue(rejected.status == Status.BadRequest)
     },
@@ -354,7 +354,7 @@ object ScopeApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.token("probe_scope")
         _ <- central.post(path, Fixtures.scope(id))
-        listed <- eventually(central.get(path, "tenantId" -> Fixtures.defaultTenant, "limit" -> "1").flatMap(_.items("scopes")))(_.nonEmpty)
+        listed <- eventually(central.get(path, "tenantId" -> Fixtures.suiteTenant, "limit" -> "1").flatMap(_.items("scopes")))(_.nonEmpty)
         _ <- cleanup(central, id)
       yield assertTrue(listed.size == 1)
     },
@@ -363,7 +363,7 @@ object ScopeApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.token("probe_scope")
         _ <- central.post(path, Fixtures.scope(id))
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "scopeId" -> id)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "scopeId" -> id)
         record <- gone(central, id)
       yield assertTrue(deleted.status == Status.NoContent) && assertTrue(record.isEmpty)
     },
@@ -373,7 +373,7 @@ object ScopeApiSpec extends CentralApiSpec:
         id <- CentralApi.token("probe_scope")
         claimId <- CentralApi.token("probe_claim")
         _ <- central.post(path, Fixtures.scope(id, claims = List(Fixtures.claim(claimId))))
-        _ <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "scopeId" -> id)
+        _ <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "scopeId" -> id)
         again <- central.post(path, Fixtures.scope(id))
         record <- read(central, id, expect = _.objs("claims").isEmpty)
         _ <- cleanup(central, id)
@@ -385,20 +385,20 @@ object ScopeApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.token("probe_absent")
-        deleted <- central.delete(path, "tenantId" -> Fixtures.defaultTenant, "scopeId" -> id)
+        deleted <- central.delete(path, "tenantId" -> Fixtures.suiteTenant, "scopeId" -> id)
       yield assertTrue(deleted.status == Status.NoContent)
     },
     test("deleting without a scopeId is refused") {
       for
         central <- api
-        rejected <- central.delete(path, "tenantId" -> Fixtures.defaultTenant)
+        rejected <- central.delete(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(rejected.status == Status.BadRequest) &&
         assertTrue(rejected.body.contains("scopeId"))
     },
     test("an anonymous caller cannot list scopes") {
       for
         central <- api
-        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.defaultTenant)
+        listed <- central.anonymous.get(path, "tenantId" -> Fixtures.suiteTenant)
       yield assertTrue(listed.status == Status.Unauthorized)
     },
     test("an anonymous caller cannot create a scope") {
@@ -415,7 +415,7 @@ object ScopeApiSpec extends CentralApiSpec:
         id <- CentralApi.token("probe_scope")
         _ <- central.post(path, Fixtures.scope(id))
         rejected <- central.withCredentials("central", "d3Jvbmctc2VjcmV0LWZvci1lMmUtdGVzdHM")
-          .delete(path, "tenantId" -> Fixtures.defaultTenant, "scopeId" -> id)
+          .delete(path, "tenantId" -> Fixtures.suiteTenant, "scopeId" -> id)
         record <- read(central, id)
         _ <- cleanup(central, id)
       yield assertTrue(rejected.status == Status.Unauthorized) && assertTrue(record.nonEmpty)

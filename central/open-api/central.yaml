@@ -1108,14 +1108,10 @@ paths:
           description: Settings stored.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '409':
+        '400':
           description: |
-            The switch to `fapi2` was refused: the tenant holds clients the profile would not
-            admit. Nothing is stored.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SecurityProfileConflict'
+            Refused, with nothing stored -- among other reasons, because `securityProfile` names
+            a profile other than the one the tenant was created with, which cannot be changed.
 
   /configuration/forms:
     get:
@@ -1901,6 +1897,14 @@ components:
           oneOf:
             - $ref: '#/components/schemas/EdgeId'
             - type: 'null'
+        securityProfile:
+          oneOf:
+            - $ref: '#/components/schemas/SecurityProfile'
+            - type: 'null'
+          description: >-
+            The profile the tenant's clients are held to; `fapi2` when omitted. Settled here and
+            never changed: the challenge-settings endpoint refuses any other value afterwards,
+            and so does posting this tenant again with a different one.
       description: >-
         Takes no submission limits: every tenant is seeded with the recommended ones, so
         there is no caller-supplied rate-limit configuration to validate or fall back on.
@@ -2325,6 +2329,9 @@ components:
             regardless; a value below it is refused at registration.
         authMethod:
           $ref: '#/components/schemas/AuthMethod'
+          description: |
+            How the client authenticates. Fixed here for the life of the client: an update refuses
+            any other value, and a client that has to change method is deleted and registered again.
         applicationType:
           oneOf:
             - $ref: '#/components/schemas/ApplicationType'
@@ -2507,9 +2514,9 @@ components:
             - $ref: '#/components/schemas/AuthMethod'
             - type: 'null'
           description: |
-            Absent or `null` leaves the stored method unchanged. A value moves the client to
-            it, which is validated against the resulting `mtlsAuth`/`jwks` exactly as a
-            registration is, and drops the stored secret when it leaves `client_secret`.
+            The method the client was registered with, which an update cannot change. Absent,
+            `null`, or the stored method leaves it as it is; any other value is refused with
+            `400`. A client that has to change method is deleted and registered again.
         applicationType:
           oneOf:
             - $ref: '#/components/schemas/ApplicationType'
@@ -2594,45 +2601,10 @@ components:
       type: string
       description: |
         Which profile a tenant's clients are held to, at registration and at runtime.
-        `fapi2` is the default for a new tenant; `standard` is plain OAuth 2.1, which also
-        admits a reverse-domain private-use redirect scheme (RFC 8252 §7.1).
+        Chosen when the tenant is created, and never changed afterwards. `fapi2` is the default
+        for a new tenant; `standard` is plain OAuth 2.1, which also admits a reverse-domain
+        private-use redirect scheme (RFC 8252 §7.1).
       enum: [standard, fapi2]
-    ClientProfileViolation:
-      type: object
-      description: One client the profile would not admit, and why.
-      properties:
-        clientId:
-          $ref: '#/components/schemas/ClientId'
-        reasons:
-          type: array
-          items:
-            type: string
-      required:
-        - clientId
-        - reasons
-    SecurityProfileConflict:
-      type: object
-      description: |
-        Why a switch to a stricter profile was refused: every client the profile would not
-        admit. The request is well formed, and is accepted as it stands once those clients
-        are brought into conformance.
-      properties:
-        error:
-          type: string
-          enum: [security_profile_violations]
-        message:
-          type: string
-        securityProfile:
-          $ref: '#/components/schemas/SecurityProfile'
-        violations:
-          type: array
-          items:
-            $ref: '#/components/schemas/ClientProfileViolation'
-      required:
-        - error
-        - message
-        - securityProfile
-        - violations
     ApplicationType:
       type: string
       description: |
@@ -3741,9 +3713,8 @@ components:
             - $ref: '#/components/schemas/SecurityProfile'
             - type: 'null'
           description: >-
-            Keeps the stored value when omitted; defaults to `fapi2` for a new tenant. A
-            switch to `fapi2` is refused with `409` while any of the tenant's clients would
-            violate it.
+            Fixed when the tenant is created. Omitted, or naming the stored profile, it leaves
+            the profile as it is; naming any other is refused with `400`.
         mtlsCertificateHeader:
           type: [string, 'null']
           description: >-
