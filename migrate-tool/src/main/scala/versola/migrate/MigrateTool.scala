@@ -84,10 +84,18 @@ object MigrateTool:
     * identical configuration either way, since a dry run has to validate
     * against the exact same migration history and connection a real one
     * would, or "what would apply" stops meaning anything.
+    *
+    * The single difference is `ignorePending`, for the dry run only: Flyway's
+    * `validate()` reports a migration that simply hasn't been applied yet as
+    * "Detected resolved migration not applied to database" -- exactly what a
+    * dry run exists to list, so validating without it failed on every run that
+    * had anything to show. `migrate()` itself never needs this: pending
+    * migrations are what it applies, and its own pre-migrate validation already
+    * treats them that way.
     */
-  private def buildFlyway(target: Target): Flyway =
+  private def buildFlyway(target: Target, ignorePending: Boolean = false): Flyway =
     val connection = readConnection(target.configPath)
-    Flyway
+    val config = Flyway
       .configure()
       .locations(target.migrationsLocation)
       .dataSource(connection.url, connection.user, connection.password)
@@ -98,7 +106,8 @@ object MigrateTool:
       .validateOnMigrate(true)
       .cleanDisabled(true)
       .validateMigrationNaming(false)
-      // No `.ignoreMigrationPatterns(...)` override here, unlike the services' own `validate()`
+      // No `.ignoreMigrationPatterns(...)` override here (only the dry run adds `*:pending`, below),
+      // unlike the services' own `validate()`
       // path -- that path deliberately tolerates a database ahead of the build it's running (see
       // its own comment: a rollback deploy must still start against a schema a newer version
       // already migrated). This tool has no such excuse: it's the one place that actually applies
@@ -109,7 +118,10 @@ object MigrateTool:
       // being silently waved through, which is the stricter behavior this tool should have and
       // the per-service startup check specifically should not.
       .outOfOrder(true)
-      .load()
+    // Replaces Flyway's default patterns rather than adding to them, so "*:future" (the default)
+    // is listed again explicitly.
+    if ignorePending then config.ignoreMigrationPatterns("*:future", "*:pending").load()
+    else config.load()
 
   private def migrate(target: Target): Unit =
     println(s"${target.serviceName}: applying migrations from ${target.configPath}")
@@ -136,7 +148,7 @@ object MigrateTool:
     */
   private def checkPending(target: Target): Unit =
     println(s"${target.serviceName}: checking pending migrations against ${target.configPath}")
-    val flyway = buildFlyway(target)
+    val flyway = buildFlyway(target, ignorePending = true)
     val info = flyway.info()
     if info.applied().isEmpty then
       println(s"${target.serviceName}: no schema history yet, every migration below is a first-time apply")

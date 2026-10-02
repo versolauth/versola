@@ -109,9 +109,22 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
 # container. These *.generated-secrets.env files are the untrusted-until-
 # resolved candidates, not the final values -- versola-cli, not this
 # image, decides which of these actually get used.
-cp .local/env/"$TARGET"/auth.generated-secrets.env    "$OUT_DIR"/auth.generated-secrets.env
-cp .local/env/"$TARGET"/central.generated-secrets.env "$OUT_DIR"/central.generated-secrets.env
-cp .local/env/"$TARGET"/edge.generated-secrets.env    "$OUT_DIR"/edge.generated-secrets.env
+#
+# Copied under umask 077, in a subshell, so they're created 0600 from the
+# start -- with the default 022 they'd sit world-readable on the host (this
+# is a bind-mounted directory) until versola-cli's own chmod. Scoped to
+# these three files on purpose: everything else written here is read by
+# other containers running as their own users (OpenBao reads openbao.hcl,
+# the proxy's nginx serves central-ui/), and 0600/0700 would lock them out.
+# The rm first: cp onto an existing file (a reused OUT_DIR) keeps that
+# file's old mode, umask or not.
+(
+  umask 077
+  rm -f "$OUT_DIR"/auth.generated-secrets.env "$OUT_DIR"/central.generated-secrets.env "$OUT_DIR"/edge.generated-secrets.env
+  cp .local/env/"$TARGET"/auth.generated-secrets.env    "$OUT_DIR"/auth.generated-secrets.env
+  cp .local/env/"$TARGET"/central.generated-secrets.env "$OUT_DIR"/central.generated-secrets.env
+  cp .local/env/"$TARGET"/edge.generated-secrets.env    "$OUT_DIR"/edge.generated-secrets.env
+)
 
 # Bake this image's own version into the compose fragment so it pulls the
 # matching auth/central/edge/gateway images. sed instead of envsubst: fewer
