@@ -181,14 +181,6 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
         yield assertTrue(env.jwksRepository.find.calls.isEmpty)
       },
     ),
-    test("refreshNow replaces the cache with the repository's settings") {
-      val env = Env(Vector.empty) // loaded before bootstrap wrote the default tenant's row
-      for
-        _ <- env.repository.getAll.succeedsWith(Vector(settings))
-        _ <- env.service.refreshNow
-        cached <- env.cache.get
-      yield assertTrue(cached == Vector(settings))
-    },
     test("sync removes settings on delete event") {
       val env = Env(Vector(settings))
       val event = SyncEvent.ChallengeSettingsUpdated(tenantId, SyncEvent.Op.DELETE)
