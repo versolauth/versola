@@ -4,8 +4,13 @@ import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
 import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord}
 import versola.central.configuration.{InjectRule, InjectTarget}
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.jwk.gen.ECKeyGenerator
+import com.nimbusds.jose.jwk.{Curve, JWK}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
@@ -71,6 +76,19 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     None,
     requirePushedAuthorizationRequests = true,
   )
+
+  private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()
+
+  private def jwkOf(key: JWK): Json.Obj = key.toJSONString.fromJson[Json.Obj].toOption.get
+
+  private def utilitySeed(secret: Option[Secret] = None, publicKeyJwk: Option[Json.Obj] = None) =
+    CentralConfig.BootstrapConfig.UtilityClientSeed(ClientId("utils"), secret, publicKeyJwk)
+
+  private val utilitySecretCredential =
+    BootstrapService.UtilityClientCredential(AuthMethod.client_secret, Some(Secret(Array[Byte](1, 2, 3))), None)
+
+  private val utilityKeyCredential =
+    BootstrapService.UtilityClientCredential(AuthMethod.private_key_jwt, None, None)
 
   def spec = suite("BootstrapService")(
     // #353: the default tenant is FAPI 2.0, and tls_client_auth by edge is what it admits for
@@ -231,4 +249,51 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       test("does not refuse a boot with no prior central-admin to downgrade") {
         assertTrue(BootstrapService.authMethodDowngradeRefusal(None, secretlessCredential).isEmpty)
       },
+    // #424: the default tenant is FAPI 2.0, and private_key_jwt with DPoP-bound tokens is what
+    // it admits for a service client with no redirect URIs.
+    test("registers utils as private_key_jwt against its configured public key, over a secret also given") {
+      val credential = BootstrapService.utilityClientCredential(
+        utilitySeed(secret = Some(Secret(Array[Byte](1))), publicKeyJwk = Some(jwkOf(utilityKey.toPublicJWK))),
+      )
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.private_key_jwt),
+        credential.exists(_.secret.isEmpty),
+        credential.exists(_.jwks.exists(_.publicKeys.isRight)),
+        credential.exists(_.conformant),
+      )
+    },
+    test("keeps utils on client_secret, outside the profile, without a public key") {
+      val credential = BootstrapService.utilityClientCredential(utilitySeed(secret = Some(Secret(Array[Byte](1)))))
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.client_secret),
+        credential.exists(_.secret.nonEmpty),
+        credential.exists(!_.conformant),
+      )
+    },
+    test("refuses to boot with neither a public key nor a secret for utils") {
+      assertTrue(BootstrapService.utilityClientCredential(utilitySeed()).isLeft)
+    },
+    test("refuses to boot on a utils key that carries its private half") {
+      assertTrue(
+        BootstrapService.utilityClientCredential(utilitySeed(publicKeyJwk = Some(jwkOf(utilityKey))))
+          .left.exists(_.contains("public keys only")),
+      )
+    },
+    test("refuses a boot that would move utils back to client_secret when it holds no secret") {
+      assertTrue(
+        BootstrapService.utilityClientDowngradeRefusal(
+          Some(centralAdminRecord(AuthMethod.private_key_jwt)),
+          utilitySecretCredential,
+        ).exists(_.contains("bootstrap.utility-client.public-key-jwk was removed")),
+        BootstrapService.utilityClientDowngradeRefusal(
+          Some(centralAdminRecord(AuthMethod.client_secret)),
+          utilitySecretCredential,
+        ).isEmpty,
+        BootstrapService.utilityClientDowngradeRefusal(
+          Some(centralAdminRecord(AuthMethod.client_secret)),
+          utilityKeyCredential,
+        ).isEmpty,
+        BootstrapService.utilityClientDowngradeRefusal(None, utilitySecretCredential).isEmpty,
+      )
+    },
   )

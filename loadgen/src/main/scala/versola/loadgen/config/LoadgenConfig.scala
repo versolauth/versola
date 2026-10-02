@@ -428,12 +428,19 @@ case class AcceptanceMeasurementsConfig(
 case class ProvisionConfig(
     tenantId: String,
     /** The `client_credentials` client every admin call is made as. Central seeds it from its own
-      * `bootstrap.utility-client` block, which is where this secret is configured to match;
+      * `bootstrap.utility-client` block, which is where its credential is configured to match;
       * loadgen holds no internal secret of central's or edge's, and reaches the admin API only
       * through edge's proxy, with the permissions that client was granted.
       */
     provisionerClientId: String,
-    provisionerSecret: Config.Secret,
+    /** The client's `client_secret`, for a central that seeded it with `bootstrap.utility-client.secret`. */
+    provisionerSecret: Option[Config.Secret] = None,
+    /** The private JWK whose public half central seeded as `bootstrap.utility-client.public-key-jwk`:
+      * the client then authenticates with an RFC 7523 assertion signed by it, and its tokens are
+      * DPoP-bound, as the default tenant's FAPI 2.0 profile requires. Preferred over
+      * [[provisionerSecret]] when both are set; one of the two is required.
+      */
+    provisionerPrivateKey: Option[Config.Secret] = None,
     /** Where the three mobile clients' authorization codes are redirected -- a claimed `https`
       * URI, as a real native app would register (App Links / Universal Links). Central refuses a
       * private-use scheme (`versola://...`) and plain HTTP to a non-loopback host at registration

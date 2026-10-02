@@ -17,7 +17,7 @@ import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
 import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchAudience, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
 import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
-import versola.util.{EnvName, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
+import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
 import zio.{Task, UIO, ZIO, ZLayer}
@@ -104,6 +104,46 @@ object BootstrapService:
           s"registered as ${client.authMethod} with no client secret to fall back to -- reintroduce " +
           "bootstrap.central-admin-mtls, or rotate a secret for it first with " +
           "POST /configuration/clients/rotate-secret, before removing it"
+
+  /** How the `utils` service client authenticates, decided by whether bootstrap was given a
+    * public key for it (#424).
+    *
+    * With one: RFC 7523 `private_key_jwt` against that key, with DPoP-bound tokens -- what the
+    * default tenant's FAPI 2.0 profile asks of a client with no redirect URIs. Without one: the
+    * `client_secret` it has always had, seeded outside the profile.
+    */
+  private[versola] case class UtilityClientCredential(
+      authMethod: AuthMethod,
+      secret: Option[Secret],
+      jwks: Option[JsonWebKeySet],
+  ):
+    def conformant: Boolean = authMethod == AuthMethod.private_key_jwt
+
+  private[versola] def utilityClientCredential(
+      seed: CentralConfig.BootstrapConfig.UtilityClientSeed,
+  ): Either[String, UtilityClientCredential] =
+    (seed.publicKeyJwk, seed.secret) match
+      case (Some(jwk), _) =>
+        JsonWebKeySet.validateForAssertions(Json.Obj("keys" -> Json.Arr(jwk)))
+          .left.map(reason => s"bootstrap.utility-client.public-key-jwk, as a key set, $reason")
+          .map(keySet => UtilityClientCredential(AuthMethod.private_key_jwt, None, Some(keySet)))
+      case (None, Some(secret)) =>
+        Right(UtilityClientCredential(AuthMethod.client_secret, Some(secret), None))
+      case (None, None) =>
+        Left("bootstrap.utility-client needs a public-key-jwk or a secret")
+
+  /** [[authMethodDowngradeRefusal]]'s rule for `utils`: a config that falls back to a secret
+    * cannot move a client that already holds none back to `client_secret`, since the secret it
+    * names was never registered for it. */
+  private[versola] def utilityClientDowngradeRefusal(
+      existing: Option[OAuthClientRecord],
+      credential: UtilityClientCredential,
+  ): Option[String] =
+    existing.collect:
+      case client if !credential.conformant && !client.usesSecret =>
+        s"bootstrap.utility-client.public-key-jwk was removed, but '${client.id}' is already registered " +
+          s"as ${client.authMethod} with no client secret to fall back to -- reintroduce the key, or " +
+          "rotate a secret for it first with POST /configuration/clients/rotate-secret"
 
   private[versola] def adminAuthFlow(envName: EnvName): AuthFlow =
     AuthFlow(
@@ -1055,6 +1095,13 @@ object BootstrapService:
       */
     private def seedUtilityClient(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.utilityClient): seed =>
+        ZIO.fromEither(BootstrapService.utilityClientCredential(seed)).mapError(RuntimeException(_))
+          .flatMap(seedUtilityClient(seed, _))
+
+    private def seedUtilityClient(
+        seed: CentralConfig.BootstrapConfig.UtilityClientSeed,
+        credential: UtilityClientCredential,
+    ): Task[Unit] =
         val request = CreateClientRequest(
           tenantId = CentralConfig.defaultTenantId,
           id = seed.clientId,
@@ -1075,13 +1122,13 @@ object BootstrapService:
           policyUri = None,
           tosUri = None,
           consentFlow = None,
-          dpopBoundAccessTokens = false,
+          dpopBoundAccessTokens = credential.conformant,
           dpopSigningAlgs = Set.empty,
           dpopMinRsaKeySize = None,
-          authMethod = AuthMethod.client_secret,
+          authMethod = credential.authMethod,
           mtlsAuth = None,
           certificateBoundAccessTokens = false,
-          jwks = None,
+          jwks = credential.jwks,
           generateJwks = None,
           requireSignedRequestObject = false,
           requirePushedAuthorizationRequests = false,
@@ -1091,18 +1138,24 @@ object BootstrapService:
           applicationType = None,
         )
         // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
-        // does not admit. Seeded outside the profile until the tooling that authenticates as
-        // it (`loadgen provision`) can sign a client assertion and a DPoP proof instead.
-        ZIO.logWarning(
+        // does not admit, is still seeded for a deployment that configured no key for it.
+        val warnNonConformant = ZIO.logWarning(
           s"'${seed.clientId}' is seeded with client_secret, which the FAPI 2.0 profile of tenant " +
-            s"'${CentralConfig.defaultTenantId}' does not admit",
-        ) *> clientService.registerClient(request, presetSecret = Some(seed.secret), enforceSecurityProfile = false).foldZIO(
+            s"'${CentralConfig.defaultTenantId}' does not admit -- configure " +
+            "bootstrap.utility-client.public-key-jwk to have it authenticate with private_key_jwt instead",
+        ).unless(credential.conformant)
+        warnNonConformant *> clientService.registerClient(
+          request,
+          presetSecret = credential.secret,
+          enforceSecurityProfile = credential.conformant,
+        ).foldZIO(
           {
-            // Already seeded by an earlier boot: the secret stays whatever central holds, since
+            // Already seeded by an earlier boot: a secret stays whatever central holds, since
             // rotating it here would break a loadgen configured with the previous value, but the
-            // permission set is reasserted so a catalog change reaches an existing deployment.
+            // permission set is reasserted so a catalog change reaches an existing deployment --
+            // and so is a configured key, which moves a `client_secret` client onto it.
             case _: ClientAlreadyExists =>
-              clientService.updateClient(
+              refuseUtilityClientDowngrade(seed.clientId, credential) *> clientService.updateClient(
                 UpdateClientRequest(
                   clientId = seed.clientId,
                   clientName = None,
@@ -1122,26 +1175,31 @@ object BootstrapService:
                   policyUri = None,
                   tosUri = None,
                   consentFlow = None,
-                  dpopBoundAccessTokens = None,
+                  dpopBoundAccessTokens = Option.when(credential.conformant)(true),
                   dpopSigningAlgs = None,
                   dpopMinRsaKeySize = None,
-                  authMethod = None,
+                  authMethod = Option.when(credential.conformant)(credential.authMethod),
                   mtlsAuth = None,
                   certificateBoundAccessTokens = None,
-                  jwks = None,
+                  jwks = credential.jwks.map(Patch.Modified(_)),
                   requireSignedRequestObject = None,
                   requirePushedAuthorizationRequests = None,
                   edgeSigningKey = None,
                   edgeClientCertificate = None,
                   applicationType = None,
                 ),
-                enforceSecurityProfile = false,
+                enforceSecurityProfile = credential.conformant,
               ).mapError(registrationConfigurationError)
             case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
             case e: Throwable => ZIO.fail(e)
           },
           _ => ZIO.unit,
         )
+
+    private def refuseUtilityClientDowngrade(clientId: ClientId, credential: UtilityClientCredential): Task[Unit] =
+      clientRepo.find(clientId).flatMap: existing =>
+        ZIO.foreachDiscard(BootstrapService.utilityClientDowngradeRefusal(existing, credential)):
+          reason => ZIO.fail(RuntimeException(reason))
 
     private def registrationConfigurationError(error: InvalidRegistrationConfiguration | Throwable): Throwable =
       error match
