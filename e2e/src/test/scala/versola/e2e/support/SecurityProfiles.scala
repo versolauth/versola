@@ -19,14 +19,21 @@ object SecurityProfiles:
 
   private val suiteTenantReady = java.util.concurrent.atomic.AtomicBoolean(false)
 
+  private val suiteTenantGate = Unsafe.unsafe(unsafe ?=> Semaphore.unsafe.make(1))
+
   /** Creates the suite's tenant on `standard`, with what its specs register clients against.
     *
     * Every spec's layer calls this, and so does every run against a database the last one left
     * behind, so it is idempotent: posting the tenant again is accepted for the same profile
     * (and refused for any other), and the role is only created when it is missing. After the
-    * first call in a JVM it does nothing. */
+    * first call in a JVM it does nothing.
+    *
+    * A spec's layers are built concurrently, and two of them -- `OAuthClient.live` and
+    * `CentralApi.live` -- call this, so the calls are taken one at a time: two both finding the
+    * role missing would both create it, and the second is refused as a duplicate. */
   def ensureSuiteTenant(api: CentralApi): Task[Unit] =
-    ZIO.unless(suiteTenantReady.get)(createSuiteTenant(api) *> ZIO.succeed(suiteTenantReady.set(true))).unit
+    suiteTenantGate.withPermit:
+      ZIO.unless(suiteTenantReady.get)(createSuiteTenant(api) *> ZIO.succeed(suiteTenantReady.set(true))).unit
 
   private def createSuiteTenant(api: CentralApi): Task[Unit] =
     for

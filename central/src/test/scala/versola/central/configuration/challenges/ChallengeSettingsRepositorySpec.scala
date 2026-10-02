@@ -79,6 +79,23 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           all <- env.repository.getAll
         yield assertTrue(all.map(_.tenantId) == Vector(tenantA, tenantB))
       },
+      test("upsert reports that it wrote a tenant's settings") {
+        val original = settingsFor(tenantA)
+        for
+          created <- env.repository.upsert(original)
+          replaced <- env.repository.upsert(original.copy(otpLength = 8))
+        yield assertTrue(created, replaced)
+      },
+      // The profile is fixed at creation; the write itself refuses to move it, so two creations
+      // of one tenant racing under different profiles cannot both land.
+      test("upsert leaves the settings of a tenant stored under another profile untouched") {
+        val original = settingsFor(tenantA)
+        for
+          _ <- env.repository.upsert(original)
+          written <- env.repository.upsert(original.copy(otpLength = 8, securityProfile = SecurityProfile.standard))
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(!written, found == Some(original))
+      },
       test("upsert round-trips a configured mTLS certificate header and encoding") {
         val record = settingsFor(tenantA).copy(
           mtlsCertificateHeader = Some("ssl-client-cert"),

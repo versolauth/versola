@@ -59,7 +59,8 @@ object TenantService:
         // makes this call a way to re-seed a tenant that already exists. The profile is the one
         // thing that must not move that way: it is fixed at creation, so a request that names a
         // different one for a tenant that already has settings is refused, and one that names
-        // none keeps the one it has.
+        // none keeps the one it has. The check is repeated by the write itself, which leaves a
+        // stored profile alone: a creation racing this one under another profile is refused there.
         existing <- challengeSettingsService.getSettings(request.id)
         profile = request.securityProfile
           .orElse(existing.map(_.securityProfile))
@@ -77,7 +78,9 @@ object TenantService:
         _ <- challengeSettingsService.upsertSettings(
           defaultChallengeSettings(request.id, SubmissionLimits.recommended)
             .copy(signingKeyId = JwksRecord.preferredSigningKey(keys).map(_.kid), securityProfile = profile),
-        )
+        ).mapError:
+          case error: ChallengeSettingsService.ValidationError.SecurityProfileFixed => BadRequest(error.message)
+          case other => other
       yield ()
 
     override def updateTenant(

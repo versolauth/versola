@@ -121,6 +121,26 @@ object TenantApiSpec extends CentralApiSpec:
         assertTrue(second.status != Status.Created || listed.count(_.str("id").contains(id)) == 1)
           .label("either the duplicate is rejected, or it upserts — never two rows under one id")
     },
+    // The profile is fixed at creation, so of two creations of one tenant racing under different
+    // profiles exactly one may land; repeated, since a single pair may not overlap at all.
+    test("of two concurrent creations of a tenant under different profiles, exactly one is accepted") {
+      def race(central: CentralApi) =
+        for
+          id <- CentralApi.id("e2e-race")
+          (standard, fapi2) <- central.post(path, Fixtures.tenant(id, securityProfile = Some("standard")))
+            .zipPar(central.post(path, Fixtures.tenant(id, securityProfile = Some("fapi2"))))
+          winner = if standard.status == Status.Created then "standard" else "fapi2"
+          stored <- eventually(SecurityProfiles.profileOf(central, id))(_.isDefined)
+          _ <- central.delete(path, "tenantId" -> id)
+        yield (Set(standard.status, fapi2.status), winner, stored)
+      for
+        central <- api
+        outcomes <- ZIO.foreach(1 to 10)(_ => race(central))
+      yield assertTrue(outcomes.forall(_._1 == Set(Status.Created, Status.BadRequest)))
+        .label("the creation that lost the race must be refused, not stored over the one that won") &&
+        assertTrue(outcomes.forall((_, winner, stored) => stored.contains(winner)))
+          .label("the tenant must be on the profile of the creation that was accepted")
+    },
     test("an id that breaks the documented pattern is rejected") {
       for
         central <- api

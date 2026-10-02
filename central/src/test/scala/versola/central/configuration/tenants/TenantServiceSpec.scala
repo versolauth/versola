@@ -6,6 +6,7 @@ import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.util.{ReloadingCache, Secret}
+import versola.util.http.BadRequest
 import zio.json.ast.Json
 import zio.*
 import zio.test.*
@@ -175,6 +176,24 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result.left.toOption.exists(_.getMessage.contains("cannot be changed after the tenant is created")),
         tenantWrites == 0,
         settingsWrites == 0,
+      )
+    },
+    // Two creations of the same tenant under different profiles, each reading no settings yet:
+    // the write of the second is the one that refuses, and it is the caller's error to fix.
+    test("createTenant refuses with a bad request when a concurrent creation stored another profile first") {
+      val env = new Env()
+
+      for
+        _ <- env.challengeSettingsService.getSettings.succeedsWith(None)
+        _ <- env.repository.createTenant.succeedsWith(())
+        _ <- env.jwksRepository.getAll.succeedsWith(Vector.empty)
+        _ <- env.challengeSettingsService.upsertSettings.failsWith(
+          ChallengeSettingsService.ValidationError.SecurityProfileFixed(tenant1.toString),
+        )
+        result <- env.service.createTenant(createRequest.copy(securityProfile = Some(SecurityProfile.standard))).either
+      yield assertTrue(
+        result.left.toOption.exists(_.isInstanceOf[BadRequest]),
+        result.left.toOption.exists(_.getMessage.contains("cannot be changed after the tenant is created")),
       )
     },
     // A retry that finishes a half-made tenant names the profile again, or nothing at all.
