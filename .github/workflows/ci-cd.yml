@@ -234,6 +234,19 @@ jobs:
         if: github.event_name != 'release'
         run: echo "local" | scala-cli run scripts/gen-env.scala
 
+      # For the fresh-start check after edge comes up (see
+      # check-fresh-start-login.sh): with the dev default (1 minute) a slow
+      # runner could reach it after central refreshed its caches on its own,
+      # and the check would pass without the bootstrap reload it guards.
+      # Central's caches otherwise follow Postgres notifications, and its
+      # token for auth renews on its own fixed schedule, so nothing else in
+      # the job depends on this interval.
+      - name: Lengthen central's cache refresh interval
+        if: github.event_name != 'release'
+        run: |
+          sed -i 's/^configuration-cache-refresh-interval = .*/configuration-cache-refresh-interval = "10 minutes"/' central/dev/env.conf
+          grep -n '^configuration-cache-refresh-interval = "10 minutes"' central/dev/env.conf
+
       # No `if: != release` guard here (unlike the steps above/below it) --
       # central-postgres-impl/stage packages whatever's under
       # central/src/main/resources at stage time, and this is what
@@ -438,6 +451,12 @@ jobs:
             fi
             sleep 2
           done
+
+      # Right after edge is ready, before anything forces a configuration
+      # sync: central-admin has to be served by edge's very first sync.
+      - name: Check central-admin login right after a fresh start
+        if: github.event_name != 'release'
+        run: bash .github/scripts/check-fresh-start-login.sh
 
       # Runs loadgen's own Provisioner/HttpAdminClient, unmodified, against this real central --
       # not FakeCentral, loadgen's hand-maintained stand-in, which has twice let a wire-shape
