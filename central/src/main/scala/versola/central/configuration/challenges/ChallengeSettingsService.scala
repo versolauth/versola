@@ -35,6 +35,11 @@ trait ChallengeSettingsService:
   def upsertSettings(record: ChallengeSettingsRecord): Task[Unit]
   def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit]
 
+  /** Reloads the whole cache from the repository now -- for bootstrap, which writes the
+    * default tenant's settings after this cache has loaded and before central listens for
+    * the change notifications (see `OAuthClientService.refreshNow`). */
+  def refreshNow: Task[Unit]
+
 object ChallengeSettingsService:
   /** Rejected before the row is written, so a tenant cannot be left pointing at a key nothing
     * can sign with -- auth would silently fall back to its legacy key and issue tokens under
@@ -113,6 +118,9 @@ object ChallengeSettingsService:
         cache,
         repository.findByTenant(event.tenantId),
       )
+
+    override def refreshNow: Task[Unit] =
+      repository.getAll.flatMap(cache.set(_))
 
     /** Read through the repository, not the key service's cache: a key generated moments ago
       * must be selectable immediately, rather than after the next cache refresh.

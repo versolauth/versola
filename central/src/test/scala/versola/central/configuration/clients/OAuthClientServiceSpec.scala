@@ -404,6 +404,26 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result <- env.service.getClientsForSync(Some(edgeId))
       yield assertTrue(result === Vector(cachedClient))
     },
+    // Bootstrap seeds central-admin after this cache has loaded, and its change notification
+    // is lost (no listener yet): refreshNow is what makes the seed visible to edge's sync.
+    test("refreshNow replaces the cache with the repository's clients, secrets decrypted") {
+      val edgeId = EdgeId("edge-1")
+      val seeded = cachedClient.copy(id = ClientId("central-admin"), secret = Some(Secret.fromString("encrypted")))
+      val plaintext = "plaintext".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+      val env = new Env(Vector.empty) // loaded before the seed
+
+      for
+        _ <- env.repository.getAll.succeedsWith(Vector(seeded))
+        _ <- env.securityService.decryptAes256.succeedsWith(plaintext)
+        _ <- env.tenantRepository.getAll.succeedsWith(Vector(TenantRecord(tenantId, "Tenant A", Some(edgeId))))
+        before <- env.service.getClientsForSync(Some(edgeId))
+        _ <- env.service.refreshNow
+        after <- env.service.getClientsForSync(Some(edgeId))
+      yield assertTrue(
+        before.isEmpty,
+        after === Vector(seeded.copy(secret = Some(Secret(plaintext)))),
+      )
+    },
     test("getTenantClients applies pagination after filtering") {
       val env = new Env(Vector(cachedClient, cachedClient.copy(id = ClientId("spa-app"), clientName = Map("en" -> "SPA App")), otherTenantClient))
       val secondClient = cachedClient.copy(id = ClientId("spa-app"), clientName = Map("en" -> "SPA App"))
