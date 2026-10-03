@@ -5,7 +5,7 @@ import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
-import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientController, OAuthClientRepository, OAuthClientService}
+import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientCertificateAuthority, ClientController, OAuthClientRepository, OAuthClientService}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
@@ -155,6 +155,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       ChallengeSettingsService.live >+>
       // RFC 8705 §6.5: registering `mtlsAuth` is refused unless the client's tenant names a
       // certificate header, so client registration reads the challenge settings.
+      ClientCertificateAuthority.live >+>
       OAuthClientService.live >+>
       BootstrapService.live >+>
       TenantService.live >+>

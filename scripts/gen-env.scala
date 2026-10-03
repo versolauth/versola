@@ -644,6 +644,20 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     else ""
   val edgeInternalTrustLine =
     edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = "$path"\n""")
+  // #440: the CA central issues edge client certificates from, for a registration that asks for
+  // one. The terminator's own, for the reason central-admin's certificate is signed by it: it is
+  // the one issuer nginx advertises, so the only one edge will present a certificate from. Auth's
+  // mutual-TLS listener trusts it as well (`authMutualTlsTrustedClients` below), so the same
+  // certificate serves an edge-fronted native client there. isLocal alone, like the CA itself.
+  val centralClientCertificateAuthorityBlock =
+    if isLocal then
+      s"""
+         |client-certificate-authority {
+         |  certificate = "${File(edgeInternalTlsDir, "ca.crt").getAbsolutePath}"
+         |  private-key = "${File(edgeInternalTlsDir, "ca.key").getAbsolutePath}"
+         |}
+         |""".stripMargin
+    else ""
   val authAdditionalDefault =
     if isDockerLocal then "http://auth:8082"
     else if isVps then "http://127.0.0.1:8082"
@@ -660,13 +674,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val authMutualTlsDir = File("auth/dev/mtls")
   val authMutualTlsPort = 9008
   val authMutualTlsUrl = s"https://localhost:$authMutualTlsPort"
+  // The listener's own CA, which e2e's client certificate chains to, and the terminator's, which
+  // central issues edge client certificates from (`centralClientCertificateAuthorityBlock`). One
+  // PEM bundle: the trust manager loads every certificate in it.
+  val authMutualTlsTrustedClients = File(authMutualTlsDir, "trusted-clients.crt")
   val authMutualTlsBlock =
     if isLocal then
       s"""
          |mutual-tls {
          |  certificate            = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
          |  private-key            = "${File(authMutualTlsDir, "server.key").getAbsolutePath}"
-         |  trusted-certificates   = "${File(authMutualTlsDir, "ca.crt").getAbsolutePath}"
+         |  trusted-certificates   = "${authMutualTlsTrustedClients.getAbsolutePath}"
          |  external-url           = "$authMutualTlsUrl"
          |}
          |""".stripMargin
@@ -1075,7 +1093,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |auth {
        |  url = "$authInternalUrl"
        |}
-       |
+       |$centralClientCertificateAuthorityBlock
        |user-outbox {
        |  poll-interval = 1 second
        |  batch-size = 32
@@ -1213,6 +1231,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     // The CA and server certificate were generated with central-admin's certificate, above.
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
+    writeFile(
+      authMutualTlsDir,
+      authMutualTlsTrustedClients.getName,
+      Seq(File(authMutualTlsDir, "ca.crt"), File(edgeInternalTlsDir, "ca.crt"))
+        .map(file => scala.io.Source.fromFile(file).mkString.trim)
+        .mkString("", "\n", "\n"),
+    )
     println(
       s"""
          |Done! Files written to service dev directories:
@@ -1222,7 +1247,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  - edge/dev/internal-tls/{ca.*,server.*,central-admin.*,nginx.conf} (the TLS terminator
          |    edge's RFC 8705 mutual-TLS calls go through -- start with
          |    `nginx -c $$(pwd)/edge/dev/internal-tls/nginx.conf` before edge)
-         |  - auth/dev/mtls/{ca.*,server.*,client.*} (auth's own RFC 8705 §5 listener --
+         |  - auth/dev/mtls/{ca.*,server.*,client.*,trusted-clients.crt} (auth's own RFC 8705 §5 listener --
          |    no terminator to start, auth serves it itself on MPORT=$authMutualTlsPort;
          |    client.crt/client.key are the certificate e2e's MutualTlsListenerSpec presents)
          |""".stripMargin,

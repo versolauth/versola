@@ -141,6 +141,37 @@ object InvalidRegistrationConfiguration:
         invalid(s"generates the key an assertion is signed with, which $authMethod does not read")
       else None
 
+  /** A registration asking central to issue the edge's certificate states neither the
+    * certificate nor the subject it is recognised by: both come from the issued certificate, so
+    * a value supplied for either is one the registration would have to choose over. Checked
+    * before the certificate is issued, for the reason [[validateGeneratedJwks]] is.
+    */
+  def validateIssuedEdgeClientCertificate(
+      clientId: ClientId,
+      issueEdgeClientCertificate: Boolean,
+      authMethod: AuthMethod,
+      mtlsAuth: Option[MutualTlsAuth],
+      edgeClientCertificate: Option[PrivateClientCertificate],
+  ): Option[InvalidRegistrationConfiguration] =
+    Option.when(issueEdgeClientCertificate)(()).flatMap: _ =>
+      def invalid(reason: String) =
+        Some(InvalidRegistrationConfiguration(clientId, s"issueEdgeClientCertificate $reason"))
+
+      if authMethod != AuthMethod.tls_client_auth then
+        invalid(s"issues a tls_client_auth certificate, which $authMethod does not read")
+      else if edgeClientCertificate.nonEmpty then
+        invalid("cannot be combined with edgeClientCertificate - edge presents the certificate it is given or one central issues, not both")
+      else if mtlsAuth.nonEmpty then
+        invalid("cannot be combined with mtlsAuth - the client is registered by the issued certificate's own subject")
+      else None
+
+  /** Central was asked to issue a certificate and has no CA to issue it from. */
+  def noClientCertificateAuthority(clientId: ClientId): InvalidRegistrationConfiguration =
+    InvalidRegistrationConfiguration(
+      clientId,
+      "issueEdgeClientCertificate needs a CA, and central has none configured (client-certificate-authority)",
+    )
+
   /** RFC 8705 §6.5 leaves it to the deployment to hand a terminated certificate to the
     * application, and this one does it per tenant: `auth` looks for a certificate only where
     * that tenant's `mtlsCertificateHeader` names one. A client registering `mtlsAuth` under a

@@ -333,10 +333,48 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
     },
   )
 
+  private def issued(
+      authMethod: AuthMethod = AuthMethod.tls_client_auth,
+      mtlsAuth: Option[MutualTlsAuth] = None,
+      edgeClientCertificate: Option[PrivateClientCertificate] = None,
+      issue: Boolean = true,
+  ) = InvalidRegistrationConfiguration.validateIssuedEdgeClientCertificate(
+    clientId,
+    issue,
+    authMethod,
+    mtlsAuth,
+    edgeClientCertificate,
+  ).map(_.reason)
+
+  private val issuedEdgeClientCertificateSuite = suite("validateIssuedEdgeClientCertificate")(
+    test("accepts a tls_client_auth client stating neither its certificate nor its subject") {
+      assertTrue(issued().isEmpty)
+    },
+    test("leaves a registration that issues nothing alone") {
+      assertTrue(issued(authMethod = AuthMethod.client_secret, issue = false).isEmpty)
+    },
+    test("refuses every method but tls_client_auth") {
+      assertTrue(
+        issued(authMethod = AuthMethod.self_signed_tls_client_auth).exists(_.contains("self_signed_tls_client_auth")),
+        issued(authMethod = AuthMethod.private_key_jwt).exists(_.contains("private_key_jwt")),
+      )
+    },
+    test("refuses a certificate or a subject supplied beside the issued one") {
+      val certificate = TestCertificates.generate(subject = "CN=supplied")
+      assertTrue(
+        issued(edgeClientCertificate = Some(PrivateClientCertificate(certificate.bundle)))
+          .exists(_.contains("cannot be combined with edgeClientCertificate")),
+        issued(mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=supplied")))
+          .exists(_.contains("cannot be combined with mtlsAuth")),
+      )
+    },
+  )
+
   def spec = suite("InvalidRegistrationConfiguration")(
     securityProfileSuite,
     edgeSigningKeySuite,
     edgeFrontedNativeSuite,
+    issuedEdgeClientCertificateSuite,
     edgeClientCertificateSuite,
     test("accepts multiple assigned roles") {
       val flow = RegistrationFlow.default.copy(

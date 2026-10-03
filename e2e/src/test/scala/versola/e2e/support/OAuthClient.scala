@@ -1141,6 +1141,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
         * with `tls_client_auth` is the app fronted by edge (#421). */
       applicationType: Option[String] = None,
+      /** #440: central issues the certificate the edge fronting this client presents, from its
+        * own CA, and registers the client `tls_client_auth` by its subject. Leaves out
+        * `mtlsAuth` and `edgeClientCertificate`, which the issued certificate supplies. */
+      issueEdgeClientCertificate: Boolean = false,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1173,6 +1177,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
       applicationType = applicationType,
+      issueEdgeClientCertificate = issueEdgeClientCertificate,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1788,4 +1793,5 @@ object OAuthClient:
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
       applicationType: Option[String] = None,
+      issueEdgeClientCertificate: Boolean = false,
   ) derives JsonEncoder

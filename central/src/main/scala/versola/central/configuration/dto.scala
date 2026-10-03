@@ -463,6 +463,11 @@ case class CreateClientRequest(
       * with `tls_client_auth` is the app fronted by edge (#421), which registration holds to
       * the rules in `InvalidRegistrationConfiguration.validateEdgeFrontedNative`. */
     applicationType: Option[ApplicationType],
+    /** Issue the certificate the edge fronting this client presents from central's own CA
+      * (`ClientCertificateAuthority`), instead of [[edgeClientCertificate]] supplying one. The
+      * client is registered `tls_client_auth` by that certificate's subject, so [[mtlsAuth]] is
+      * left out too. The certificate reaches the edge alone: nothing hands it back here. */
+    issueEdgeClientCertificate: Boolean = false,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
