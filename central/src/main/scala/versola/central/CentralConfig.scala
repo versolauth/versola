@@ -17,6 +17,11 @@ case class CentralConfig(
     auth: CentralConfig.AuthConfig,
     userOutbox: CentralConfig.UserOutboxConfig,
     configurationCacheRefreshInterval: Duration,
+    /** The CA central issues edge client certificates from, for a registration that asks for one
+      * (`CreateClientRequest.issueEdgeClientCertificate`) rather than supplying it. Absent, such a
+      * registration is refused, and edge-fronted mTLS clients need an operator-supplied
+      * certificate as before. */
+    clientCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
 )
 
 object CentralConfig:
@@ -24,6 +29,19 @@ object CentralConfig:
   val defaultTenantId: TenantId = TenantId("default")
 
   case class AuthConfig(url: URL)
+
+  /** @param certificate PEM path to the CA certificate. It has to be one every party an edge
+    *                    presents an issued certificate to trusts: auth's
+    *                    `mutual-tls.trusted-certificates` for an edge-fronted native client, and
+    *                    the issuer the TLS terminator in front of auth advertises for a web one.
+    * @param privateKey PEM path to the CA's key, unencrypted PKCS#8.
+    * @param validityDays how long an issued certificate is valid, capped at the CA's own expiry.
+    */
+  case class ClientCertificateAuthorityConfig(
+      certificate: String,
+      privateKey: String,
+      validityDays: Option[Int],
+  )
 
   case class PasskeyConfig(
       rpId: String,

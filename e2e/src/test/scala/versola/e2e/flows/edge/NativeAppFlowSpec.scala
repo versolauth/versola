@@ -11,8 +11,8 @@ import zio.test.*
   * the device.
   *
   * Central registers the client native and confidential at once (`application_type=native`,
-  * `tls_client_auth`, a certificate issued by the CA auth's own mutual-TLS listener trusts,
-  * held by edge). Edge authenticates as it straight on that listener (`MPORT`), the device's
+  * `tls_client_auth`, with a certificate central issues from its own CA (#440), which auth's
+  * mutual-TLS listener trusts, held by edge). Edge authenticates as it straight on that listener (`MPORT`), the device's
   * DPoP key is the only sender constraint, and the browser leg goes to auth directly. What only
   * this level shows is that the pieces agree across the services: the `applicationType` column
   * surviving central -> auth (`cnf` carrying `jkt` and no `x5t#S256`) and central -> edge (the
@@ -20,8 +20,9 @@ import zio.test.*
   * being the one the listener's handshake accepts, the `dpop_jkt` edge pushed binding the code,
   * and the device proof reaching auth byte for byte through edge.
   *
-  * Needs the staged stack with auth's mutual-TLS listener and edge's `native { }` block, both
-  * of which `scripts/gen-env.scala`'s `local` target writes (see develop.md).
+  * Needs the staged stack with auth's mutual-TLS listener, edge's `native { }` block and
+  * central's `client-certificate-authority`, all of which `scripts/gen-env.scala`'s `local`
+  * target writes (see develop.md).
   */
 object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub]:
 
@@ -32,6 +33,7 @@ object NativeAppFlowSpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi & Ed
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items")),
     nativeApp = true,
+    issuedCertificate = true,
   )
 
   override val bootstrap: ZLayer[Any, Any, OAuthClient & CentralApi & EdgeApi & EdgeFixture & UpstreamStub] =
