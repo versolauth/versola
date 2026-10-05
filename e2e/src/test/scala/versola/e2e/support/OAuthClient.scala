@@ -211,17 +211,17 @@ sealed trait IntrospectResult:
       ZIO.fail(RuntimeException(s"Expected introspect success but got: status=${resp.status} body=$body"))
 
 object IntrospectResult:
-  case class Success(response: Response, active: Boolean) extends IntrospectResult
+  case class Success(response: Response, active: Boolean, cnf: Option[Json.Obj] = None) extends IntrospectResult
   case class Failure(response: Response, body: String) extends IntrospectResult
 
-  private case class Raw(active: Boolean) derives JsonDecoder
+  private case class Raw(active: Boolean, cnf: Option[Json.Obj]) derives JsonDecoder
 
   def parse(response: Response): Task[IntrospectResult] =
     response.body.asString.map: body =>
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(response, raw.active),
+          raw => Success(response, raw.active, raw.cnf),
         )
       else Failure(response, body)
 

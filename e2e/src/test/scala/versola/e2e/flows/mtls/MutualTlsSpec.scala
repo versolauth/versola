@@ -264,7 +264,10 @@ object MutualTlsSpec extends E2ESpec:
           Some(""),
           certificate = Some(header),
         ).success
-      yield assertTrue(introspection.active)
+      yield assertTrue(
+        introspection.active,
+        introspection.cnf.flatMap(_.get("x5t#S256")).contains(Json.Str(certificate.thumbprint)),
+      ).label(s"RFC 8705 §3.2: expected cnf.x5t#S256=${certificate.thumbprint}, got ${introspection.cnf}")
     },
 
     test("/revoke authenticates the caller by certificate") {

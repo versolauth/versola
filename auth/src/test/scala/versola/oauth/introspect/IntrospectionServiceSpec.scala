@@ -218,6 +218,33 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.cnf == Some(Json.Obj("jkt" -> Json.Str("test-key-thumbprint"))),
         )).provide(env.layer)
       },
+      test("introspects a certificate-bound access token, echoing its cnf.x5t#S256") {
+        val env = Env()
+        val publicResource = ResourceUri("https://api.example.com")
+        val resource = ResourceRecord(
+          ResourceId("api"),
+          testClient.tenantId,
+          publicResource,
+          List(testClient.id),
+          internal = false,
+        )
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          payload = accessTokenPayload(now, audience = Vector(publicResource))
+            .copy(confirmation = Some(Cnf.certificate("test-certificate-thumbprint")))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.oauthClientService.getResourcesForClient.succeedsWith(List(resource))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectAccessToken(payload, credentials, None)
+        yield assertTrue(
+          result.active == true,
+          result.tokenType == Some("Bearer"),
+          result.cnf == Some(Json.Obj("x5t#S256" -> Json.Str("test-certificate-thumbprint"))),
+        )).provide(env.layer)
+      },
       test("fail with Unauthenticated when client authentication fails") {
         val env = Env()
         (for
@@ -405,6 +432,25 @@ object IntrospectionServiceSpec extends UnitSpecBase:
           result.active == true,
           result.tokenType == Some("DPoP"),
           result.cnf == Some(Json.Obj("jkt" -> Json.Str("test-key-thumbprint"))),
+        )).provide(env.layer)
+      },
+      test("introspects a certificate-bound refresh token, echoing its cnf.x5t#S256") {
+        val env = Env()
+        (for
+          now <- Clock.instant
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          record = tokenRecord(now).copy(cnf = Some(Cnf.certificate("test-certificate-thumbprint")))
+
+          _ <- env.oauthClientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepository.findToken.succeedsWith(Some(record))
+
+          service <- ZIO.service[IntrospectionService]
+          result <- service.introspectRefreshToken(refreshToken1, credentials, None)
+        yield assertTrue(
+          result.active == true,
+          result.tokenType == Some("Bearer"),
+          result.cnf == Some(Json.Obj("x5t#S256" -> Json.Str("test-certificate-thumbprint"))),
         )).provide(env.layer)
       },
       test("returns the authorization details granted by the refresh token") {
