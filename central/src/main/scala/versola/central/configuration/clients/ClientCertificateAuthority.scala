@@ -32,7 +32,8 @@ import scala.util.Try
   */
 trait ClientCertificateAuthority:
 
-  /** `None` when central has no CA configured. */
+  /** `None` when central has no CA configured. Fails with [[ClientCertificateAuthority.Expired]]
+    * once the CA has expired, since anything it issued from then on could not authenticate. */
   def issue(tenantId: TenantId, clientId: ClientId): Task[Option[ClientCertificateAuthority.Issued]]
 
 object ClientCertificateAuthority:
@@ -41,6 +42,9 @@ object ClientCertificateAuthority:
     * @param subjectDn its subject in the RFC 4514 form a `subject_dn` registration is compared by
     */
   case class Issued(certificate: PrivateClientCertificate, subjectDn: String)
+
+  /** Startup only checks the CA is still valid then; a running central can outlive it. */
+  case class Expired(at: Instant) extends RuntimeException(s"client-certificate-authority expired at $at")
 
   val DefaultValidityDays = 365
 
@@ -86,6 +90,13 @@ object ClientCertificateAuthority:
         (),
         s"certificate expired at ${certificate.getNotAfter.toInstant}",
       )
+      // RFC 5280 §4.2.1.3: a CA certificate that carries KeyUsage must assert keyCertSign, or
+      // verifiers such as OpenSSL refuse every certificate it signs.
+      _ <- Either.cond(
+        Option(certificate.getKeyUsage).forall(_.lift(5).contains(true)),
+        (),
+        "certificate's KeyUsage does not permit keyCertSign",
+      )
       _ <- PrivateClientCertificate.validate(s"${certificatePem.trim}\n${privateKeyPem.trim}\n")
         .left.map(reason => s"certificate and private key: $reason")
       privateKey <- readPrivateKey(privateKeyPem)
@@ -111,10 +122,13 @@ object ClientCertificateAuthority:
         val identifier = SubjectKeyIdentifier.getInstance(ASN1OctetString.getInstance(value).getOctets)
         AuthorityKeyIdentifier(identifier.getKeyIdentifier)
 
+    private val caEnd = caCertificate.getNotAfter.toInstant
+
     override def issue(tenantId: TenantId, clientId: ClientId): Task[Option[Issued]] =
       Clock.instant.flatMap: now =>
-        ZIO.attemptBlocking(issueAt(tenantId, clientId, now)).flatMap(ZIO.fromEither(_).mapError(IllegalStateException(_)))
-          .asSome
+        ZIO.fail(Expired(caEnd)).unless(caEnd.isAfter(now)) *>
+          ZIO.attemptBlocking(issueAt(tenantId, clientId, now)).flatMap(ZIO.fromEither(_).mapError(IllegalStateException(_)))
+            .asSome
 
     private def issueAt(tenantId: TenantId, clientId: ClientId, now: Instant): Either[String, Issued] =
       val generator = KeyPairGenerator.getInstance("EC")
@@ -127,7 +141,6 @@ object ClientCertificateAuthority:
         .addRDN(BCStyle.CN, clientId.toString)
         .build()
       val requestedEnd = now.plus(java.time.Duration.ofDays(validityDays.toLong))
-      val caEnd = caCertificate.getNotAfter.toInstant
       val notAfter = if requestedEnd.isAfter(caEnd) then caEnd else requestedEnd
 
       val extensions = ExtensionsGenerator()

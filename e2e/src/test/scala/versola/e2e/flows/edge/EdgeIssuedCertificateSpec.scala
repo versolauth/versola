@@ -64,6 +64,31 @@ object EdgeIssuedCertificateSpec
       session <- edgeApi.browserLogin(authApi, f.presetId, f.login, f.password)
     yield session
 
+  private def refusedIssuance(prefix: String, authMethod: String, mtlsAuth: Option[zio.json.ast.Json]) =
+    for
+      authApi <- auth
+      centralApi <- central
+      id <- Random.nextUUID.map(uuid => s"$prefix-${uuid.toString.take(8)}")
+      result <- authApi.registerClient(
+        id,
+        "Refused Issuance",
+        Set("https://app.test/callback"),
+        authMethod = authMethod,
+        mtlsAuth = mtlsAuth,
+        issueEdgeClientCertificate = true,
+      )
+      listed <- centralApi.get("/configuration/clients", "tenantId" -> Fixtures.suiteTenant)
+        .flatMap(_.items("clients"))
+    yield result match
+      case RegisterClientResult.Failure(response, body) =>
+        assertTrue(
+          response.status == Status.BadRequest,
+          body.contains("issueEdgeClientCertificate"),
+          !listed.exists(_.str("id").contains(id)),
+        )
+      case _: RegisterClientResult.Success =>
+        assertNever(s"central registered $id despite issueEdgeClientCertificate with $authMethod")
+
   def spec = suite("edge fronting a client whose certificate central issued")(
     test("the client is registered tls_client_auth by the issued certificate's subject, which stays with edge") {
       for
@@ -96,6 +121,18 @@ object EdgeIssuedCertificateSpec
         seen <- stub.lastRequest
       yield assertTrue(response.status == Status.Ok, seen.isDefined)
     },
+    suite("refuses a registration asking for a certificate it could not register by, and stores nothing")(
+      test("for a method other than tls_client_auth") {
+        refusedIssuance("issued-secret", authMethod = "client_secret", mtlsAuth = None)
+      },
+      test("beside a subject of its own") {
+        refusedIssuance(
+          "issued-subject",
+          authMethod = "tls_client_auth",
+          mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=chosen-by-caller")),
+        )
+      },
+    ),
     test("reaches an endpoint whose authorization needs userinfo") {
       for
         f <- fixture

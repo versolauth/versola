@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
+import org.bouncycastle.asn1.x509.KeyUsage
 import versola.util.TestCertificates
 import zio.*
 import zio.test.*
@@ -65,6 +66,18 @@ object ClientCertificateAuthoritySpec extends ZIOSpecDefault:
       for issued <- issue(ca)
       yield assertTrue(!leafOf(issued).getNotAfter.after(ca.certificate.getNotAfter))
     },
+    test("refuses to issue once the authority has expired, though it was valid at startup") {
+      val ca = TestCertificates.generate(subject = "CN=Client CA", ca = true)
+      val later = Instant.now().plus(java.time.Duration.ofDays(2))
+      val clock = Clock.ClockJava(java.time.Clock.fixed(later, java.time.ZoneOffset.UTC))
+      for
+        authority <- ZIO.fromEither(authorityOf(ca)).mapError(RuntimeException(_))
+        result <- ZIO.withClock(clock)(authority.issue(tenantId, clientId)).either
+      yield assertTrue(result.left.exists {
+        case ClientCertificateAuthority.Expired(at) => at == ca.certificate.getNotAfter.toInstant
+        case _ => false
+      })
+    },
     test("issues a fresh key and serial every time") {
       val ca = TestCertificates.generate(subject = "CN=Client CA", ca = true)
       for
@@ -89,6 +102,18 @@ object ClientCertificateAuthoritySpec extends ZIOSpecDefault:
         val other = TestCertificates.generate(subject = "CN=Other CA", ca = true)
         val result = ClientCertificateAuthority.fromPem(ca.certificatePem, other.privateKeyPem, 30, Instant.now())
         assertTrue(result.left.exists(_.contains("does not belong")))
+      },
+      test("a CA whose KeyUsage does not permit signing certificates") {
+        val ca = TestCertificates.generate(subject = "CN=Client CA", ca = true, keyUsage = Some(KeyUsage.digitalSignature))
+        assertTrue(authorityOf(ca).left.exists(_.contains("keyCertSign")))
+      },
+      test("accepts a CA whose KeyUsage permits signing certificates") {
+        val ca = TestCertificates.generate(
+          subject = "CN=Client CA",
+          ca = true,
+          keyUsage = Some(KeyUsage.keyCertSign | KeyUsage.cRLSign),
+        )
+        assertTrue(authorityOf(ca).isRight)
       },
       test("a validity that is not positive") {
         val ca = TestCertificates.generate(subject = "CN=Client CA", ca = true)

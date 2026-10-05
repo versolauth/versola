@@ -1805,6 +1805,26 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         createCalls == 0,
       )
     },
+    test("registerClient refuses to issue a certificate once central's CA has expired") {
+      val expiredAt = Instant.parse("2026-01-01T00:00:00Z")
+      val expired = new ClientCertificateAuthority:
+        override def issue(tenantId: TenantId, clientId: ClientId) =
+          ZIO.fail(ClientCertificateAuthority.Expired(expiredAt))
+      val env = new Env(certificateAuthority = expired)
+
+      for
+        result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
+          issueEdgeClientCertificate = true,
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains(s"expired at $expiredAt")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
     test("registerClient refuses to issue a certificate beside a supplied one, before issuing") {
       val env = new Env()
       val certificate = TestCertificates.generate(subject = "CN=native-app")

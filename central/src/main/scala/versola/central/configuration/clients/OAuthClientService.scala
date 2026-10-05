@@ -207,6 +207,9 @@ object OAuthClientService:
         // rules one carrying its own certificate is.
         issued <- ZIO.when(request.issueEdgeClientCertificate):
           certificateAuthority.issue(request.tenantId, request.id)
+            .catchSome { case ClientCertificateAuthority.Expired(at) =>
+              ZIO.fail(InvalidRegistrationConfiguration.clientCertificateAuthorityExpired(request.id, at))
+            }
             .someOrFail(InvalidRegistrationConfiguration.noClientCertificateAuthority(request.id))
         registered <- register(
           issued.fold(request)(certificate =>

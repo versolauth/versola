@@ -172,6 +172,13 @@ object InvalidRegistrationConfiguration:
       "issueEdgeClientCertificate needs a CA, and central has none configured (client-certificate-authority)",
     )
 
+  /** Central was asked to issue a certificate and its CA has expired since startup. */
+  def clientCertificateAuthorityExpired(clientId: ClientId, at: java.time.Instant): InvalidRegistrationConfiguration =
+    InvalidRegistrationConfiguration(
+      clientId,
+      s"issueEdgeClientCertificate needs a valid CA, and central's expired at $at (client-certificate-authority)",
+    )
+
   /** RFC 8705 §6.5 leaves it to the deployment to hand a terminated certificate to the
     * application, and this one does it per tenant: `auth` looks for a certificate only where
     * that tenant's `mtlsCertificateHeader` names one. A client registering `mtlsAuth` under a
