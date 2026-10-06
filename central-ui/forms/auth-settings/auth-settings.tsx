@@ -240,6 +240,38 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       setEnrolling(false);
     }
   };
+  
+  const changePassword = async () => {
+    if (passwordBusy()) return;
+    setPasswordBusy(true);
+    setPasswordError(null);
+    setPasswordSuccess(false);
+    if (newPassword() !== confirmPassword()) {
+      setConfirmPasswordError(true);
+      setPasswordBusy(false);
+      return;
+    }
+    setConfirmPasswordError(false);
+    try {
+      const res = await fetch(`${base}password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: currentPassword(), newPassword: newPassword() }),
+      });
+      if (res.ok) {
+        setCurrentPassword('');
+        setNewPassword('');
+        setPasswordSuccess(true);
+      } else {
+        const text = await res.text();
+        setPasswordError(text || t().password_change_failed);
+      }
+    } catch {
+      setPasswordError(t().password_change_failed);
+    } finally {
+      setPasswordBusy(false);
+    }
+  };
 
   return (
     <div class="container account-container">
