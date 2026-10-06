@@ -146,6 +146,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.succeedsWith(())
           _ <- env.service.setPassword(userId, password)
@@ -163,6 +164,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordReuseError(3))
           result <- env.service.setPassword(userId, password).exit

@@ -154,6 +154,9 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
         submissionLimiter = stub[SubmissionLimiter]
+        _ <- submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+        _ <- submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
         renderService = stub[ConversationRenderService]
         passwordService = stub[PasswordService]
         stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService, passwordService)
