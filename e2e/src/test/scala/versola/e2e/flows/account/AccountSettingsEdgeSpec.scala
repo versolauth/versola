@@ -110,9 +110,10 @@ object AccountSettingsEdgeSpec extends E2ESpec:
     },
     test("changes the caller's password with correct current password") {
       for
-        (s, auth) <- setup(Flows.Id.LoginPassword)
-        caller <- login(s, auth)
-        result <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, "NewSecurePass1!")
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        caller    <- login(s, auth)
+        result    <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, "NewSecurePass1!")
       yield assertTrue(result.status == Status.NoContent)
     },
     test("rejects a password change when current password is wrong") {

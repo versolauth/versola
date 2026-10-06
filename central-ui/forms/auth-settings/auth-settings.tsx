@@ -274,6 +274,8 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         const text = await res.text();
         setPasswordError(text || t().password_change_failed);
       }
+    } catch {
+      setPasswordError(t().password_change_failed);
     } finally {
       setPasswordBusy(false);
     }
