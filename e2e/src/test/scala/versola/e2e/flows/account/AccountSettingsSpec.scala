@@ -159,14 +159,18 @@ object AccountSettingsSpec extends E2ESpec:
     },
     test("rejects a password change when current password is wrong") {
       for
-        (s, auth) <- setup(Flows.Id.LoginPassword)
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        _         <- auth.syncConfiguration()
         caller    <- login(s, auth)
         result    <- auth.changeAccountPassword(caller, "WrongPassword1!", "NewSecurePass1!")
       yield assertTrue(result.status == Status.BadRequest)
     },
     test("rejects a reused password") {
       for
-        (s, auth) <- setup(Flows.Id.LoginPassword)
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        _         <- auth.syncConfiguration()
         caller    <- login(s, auth)
         result    <- auth.changeAccountPassword(caller, s.password, s.password)
       yield assertTrue(result.status == Status.BadRequest)

@@ -112,6 +112,9 @@ object AccountSettingsEdgeSpec extends E2ESpec:
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
         s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        _         <- auth.syncConfiguration()
+        _         <- auth.assignUserRoles(s.userId, Set(accountRole))
+        _         <- auth.flushUserOutbox()
         caller    <- login(s, auth)
         result    <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, "NewSecurePass1!")
       yield assertTrue(result.status == Status.NoContent)
