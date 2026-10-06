@@ -1,7 +1,10 @@
 package versola.oauth.account
 
 import versola.auth.model.{CredentialId, PasskeyName}
+import versola.auth.model.Password
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
+import versola.oauth.challenge.password.PasswordService
+import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService
@@ -21,12 +24,13 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import java.security.MessageDigest
 
 /** The self-service Security page and APIs, exposed only on auth's additional listener.
-    * Edge authenticates and authorizes the caller, performs configured step-up checks, then
-    * authenticates to this resource with Basic credentials and overwrites the caller headers.
-    */
+  * Edge authenticates and authorizes the caller, performs configured step-up checks, then
+  * authenticates to this resource with Basic credentials and overwrites the caller headers.
+  */
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
-    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService
+    PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
+    PasswordService
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -36,9 +40,26 @@ object AccountSettingsController extends Controller:
     revokeSessionRoute,
     renamePasskeyRoute,
     deletePasskeyRoute,
+    changePasswordRoute,
     startPasskeyEnrollmentRoute,
     finishPasskeyEnrollmentRoute,
   )
+
+  val changePasswordRoute: Route[Env, Throwable] =
+    Method.PATCH / "settings" / "password" -> handler { (request: Request) =>
+      for
+        _ <- authorizeResource(request)
+        body <- request.bodyAs[ChangePasswordRequest]
+        check <- ZIO.serviceWithZIO[PasswordService](_.verifyPassword(body.userId, Password(body.currentPassword)))
+        _ <- check match
+          case CheckPassword.Success => ZIO.unit
+          case _                     => ZIO.fail(BadRequest("current password is incorrect"))
+        _ <- ZIO.serviceWithZIO[PasswordService](_.setPassword(body.userId, Password(body.newPassword)))
+          .mapError:
+            case PasswordReuseError(n) => BadRequest(s"Password reuse: must differ from last $n passwords")
+            case t: Throwable          => t
+      yield Response.status(Status.NoContent)
+    }
 
   val pageRoute: Route[Env, Throwable] =
     Method.GET / "settings" -> handler { (request: Request) =>
@@ -159,11 +180,12 @@ object AccountSettingsController extends Controller:
   private def accountView(
       userId: UserId,
       sessionId: PublicSessionId,
-  ): ZIO[SessionService & PasskeyRepository, Throwable, StepView.AccountSettings] =
+  ): ZIO[SessionService & PasskeyRepository & PasswordService, Throwable, StepView.AccountSettings] =
     for
       sessions <- listSessions(userId, sessionId)
       passkeys <- listPasskeys(userId)
-    yield StepView.AccountSettings(sessions, passkeys)
+      hasPassword <- ZIO.serviceWithZIO[PasswordService](_.hasPassword(userId))
+    yield StepView.AccountSettings(sessions, passkeys, hasPassword)
 
   private def listSessions(userId: UserId, sessionId: PublicSessionId): ZIO[SessionService, Throwable, List[StepView.AccountSession]] =
     ZIO.serviceWithZIO[SessionService](_.listByUser(userId)).map:
@@ -250,3 +272,9 @@ object AccountSettingsController extends Controller:
       response: Json,
       name: PasskeyName,
   ) derives JsonCodec
+
+  private case class ChangePasswordRequest(
+    userId: UserId,
+    currentPassword: String,
+    newPassword: String,
+) derives JsonCodec

@@ -191,6 +191,7 @@ object BootstrapService:
     "GET"    -> "/settings",
     "DELETE" -> "/settings/sessions",
     "PATCH"  -> "/settings/passkeys",
+    "PATCH"  -> "/settings/password",
     "DELETE" -> "/settings/passkeys",
     "POST"   -> "/settings/passkeys/register/start",
     "POST"   -> "/settings/passkeys/register/finish",

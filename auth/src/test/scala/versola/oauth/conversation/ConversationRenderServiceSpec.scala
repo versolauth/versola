@@ -686,7 +686,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           response <- env.service.renderAccount(
             clientId,
-            StepView.AccountSettings(Nil, Nil),
+            StepView.AccountSettings(Nil, Nil, false),
             None,
           )
           body <- response.body.asString
@@ -702,7 +702,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil, false), None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
