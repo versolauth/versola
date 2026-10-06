@@ -7,6 +7,8 @@ import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebA
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.conversation.limit.SubmissionLimiter
+import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
@@ -149,6 +151,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         passkeyRepository = stub[PasskeyRepository]
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
+        submissionLimiter = stub[SubmissionLimiter]
         renderService = stub[ConversationRenderService]
         stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService)
         tracing <- NoopTracing.layer.build
@@ -163,6 +166,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(webAuthnService) ++
                   ZEnvironment(userRepository) ++
                   ZEnvironment(renderService) ++
+                  ZEnvironment(passwordService) ++
+                  ZEnvironment(submissionLimiter) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
                   tracing,
               ),
