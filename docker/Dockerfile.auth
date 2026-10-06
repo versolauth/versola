@@ -127,5 +127,9 @@ ENV CONFIG_PATH="/app/config/env.conf"
 # the JAVA_OPTS env var itself. Passing it again routes tokens the script's
 # own arg-parser doesn't recognize (e.g. --enable-native-access=...) through
 # as a residual application argument instead of a JVM flag.
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH"]
+#
+# `exec`: the shell is only there to expand $CONFIG_PATH. Without exec it stays
+# PID 1 and does not pass SIGTERM on, so `docker stop` waits out its timeout and
+# SIGKILLs the JVM (exit 137) instead of letting the app shut down gracefully.
+ENTRYPOINT ["/bin/sh", "-c", "exec /app/bin/auth-postgres-impl -Denv.path=$CONFIG_PATH"]
 
