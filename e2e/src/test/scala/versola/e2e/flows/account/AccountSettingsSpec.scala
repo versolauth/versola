@@ -152,8 +152,7 @@ object AccountSettingsSpec extends E2ESpec:
     },
     test("changes the caller's password with correct current password") {
       for
-        (_, auth) <- setup(Flows.Id.LoginPassword)
-        s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        (s, auth) <- setup(Flows.Id.LoginPassword)
         caller    <- login(s, auth)
         result    <- auth.changeAccountPassword(caller, s.password, "NewSecurePass1!")
       yield assertTrue(result.status == Status.NoContent)
