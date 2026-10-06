@@ -21,7 +21,15 @@
     "name_required": "Enter a passkey name",
     "add_passkey_button": "Add a passkey",
     "enroll_failed": "Could not add the passkey. Please try again",
-    "go_back_button": "Go back"
+    "go_back_button": "Go back",
+    "password_title": "Password",
+    "current_password_placeholder": "Current password",
+    "new_password_placeholder": "New password",
+    "change_password_button": "Change password",
+    "password_change_failed": "Could not change password. Please try again",
+    "password_changed_success": "Password changed successfully",
+    "confirm_password_placeholder": "Confirm new password",
+    "confirm_password_mismatch": "Passwords do not match"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -45,6 +53,14 @@
     "name_required": "Укажите название ключа доступа",
     "add_passkey_button": "Добавить ключ доступа",
     "enroll_failed": "Не удалось добавить ключ доступа. Попробуйте ещё раз",
-    "go_back_button": "Назад"
+    "go_back_button": "Назад",
+    "password_title": "Пароль",
+    "current_password_placeholder": "Текущий пароль",
+    "new_password_placeholder": "Новый пароль",
+    "change_password_button": "Изменить пароль",
+    "password_change_failed": "Не удалось изменить пароль. Попробуйте ещё раз",
+    "password_changed_success": "Пароль успешно изменён",
+    "confirm_password_placeholder": "Подтвердите новый пароль",
+    "confirm_password_mismatch": "Пароли не совпадают"
   }
 }

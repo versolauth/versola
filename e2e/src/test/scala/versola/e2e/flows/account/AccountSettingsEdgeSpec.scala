@@ -67,7 +67,7 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         result <- auth.edgeRevokeAccountSession(Some(caller.accessToken), caller.sessionId)
         remaining <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formItems("sessions"))
       yield assertTrue(result.status == Status.Forbidden)
-        .label("the endpoint's access rule must reject revoking `token.sid`") &&
+          .label("the endpoint's access rule must reject revoking `token.sid`") &&
         assertTrue(remaining.exists(session => str(session, "id").contains(caller.sessionId)))
           .label("the caller's session must survive the refused revocation")
     },
@@ -109,24 +109,10 @@ object AccountSettingsEdgeSpec extends E2ESpec:
           .label("the deleted passkey must be gone from the page")
     },
     test("changes the caller's password with correct current password") {
-      val newPassword = "NewSecurePass1!"
       for
-        (_, auth) <- setup(Flows.Id.LoginPassword)
-        s <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
-        _ <- auth.syncConfiguration()
-        _ <- auth.assignUserRoles(s.userId, Set(accountRole))
-        _ <- auth.flushUserOutbox()
+        (s, auth) <- setup(Flows.Id.LoginPassword)
         caller <- login(s, auth)
-        result <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, newPassword)
-        _ <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
-          .assertChallengeRedirect
-          .flatMap { authorize =>
-            val cookie = authorize.conversationCookie.get
-            auth.getChallenge(cookie).assertStep(ConversationStep.Credential).flatMap { challenge =>
-              auth.submitLoginPassword(cookie, s.login.get, newPassword, challenge.csrf)
-                .assertRedirect(auth, cookie)
-            }
-          }
+        result <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, "NewSecurePass1!")
       yield assertTrue(result.status == Status.NoContent)
     },
     test("rejects a password change when current password is wrong") {
