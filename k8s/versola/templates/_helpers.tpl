@@ -339,3 +339,119 @@ is `kubectl get pods -o wide`.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Name of the Secret holding auth's mutual-TLS listener certificate (values.yaml's `pki.authServer`).
+*/}}
+{{- define "versola.pki.serverSecret" -}}
+{{- default (printf "%s-auth-mtls" (include "versola.fullname" .)) .Values.pki.authServer.secretName -}}
+{{- end -}}
+
+{{/*
+Name of the ConfigMap trust-manager writes the unioned client-CA bundle to.
+*/}}
+{{- define "versola.pki.trustBundle" -}}
+{{- printf "%s-client-ca" (include "versola.fullname" .) -}}
+{{- end -}}
+
+{{/*
+The cert-manager issuerRef everything under `pki` is issued from: the operator's own when
+`pki.issuerRef.name` is set, otherwise the CA Issuer this chart bootstraps (templates/pki.yaml).
+*/}}
+{{- define "versola.pki.issuerRef" -}}
+{{- if .Values.pki.issuerRef.name -}}
+name: {{ .Values.pki.issuerRef.name }}
+kind: {{ default "ClusterIssuer" .Values.pki.issuerRef.kind }}
+group: {{ default "cert-manager.io" .Values.pki.issuerRef.group }}
+{{- else -}}
+name: {{ include "versola.fullname" . }}-client-ca
+kind: ClusterIssuer
+group: cert-manager.io
+{{- end -}}
+{{- end -}}
+
+{{/*
+pki volumes / mounts / reload annotations for one service's Deployment. Expects a dict:
+{root: $, service: "auth"|"central"|"edge"}. Empty unless `pki.enabled`, and only auth and edge
+get anything: auth presents the server certificate and trusts the client-CA bundle, edge pins the
+server certificate's leaf (and nothing else from that Secret -- not its key).
+*/}}
+{{- define "versola.pki.volumes" -}}
+{{- $root := .root -}}
+{{- if $root.Values.pki.enabled -}}
+{{- if eq .service "auth" -}}
+- name: mtls-server
+  secret:
+    secretName: {{ include "versola.pki.serverSecret" $root }}
+    items:
+      - key: tls.crt
+        path: tls.crt
+      - key: tls.key
+        path: tls.key
+- name: mtls-trust
+  {{- if $root.Values.pki.trustBundle.enabled }}
+  configMap:
+    name: {{ include "versola.pki.trustBundle" $root }}
+    items:
+      - key: ca-bundle.crt
+        path: ca.crt
+  {{- else }}
+  secret:
+    secretName: {{ include "versola.pki.serverSecret" $root }}
+    items:
+      - key: ca.crt
+        path: ca.crt
+  {{- end }}
+{{- else if eq .service "edge" -}}
+- name: mtls-auth-pin
+  secret:
+    secretName: {{ include "versola.pki.serverSecret" $root }}
+    items:
+      - key: tls.crt
+        path: tls.crt
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "versola.pki.volumeMounts" -}}
+{{- if .root.Values.pki.enabled -}}
+{{- if eq .service "auth" -}}
+- name: mtls-server
+  mountPath: /app/mtls/server
+  readOnly: true
+- name: mtls-trust
+  mountPath: /app/mtls/trust
+  readOnly: true
+{{- else if eq .service "edge" -}}
+- name: mtls-auth-pin
+  mountPath: /app/mtls/auth-pin
+  readOnly: true
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "versola.pki.annotations" -}}
+{{- if and .root.Values.pki.enabled .root.Values.pki.reloader (has .service (list "auth" "edge")) -}}
+secret.reloader.stakater.com/reload: {{ include "versola.pki.serverSecret" .root | quote }}
+{{- if eq .service "auth" }}
+configmap.reloader.stakater.com/reload: {{ include "versola.pki.trustBundle" .root | quote }}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+The env central.conf's `client-certificates.cert-manager` block reads (scripts/gen-env.scala).
+*/}}
+{{- define "versola.pki.issuerEnv" -}}
+{{- if .Values.pki.issuerRef.name -}}
+- name: CLIENT_CERT_ISSUER_NAME
+  value: {{ .Values.pki.issuerRef.name | quote }}
+- name: CLIENT_CERT_ISSUER_KIND
+  value: {{ default "ClusterIssuer" .Values.pki.issuerRef.kind | quote }}
+- name: CLIENT_CERT_ISSUER_GROUP
+  value: {{ default "cert-manager.io" .Values.pki.issuerRef.group | quote }}
+{{- else -}}
+- name: CLIENT_CERT_ISSUER_NAME
+  value: {{ printf "%s-client-ca" (include "versola.fullname" .) | quote }}
+{{- end -}}
+{{- end -}}

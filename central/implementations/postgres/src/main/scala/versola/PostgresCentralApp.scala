@@ -6,6 +6,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientCertificateAuthority, ClientController, OAuthClientRepository, OAuthClientService}
+import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuer, ClientCertificateService}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
@@ -21,7 +22,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeSer
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
-import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresOAuthClientRepository}
+import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresClientCertificateIssuanceRepository, PostgresOAuthClientRepository}
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.system.PostgresSystemSettingsRepository
@@ -95,6 +96,9 @@ object PostgresCentralApp extends VersolaApp("central"):
       UserService &
       AuthClient &
       UserOutboxProcessor &
+      ClientCertificateIssuanceRepository &
+      ClientCertificateIssuer &
+      ClientCertificateService &
       ServerMetadataRepository &
       ServerMetadataService &
       JwksService
@@ -128,6 +132,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresPermissionRepository.live >+>
           PostgresResourceRepository.live >+>
           PostgresOAuthClientRepository.live >+>
+          PostgresClientCertificateIssuanceRepository.live >+>
           PostgresAuthorizationPresetRepository.live >+>
           PostgresOAuthScopeRepository.live >+>
           PostgresAuthorizationDetailTypeRepository.live >+>
@@ -157,6 +162,8 @@ object PostgresCentralApp extends VersolaApp("central"):
       // certificate header, so client registration reads the challenge settings.
       ClientCertificateAuthority.live >+>
       OAuthClientService.live >+>
+      ClientCertificateIssuer.live >+>
+      ClientCertificateService.live >+>
       BootstrapService.live >+>
       TenantService.live >+>
       PermissionService.live >+>
@@ -176,7 +183,10 @@ object PostgresCentralApp extends VersolaApp("central"):
       CacheSyncService.live >+>
       AuthClient.live >+>
       UserService.live >+>
-      UserOutboxProcessor.live
+      UserOutboxProcessor.live >+>
+      // Renews the certificates central issued, for as long as it runs. A no-op where
+      // `client-certificates` is not configured.
+      ClientCertificateService.renewal
 
   given DeriveConfig[Secret] = DeriveConfig[String]
     .mapOrFail: str =>

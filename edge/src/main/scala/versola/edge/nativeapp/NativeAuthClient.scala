@@ -78,6 +78,9 @@ object NativeAuthClient:
       certificateFiles: ClientCertificateFiles,
   ) extends NativeAuthClient:
 
+    private lazy val serverTrust: Option[ClientSSLConfig] =
+      config.native.map(native => EdgeConfig.pinnedTrust(native.trustedCertificates))
+
     override def par(
         clientId: String,
         certificate: PrivateClientCertificate.Material,
@@ -112,7 +115,7 @@ object NativeAuthClient:
         native <- ZIO.fromOption(config.native).orElseFail(NotConfigured)
         certificateConfig <- certificateFiles.present(certificate)
         ssl = ClientSSLConfig.FromClientAndServerCert(
-          ClientSSLConfig.FromCertFile(native.trustedCertificates),
+          serverTrust.get,
           certificateConfig,
         )
         // RFC 8705 §2.1: the certificate is the credential, `client_id` names whose it is.

@@ -120,6 +120,12 @@ services:
     # expose it as its own port -- see ingress.hosts' `settings` route
     # group for whether/how it's actually reachable.
     additionalPort: 8082
+    # MPORT -- RFC 8705 §5's mutual-TLS listener (VersolaApp.mutualTlsPort). On by default, with
+    # the `pki` block below; 0/unset leaves it unexposed: no container port, no Service port, no MPORT env. Auth only serves it when its
+    # env.conf has a `mutual-tls` block; see the `pki` block below for the certificate files this
+    # chart mounts for that block, and k8s/README.md for the block itself. Edge's `native
+    # { auth-mutual-tls-url }` reaches it through this Service port.
+    mutualTlsPort: 8083
     # Memory is request == limit and is derived from the image's JAVA_OPTS
     # rather than guessed: heap 512m + direct 64m + metaspace 128m + code
     # cache 64m + thread stacks and JVM internals ~80m is ~848m, so 1Gi leaves
@@ -142,6 +148,10 @@ services:
       secretKey: env.conf
     # Extra plain env vars: [{name: FOO, value: bar}, ...].
     extraEnv: []
+    # Extra volumes / mounts, in Kubernetes' own shape, for every service (e.g. a certificate
+    # Secret your env.conf points at when `pki` is not used).
+    extraVolumes: []
+    extraVolumeMounts: []
     # Extra envFrom entries, for anything beyond the required ${VAR}
     # secret placeholders `secrets.existingSecret` above already covers
     # (JWT_PRIVATE_KEY, ACCESS_TOKENS_SECRET, POSTGRES_PASSWORD, ...; see
@@ -210,6 +220,91 @@ services:
     nodeSelector: {}
     tolerations: []
     affinity: {}
+
+# Certificates for mutual TLS (#440), issued by cert-manager (https://cert-manager.io). On by
+# default, so cert-manager and trust-manager must be installed (their CRDs) before this chart; set `pki.enabled: false`
+# to opt out. This chart never installs cert-manager or trust-manager, it consumes them.
+#
+# Three relationships, three different rotation properties:
+#   (1) auth's trust anchor for incoming client certificates -- a CA *bundle*; several CAs may be
+#       in it at once, which is the rotation story (below).
+#   (2) edge's pin on auth's own listener certificate -- a leaf, never a CA.
+#   (3) client certificates for edge-fronted clients (central-admin, native/web clients) --
+#       issued and renewed by central itself through the issuer below (a client registers with
+#       `issueEdgeClientCertificate: true`); central holds no CA key, only the right to create
+#       CertificateRequests in this namespace.
+#
+# With `enabled` (the default), this chart mounts (for the env.conf you provide -- it generates none):
+#   auth: /app/mtls/server/{tls.crt,tls.key}   -> mutual-tls.certificate / .private-key
+#         /app/mtls/trust/ca.crt               -> mutual-tls.trusted-certificates
+#   edge: /app/mtls/auth-pin/tls.crt           -> native.trusted-certificates = ["..."]
+#                                                  (and versola-internal-trusted-certificates)
+# Rotating the client CA with `trustBundle`: add the incoming CA's Secret to `sources` alongside
+# the outgoing one, reissue every client (cert-manager does, or delete the Secrets), then drop the
+# outgoing source. See k8s/README.md.
+pki:
+  enabled: true
+  # An issuer you already run, instead of the Versola Client CA this chart bootstraps:
+  #   issuerRef: {name: org-ca, kind: ClusterIssuer, group: cert-manager.io}
+  issuerRef: {}
+  # Where the bootstrapped CA's Secret lives: cert-manager's own namespace (its cluster resource
+  # namespace, for a ClusterIssuer), which is also trust-manager's default trust namespace.
+  trustNamespace: cert-manager
+  ca:
+    commonName: Versola Client CA
+    duration: 87600h
+    renewBefore: 8760h
+  # (2) auth's listener certificate.
+  authServer:
+    secretName: "" # defaults to <fullname>-auth-mtls
+    dnsNames: [] # in addition to the Service's own names
+    duration: 2160h
+    renewBefore: 720h
+    privateKey: {algorithm: ECDSA, size: 256}
+  # (3) one entry per edge-fronted client, `clientId` being the id registered in central:
+  #   clients:
+  #     - clientId: central-admin
+  #       commonName: central-admin   # what its `mtlsAuth` subject matches; defaults to clientId
+  clients: []
+  clientDefaults:
+    duration: 2160h
+    renewBefore: 720h
+    privateKey: {algorithm: ECDSA, size: 256}
+  # (1) trust-manager Bundle unioning the Versola Client CA with `sources` into
+  # <fullname>-client-ca, which auth mounts as its trust anchors. On by default, so trust-manager
+  # must be installed too. `sources` is for *additional* CAs -- the incoming one during a
+  # rotation (trust-manager's source syntax, Secrets in its trust namespace). With
+  # `pki.issuerRef` set the chart bootstraps no CA, so `sources` must name that issuer's.
+  trustBundle:
+    enabled: true
+    sources: []
+    #  - secret: {name: versola-client-ca-next, key: tls.crt}
+  # Annotate auth and edge for Stakater Reloader: both read certificates once at startup, so a
+  # renewal needs a restart. Without it, roll them yourself after a renewal.
+  reloader: true
+  # Carries client certificates issued *outside* central (by cert-manager through `pki.clients`
+  # above, or by hand) into central's `edgeClientCertificate`. Off by default: central issues
+  # and renews the certificates of the clients it is asked to (`issueEdgeClientCertificate`),
+  # through the same issuer, so nothing needs carrying.
+  certSync:
+    enabled: false
+    image:
+      repository: versola-tools
+      tag: ""
+    centralUrl: "" # defaults to the in-cluster central Service
+    intervalSeconds: 300
+    # Secret holding central's resource secret (the `central:<secret>` Basic credential of its
+    # admin API, base64url as central issued it). Empty name uses `secrets.existingSecret`, whose
+    # `central-resource-secret` key is exactly CENTRAL_RESOURCE_SECRET (see versola.secretKeyFor).
+    resourceSecret:
+      name: ""
+      key: central-resource-secret
+    resources:
+      requests:
+        cpu: 10m
+        memory: 128Mi
+      limits:
+        memory: 128Mi
 
 # Pod annotations for annotation-based Prometheus/VictoriaMetrics discovery,
 # pointing scrapes at each pod's diagnostics port directly.

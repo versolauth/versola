@@ -96,15 +96,15 @@ object EdgeConfigSpec extends ZIOSpecDefault:
     ),
     central = EdgeConfig.CentralConfig(url = URL.decode("http://central:8090").toOption.get),
     versolaUrl = URL.decode("http://localhost:8080").toOption.get,
-    versolaInternalTrustedCertificates = trustPath.map(_.toString),
+    versolaInternalTrustedCertificates = trustPath.map(_.toString).toSet,
     edgeUrl = URL.decode("http://edge:8095").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
     dpop = Some(EdgeConfig.Dpop.default(Secret.Bytes32.fromBase64Url(secret32).toOption.get)),
   )
 
-  private def nativeConfig(trustedCertificates: String) = EdgeConfig.Native(
+  private def nativeConfig(trustedCertificates: String*) = EdgeConfig.Native(
     authMutualTlsUrl = URL.decode("https://auth:8083").toOption.get,
-    trustedCertificates = trustedCertificates,
+    trustedCertificates = trustedCertificates.toSet,
     blobKey = Secret.Bytes32.fromBase64Url(secret32).toOption.get,
   )
 
@@ -191,7 +191,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
             leaf = TestCertificates.generate(subject = "CN=auth.internal,O=Versola,C=KZ")
             path <- writeCertificate(directory, "leaf.pem", leaf.certificatePem)
             config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated)
-          yield assertTrue(config.versolaInternalTrustedCertificates == Some(path.toString))
+          yield assertTrue(config.versolaInternalTrustedCertificates == Set(path.toString))
       },
       test("refuses a certificate authority pinned for auth's mutual-TLS listener") {
         ZIO.scoped:
@@ -230,12 +230,58 @@ object EdgeConfigSpec extends ZIOSpecDefault:
               ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig(path.toString)))) >>>
                 EdgeConfig.validated,
             )
-          yield assertTrue(config.native.map(_.trustedCertificates) == Some(path.toString))
+          yield assertTrue(config.native.map(_.trustedCertificates) == Some(Set(path.toString)))
+      },
+      test("accepts several leaf pins at once, for the overlap window of a rotation") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            old = TestCertificates.generate(subject = "CN=auth-mtls-old,O=Versola,C=KZ")
+            incoming = TestCertificates.generate(subject = "CN=auth-mtls-new,O=Versola,C=KZ")
+            oldPath <- writeCertificate(directory, "old.pem", old.certificatePem)
+            newPath <- writeCertificate(directory, "new.pem", incoming.certificatePem)
+            config <- ZIO.service[EdgeConfig].provideLayer(
+              ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig(oldPath.toString, newPath.toString)))) >>>
+                EdgeConfig.validated,
+            )
+          yield assertTrue(config.native.map(_.trustedCertificates) == Some(Set(oldPath.toString, newPath.toString)))
+      },
+      test("refuses the whole set when any one pin is a certificate authority") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            leaf = TestCertificates.generate(subject = "CN=auth-mtls,O=Versola,C=KZ")
+            ca = TestCertificates.generate(subject = "CN=auth-mtls-ca,O=Versola,C=KZ", ca = true)
+            leafPath <- writeCertificate(directory, "leaf.pem", leaf.certificatePem)
+            caPath <- writeCertificate(directory, "ca.pem", ca.certificatePem)
+            exit <- ZIO.service[EdgeConfig]
+              .provideLayer(
+                ZLayer.succeed(baseConfig(Some(leafPath)).copy(versolaInternalTrustedCertificates = Set(leafPath.toString, caPath.toString))) >>>
+                  EdgeConfig.validated,
+              ).exit
+          yield assertTrue(exit.isFailure)
+      },
+      test("refuses a CA that follows a leaf in the same PEM file") {
+        ZIO.scoped:
+          for
+            directory <- tempDirectory
+            leaf = TestCertificates.generate(subject = "CN=auth-mtls,O=Versola,C=KZ")
+            ca = TestCertificates.generate(subject = "CN=auth-mtls-ca,O=Versola,C=KZ", ca = true)
+            path <- writeCertificate(directory, "bundle.pem", leaf.certificatePem + "\n" + ca.certificatePem)
+            exit <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(Some(path))) >>> EdgeConfig.validated).exit
+          yield assertTrue(exit.isFailure)
+      },
+      test("refuses a native block that pins nothing") {
+        for
+          exit <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(baseConfig(None).copy(native = Some(nativeConfig()))) >>> EdgeConfig.validated)
+            .exit
+        yield assertTrue(exit.isFailure)
       },
       test("passes an absent trust anchor through unexamined") {
         for
           config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None)) >>> EdgeConfig.validated)
-        yield assertTrue(config.versolaInternalTrustedCertificates == None)
+        yield assertTrue(config.versolaInternalTrustedCertificates.isEmpty)
       },
     ),
   )
