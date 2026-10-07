@@ -287,7 +287,7 @@ object OAuthClientService:
           clientId = request.id,
           applicationType = applicationType,
           authMethod = request.authMethod,
-          hasEdgeClientCertificate = request.edgeClientCertificate.isDefined,
+          hasEdgeClientCertificate = request.edgeClientCertificate.isDefined || request.enrollEdgeClientCertificate,
           requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
           dpopBoundAccessTokens = request.dpopBoundAccessTokens,
           certificateBoundAccessTokens = request.certificateBoundAccessTokens,

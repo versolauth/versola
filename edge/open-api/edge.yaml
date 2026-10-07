@@ -1,0 +1,1034 @@
+openapi: 3.1.0
+
+info:
+  title: Versola Edge API
+  version: '1.0'
+  description: |
+    Edge is an authentication- and authorization-offloading reverse proxy that sits in front
+    of resource servers (your APIs). It signs users in through Versola Auth, keeps the
+    resulting session for them, and only forwards a request upstream once the caller's access
+    token has been validated against the permissions configured in Central.
+
+    This reference covers the endpoints edge serves itself. The proxied traffic —
+    `/resources/{resourceId}/...` — is documented as a single catch-all family; the upstream
+    API behind it is yours to describe.
+
+    ## Surfaces
+
+    * **Browser login** — `/login/{presetId}`, `/complete`, `/logout/{presetId}`. A preset
+      (configured in Central) binds an OAuth client, a redirect URI and the cookie that holds
+      the session. Edge runs the authorization-code + PKCE flow itself, so the browser never
+      sees a token endpoint or a client secret.
+    * **Logout notifications** — `/logout/frontchannel` and `/logout/backchannel`, called by
+      Auth when a session ends elsewhere.
+    * **Resource proxy** — `/resources/{resourceId}/{path}`, the point of the product.
+    * **Permissions** — `/permissions/me`, for a UI that wants to hide what the user cannot do.
+    * **Native apps** — `/native/{start,complete,token,revoke}/{clientId}`, a back channel for
+      mobile apps under FAPI 2.0. Answers `404` for every client unless the edge is configured
+      for native clients.
+    * **Operations** — `/liveness`, `/readiness`, `/metrics` and, outside production only,
+      `/service/configuration/sync`.
+
+    ## Authentication of callers
+
+    Edge accepts an access token issued by Auth in any of three forms, resolved in this order:
+
+    1. `Authorization: Bearer <token>`
+    2. `Authorization: DPoP <token>` together with a `DPoP` proof header (RFC 9449)
+    3. The `EDGE_SESSION` cookie set by `/complete`
+
+    The token's `cnf` claim, not the scheme the caller chose, decides what must be proven. A
+    token bound to a key (`cnf.jkt`) is refused over `Bearer` and requires a valid DPoP proof.
+    A token bound to a certificate (`cnf.x5t#S256`) is honoured only out of the session
+    cookie, because the certificate is edge's own. When the session cookie carries an expired
+    access token, edge transparently refreshes it and replies with a rotated cookie.
+
+    ## DPoP challenges
+
+    Where edge requires a nonce, a request with no valid one is answered `401` with
+    `WWW-Authenticate: DPoP error="use_dpop_nonce"` and a fresh `DPoP-Nonce` header. Retry once
+    with a proof that includes that nonce. A proof that fails any other check is answered
+    `401` with `WWW-Authenticate: DPoP error="invalid_dpop_proof"`.
+  license:
+    name: Business Source License 1.1
+    url: https://github.com/versolauth/versola/blob/main/LICENCE.md
+
+externalDocs:
+  description: Versola documentation
+  url: https://docs.versola.kz
+
+servers:
+  - url: '{edgeBaseUrl}'
+    description: |
+      The public origin clients reach this edge on — the `edge-url` of its configuration.
+      Proof-of-possession checks are computed against that value, never against the request's
+      own `Host` or `X-Forwarded-*` headers.
+    variables:
+      edgeBaseUrl:
+        default: https://edge.example.com
+
+tags:
+  - name: Login
+    description: Browser sign-in and sign-out through an authorization preset.
+  - name: Logout notifications
+    description: Endpoints Auth calls when a session ends.
+  - name: Proxy
+    description: Authenticated, authorized pass-through to a resource server.
+  - name: Permissions
+    description: What the current user may call.
+  - name: Native
+    description: Back channel for mobile apps under FAPI 2.0.
+  - name: Operations
+    description: Health, metrics and configuration refresh.
+
+paths:
+  /login/{presetId}:
+    get:
+      operationId: login
+      summary: Start a browser login
+      description: |
+        Begins the authorization-code flow for the preset. Edge records a PKCE verifier and a
+        `state` for this login and redirects the browser to Auth's authorization endpoint.
+
+        The caller may tune the authentication request with a fixed whitelist of query
+        parameters: `acr_values`, `max_age`, `prompt`, `login_hint` and `ui_locales`. Any other
+        query parameter is ignored. Everything that decides the security of the flow
+        (`client_id`, `redirect_uri`, `state`, PKCE) belongs to the preset and edge.
+      tags: [Login]
+      security: []
+      parameters:
+        - name: presetId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Identifier of an authorization preset configured in Central.
+        - name: acr_values
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Space-separated authentication context class references requested of Auth.
+        - name: max_age
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Maximum acceptable age, in seconds, of the user's last authentication.
+        - name: prompt
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OIDC `prompt` value, e.g. `login`.
+        - name: login_hint
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Hint about the identifier the user is expected to sign in with.
+        - name: ui_locales
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Space-separated BCP 47 language tags, in order of preference.
+      responses:
+        '303':
+          description: Redirect to Auth's authorization endpoint.
+          headers:
+            Location:
+              description: Authorization request URL.
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: No preset has this identifier.
+
+  /complete:
+    get:
+      operationId: loginComplete
+      summary: Finish a browser login
+      description: |
+        The redirect URI Auth sends the browser back to. Exactly one of `code` or `error`
+        must be present.
+
+        With a `code`, edge redeems it (using the PKCE verifier it kept), stores the session,
+        sets the `EDGE_SESSION` cookie and redirects to the preset's post-login URI.
+
+        With an `error`, edge discards the login and redirects to the same post-login URI with
+        `error`, `error_description` and `error_uri` appended as query parameters, so the
+        application can render the failure itself.
+      tags: [Login]
+      security: []
+      parameters:
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The `state` edge generated at `/login/{presetId}`.
+        - name: code
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Authorization code. Mutually exclusive with `error`.
+        - name: error
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OAuth error code from Auth. Mutually exclusive with `code`.
+        - name: error_description
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: error_uri
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        '303':
+          description: Redirect to the preset's post-login URI.
+          headers:
+            Location:
+              description: Post-login URI, with the error parameters appended on failure.
+              schema:
+                type: string
+                format: uri
+            Set-Cookie:
+              description: |
+                `EDGE_SESSION=<presetId>:<accessToken>` on success only. `Secure`, `HttpOnly`,
+                `SameSite=Strict`; `Domain` and `Path` come from the preset (`Path` defaults to
+                `/`) and `Max-Age` from the refresh token's lifetime.
+              schema:
+                type: string
+        '400':
+          description: |
+            Neither or both of `code` and `error` were supplied, or `state` matches no login in
+            progress (unknown, already used, or expired).
+
+  /logout/{presetId}:
+    get:
+      operationId: logout
+      summary: Sign out of the SSO session
+      description: |
+        Redirects the browser to Auth's `/logout` endpoint, carrying the preset's
+        `post_logout_redirect_uri` when it has one. Auth then ends the SSO session and
+        notifies every participating client through `/logout/frontchannel` and
+        `/logout/backchannel`.
+      tags: [Login]
+      security: []
+      parameters:
+        - name: presetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '303':
+          description: Redirect to Auth's logout endpoint.
+          headers:
+            Location:
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: No preset has this identifier.
+
+  /logout/frontchannel:
+    get:
+      operationId: frontChannelLogout
+      summary: Front-channel logout
+      description: |
+        OIDC Front-Channel Logout. Auth loads this URL in a hidden iframe, passing `iss` and
+        `sid`; it may also be called first-party by the browser with no parameters at all.
+
+        Edge clears the `EDGE_SESSION` cookie of every preset that took part in the session,
+        and records a revocation for the session so that tokens already issued stop being
+        honoured. The revocation is only recorded for a caller that holds a session token for
+        that same `sid` — a bare `sid` clears cookies but cannot make edge deny tokens, so an
+        unauthenticated caller cannot log other users out.
+
+        If `iss` is present and is not Auth's issuer, nothing is done.
+      tags: [Logout notifications]
+      security: []
+      parameters:
+        - name: iss
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uri
+          description: Issuer of the logout. Must share an origin with the Auth service.
+        - name: sid
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Session identifier being ended.
+        - name: EDGE_SESSION
+          in: cookie
+          required: false
+          schema:
+            type: string
+          description: The caller's session cookie, which authorizes the revocation.
+      responses:
+        '200':
+          description: Processed. `Set-Cookie` headers expire each affected session cookie.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+            Set-Cookie:
+              description: One expiring `EDGE_SESSION` cookie per participating preset.
+              schema:
+                type: string
+
+  /logout/backchannel:
+    post:
+      operationId: backChannelLogout
+      summary: Back-channel logout
+      description: |
+        OIDC Back-Channel Logout 1.0. Called by Auth server to server with a signed
+        `logout_token`. The browser is not involved, so no cookie is cleared; dropping the
+        stored session is what stops `EDGE_SESSION` from being honoured. One registration
+        covers every preset behind this edge.
+
+        The token is verified against Auth's JWKS. It must be issued by Auth, be addressed to a
+        client this edge knows, carry the back-channel logout event (or the access-token
+        revocation event), and must not carry a `nonce`.
+      tags: [Logout notifications]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [logout_token]
+              properties:
+                logout_token:
+                  type: string
+                  description: Signed logout token JWT.
+      responses:
+        '200':
+          description: The session was ended.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        '400':
+          description: The logout token is missing or invalid.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutError'
+              example:
+                error: invalid_request
+                error_description: logout_token is required
+
+  /resources/{resourceId}/{path}:
+    parameters:
+      - name: resourceId
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Identifier of a resource registered in Central.
+      - name: path
+        in: path
+        required: true
+        allowReserved: true
+        schema:
+          type: string
+        description: |
+          Path on the resource, possibly empty or multi-segment (`orders/42/items`). It is
+          matched against the endpoints registered for the resource, most specific pattern
+          first; `{param}` segments in a registered pattern bind to concrete values.
+    get:
+      operationId: proxyGet
+      summary: Proxy a GET request
+      description: &proxyDescription |
+        Authenticates the caller, authorizes the call against the resource's registered
+        endpoints, then forwards it upstream and returns the upstream response.
+
+        In order, edge:
+
+        1. extracts the access token (`Bearer`, `DPoP` or the `EDGE_SESSION` cookie) and
+           verifies its signature, expiry, revocation status and key/certificate binding;
+           an expired cookie token is refreshed through Auth and the cookie rotated;
+        2. looks the resource and the matching endpoint up (`404` if either is unknown);
+        3. checks that the caller's roles (or, for a client-credentials token, its client)
+           are permitted to call that endpoint (`403` otherwise) and that the token's
+           audience covers the resource;
+        4. fetches `userinfo` from Auth when the endpoint asks for it;
+        5. evaluates the endpoint's CEL rules and step-up requirements — the required `acr`
+           and a maximum authentication age (`401` with `insufficient_user_authentication`
+           when unmet);
+        6. builds the upstream request, applying the endpoint's header, query and JSON-body
+           injection rules, and authenticating to the upstream with the resource's secret
+           over HTTP Basic or, when it has none, the caller's token as `Bearer`.
+
+        `Set-Cookie` headers from the upstream are stripped. The body of the upstream
+        response and its status are otherwise returned unchanged, so the responses below
+        list only the statuses edge itself produces.
+      tags: [Proxy]
+      security: &proxySecurity
+        - bearer: []
+        - dpop: []
+        - sessionCookie: []
+      parameters: &proxyHeaders
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: RFC 9449 proof. Required when the access token is key-bound.
+      responses: &proxyResponses
+        default:
+          description: The upstream's response, passed through unchanged.
+        '401':
+          description: |
+            The token is missing, invalid, expired (and not refreshable), revoked, or fails its
+            binding. The `WWW-Authenticate` header says which, when it is a DPoP or step-up
+            problem:
+
+            * `DPoP error="use_dpop_nonce"` — retry with the `DPoP-Nonce` header's value.
+            * `DPoP error="invalid_dpop_proof"` — the proof is wrong, or the token is
+              key-bound and was presented without one.
+            * `Bearer error="insufficient_user_authentication"` — carries `acr_values` and/or
+              `max_age`; re-authenticate through `/login/{presetId}` with those.
+
+            When the session could not be refreshed, a `Location` header names where to sign
+            in again and the session cookie is cleared.
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+            DPoP-Nonce:
+              schema:
+                type: string
+            Location:
+              description: Where to re-authenticate, when the session expired and could not be refreshed.
+              schema:
+                type: string
+            Set-Cookie:
+              description: An expiring `EDGE_SESSION`, when the session could not be refreshed.
+              schema:
+                type: string
+        '403':
+          description: The caller is authenticated but not permitted to call this endpoint.
+        '404':
+          description: Unknown resource, or no registered endpoint matches the method and path.
+        '500':
+          description: |
+            Edge could not decide — e.g. a step-up condition failed to evaluate, or `userinfo`
+            could not be fetched.
+    post:
+      operationId: proxyPost
+      summary: Proxy a POST request
+      description: *proxyDescription
+      tags: [Proxy]
+      security: *proxySecurity
+      parameters: *proxyHeaders
+      requestBody:
+        $ref: '#/components/requestBodies/ProxyBody'
+      responses: *proxyResponses
+    put:
+      operationId: proxyPut
+      summary: Proxy a PUT request
+      description: *proxyDescription
+      tags: [Proxy]
+      security: *proxySecurity
+      parameters: *proxyHeaders
+      requestBody:
+        $ref: '#/components/requestBodies/ProxyBody'
+      responses: *proxyResponses
+    patch:
+      operationId: proxyPatch
+      summary: Proxy a PATCH request
+      description: *proxyDescription
+      tags: [Proxy]
+      security: *proxySecurity
+      parameters: *proxyHeaders
+      requestBody:
+        $ref: '#/components/requestBodies/ProxyBody'
+      responses: *proxyResponses
+    delete:
+      operationId: proxyDelete
+      summary: Proxy a DELETE request
+      description: *proxyDescription
+      tags: [Proxy]
+      security: *proxySecurity
+      parameters: *proxyHeaders
+      responses: *proxyResponses
+
+  /permissions/me:
+    get:
+      operationId: myPermissions
+      summary: Permissions of the current user
+      description: |
+        Returns, for each requested resource, the ids of the endpoints the caller's roles
+        allow. Intended for a UI deciding which controls to show; the proxy enforces the same
+        rules independently.
+
+        The caller is authenticated exactly as for the proxy: `Bearer`, `DPoP` or the
+        `EDGE_SESSION` cookie, with the same binding rules. An expired token is not refreshed
+        here.
+      tags: [Permissions]
+      security:
+        - bearer: []
+        - dpop: []
+        - sessionCookie: []
+      parameters:
+        - name: resource
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: Resource identifier. Repeat the parameter to ask about several resources.
+        - name: DPoP
+          in: header
+          required: false
+          schema:
+            type: string
+          description: RFC 9449 proof. Required when the access token is key-bound.
+      responses:
+        '200':
+          description: Permissions per resource. An unknown resource yields an empty set.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PermissionsResponse'
+              example:
+                resources:
+                  orders:
+                    permissions: [orders.list, orders.read]
+                isProd: true
+        '401':
+          description: |
+            Not authenticated. A DPoP nonce challenge carries `WWW-Authenticate: DPoP
+            error="use_dpop_nonce"` and a `DPoP-Nonce` header; any other refusal is a bare 401.
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+            DPoP-Nonce:
+              schema:
+                type: string
+
+  /native/start/{clientId}:
+    post:
+      operationId: nativeStart
+      summary: Start a native authorization
+      description: |
+        Begins a FAPI 2.0 authorization for a mobile app. Edge builds the authorization
+        request itself — PKCE, `state`, `response_type=code`, the app's DPoP key thumbprint —
+        pushes it to Auth's `/par` as the client, and returns what the app needs to open the
+        system browser, plus a sealed `blob`. Edge keeps no record of the flow: the blob is
+        what carries the PKCE verifier and `state` to `/native/complete`.
+
+        The `DPoP` proof must be addressed to this endpoint and signed by the device key. It
+        is never forwarded, and each proof can be used once. The request carries no client
+        credential: the device authenticates only by that key.
+
+        Only the parameters listed in the request body may be supplied; everything that decides
+        the security of the flow is edge's. Auth's refusals of the pushed request are relayed
+        unchanged.
+      tags: [Native]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NativeClientId'
+        - $ref: '#/components/parameters/DpopProofRequired'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NativeStartRequest'
+      responses:
+        '200':
+          description: The request was accepted by Auth.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NativeStartResponse'
+        '400':
+          $ref: '#/components/responses/NativeError'
+        '401':
+          $ref: '#/components/responses/NativeNonceRequired'
+        '404':
+          $ref: '#/components/responses/NativeUnknownClient'
+
+  /native/complete/{clientId}:
+    post:
+      operationId: nativeComplete
+      summary: Redeem the authorization code
+      description: |
+        Exchanges the authorization code the system browser returned for tokens. Edge checks
+        the blob (issued by this edge, for this client, unexpired), that `state` matches, that
+        `iss` is the authorization server the request was pushed to (RFC 9207), and that the
+        proof is signed by the key the flow started with; it then redeems the code at Auth with
+        the PKCE verifier from the blob and relays Auth's response unchanged.
+
+        The `DPoP` proof is addressed to Auth's token endpoint (the `token_endpoint` from
+        `/native/start`) and is forwarded byte for byte.
+      tags: [Native]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NativeClientId'
+        - $ref: '#/components/parameters/DpopProofRequired'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NativeCompleteRequest'
+      responses:
+        '200':
+          description: Auth's token response, relayed unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/NativeError'
+        '401':
+          $ref: '#/components/responses/NativeNonceRequired'
+        '404':
+          $ref: '#/components/responses/NativeUnknownClient'
+
+  /native/token/{clientId}:
+    post:
+      operationId: nativeToken
+      summary: Refresh tokens
+      description: |
+        Exchanges a refresh token for new tokens. Only the `refresh_token` grant is served
+        here. Edge checks the proof (`htm`, `htu`, signature, `iat`), authenticates to Auth as
+        the client and relays the response unchanged.
+
+        The `DPoP` proof is addressed to Auth's token endpoint and is forwarded byte for byte.
+        `Idempotency-Key` is forwarded too, making the rotation safely retryable.
+      tags: [Native]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NativeClientId'
+        - $ref: '#/components/parameters/DpopProofRequired'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NativeRefreshRequest'
+      responses:
+        '200':
+          description: Auth's token response, relayed unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/NativeError'
+        '401':
+          $ref: '#/components/responses/NativeNonceRequired'
+        '404':
+          $ref: '#/components/responses/NativeUnknownClient'
+
+  /native/revoke/{clientId}:
+    post:
+      operationId: nativeRevoke
+      summary: Revoke a token
+      description: |
+        RFC 7009 revocation. Edge checks the proof, authenticates to Auth as the client and
+        relays the response unchanged. The `DPoP` proof is addressed to Auth's revocation
+        endpoint (the `revocation_endpoint` from `/native/start`) and is forwarded byte for
+        byte.
+      tags: [Native]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/NativeClientId'
+        - $ref: '#/components/parameters/DpopProofRequired'
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NativeRevokeRequest'
+      responses:
+        '200':
+          description: Auth's response, relayed unchanged.
+        '400':
+          $ref: '#/components/responses/NativeError'
+        '401':
+          $ref: '#/components/responses/NativeNonceRequired'
+        '404':
+          $ref: '#/components/responses/NativeUnknownClient'
+
+  /liveness:
+    get:
+      operationId: liveness
+      summary: Liveness probe
+      description: Answers `200` while the process is running.
+      tags: [Operations]
+      security: []
+      responses:
+        '200':
+          description: Alive.
+
+  /readiness:
+    get:
+      operationId: readiness
+      summary: Readiness probe
+      description: Answers `200` once the edge has loaded its configuration and can serve traffic.
+      tags: [Operations]
+      security: []
+      responses:
+        '200':
+          description: Ready.
+        '503':
+          description: Not ready.
+
+  /metrics:
+    get:
+      operationId: metrics
+      summary: Prometheus metrics
+      tags: [Operations]
+      security: []
+      responses:
+        '200':
+          description: Metrics in the Prometheus text exposition format.
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /service/configuration/sync:
+    post:
+      operationId: syncConfiguration
+      summary: Refresh configuration now
+      description: |
+        Makes the edge pull OAuth clients, resources, permissions and DPoP policy from Central
+        immediately instead of waiting for the next refresh interval. Meant for end-to-end
+        tests, so it answers `404` in production.
+
+        Authenticated with HTTP Basic: username `edge`, password the base64url-encoded
+        `security.internal-secret` from the edge's configuration. When no such secret is
+        configured the endpoint is unreachable.
+      tags: [Operations]
+      security:
+        - internalBasic: []
+      responses:
+        '200':
+          description: Configuration refreshed.
+        '401':
+          description: Missing or wrong credentials, or no internal secret is configured.
+        '404':
+          description: Production environment.
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: An access token issued by Auth. Refused if the token is key-bound (`cnf.jkt`).
+    dpop:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: |
+        `Authorization: DPoP <access token>`, accompanied by a `DPoP` proof header. OpenAPI
+        has no native scheme for this; the value is `DPoP ` followed by the token.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: EDGE_SESSION
+      description: |
+        Set by `/complete`. Holds `<presetId>:<accessToken>`. The only presentation under
+        which certificate-bound tokens are honoured, and the only one edge refreshes.
+    internalBasic:
+      type: http
+      scheme: basic
+      description: Username `edge`, password the base64url-encoded internal secret.
+
+  parameters:
+    NativeClientId:
+      name: clientId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: A native client of a tenant served by this edge.
+    DpopProofRequired:
+      name: DPoP
+      in: header
+      required: true
+      schema:
+        type: string
+      description: RFC 9449 proof signed by the device key. Exactly one must be sent.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+      description: Forwarded to Auth, which makes a refresh-token rotation safely retryable.
+
+  requestBodies:
+    ProxyBody:
+      required: false
+      description: |
+        Forwarded upstream. When the endpoint has body-injection rules the body must be JSON,
+        and the injected members are applied to it.
+      content:
+        '*/*':
+          schema: {}
+
+  responses:
+    NativeError:
+      description: |
+        A refusal in the RFC 6749 §5.2 shape, from edge or relayed from Auth. Edge's own
+        codes are `invalid_request`, `unsupported_grant_type`, `invalid_dpop_proof` and
+        `invalid_grant`.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OAuthError'
+          example:
+            error: invalid_grant
+            error_description: blob has expired
+    NativeNonceRequired:
+      description: |
+        A DPoP nonce is required (RFC 9449 §9). Retry with a proof that includes the nonce
+        from `DPoP-Nonce`. Auth's own `use_dpop_nonce` challenge is relayed the same way.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: DPoP error="use_dpop_nonce"
+        DPoP-Nonce:
+          schema:
+            type: string
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+    NativeUnknownClient:
+      description: |
+        The client is not a native client served by this edge, or this edge is not configured
+        for native clients. Indistinguishable by design.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+
+  schemas:
+    LogoutError:
+      type: object
+      required: [error, error_description]
+      properties:
+        error:
+          type: string
+          example: invalid_request
+        error_description:
+          type: string
+
+    OAuthError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+        error_description:
+          type: string
+
+    PermissionsResponse:
+      type: object
+      required: [resources, isProd]
+      properties:
+        resources:
+          type: object
+          description: Permissions keyed by the requested resource identifier.
+          additionalProperties:
+            type: object
+            required: [permissions]
+            properties:
+              permissions:
+                type: array
+                uniqueItems: true
+                items:
+                  type: string
+                description: Identifiers of the endpoints the caller may call.
+        isProd:
+          type: boolean
+          description: |
+            Whether this is a production environment. Lets a console hide affordances that
+            exist only outside production, such as revealing a generated temporary password.
+
+    NativeStartRequest:
+      type: object
+      description: |
+        Authorization request parameters the app may set, passed to Auth's `/par` as given.
+        Anything else is ignored.
+      properties:
+        redirect_uri:
+          type: string
+          description: |
+            One of the client's registered redirect URIs. Optional only when the client
+            registered exactly one.
+        scope:
+          type: string
+        nonce:
+          type: string
+        acr_values:
+          type: string
+        prompt:
+          type: string
+        login_hint:
+          type: string
+        ui_locales:
+          type: string
+        max_age:
+          type: string
+        claims:
+          type: string
+          description: JSON `claims` request parameter.
+        resource:
+          type: array
+          items:
+            type: string
+          description: RFC 8707 resource indicators. The only parameter that may repeat.
+        authorization_details:
+          type: string
+          description: RFC 9396 authorization details, as JSON.
+
+    NativeStartResponse:
+      type: object
+      required:
+        - client_id
+        - request_uri
+        - expires_in
+        - authorization_endpoint
+        - state
+        - blob
+        - token_endpoint
+        - revocation_endpoint
+      properties:
+        client_id:
+          type: string
+        request_uri:
+          type: string
+          description: Pushed-request reference. Open the system browser on `authorization_endpoint` with this and `client_id`.
+        expires_in:
+          type: integer
+          format: int64
+          description: Seconds both `request_uri` and `blob` remain valid — the shorter of Auth's lifetime and the edge's `blob-ttl`.
+        authorization_endpoint:
+          type: string
+          format: uri
+        state:
+          type: string
+          description: Echoed back in the redirect; present it again at `/native/complete`.
+        blob:
+          type: string
+          description: Sealed, opaque. Present it unchanged at `/native/complete`.
+        token_endpoint:
+          type: string
+          format: uri
+          description: The `htu` the device must sign its `/native/complete` and `/native/token` proofs for.
+        revocation_endpoint:
+          type: string
+          format: uri
+          description: The `htu` the device must sign its `/native/revoke` proof for.
+
+    NativeCompleteRequest:
+      type: object
+      required: [code, state, iss, blob]
+      properties:
+        code:
+          type: string
+          description: Authorization code from the redirect.
+        state:
+          type: string
+          description: The `state` from the redirect; must match the one in the blob.
+        iss:
+          type: string
+          description: The `iss` from the redirect (RFC 9207); must be the authorization server the request was pushed to.
+        blob:
+          type: string
+          description: The `blob` from `/native/start`.
+
+    NativeRefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        grant_type:
+          type: string
+          enum: [refresh_token]
+          description: Optional; any other value is refused with `unsupported_grant_type`.
+        refresh_token:
+          type: string
+        scope:
+          type: string
+        resource:
+          type: array
+          items:
+            type: string
+
+    NativeRevokeRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+        token_type_hint:
+          type: string
+          enum: [access_token, refresh_token]
+
+    TokenResponse:
+      type: object
+      description: |
+        Auth's token response, relayed. See Auth's token endpoint for the full definition.
+      required: [access_token, token_type, expires_in]
+      properties:
+        access_token:
+          type: string
+        token_type:
+          type: string
+          enum: [DPoP]
+        expires_in:
+          type: integer
+        refresh_token:
+          type: string
+        id_token:
+          type: string
+        scope:
+          type: string

@@ -24,6 +24,8 @@ lazy val util = project
     libraryDependencies ++= Dependencies.http,
     libraryDependencies ++= Dependencies.cel,
     libraryDependencies ++= Dependencies.jsonSchema,
+    // PKCS#10 requests for edge-fronted clients' certificates (#440, #463).
+    libraryDependencies ++= Dependencies.certificates,
   )
 
 lazy val utilImplementations = file("util/implementations")
@@ -102,7 +104,6 @@ lazy val central = project
     commonSettings,
     libraryDependencies ++= Dependencies.core,
     libraryDependencies ++= Dependencies.http,
-    libraryDependencies ++= Dependencies.certificates,
   )
   .dependsOn(
     util % CompileTest

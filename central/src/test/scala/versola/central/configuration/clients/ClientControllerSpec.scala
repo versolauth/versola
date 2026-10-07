@@ -2,7 +2,7 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuance, ClientCertificateIssuer, ClientCertificateService}
+import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuance, ClientCertificateIssuer, ClientCertificateService, EdgeCertificateEnrollmentRepository}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
@@ -248,9 +248,17 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     def delete(clientId: ClientId) = ZIO.unit
     def expiringBefore(deadline: java.time.Instant) = ZIO.succeed(Vector.empty)
 
+  private object Enrollments:
+    def apply(): EdgeCertificateEnrollmentRepository = new EdgeCertificateEnrollmentRepository:
+      def enroll(clientId: ClientId, at: Instant) = ZIO.unit
+      def isEnrolled(clientId: ClientId) = ZIO.succeed(false)
+      def enrolledClients = ZIO.succeed(Set.empty)
+      def recordIssued(clientId: ClientId, serial: String, at: Instant, edgeId: EdgeId) = ZIO.unit
+      def delete(clientId: ClientId) = ZIO.unit
+
   private def certificates(service: OAuthClientService): ZEnvironment[ClientCertificateService] =
     ZEnvironment[ClientCertificateService](
-      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, config),
+      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, Enrollments(), config),
     )
 
   private def controllerTestCase(
@@ -546,6 +554,48 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         wireSecret.exists(_ != Base64Url.encode(plaintext.get)),
         recovered.map(_.toVector) == plaintext.map(_.toVector),
       )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    // #463: only an edge asks for a certificate to be signed. The token central itself syncs with
+    // names no edge, and has no business here.
+    controllerTestCase(
+      description = "refuses to sign an edge certificate for a caller that is not an edge",
+      request = Request.post(
+        URL.empty / "configuration" / "clients" / "edge-certificate" / "sign",
+        Body.fromString("""{"clientId":"web-app","csr":"x"}"""),
+      ).addHeader(Header.Authorization.Bearer(syncToken)).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Unauthorized,
+    ),
+    test("answers an edge's request for a client that is not enrolled with 422, and signs nothing") {
+      for
+        client <- ZIO.service[Client]
+        service = stub[OAuthClientService]
+        resourceService = stub[versola.central.configuration.resources.ResourceService]
+        edgeService = stub[EdgeService]
+        tracing <- tracingLayer.build
+        security <- securityLayer.build
+        token <- JWT.serialize(
+          JWT.Claims("edge", "edge", List("central"), Json.Obj()),
+          1.minute,
+          JWT.Signature.Asymmetric(JWT.Algorithm.RS256, edgeKeyPair.keyId, edgeKeyPair.privateKey),
+          headers = Map("edge_id" -> edgeId.toString),
+        )
+        _ <- edgeService.find.succeedsWith(Some(edgeRecord))
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ClientController.routes.provideEnvironment(
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
+        )
+        response <- client.batched(
+          Request.post(
+            URL.empty / "configuration" / "clients" / "edge-certificate" / "sign",
+            Body.fromString("""{"clientId":"web-app","csr":"x"}"""),
+          ).addHeader(Header.Authorization.Bearer(token)).addHeader(Header.ContentType(MediaType.application.json)),
+        )
+        text <- response.body.asString
+      yield assertTrue(response.status == Status.UnprocessableEntity, text.contains("not enrolled"))
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     // Regression test for the bug encryptRsaHybrid fixes: plain RSA-OAEP transport
     // (encryptRsa, what the test above exercises for the 48-byte client secret) throws

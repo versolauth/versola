@@ -22,11 +22,21 @@ paths:
       operationId: token
       summary: Exchange a grant for tokens
       description: |
-        Clients authenticate with `client_secret_basic` (HTTP Basic), `client_secret_post`
-        (`client_id` / `client_secret` form fields), or, for a public client, `client_id`
-        alone with no secret at all. At most one of the two credentialed methods may be used
-        per request. The empty security requirement below stands for the form-field cases,
-        which OpenAPI cannot express as a security scheme.
+        The client authenticates with the method it registered: `client_secret_basic` (HTTP
+        Basic), `client_secret_post` (`client_id` / `client_secret` form fields),
+        `private_key_jwt` (`client_assertion_type` / `client_assertion` form fields, RFC
+        7523), `tls_client_auth` / `self_signed_tls_client_auth` (RFC 8705, certificate
+        presented on the mutual-TLS listener or forwarded by the tenant's proxy), or, for a
+        public client, `client_id` alone with no secret at all. At most one method may be
+        used per request; a client that registered `private_key_jwt` cannot authenticate with
+        a secret. The empty security requirement below stands for the form-field and
+        certificate cases, which OpenAPI cannot express as a security scheme.
+
+        The endpoint is also served at the `mtls_endpoint_aliases` address advertised in the
+        discovery document. A certificate presented there (or forwarded by the proxy) may
+        bind the issued tokens to it for clients registered for certificate-bound access
+        tokens (RFC 8705 §3); such tokens carry `cnf.x5t#S256` and refresh tokens are then
+        redeemable only over that certificate.
       tags: [Token]
       security:
         - clientSecretBasic: []
@@ -124,7 +134,8 @@ components:
       scheme: basic
       description: |
         `client_secret_basic` — `client_id` as the username, `client_secret` as the password
-        (RFC 6749 §2.3.1). Takes precedence when both methods are present.
+        (RFC 6749 §2.3.1). Combining it with a `client_secret` form field is treated as two
+        methods and fails with `invalid_client`.
 
   schemas:
     AuthorizationCodeGrant:
@@ -145,13 +156,23 @@ components:
           description: Must be identical to the `redirect_uri` of the authorization request.
         code_verifier:
           type: string
-          description: PKCE verifier matching the `code_challenge` of the authorization request.
+          description: |
+            PKCE verifier matching the `code_challenge` of the authorization request (RFC 7636
+            §4.1): 43 to 128 characters from `A-Z a-z 0-9 - . _ ~`.
+          pattern: '^[A-Za-z0-9~._-]{43,128}$'
         client_id:
           type: string
           description: Required for `client_secret_post` and for public clients.
         client_secret:
           type: string
           description: Confidential clients using `client_secret_post`.
+        client_assertion_type:
+          type: string
+          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+          description: Clients using `private_key_jwt`; sent together with `client_assertion`.
+        client_assertion:
+          type: string
+          description: Signed client assertion JWT (RFC 7523) for `private_key_jwt`.
 
     RefreshTokenGrant:
       type: object
@@ -194,6 +215,13 @@ components:
           type: string
         client_secret:
           type: string
+        client_assertion_type:
+          type: string
+          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+          description: Clients using `private_key_jwt`; sent together with `client_assertion`.
+        client_assertion:
+          type: string
+          description: Signed client assertion JWT (RFC 7523) for `private_key_jwt`.
 
     ClientCredentialsGrant:
       type: object
@@ -229,6 +257,13 @@ components:
           type: string
         client_secret:
           type: string
+        client_assertion_type:
+          type: string
+          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+          description: Clients using `private_key_jwt`; sent together with `client_assertion`.
+        client_assertion:
+          type: string
+          description: Signed client assertion JWT (RFC 7523) for `private_key_jwt`.
 
     TokenResponse:
       type: object
@@ -238,8 +273,9 @@ components:
           type: string
           description: |
             Signed JWT. Beyond the registered claims it carries `client_id`, `scope`, `jti`,
-            `roles`, `tenant_id`, and — for user-bound tokens — `sid`, `amr`, `auth_time`
-            and `acr`.
+            `roles`, `tenant_id`, and, where applicable, `sid`, `fam` (refresh token family),
+            `cnf` (DPoP `jkt` and/or certificate `x5t#S256` binding), `requested_claims`,
+            `authorization_details`, and `amr`, `auth_time` and `acr` for user-bound tokens.
         token_type:
           type: string
           enum: [Bearer, DPoP]
@@ -253,7 +289,7 @@ components:
           description: Access token lifetime in seconds.
         refresh_token:
           type: string
-          description: Present for `authorization_code` and `refresh_token` when the client is allowed to refresh.
+          description: Present for `authorization_code` and `refresh_token` when the client is allowed to refresh. Never issued for `client_credentials`.
         scope:
           type: string
           description: Space-delimited granted scopes. Omitted when empty.
@@ -311,7 +347,8 @@ components:
 
     TokenError:
       description: |
-        - `invalid_request` — a required field is missing or malformed.
+        - `invalid_request` — a required field is missing or malformed (including a
+          `code_verifier` or `redirect_uri` of the wrong shape, or an unreadable form body).
         - `invalid_grant` — the code or refresh token is unknown, expired, already used, bound
           to a different client or redirect URI, PKCE verification failed, or the code was
           committed to a key with `dpop_jkt` and this request's proof is for another key
@@ -324,11 +361,13 @@ components:
         - `invalid_authorization_details` — an `authorization_details` object is unknown for
           the client's tenant, fails its type's schema, or (for `refresh_token`) does not
           exactly match one already granted.
-        - `invalid_dpop_proof` — the `DPoP` header is malformed, signed by the wrong key,
+        - `invalid_dpop_proof` — the `DPoP` header is repeated, malformed, signed by the wrong key,
           or has already been used (RFC 9449 §5); also returned when the client is registered
           with `dpop_bound_access_tokens` and the request carries no proof at all (§5.2).
         - `use_dpop_nonce` — retry with the nonce carried in the `DPoP-Nonce` header of this
-          response (RFC 9449 §8).
+          response (RFC 9449 §8). Returned as `400`.
+
+        All errors except `invalid_client` are `400`; `invalid_client` is `401` (see below).
       headers:
         Cache-Control:
           schema:
@@ -357,7 +396,9 @@ components:
     InvalidClient:
       description: |
         `invalid_client` — the client is unknown, credentials were not supplied, more than one
-        authentication method was used, or the secret does not verify.
+        authentication method was used, the secret, client assertion or client certificate
+        does not verify (or the forwarded certificate is unreadable), or the client is public
+        but the tenant's security profile does not allow public clients.
       headers:
         Cache-Control:
           schema:

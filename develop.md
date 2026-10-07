@@ -404,7 +404,7 @@ Three certificate relationships exist in the mTLS work, with different rotation 
 |---|---|---|---|
 | 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
 | 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
-| 3 | client certificates of edge-fronted clients (`edgeClientCertificate` in central) | PEM (certificate chain + PKCS#8 key) | central issues it at registration (`issueEdgeClientCertificate`) and renews it before it expires (14-day certificates, renewed at 4 days left) |
+| 3 | client certificates of edge-fronted clients | the edge enrols for it (`enrollEdgeClientCertificate`, key on the edge) -- or `edgeClientCertificate` in central (PEM + PKCS#8 key) | 14-day certificates; the edge renews at a third of the lifetime left, or central renews the one it issued at 4 days left |
 
 **(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
 `ClientCaBundleRotationSpec` proves that clients issued by either CA connect while both are in
@@ -428,7 +428,26 @@ it; (c) once every edge has the new set, drop the old entry. Edge reads the file
 a changed file needs a restart. A single-element list is the previous behaviour; the previous
 bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
 
-**(3) Client certificates issued by central.** Register an edge-fronted client with
+**(3a) Client certificates the edge enrols for (#463) -- preferred.** Register an edge-fronted client with
+`"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
+Central stores **neither a certificate nor a key** -- only that the client is enrolled
+(`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
+replica generates its own EC P-256 key (kept in memory, never sent anywhere), and the client sync tells it
+what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
+`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
+syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
+is enrolled and that the request is signed by its own key and names exactly the registered subject and
+alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and
+returns the chain. The edge renews when a third of the lifetime is left -- on its ordinary client sync, so
+no new schedule -- keeps the current certificate if the CA is briefly unavailable, and enrols again after a
+restart. Replicas hold different certificates carrying the same subject, which is what auth recognises the
+client by. Mutually exclusive with `issueEdgeClientCertificate` and with supplying `edgeClientCertificate`.
+
+**(3b) Client certificates issued by central** (`issueEdgeClientCertificate`), where central generates the key
+pair and stores the certificate and key encrypted, then renews it itself. Kept for deployments that have
+clients registered this way; (3a) is the one to use for new ones.
+
+**Issuing, and the CAs both modes sign through.** For (3b), register an edge-fronted client with
 `"issueEdgeClientCertificate": true` (and `mtlsAuth`) and central generates an EC P-256 key pair and
 a PKCS#10 request whose subject and SAN are built from the `mtlsAuth` it registers, has a CA sign it,
 validates that the result names what `mtlsAuth` expects, and stores it as `edgeClientCertificate`. It

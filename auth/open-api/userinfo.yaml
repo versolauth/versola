@@ -12,8 +12,13 @@ info:
     Which claims appear is determined by the scopes granted at authorization time and by the
     `claims` request parameter, both of which are carried inside the access token.
 
-    `GET` and `POST` behave identically; `POST` exists for clients that would otherwise have to
-    put the token in a URL.
+    `GET` and `POST` behave identically and neither reads a request body; the token is always
+    presented in the `Authorization` header.
+
+    A sender-constrained token must be presented accordingly: a DPoP-bound token (RFC 9449)
+    with the `DPoP` scheme plus a `DPoP` proof header carrying a matching `ath`, and a
+    certificate-bound token (RFC 8705) over the certificate it is bound to. The endpoint is
+    also served at the `mtls_endpoint_aliases` address advertised in the discovery document.
   license:
     name: Business Source License 1.1
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -30,8 +35,10 @@ paths:
       tags: [UserInfo]
       security:
         - bearerAuth: []
+        - dpopAuth: []
       parameters:
         - $ref: '#/components/parameters/Accept'
+        - $ref: '#/components/parameters/DPoP'
       responses:
         '200':
           $ref: '#/components/responses/UserInfo'
@@ -44,8 +51,10 @@ paths:
       tags: [UserInfo]
       security:
         - bearerAuth: []
+        - dpopAuth: []
       parameters:
         - $ref: '#/components/parameters/Accept'
+        - $ref: '#/components/parameters/DPoP'
       responses:
         '200':
           $ref: '#/components/responses/UserInfo'
@@ -59,10 +68,31 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        The access token from `/token`, sent as `Authorization: Bearer <token>`. This is the
-        only accepted way to present the token.
+        The access token from `/token`, sent as `Authorization: Bearer <token>`. For a
+        token bound to a DPoP key this is refused (`invalid_dpop_proof`) unless the request
+        comes from a registered edge that vouches for it. The token is never accepted in the
+        query string or body.
+    dpopAuth:
+      type: http
+      scheme: DPoP
+      description: |
+        `Authorization: DPoP <token>` together with a `DPoP` proof header (RFC 9449 §7.1),
+        for a DPoP-bound access token. A `DPoP`-scheme request for a token that is not
+        DPoP-bound is refused with `invalid_dpop_proof`.
 
   parameters:
+    DPoP:
+      name: DPoP
+      in: header
+      required: false
+      description: |
+        RFC 9449 proof of possession, required with the `DPoP` scheme. Must be signed with the
+        key the token is bound to, carry `htm`/`htu` for this request and an `ath` matching
+        the token, and may be required to carry a server nonce (`use_dpop_nonce`). Exactly
+        one `DPoP` header may be sent.
+      schema:
+        type: string
+
     Accept:
       name: Accept
       in: header
@@ -137,12 +167,24 @@ components:
 
     Unauthorized:
       description: |
-        The error is reported in the `WWW-Authenticate` header; the body is empty.
+        The error is reported in the `WWW-Authenticate` header; the body is empty. Every
+        error, including `insufficient_scope`, is answered with `401`.
 
-        - `invalid_request` — no `Authorization: Bearer` header was sent.
-        - `invalid_token` — the token failed verification, expired, or is not bound to a user.
+        - `invalid_request` — no `Authorization: Bearer` or `Authorization: DPoP` header was sent.
+        - `invalid_token` — the token failed verification, expired, is not bound to a user,
+          or is bound to a client certificate that was not presented.
         - `insufficient_scope` — the token was not granted the `openid` scope.
+        - `invalid_dpop_proof` (`DPoP` scheme) — the proof is missing, repeated, invalid,
+          replayed, has the wrong key or `ath`; or a DPoP-bound token was presented as
+          `Bearer`, or an unbound one under `DPoP`.
+        - `use_dpop_nonce` (`DPoP` scheme) — retry with a proof containing the nonce from the
+          `DPoP-Nonce` response header (RFC 9449 §9).
       headers:
+        DPoP-Nonce:
+          required: false
+          description: Present only for `use_dpop_nonce`.
+          schema:
+            type: string
         WWW-Authenticate:
           required: true
           schema:
@@ -154,3 +196,7 @@ components:
               value: Bearer realm="UserInfo", error="insufficient_scope", error_description="The access token does not have sufficient scope"
             invalidRequest:
               value: Bearer realm="UserInfo", error="invalid_request", error_description="The request is missing a required parameter or is otherwise malformed"
+            invalidDpopProof:
+              value: DPoP error="invalid_dpop_proof"
+            useDpopNonce:
+              value: DPoP error="use_dpop_nonce"

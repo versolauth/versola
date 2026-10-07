@@ -46,10 +46,13 @@ paths:
         - $ref: '#/components/parameters/PostLogoutRedirectUri'
         - $ref: '#/components/parameters/State'
         - $ref: '#/components/parameters/IdTokenHint'
+        - $ref: '#/components/parameters/UiLocales'
         - $ref: '#/components/parameters/SessionCookie'
       responses:
         '200':
           $ref: '#/components/responses/LogoutPage'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
     post:
       operationId: logoutPost
@@ -78,6 +81,8 @@ paths:
           $ref: '#/components/responses/LogoutPage'
         '403':
           $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
 
 components:
   parameters:
@@ -86,8 +91,9 @@ components:
       in: query
       required: false
       description: |
-        Where to send the user after logout. Must be registered as a post-logout redirect URI
-        for the client; an unvalidated or unregistered value is dropped. The value is embedded
+        Where to send the user after logout. Must exactly match a post-logout redirect URI
+        registered for the tenant of a client that took part in the session; an unvalidated
+        or unregistered value is dropped, as is any value when no session is identified. The value is embedded
         in the signed-out page and navigated to client-side, with `state` appended.
       schema:
         type: string
@@ -99,6 +105,16 @@ components:
       in: query
       required: false
       description: Opaque value echoed back on the post-logout redirect.
+      schema:
+        type: string
+
+    UiLocales:
+      name: ui_locales
+      in: query
+      required: false
+      description: |
+        Space-delimited BCP 47 language tags, in order of preference, for the confirmation
+        page. Read by `GET` only.
       schema:
         type: string
 
@@ -164,6 +180,15 @@ components:
           schema:
             type: string
             const: no-referrer
+      content:
+        text/html:
+          schema:
+            type: string
+
+    NotFound:
+      description: |
+        The `confirm-logout` or `signed-out` page is not configured for the deployment; an
+        HTML not-found page is returned instead.
       content:
         text/html:
           schema:
