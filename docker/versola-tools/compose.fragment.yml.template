@@ -140,6 +140,9 @@ services:
     image: ghcr.io/versolauth/versola-central:${VERSION}
     container_name: versola-central
     restart: unless-stopped
+    # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
+    # would SIGKILL a JVM still finishing requests.
+    stop_grace_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -185,6 +188,9 @@ services:
     image: ghcr.io/versolauth/versola-auth:${VERSION}
     container_name: versola-auth
     restart: unless-stopped
+    # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
+    # would SIGKILL a JVM still finishing requests.
+    stop_grace_period: 20s
     # central has no healthcheck (no curl in eclipse-temurin:21-jre), so
     # this depends_on can only wait for "container started", not "actually
     # ready". If auth starts before central is really up, its startup
@@ -218,6 +224,9 @@ services:
     image: ghcr.io/versolauth/versola-edge:${VERSION}
     container_name: versola-edge
     restart: unless-stopped
+    # The app's own graceful shutdown is bounded at 15s; Compose's default 10s
+    # would SIGKILL a JVM still finishing requests.
+    stop_grace_period: 20s
     depends_on:
       - central
     environment:

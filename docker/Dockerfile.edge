@@ -86,5 +86,5 @@ RUN mkdir -p /diagnostics
 ENV CONFIG_PATH="/app/config/env.conf"
 
 # Run the application with config path. See Dockerfile.auth's comment on why
-# JAVA_OPTS is not repeated on the command line.
-ENTRYPOINT ["/bin/sh", "-c", "/app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH"]
+# JAVA_OPTS is not repeated on the command line, and why it is `exec`.
+ENTRYPOINT ["/bin/sh", "-c", "exec /app/bin/edge-postgres-impl -Denv.path=$CONFIG_PATH"]
