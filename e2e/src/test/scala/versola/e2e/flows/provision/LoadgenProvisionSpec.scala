@@ -45,7 +45,7 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
     ProvisionConfig(
       tenantId = Fixtures.suiteTenant,
       provisionerClientId = c.provisionerClientId,
-      provisionerSecret = Some(Config.Secret(c.provisionerSecret)),
+      provisionerPrivateKey = Some(Config.Secret(c.provisionerPrivateKey)),
       mobileRedirectUri = "https://app.versola.test/e2e-callback",
       resources = ProvisionResourcesConfig(
         coreUri = "http://e2e-mockapi-core.invalid:8100",
@@ -95,16 +95,12 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
         firstPass <- Provisioner.run(admin, blueprint)
           .retry(Schedule.recurs(40) && Schedule.spaced(2.seconds))
         secondPass <- Provisioner.run(admin, blueprint)
-        token <- auth.clientCredentials(
-          clientId = c.provisionerClientId,
-          clientSecret = c.provisionerSecret,
-          resources = Some(List("resource://central")),
-        ).success
-        listed <- edgeApi.proxy(
+        session <- ProvisionerCredential.session(auth, c, List("resource://central"))
+        listed <- edgeApi.proxyDpop(
           Method.GET,
           "central",
           "/configuration/clients",
-          EdgeAuth.Bearer(token.accessToken),
+          session,
           query = List("tenantId" -> Fixtures.suiteTenant),
         )
         body <- listed.obj

@@ -27,7 +27,9 @@ final case class E2EConfig(
     /** The `client_credentials` client central seeds for `loadgen provision`, which reaches
       * central's admin API through edge's proxy rather than with the resource secret. */
     provisionerClientId: String,
-    provisionerSecret: String,
+    /** The private half, as a JWK, of the key central registered for it as `private_key_jwt`
+      * (`bootstrap.utility-client.public-key-jwk`) -- see [[ProvisionerCredential]]. */
+    provisionerPrivateKey: String,
     redirectUri: String,
     /** RFC 8705 §5: `auth`'s own mutual-TLS listener (`MPORT`), terminating TLS itself rather
       * than reading a header a proxy forwarded -- the header path is `Fixtures.ClientCertificates`
@@ -69,7 +71,7 @@ object E2EConfig:
       edgeInternalSecret <- env("E2E_EDGE_INTERNAL_SECRET", "ZGV2LWVkZ2UtaW50ZXJuYWwtc2VjcmV0LTMyYnl0ZSE")
       // Defaults match the pinned local provisioner seed (see gen-env.scala).
       provisionerClientId <- env("E2E_PROVISIONER_CLIENT_ID", "utils")
-      provisionerSecret <- env("E2E_PROVISIONER_SECRET", "ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI")
+      provisionerPrivateKey <- env("E2E_PROVISIONER_PRIVATE_KEY", """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","d":"jWGh5lV46NJ3RwT8kJ5lfBeBTGBtXnM5V3gwgAEYpXM","use":"sig","kid":"utils-local","alg":"ES256"}""")
       redirectUri      <- env("E2E_REDIRECT_URI",   "http://localhost:3000")
       authMutualTlsUrl <- env("AUTH_MTLS_URL", "https://localhost:9008")
       // Relative to this module's own directory, not the repo root: `Test / fork := true`
@@ -94,7 +96,7 @@ object E2EConfig:
       accountResourceSecret,
       edgeInternalSecret,
       provisionerClientId,
-      provisionerSecret,
+      provisionerPrivateKey,
       redirectUri,
       authMutualTlsUrl,
       authMutualTlsClientCertificate,

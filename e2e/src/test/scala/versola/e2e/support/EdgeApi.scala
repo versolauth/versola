@@ -132,6 +132,27 @@ final class EdgeApi(client: Client, config: E2EConfig):
       result <- ApiResult.of(response)
     yield result
 
+  /** [[proxy]] for a DPoP-bound token: a proof for this very call, and one retry when edge
+    * answers with the nonce it wants signed into it (RFC 9449 §9). */
+  def proxyDpop(
+      method: Method,
+      resourceId: String,
+      path: String,
+      session: ProvisionerSession,
+      body: Option[Json] = scala.None,
+      query: List[(String, String)] = Nil,
+  ): Task[ApiResult] =
+    // `htu` carries no query string (RFC 9449 §4.2), so the proof is the same for any `query`.
+    val htu = proxyUrl(resourceId, path)
+    def call(nonce: Option[String]) =
+      session.prover.proof(method, htu, accessToken = Some(session.token), nonce = nonce)
+        .flatMap(proof => proxy(method, resourceId, path, EdgeAuth.Dpop(session.token, proof), body, query))
+    call(scala.None).flatMap(first =>
+      DpopProver.nonceOf(first.response) match
+        case scala.None => ZIO.succeed(first)
+        case Some(nonce) => call(Some(nonce)),
+    )
+
   /** POST /service/configuration/sync — makes edge reload its client, preset, resource,
     * role and permission caches from central at once, instead of waiting out
     * `configurationCacheRefreshInterval`. Every fixture a test registers in central has to
