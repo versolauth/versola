@@ -134,8 +134,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install Semgrep
         run: python3 -m pip install --user semgrep==1.179.0
+      # `use-of-basic-authentication` is excluded: every hit is an OpenAPI description of a scheme
+      # the protocol itself defines (`client_secret_basic`, RFC 6749 §2.3.1) or of central's
+      # internal resource-secret credential. It flags documentation, not code, and says nothing a
+      # reviewer can act on; the choice of credentials is tracked in the security epic.
       - name: Scan
-        run: ~/.local/bin/semgrep scan --config p/default --severity ERROR --error --sarif --output semgrep.sarif --exclude target --exclude node_modules --exclude .claude
+        run: ~/.local/bin/semgrep scan --config p/default --severity ERROR --error --sarif --output semgrep.sarif --exclude-rule yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication --exclude target --exclude node_modules --exclude .claude
       - name: Upload results
         if: always() && hashFiles('semgrep.sarif') != ''
         uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3
