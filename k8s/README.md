@@ -134,6 +134,12 @@ from the run that first created central's Secret: central seeds `utils` once, so
 run produces a pair whose public half central never sees (versolauth/versola#380). Do not
 regenerate it for a deployment that already has one.
 
+**Upgrading a deployment that already seeded `utils` with a `client_secret`:** a client's
+authentication method is fixed when it is created, so central refuses to start (naming `utils`,
+both methods and the setting) on a `central.conf` that now carries `public-key-jwk`. Either keep
+the previous `central.conf` for `bootstrap.utility-client`, or delete the `utils` client so the
+next boot registers it again with the new key, and give `loadgen` the new private key.
+
 `bootstrap.resource-secret` has no counterpart to match — central is the only reader — but it
 still has to be present at central's *first* boot: central seeds each of the two exactly once,
 the first time it finds neither configured, and a value added to the config later has no effect

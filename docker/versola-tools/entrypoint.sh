@@ -124,6 +124,11 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
   cp .local/env/"$TARGET"/auth.generated-secrets.env    "$OUT_DIR"/auth.generated-secrets.env
   cp .local/env/"$TARGET"/central.generated-secrets.env "$OUT_DIR"/central.generated-secrets.env
   cp .local/env/"$TARGET"/edge.generated-secrets.env    "$OUT_DIR"/edge.generated-secrets.env
+  # The private key of the `utils` client (see gen-env.scala's bootstrapUtilityClientLines):
+  # not a generated-secrets file, so versola-cli never resolves or loads it, but it has to
+  # leave this container or the key is gone with it.
+  rm -f "$OUT_DIR"/utils.private-key.jwk
+  cp .local/env/"$TARGET"/utils.private-key.jwk "$OUT_DIR"/utils.private-key.jwk
 )
 
 # Bake this image's own version into the compose fragment so it pulls the

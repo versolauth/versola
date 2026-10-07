@@ -585,6 +585,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   //     That file is authoritative only for the run that first populated central's OpenBao:
   //     a later run generates a fresh pair, but central keeps the stored public half, so only
   //     the file from the first run matches it. Keep that file, not a regenerated one.
+  //   A deployment that seeded `utils` with a client_secret under an older generator cannot take
+  //   this config as is: central refuses a boot that calls for another method than the client
+  //   holds (see k8s/README.md, "Upgrading a deployment that already seeded utils").
   val utilityPublicJwk =
     if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","use":"sig","kid":"utils-local","alg":"ES256"}"""
     else utilityKey.jwk
@@ -1330,14 +1333,16 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
       ) ++ edgeExtras)
 
-      // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
-      // owner-readable only, written outside every *.generated-secrets.env on purpose.
-      writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-      java.nio.file.Files.setPosixFilePermissions(
-        File(dir, "utils.private-key.jwk").toPath,
-        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
-      )
-      println("  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.")
+    // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
+    // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
+    // whether or not secrets are placeholdered: an interactive prod run registers the public half
+    // in central.conf as a literal, and nothing else keeps the private half.
+    writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
+    java.nio.file.Files.setPosixFilePermissions(
+      File(dir, "utils.private-key.jwk").toPath,
+      java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+    )
+    println("  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.")
 
     println(
       s"""
