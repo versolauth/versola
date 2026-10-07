@@ -136,10 +136,16 @@ kubectl create secret generic versola-utils-key --from-file=private-key.jwk=.loc
 ```
 
 Central seeds `utils` once, so a later `gen-env` run would produce a pair whose public half central
-never sees (versolauth/versola#380). To rerun `gen-env` against a deployment that already has its
-key, hand it back: `UTILS_PRIVATE_KEY_JWK="$(kubectl get secret versola-utils-key -o jsonpath='{.data.private-key\.jwk}' | base64 -d)"`
-makes it write that pair's public half into `central.generated-secrets.env` and the same private key
-into `utils.private-key.jwk`, instead of generating a new one. (`versola-cli` does the equivalent for
+never sees (versolauth/versola#380). To rerun `gen-env` against a deployment that already has its key, hand it back through the
+environment of that one command (a bare assignment on its own line would not reach `scala-cli`):
+
+```bash
+UTILS_PRIVATE_KEY_JWK="$(kubectl get secret versola-utils-key -o jsonpath='{.data.private-key\.jwk}' | base64 -d)" \
+  scala-cli run scripts/gen-env.scala
+```
+
+`gen-env` then writes that pair's public half into `central.generated-secrets.env` and the same
+private key into `utils.private-key.jwk`, instead of generating a new one. (`versola-cli` does the equivalent for
 `docker-local` and `vps` out of OpenBao, at `secret/versola/<target>/utils`.)
 
 **Upgrading a deployment that already seeded `utils` with a `client_secret`:** a client's
