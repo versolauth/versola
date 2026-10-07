@@ -15,7 +15,7 @@ object Versions {
   val zioLogging = "2.5.1"
   val flyway = "11.17.2"
   val magnum = "2.0.0-M2"
-  val postgresql = "42.7.8"
+  val postgresql = "42.7.13"
   val hikari = "7.0.2"
   val libphonenumber = "9.0.19"
   val uuidGenerator = "5.1.1"
