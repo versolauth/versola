@@ -582,6 +582,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push auth image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -606,9 +607,19 @@ jobs:
           # against the registry rather than assumed.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest auth image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-auth
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   docker-central:
     needs: build
@@ -685,6 +696,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push central image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -693,9 +705,19 @@ jobs:
           # image" step -- same reasoning, same base image digest.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest central image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-central
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   docker-edge:
     needs: build
@@ -768,6 +790,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push edge image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -776,9 +799,19 @@ jobs:
           # image" step -- same reasoning, same base image digest.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest edge image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-edge
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # versola-gateway is nginx with central-ui's static build baked in (see
   # docker/Dockerfile.gateway) -- not a JVM service like auth/central/edge,
@@ -855,6 +888,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push gateway image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -867,9 +901,19 @@ jobs:
           # binfmt to handle.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest gateway image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # versola-tools generates auth.conf/central.conf/edge.conf (via
   # scripts/gen-env.scala) plus compose.fragment.yml and nginx.conf for
@@ -979,6 +1023,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push tools image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -1000,9 +1045,19 @@ jobs:
           build-args: |
             VERSION=${{ steps.version.outputs.version }}
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest tools image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-tools
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # versola-loadgen and versola-mockapi: the load emulator (see
   # versola-loadgen-dev-spec.md), not part of the product a customer
@@ -1084,6 +1139,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push loadgen image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -1092,9 +1148,19 @@ jobs:
           # image" step -- same reasoning, same base image digest.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest loadgen image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-loadgen
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   docker-mockapi:
     needs: build
@@ -1161,6 +1227,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build and push mockapi image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -1169,9 +1236,19 @@ jobs:
           # image" step -- same reasoning, same base image digest.
           platforms: linux/amd64,linux/arm64
           push: true
+          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
+          sbom: true
           tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
+      - name: Attest mockapi image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-mockapi
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
 
   # Guards against the k8s/*/values.yaml `image.tag: ""` default -- which
   # _helpers.tpl resolves to .Chart.AppVersion -- naming a tag that was never

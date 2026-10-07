@@ -35,3 +35,20 @@ security headers on non-production example configs, and denial of service by vol
 
 We credit reporters who want it, publish a GitHub security advisory for fixed
 vulnerabilities, and do not take action against good-faith research that follows this policy.
+
+## Vulnerability management
+
+Scanning runs in `.github/workflows/security.yml`: verified secrets (TruffleHog), dependency
+review on pull requests, Trivy on the repository and on the published images (weekly), `npm
+audit`, CodeQL for the TypeScript and Semgrep for the Scala code. Images are built with a
+build-provenance attestation and an SBOM (`ci-cd.yml`).
+
+| Severity | Fix or accept within |
+|---|---|
+| Critical | 7 days |
+| High | 30 days |
+| Medium | 90 days |
+
+A finding is accepted rather than fixed only by adding it to `.trivyignore` (or the tool's own
+suppression) with the reason, the owner and a re-evaluation date. Findings without a fix upstream
+are tracked until one exists.
