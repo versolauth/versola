@@ -13,6 +13,19 @@ import java.nio.charset.StandardCharsets
 trait OAuthClientsSyncClient extends CacheSource[Map[ClientId, OAuthClient]]:
   def getAll: Task[Map[ClientId, OAuthClient]]
 
+  /** Every client's permissions, including clients edge holds no credential for. */
+  def getPermissions: Task[Map[ClientId, Set[PermissionId]]]
+
+/** Permissions of every client central syncs, whether or not edge holds a credential for it. */
+trait ClientPermissionsSyncClient extends CacheSource[Map[ClientId, Set[PermissionId]]]
+
+object ClientPermissionsSyncClient:
+  val live: URLayer[OAuthClientsSyncClient, ClientPermissionsSyncClient] =
+    ZLayer.fromFunction((source: OAuthClientsSyncClient) =>
+      new ClientPermissionsSyncClient:
+        def getAll = source.getPermissions,
+    )
+
 object OAuthClientsSyncClient:
   val live: URLayer[Client & EdgeConfig & SecurityService & CentralSyncTokenService, OAuthClientsSyncClient] =
     ZLayer.fromFunction(Impl(_, _, _, _))
@@ -25,14 +38,22 @@ object OAuthClientsSyncClient:
   ) extends OAuthClientsSyncClient:
     private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
 
-    override def getAll: Task[Map[ClientId, OAuthClient]] =
+    private def fetch: Task[GetOAuthClientsSyncResponse] =
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ClientsURL).addHeader(Header.Authorization.Bearer(token))
         response <- ZIO.scoped(httpClient.request(request))
         response <- response.bodyAs[GetOAuthClientsSyncResponse]
+      yield response
+
+    override def getAll: Task[Map[ClientId, OAuthClient]] =
+      for
+        response <- fetch
         clients <- ZIO.foreach(response.clients)(credentialed)
       yield clients.flatten.map(x => x.id -> x).toMap
+
+    override def getPermissions: Task[Map[ClientId, Set[PermissionId]]] =
+      fetch.map(_.clients.map(c => c.id -> c.permissions.map(PermissionId(_))).toMap)
 
     /** The client as edge can act for it, or nothing.
       *

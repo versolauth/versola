@@ -137,6 +137,24 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         clients <- service.getAll
       yield assertTrue(clients.keySet == Set(ClientId("key-only")))
     },
+    // A client authenticating to auth with a registered public key alone (private_key_jwt, such as
+    // `utils`) is one edge holds no credential for, so `getAll` drops it. Its permissions are
+    // still what authorizes its service tokens at the proxy.
+    test("reports the permissions of a client edge holds no credential for") {
+      val body = SyncResponseMirror(
+        Vector(SyncClientRecordMirror(ClientId("utils"), None, 15.minutes, permissions = Set("oauth:read", "service:operate"))),
+      ).toJson
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService)
+        clients <- service.getAll
+        permissions <- service.getPermissions
+      yield assertTrue(
+        clients.isEmpty,
+        permissions == Map(ClientId("utils") -> Set(PermissionId("oauth:read"), PermissionId("service:operate"))),
+      )
+    },
     test("fails the whole sync on an unusable key rather than serving a doubtful snapshot") {
       val keyCiphertext = Base64.urlEncode(Array.fill(32)(43.toByte))
       val body = SyncResponseMirror(

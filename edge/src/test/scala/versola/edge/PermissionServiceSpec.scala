@@ -65,9 +65,12 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     new PermissionsSyncClient:
       override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] = ZIO.succeed(value)
 
-  private def clientsClient(value: Map[ClientId, OAuthClient]): OAuthClientsSyncClient =
-    new OAuthClientsSyncClient:
-      override def getAll: Task[Map[ClientId, OAuthClient]] = ZIO.succeed(value)
+  private def permissionsOf(clients: Map[ClientId, OAuthClient]): Map[ClientId, Set[PermissionId]] =
+    clients.view.mapValues(_.permissions).toMap
+
+  private def clientsClient(value: Map[ClientId, OAuthClient]): ClientPermissionsSyncClient =
+    new ClientPermissionsSyncClient:
+      override def getAll: Task[Map[ClientId, Set[PermissionId]]] = ZIO.succeed(permissionsOf(value))
 
   private def buildService(
       roles: Map[(TenantId, RoleId), Set[PermissionId]] = rolesMap,
@@ -79,7 +82,7 @@ object PermissionServiceSpec extends ZIOSpecDefault:
   ): PermissionService =
     val rolesCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(roles)))
     val permissionsCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(permissions)))
-    val clientsCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(clients)))
+    val clientsCache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(permissionsOf(clients))))
     PermissionService.Impl(
       rolesCache,
       permissionsCache,

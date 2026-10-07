@@ -84,6 +84,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       CentralSyncTokenService.live >+>
       AuthorizationPresetsSyncClient.live >+>
       OAuthClientsSyncClient.live >+>
+      versola.edge.ClientPermissionsSyncClient.live >+>
       CelEvaluator.live >+>
       ResourcesSyncClient.live >+>
       RolesSyncClient.live >+>
