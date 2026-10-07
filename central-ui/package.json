@@ -28,7 +28,7 @@
   "author": "Versola",
   "license": "MIT",
   "dependencies": {
-    "@marcbachmann/cel-js": "^7.6.1",
+    "@marcbachmann/cel-js": "^8.0.0",
     "@types/prismjs": "^1.26.6",
     "libphonenumber-js": "^1.13.14",
     "lit": "^3.2.1",
