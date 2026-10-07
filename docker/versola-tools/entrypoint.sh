@@ -140,6 +140,17 @@ cp .local/env/"$TARGET"/edge.conf    "$OUT_DIR"/edge.conf
   cp .local/env/"$TARGET"/utils.private-key.jwk "$OUT_DIR"/utils.private-key.jwk
 )
 
+# What each of those secrets is, which services receive it and what to do
+# when a deployment doesn't have it yet (see gen-env.scala's SecretSchema):
+# versola-cli reads this to decide, before deploying a version, which
+# secrets are missing from OpenBao. Names, shapes and policies only -- no
+# values -- so, unlike the files above, it needs neither umask 077 nor
+# anything else that keeps it private. The rm first for the same reason as
+# above: a reused OUT_DIR must not keep a stale copy if this run fails to
+# produce one (cp then fails under `set -e`, and nothing stale is left).
+rm -f "$OUT_DIR"/secrets.schema.json
+cp .local/env/"$TARGET"/secrets.schema.json "$OUT_DIR"/secrets.schema.json
+
 # Bake this image's own version into the compose fragment so it pulls the
 # matching auth/central/edge/gateway images. sed instead of envsubst: fewer
 # assumptions about what's installed in the base image, and there are no
@@ -177,7 +188,7 @@ cp -R central-ui "$OUT_DIR"/central-ui
 if [ "$TARGET" != "vps" ]; then
   cp nginx.conf.template "$OUT_DIR"/nginx.conf
   cp proxy_params.conf.template "$OUT_DIR"/proxy_params.conf
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, nginx.conf, proxy_params.conf, openbao.hcl, central-ui/ to $OUT_DIR"
 else
-  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, compose.fragment.yml, openbao.hcl, central-ui/ to $OUT_DIR"
+  echo "versola-tools: wrote auth.conf, central.conf, edge.conf, *.generated-secrets.env, secrets.schema.json, compose.fragment.yml, openbao.hcl, central-ui/ to $OUT_DIR"
 fi

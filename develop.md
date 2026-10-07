@@ -173,6 +173,28 @@ gen-env generates each run, and central's public half is taken from it, so the p
 reconfigure. `configure` leaves the resolved key in the bundle directory as `utils.private-key.jwk`
 (mode 0600).
 
+### Secret schema
+
+`scripts/gen-env.scala` declares every secret in one list, `SecretSchema.specs`, and writes it next to
+the configs as `secrets.schema.json` (one per target; no values, so it needs no special permissions).
+Each entry says what the secret is called (`name`), which services receive it (`services`; a value
+shared by several is listed once; `utils` is the holder of the `utils` client's private key, stored
+under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`: `base64url` is URL-safe
+base64 without padding of `size` random bytes), whether it belongs to a `group` (secrets that only
+work as a set, e.g. a private key and the public JWKS that carries its `kid`: take all of them or
+none), what to do when it is missing from the store (`onMissing`: `generate`,
+`generate-on-first-install-only` — for a value something outside the store already holds, like
+`POSTGRES_PASSWORD`, which Postgres has its own copy of — or `external`) and the `file` it is written
+to when it isn't in a `*.generated-secrets.env`. `versola-cli` uses it to find the secrets a new
+version needs that the store doesn't have yet.
+
+Adding a secret takes four edits that must agree: a `SecretSpec` in `SecretSchema.specs`, a
+`secretField`/`secretKeyField` placeholder in the service's config, an entry in that service's
+`writeGeneratedSecrets` list, and, for k8s, `versola.requiredSecretVars` in
+`k8s/versola/templates/_helpers.tpl`. gen-env stops when the keys it writes differ from the schema;
+`sbt tools/test` covers the schema itself and `.github/scripts/check-secret-schema.sh` runs the
+generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
+
 ### Setup is automatic
 
 `versola configure <target> <version>` (and `bootstrap`) starts the

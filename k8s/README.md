@@ -196,9 +196,16 @@ genuinely shared values stay bare. So:
 | `CENTRAL_SECRET_KEY` | auth *and* central | `central-secret-key` — one key, one value |
 | `POSTGRES_PASSWORD` | each | `auth-postgres-password`, `central-postgres-password`, `edge-postgres-password` |
 
-Twenty-six keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
+Twenty-nine keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
 unset, and a missing key surfaces as an unresolved HOCON substitution at startup, so both
 mistakes fail loudly rather than silently.
+
+**Upgrading an existing Secret:** edge now reads its native-app blob key from `EDGE_NATIVE_BLOB_KEY`
+instead of a literal in `edge.conf`, so the shared Secret needs one more key, `edge-native-blob-key`
+(32 random bytes, URL-safe base64 without padding — it is in the new `edge.generated-secrets.env`).
+Add it before upgrading the chart, or edge's pods will not start. Until then the old edge keeps the
+literal from the `edge.conf` it was generated with; a new one regenerates it, so a native login
+in flight across the switch has to be restarted.
 
 Build both kinds from the generated files without the values passing through a terminal:
 

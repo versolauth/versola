@@ -226,6 +226,12 @@ jobs:
           POSTGRES_HOST: localhost:5432
         run: sbt "loadgen/test" "mockapi/test"
 
+      # tools (gen-env.scala) isn't in root's aggregate either, so `sbt test` above never ran its
+      # specs: SecretSchemaSpec is the secret schema versola-cli reads. Needs no database.
+      - name: Run tools tests
+        if: github.event_name != 'release'
+        run: sbt "tools/test"
+
       - name: Publish coverage badge to gist
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
@@ -1302,6 +1308,11 @@ jobs:
 
       - name: Check gen-env keeps the utils key pair stable
         run: .github/scripts/check-utils-key-reuse.sh
+
+      # Runs gen-env.scala for every target that writes secrets, so it needs scala-cli like
+      # the two checks above; it needs no Helm, but gains nothing from a job of its own.
+      - name: Check the secret schema matches what gen-env generates
+        run: bash .github/scripts/check-secret-schema.sh
 
   # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
   # global values reach every pod, that a component's own value replaces them
