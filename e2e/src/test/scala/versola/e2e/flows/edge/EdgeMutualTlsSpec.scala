@@ -46,6 +46,9 @@ object EdgeMutualTlsSpec
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
       EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      // Only the dual-binding test calls this one, so the upstream seeing it at all is that
+      // test's request getting through -- the tests above run alongside and share the stub.
+      EdgeFixture.Endpoint(name = "dual-bound", method = "GET", path = "/dual-bound"),
       // The endpoint that makes edge call `/userinfo` with the token it was issued, and the
       // injected header that proves the call came back with claims rather than a refusal.
       EdgeFixture.Endpoint(
@@ -169,15 +172,14 @@ object EdgeMutualTlsSpec
       for
         f <- fixture
         stub <- upstream
-        _ <- stub.reset
         edgeApi <- edge
         prover <- DpopProver.make
         token <- doublyBoundToken(prover)
         cnf <- confirmation(token)
-        htu = edgeApi.proxyUrl(f.resourceId, "/items")
+        htu = edgeApi.proxyUrl(f.resourceId, "/dual-bound")
         call = (nonce: Option[String]) =>
           prover.proof(Method.GET, htu, accessToken = Some(token), nonce = nonce)
-            .flatMap(proof => edgeApi.proxy(Method.GET, f.resourceId, "/items", EdgeAuth.Dpop(token, proof)))
+            .flatMap(proof => edgeApi.proxy(Method.GET, f.resourceId, "/dual-bound", EdgeAuth.Dpop(token, proof)))
         // A registered edge demands a nonce by default, so a first proof without one is
         // answered `use_dpop_nonce` -- which would look like a refusal whether or not the
         // dual binding is checked. Answer the challenge if there is one, so the call is only
@@ -193,7 +195,7 @@ object EdgeMutualTlsSpec
       ).label(s"the control: this token has to carry both bindings, got $cnf") &&
         assertTrue(DpopProver.nonceOf(first.response).isEmpty)
           .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
-        assertTrue(answered.status == Status.Unauthorized, seen.isEmpty)
+        assertTrue(answered.status == Status.Unauthorized, !seen.exists(_.path == "/dual-bound"))
           .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
     },
   )
