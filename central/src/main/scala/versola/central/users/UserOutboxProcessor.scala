@@ -28,9 +28,12 @@ object UserOutboxProcessor:
             fiberRef <- Ref.make(Option.empty[Fiber.Runtime[Nothing, Unit]])
             processSemaphore <- Semaphore.make(1)
             processor: UserOutboxProcessor = Live(config.userOutbox, repo, client, fiberRef, processSemaphore)
-            _ <- processor.start()
           yield processor,
       )(_.stop())
+        // Outside `acquire` on purpose: acquire runs uninterruptibly, and the fiber forked by
+        // `start()` would inherit that, so `stop()`'s `interrupt` would wait for it forever
+        // (every shutdown then ran into the 15 s `gracefulShutdownTimeout`).
+        .tap(_.start())
 
   private[users] class Live(
       config: UserOutboxConfig,
