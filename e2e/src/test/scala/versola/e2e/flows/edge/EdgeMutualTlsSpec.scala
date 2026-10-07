@@ -175,14 +175,25 @@ object EdgeMutualTlsSpec
         token <- doublyBoundToken(prover)
         cnf <- confirmation(token)
         htu = edgeApi.proxyUrl(f.resourceId, "/items")
-        proof <- prover.proof(Method.GET, htu, accessToken = Some(token))
-        response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", EdgeAuth.Dpop(token, proof))
+        call = (nonce: Option[String]) =>
+          prover.proof(Method.GET, htu, accessToken = Some(token), nonce = nonce)
+            .flatMap(proof => edgeApi.proxy(Method.GET, f.resourceId, "/items", EdgeAuth.Dpop(token, proof)))
+        // A registered edge demands a nonce by default, so a first proof without one is
+        // answered `use_dpop_nonce` -- which would look like a refusal whether or not the
+        // dual binding is checked. Answer the challenge if there is one, so the call is only
+        // refused for the reason under test.
+        first <- call(None)
+        answered <- DpopProver.nonceOf(first.response) match
+          case None => ZIO.succeed(first)
+          case Some(nonce) => call(Some(nonce))
         seen <- stub.requests
       yield assertTrue(
         cnf.get("jkt").isDefined,
         cnf.get("x5t#S256").isDefined,
       ).label(s"the control: this token has to carry both bindings, got $cnf") &&
-        assertTrue(response.status == Status.Unauthorized, seen.isEmpty)
-          .label("a valid proof must not carry a certificate-bound token past edge")
+        assertTrue(DpopProver.nonceOf(first.response).isEmpty)
+          .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
+        assertTrue(answered.status == Status.Unauthorized, seen.isEmpty)
+          .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
     },
   )
