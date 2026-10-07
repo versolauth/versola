@@ -9,6 +9,8 @@ The name is inspired by the Italian word "verso", meaning the reverse (back) sid
 
 - **License:** [Versola Community License v1.0](LICENCE.md) — free for Internal Authentication (an Organization's own employees/contractors) by organizations with fewer than 50 employees, and for evaluation use by any organization. Authenticating customers or end users, or offering the Software as a hosted/managed identity service, is not permitted under this free tier regardless of organization size. See the license file for full terms.
 
+- **Compatibility:** we do not offer any compatibility until 1.0.0
+
 ## Architecture
 
 Three Scala services share one codebase, plus a static admin SPA:
