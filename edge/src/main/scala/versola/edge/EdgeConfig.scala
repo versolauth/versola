@@ -3,11 +3,14 @@ package versola.edge
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
 import zio.{Duration, Task, ZIO, ZLayer}
-import zio.http.URL
+import zio.http.{ClientSSLConfig, URL}
 
 import java.io.FileInputStream
+import java.nio.charset.StandardCharsets
+import java.nio.file.{Files, Path}
 import java.security.PrivateKey
 import java.security.cert.{CertificateFactory, X509Certificate}
+import scala.jdk.CollectionConverters.*
 import scala.util.Using
 
 case class EdgeConfig(
@@ -49,7 +52,11 @@ case class EdgeConfig(
     // issued, for any host, to stand in for this one. `EdgeConfig.validated`
     // refuses to start with anything this file's `BasicConstraints` mark as a
     // CA, so the file is a leaf certificate or nothing runs.
-    versolaInternalTrustedCertificates: Option[String] = None,
+    //
+    // A set so the pin can be rotated without a window in which edge rejects auth: publish
+    // `{old leaf, new leaf}`, cut auth over, then drop the old one. A peer matching any entry
+    // is accepted; every entry is held to the leaf-only rule above. Empty is "absent".
+    versolaInternalTrustedCertificates: Set[String] = Set.empty,
     // The origin clients reach this edge on. Used to build the `htu` a DPoP proof is checked
     // against (DpopVerifier) -- taken from configuration rather than from the request's own
     // `Host` or `X-Forwarded-*`, since those are set by whatever last handled the request and
@@ -81,8 +88,15 @@ object EdgeConfig:
     ZLayer.fromZIO(
       for
         config <- ZIO.service[EdgeConfig]
-        _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(refuseCertificateAuthority)
-        _ <- ZIO.foreachDiscard(config.native.map(_.trustedCertificates))(refuseCertificateAuthority)
+        _ <- ZIO.foreachDiscard(config.versolaInternalTrustedCertificates)(
+          refuseCertificateAuthority("versola-internal-trusted-certificates", _),
+        )
+        _ <- ZIO.foreachDiscard(config.native.toList)(native =>
+          refuseEmptyPins("native.trusted-certificates", native.trustedCertificates) *>
+            ZIO.foreachDiscard(native.trustedCertificates)(
+              refuseCertificateAuthority("native.trusted-certificates", _),
+            ),
+        )
         _ <- refuseNativeWithoutDpop(config)
       yield config,
     )
@@ -105,21 +119,43 @@ object EdgeConfig:
       ),
     ).unit
 
-  private def refuseCertificateAuthority(path: String): Task[Unit] =
+  private def refuseEmptyPins(name: String, pins: Set[String]): Task[Unit] =
+    ZIO.fail(IllegalArgumentException(s"$name must name at least one certificate")).when(pins.isEmpty).unit
+
+  /** Every certificate in the file is checked, not just the first: a PEM may hold several
+    * blocks, and Netty trusts all of them.
+    */
+  private def refuseCertificateAuthority(name: String, path: String): Task[Unit] =
     ZIO.attemptBlocking {
       val factory = CertificateFactory.getInstance("X.509").nn
-      val certificate = Using.resource(FileInputStream(path).nn): stream =>
-        factory.generateCertificate(stream).nn.asInstanceOf[X509Certificate]
-      // -1 means "not a CA" (see X509Certificate#getBasicConstraints); anything else,
-      // including Int.MaxValue for an unconstrained path length, means it is one.
-      if certificate.getBasicConstraints != -1 then
-        throw IllegalArgumentException(
-          s"versola-internal-trusted-certificates ($path) is a certificate authority, not a leaf. " +
-            "zio-http's client performs no hostname verification on this connection, so trusting a " +
-            "CA would accept any certificate it has issued -- for any host -- as this internal " +
-            "endpoint. Point this at the specific certificate the endpoint presents instead.",
-        )
+      val certificates = Using.resource(FileInputStream(path).nn): stream =>
+        factory.generateCertificates(stream).nn.asScala.toList
+      if certificates.isEmpty then
+        throw IllegalArgumentException(s"$name ($path) holds no certificate")
+      certificates.foreach: certificate =>
+        // -1 means "not a CA" (see X509Certificate#getBasicConstraints); anything else,
+        // including Int.MaxValue for an unconstrained path length, means it is one.
+        if certificate.asInstanceOf[X509Certificate].getBasicConstraints != -1 then
+          throw IllegalArgumentException(
+            s"$name ($path) is a certificate authority, not a leaf. " +
+              "zio-http's client performs no hostname verification on this connection, so trusting a " +
+              "CA would accept any certificate it has issued -- for any host -- as this internal " +
+              "endpoint. Point this at the specific certificate the endpoint presents instead.",
+          )
     }
+
+  /** The client-side trust for a set of pins. zio-http's `FromCertFile` takes one path but
+    * Netty loads every certificate in it, so several pins are concatenated into one file
+    * (written once, removed on exit) rather than needing a different `ClientSSLConfig`.
+    */
+  def pinnedTrust(paths: Set[String]): ClientSSLConfig =
+    paths.toList.sorted match
+      case single :: Nil => ClientSSLConfig.FromCertFile(single)
+      case many =>
+        val bundle = Files.createTempFile("versola-pins", ".pem").nn
+        bundle.toFile.nn.deleteOnExit()
+        Files.write(bundle, many.flatMap(path => Files.readAllLines(Path.of(path)).nn.asScala :+ "").mkString("\n").getBytes(StandardCharsets.UTF_8))
+        ClientSSLConfig.FromCertFile(bundle.toString)
 
   case class Security(
       tokenEncryption: EdgeConfig.Security.TokenEncryption,
@@ -201,8 +237,8 @@ object EdgeConfig:
     *   the `mtls_endpoint_aliases` origin). It is the origin of the `htu` a device proof for
     *   `/token` must carry, since edge forwards the proof unchanged to that listener. Defaults
     *   to [[authMutualTlsUrl]], which is right wherever edge and the listener share a network.
-    * @param trustedCertificates PEM of the certificate the listener presents -- a pin, not a
-    *   CA, for the same reason as `versolaInternalTrustedCertificates`: zio-http's client does
+    * @param trustedCertificates PEM paths of the certificates the listener may present -- pins, not
+    *   CAs (several only to overlap a rotation, see `versolaInternalTrustedCertificates`), for the same reason as `versolaInternalTrustedCertificates`: zio-http's client does
     *   no hostname verification. `EdgeConfig.validated` refuses a CA here.
     * @param blobKey the AES-256-GCM key sealing the stateless blob `/native/start` hands the app
     *   in place of a stored login record. Its own key, not `tokenEncryption`'s.
@@ -218,7 +254,7 @@ object EdgeConfig:
   case class Native(
       authMutualTlsUrl: URL,
       authMutualTlsExternalUrl: Option[URL] = None,
-      trustedCertificates: String,
+      trustedCertificates: Set[String],
       blobKey: Secret.Bytes32,
       blobTtl: Duration = Duration.fromSeconds(600),
       authIssuer: Option[URL] = None,

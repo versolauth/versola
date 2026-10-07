@@ -60,6 +60,10 @@ host nginx.
 | `versola-proxy` | 2821 | — | — |
 | OpenBao | 8200 | — | — |
 
+Auth also has an optional mutual-TLS listener (`MPORT`, 8083, loopback like everything else here)
+that does nothing unless `auth.conf` carries a `mutual-tls` block — see
+[8.1](#81-certificates-for-mutual-tls-optional).
+
 The source of truth is the generated `compose.yml` in the active bundle (next section). The
 Dockerfiles `EXPOSE 8080 9345`, but with `network_mode: host` `EXPOSE` is inert — `PORT`/`DPORT`
 decide.
@@ -556,6 +560,44 @@ docker logs --tail=200 versola-auth 2>&1 | jq -r '"\(.timestamp) \(.level) \(.me
 
 `versola-proxy`'s access log is plain nginx format; with realip, its first field is the real client
 address.
+
+### 8.1 Certificates for mutual TLS
+
+Auth's mutual-TLS listener (`MPORT`, 8083, RFC 8705 §5) is on by default, and so is the
+certificate machinery behind it. Three certificates are involved — auth's trust anchor for client
+certificates, edge's pin on auth's listener certificate, and the clients' own — each with its own
+rotation, described in [`develop.md`](develop.md#certificate-storage-and-rotation-440).
+
+The generated compose file runs, with no extra flags:
+
+| Service | Does |
+|---|---|
+| `step-ca` | the internal "Versola Client CA" ([step-ca](https://smallstep.com/docs/step-ca/)); its state lives in `versola-step-ca-*` |
+| `mtls-init` | one-shot: signs auth's listener certificate with the CA's intermediate key into `versola-mtls-*` (`server.crt`, PKCS#8 `server.key`, `ca.crt` = root + intermediate), then exits. A restart leaves the files alone — re-issuing would change the leaf edge pins |
+| `central` | starts after `mtls-init` too, reading its provisioner key and the CA root from `/app/ca` |
+| `auth` / `edge` | start after `mtls-init`, mounting that volume at `/app/mtls`. `auth.conf`'s `mutual-tls` and `edge.conf`'s `native` blocks (written by `configure`) already point at it; edge pins `server.crt` |
+
+On `vps` all of it stays on loopback: the listener binds `127.0.0.1:8083` (like every service
+there) and edge reaches it at `https://127.0.0.1:8083`. `docker-local` keeps `auth:8083` inside the
+project network and does not publish it.
+
+`step-ca` also has a JWK provisioner, `central`, created on first start with a 14-day maximum
+certificate lifetime; `mtls-init` copies its key and the CA root into a volume only central mounts
+(`/app/ca`). Central uses it to issue and renew edge-fronted clients' certificates itself —
+`central.conf` carries the `client-certificates` block that says so. To get one, register the client
+with `issueEdgeClientCertificate: true` and an `mtlsAuth` of any type; there is nothing to run by
+hand.
+
+Two things to know about step-ca: its first start prints the generated password of the unused
+`versola` provisioner once to `docker logs versola-step-ca` (nothing here uses it; remove the
+provisioner or keep the log private), and the `central` provisioner is created only on a CA's first
+start — a step-ca volume from before its client template existed keeps issuing certificates with the
+subject rewritten to the bare CN (central then refuses a `subject_dn` longer than that; recreate the
+`versola-step-ca-*` volume, or add the template to the provisioner, to lift it). Certificates issued
+by other means can still be carried into central by `cert-sync` (see `develop.md`).
+
+The listener certificate is valid for two years and is not renewed automatically: edge and auth read
+it at startup, and rotating it needs the two-pin procedure in `develop.md`.
 
 ---
 

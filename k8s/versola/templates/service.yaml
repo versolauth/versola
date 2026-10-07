@@ -23,5 +23,10 @@ spec:
       port: {{ $svc.additionalPort }}
       targetPort: additional
     {{- end }}
+    {{- if $svc.mutualTlsPort }}
+    - name: mtls
+      port: {{ $svc.mutualTlsPort }}
+      targetPort: mtls
+    {{- end }}
 {{- end }}
 {{- end }}

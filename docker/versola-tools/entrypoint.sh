@@ -21,6 +21,15 @@ if [ "${1:-}" = "migrate" ]; then
   exec java -cp 'migrate-lib/*' versola.migrate.MigrateTool "$@"
 fi
 
+# "cert-sync" dispatch: keeps each edge-fronted client's `edgeClientCertificate` in central equal
+# to the certificate its issuer (cert-manager, step-ca) last wrote -- see CertSyncTool.scala for
+# the directory layout and the CENTRAL_URL/CENTRAL_SECRET environment it reads. Runs as a loop by
+# default; CERT_SYNC_INTERVAL_SECONDS=0 makes it one pass, for a Job or a renewal hook. Same
+# `migrate-lib` classpath as "migrate" above.
+if [ "${1:-}" = "cert-sync" ]; then
+  exec java -cp 'migrate-lib/*' versola.migrate.CertSyncTool
+fi
+
 OUT_DIR="${OUT_DIR:-/out}"
 # TARGET picks which of gen-env.scala's non-interactive branches to run,
 # and which compose fragment to emit. Defaults to docker-local so every

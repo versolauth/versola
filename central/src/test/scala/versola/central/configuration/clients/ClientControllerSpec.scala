@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
+import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuance, ClientCertificateIssuer, ClientCertificateService}
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
@@ -238,6 +239,20 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
     )
 
+  /** No certificate is ever issued here: the controller is what is under test, and the real
+    * service passes a plain registration straight through to the stubbed [[OAuthClientService]]. */
+  private object NoIssuances extends ClientCertificateIssuanceRepository:
+    def upsert(issuance: ClientCertificateIssuance) = ZIO.unit
+    def replace(issuance: ClientCertificateIssuance) = ZIO.succeed(false)
+    def find(clientId: ClientId) = ZIO.none
+    def delete(clientId: ClientId) = ZIO.unit
+    def expiringBefore(deadline: java.time.Instant) = ZIO.succeed(Vector.empty)
+
+  private def certificates(service: OAuthClientService): ZEnvironment[ClientCertificateService] =
+    ZEnvironment[ClientCertificateService](
+      ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, service, NoIssuances, config),
+    )
+
   private def controllerTestCase(
       description: String,
       request: Request,
@@ -257,7 +272,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
@@ -507,7 +522,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 ZEnvironment[SecurityService](edgeSecurity(realSecurity, rsaKeys)) ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),
@@ -560,7 +575,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 security ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),
@@ -602,7 +617,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 security ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),

@@ -1,0 +1,64 @@
+{{- if and .Values.pki.enabled .Values.pki.certSync.enabled }}
+{{- $full := include "versola.fullname" . }}
+{{- $sync := .Values.pki.certSync }}
+# Pushes each client certificate cert-manager issues into central's `edgeClientCertificate`
+# whenever it renews (versola-tools' `cert-sync`, see migrate-tool's CertSyncTool).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $full }}-cert-sync
+  labels:
+    {{- include "versola.componentLabels" (dict "component" "cert-sync" "context" $) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "versola.componentSelectorLabels" (dict "component" "cert-sync" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "versola.componentSelectorLabels" (dict "component" "cert-sync" "context" $) | nindent 8 }}
+    spec:
+      {{- with .Values.global.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cert-sync
+          image: {{ include "versola.image" (dict "global" .Values.global "svc" $sync "chart" .Chart) }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          args: ["cert-sync"]
+          env:
+            - name: CENTRAL_URL
+              value: {{ default (printf "http://%s-central:%v" $full .Values.services.central.port) $sync.centralUrl | quote }}
+            - name: CENTRAL_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ required "pki.certSync needs pki.certSync.resourceSecret.name or secrets.existingSecret" (default .Values.secrets.existingSecret $sync.resourceSecret.name) }}
+                  key: {{ $sync.resourceSecret.key }}
+            - name: CERT_SYNC_DIR
+              value: /certs
+            - name: CERT_SYNC_INTERVAL_SECONDS
+              value: {{ $sync.intervalSeconds | quote }}
+          volumeMounts:
+            - name: certs
+              mountPath: /certs
+              readOnly: true
+          resources:
+            {{- toYaml $sync.resources | nindent 12 }}
+      volumes:
+        - name: certs
+          projected:
+            sources:
+              {{- if not .Values.pki.clients }} []{{ end }}
+              {{- range .Values.pki.clients }}
+              - secret:
+                  name: {{ $full }}-client-{{ .clientId }}
+                  items:
+                    - key: tls.crt
+                      path: {{ .clientId }}/tls.crt
+                    - key: tls.key
+                      path: {{ .clientId }}/tls.key
+              {{- end }}
+{{- end }}

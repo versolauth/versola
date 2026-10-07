@@ -125,14 +125,32 @@ object EdgeIssuedCertificateSpec
       test("for a method other than tls_client_auth") {
         refusedIssuance("issued-secret", authMethod = "client_secret", mtlsAuth = None)
       },
-      test("beside a subject of its own") {
-        refusedIssuance(
-          "issued-subject",
-          authMethod = "tls_client_auth",
-          mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", "CN=chosen-by-caller")),
-        )
-      },
     ),
+    // Formerly refused: the subject a certificate is issued for may now be the caller's own (#440),
+    // which is what lets a SAN type or a longer DN be registered for an issued certificate.
+    test("accepts a subject of its own and registers the client by it") {
+      for
+        authApi <- auth
+        centralApi <- central
+        id <- Random.nextUUID.map(uuid => s"issued-subject-${uuid.toString.take(8)}")
+        subject = s"CN=$id,O=Versola"
+        result <- authApi.registerClient(
+          id,
+          "Issued With Own Subject",
+          Set("https://app.test/callback"),
+          authMethod = "tls_client_auth",
+          mtlsAuth = Some(Fixtures.mutualTlsAuth("subject_dn", subject)),
+          issueEdgeClientCertificate = true,
+        )
+        listed <- centralApi.get("/configuration/clients", "tenantId" -> Fixtures.suiteTenant)
+          .flatMap(_.items("clients"))
+        client = listed.find(_.str("id").contains(id))
+      yield result match
+        case _: RegisterClientResult.Success =>
+          assertTrue(client.flatMap(_.obj("mtlsAuth")).flatMap(_.str("subjectValue")).contains(subject))
+        case RegisterClientResult.Failure(response, body) =>
+          assertNever(s"central refused $id: ${response.status} $body")
+    },
     test("reaches an endpoint whose authorization needs userinfo") {
       for
         f <- fixture

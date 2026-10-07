@@ -151,7 +151,7 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
     central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
     versolaUrl = URL.decode("https://idp.example").toOption.get,
     versolaInternalUrl = Some(URL.decode(s"https://localhost:$port").toOption.get),
-    versolaInternalTrustedCertificates = trust.map(_.toString),
+    versolaInternalTrustedCertificates = trust.map(_.toString).toSet,
     edgeUrl = URL.decode("https://edge.example").toOption.get,
     configurationCacheRefreshInterval = 5.minutes,
   )

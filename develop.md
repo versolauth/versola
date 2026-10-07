@@ -374,8 +374,8 @@ than reading one from a header a proxy forwarded. It is served only when `auth/d
 carries a `mutual-tls` block -- absent one, `MPORT` does nothing. `scripts/gen-env.scala`'s
 `local` target writes that block, plus the certificate it presents and a client certificate
 signed by the same CA (`auth/dev/mtls/{ca,server,client}.{crt,key}`) for e2e's own use --
-see `MutualTlsListenerSpec`. `docker-local`/`vps`/interactive get no such block, and no listener,
-until whoever operates one decides what certificate it should present.
+see `MutualTlsListenerSpec`. The `docker-local`/`vps`/`k8s` configs do carry the block, and the bundle / chart
+issue the certificate it names -- see [Certificate storage and rotation](#certificate-storage-and-rotation-440).
 
 The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment variables.
 ### Native apps through edge (#420)
@@ -396,3 +396,80 @@ nginx advertises, and writes `auth/dev/mtls/trusted-clients.crt` -- the listener
 terminator's -- as the listener's `trusted-certificates`, so one issued certificate serves an
 edge-fronted web client through nginx and a native one on `MPORT`. Without a
 `client-certificate-authority`, central refuses such a registration.
+### Certificate storage and rotation (#440)
+
+Three certificate relationships exist in the mTLS work, with different rotation properties:
+
+| | What | Shape in config | Rotation |
+|---|---|---|---|
+| 1 | auth's trust anchor for incoming client certificates (`mutual-tls.trusted-certificates`) | PEM path; the file may hold **several CAs** | overlap window: keep outgoing + incoming CA in the file, reissue clients, drop the outgoing CA |
+| 2 | edge's pin on auth's own listener certificate (`native.trusted-certificates`, `versola-internal-trusted-certificates`) | **list** of PEM paths, each a **leaf** (a CA is refused at startup, in every certificate of every file) | overlap window: publish `[old leaf, new leaf]` on every edge, cut auth over to the new certificate, drop the old pin |
+| 3 | client certificates of edge-fronted clients (`edgeClientCertificate` in central) | PEM (certificate chain + PKCS#8 key) | central issues it at registration (`issueEdgeClientCertificate`) and renews it before it expires (14-day certificates, renewed at 4 days left) |
+
+**(1) CA rotation.** Netty loads every certificate in the file, so no code is involved --
+`ClientCaBundleRotationSpec` proves that clients issued by either CA connect while both are in
+the file and that dropping one ends it. The order matters: add the incoming CA and restart auth
+(it reads the file at startup); reissue every client certificate from the incoming CA and let
+`cert-sync` (or a human) put it into central; only then remove the outgoing CA. Under Kubernetes
+trust-manager maintains that union (`pki.trustBundle`, [k8s/README.md](k8s/README.md)).
+
+**(2) Pin rotation.** Both fields are lists, e.g.
+
+```hocon
+native {
+  trusted-certificates = ["/certs/auth-mtls-old.crt", "/certs/auth-mtls-new.crt"]
+}
+versola-internal-trusted-certificates = ["/certs/auth-internal.crt"]
+```
+
+and the TLS client accepts a server certificate matching *any* entry. Roll it out as: (a) put
+`{old, new}` on every edge and restart them; (b) switch auth to the new certificate and restart
+it; (c) once every edge has the new set, drop the old entry. Edge reads the files at startup, so
+a changed file needs a restart. A single-element list is the previous behaviour; the previous
+bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it in `[...]`.
+
+**(3) Client certificates issued by central.** Register an edge-fronted client with
+`"issueEdgeClientCertificate": true` (and `mtlsAuth`) and central generates an EC P-256 key pair and
+a PKCS#10 request whose subject and SAN are built from the `mtlsAuth` it registers, has a CA sign it,
+validates that the result names what `mtlsAuth` expects, and stores it as `edgeClientCertificate`. It
+renews every certificate it issued once less than `renew-before` remains (checked every
+`check-interval`), and `POST /configuration/clients/edge-certificate/renew?clientId=` renews one now.
+A certificate you supply yourself through an update stops central renewing that client's.
+
+Where `mtlsAuth` is left out, the client is recognised by the subject `CN=<client>,OU=<tenant>,O=Versola`
+(what a registration has always got from `client-certificate-authority`, above). Central normally
+holds **no CA key**: the signing is delegated through `ClientCertificateIssuer`, configured by the
+`client-certificates` block of `central.conf`:
+
+```hocon
+client-certificates {
+  validity     = "14 days"
+  renew-before = "4 days"
+  # exactly one of:
+  step-ca       { url = "https://step-ca:9000", root-certificate = "/app/ca/root_ca.crt",
+                  provisioner = "central", provisioner-key = "/app/ca/provisioner.json" }
+  cert-manager  { issuer-name = "versola-client-ca" }   # + issuer-kind, issuer-group, namespace
+}
+```
+
+- **step-ca** (docker-local, vps): a one-time token from a JWK provisioner (`central`, which the
+  compose file creates with a 14-day maximum and a template that keeps the request's subject and
+  limits the certificate to client authentication). The provisioner key is the only thing central
+  holds; a CA created before that template existed keeps the default one, which rewrites the subject
+  to the bare CN -- central then refuses a longer `subject_dn` registration with that reason.
+- **cert-manager** (k8s): a `CertificateRequest` created with the pod's service account, which may only
+  create, get and delete those in its namespace.
+- **`client-certificate-authority`** (the `local` stack, or any deployment that already has one): the one
+  backend where central holds the CA's certificate *and key*. Used when no `client-certificates` block
+  names a CA; it signs the request itself, leaf only, and gets the same renewal. Prefer the other two.
+
+Which clients central issued for is recorded in `client_certificate_issuance` (serial, expiry; no key
+material) -- the beginning of the audit trail #462 designs. Generating keys on edge instead of in
+central is #463.
+
+**Externally issued certificates.** `versola-tools`' `cert-sync` command (`migrate-tool`'s
+`CertSyncTool`) still copies certificates something else issued (cert-manager through the chart's
+`pki.clients`, or by hand) into central: it reads `$CERT_SYNC_DIR/<client-id>/tls.{crt,key}` and `PUT`s
+`/configuration/clients` with only `edgeClientCertificate` whenever the content changes
+(`CENTRAL_URL`, `CENTRAL_SECRET`/`CENTRAL_SECRET_FILE`/`CENTRAL_RESOURCE_SECRET`,
+`CERT_SYNC_INTERVAL_SECONDS`; `0` runs one pass). Off by default. Keys must be unencrypted PKCS#8.
