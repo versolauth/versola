@@ -142,6 +142,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       callerSessionId: PublicSessionId = ownSessionId,
       resourceSecrets: List[Secret] = List(accountResourceSecret),
       callerSecret: Secret = accountResourceSecret,
+      isBannedStatus: LimitStatus = LimitStatus.Allowed,
   ) =
     test(description) {
       for
@@ -152,7 +153,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
         submissionLimiter = stub[SubmissionLimiter]
-        _ <- submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+        _ <- submissionLimiter.isBanned.succeedsWith(isBannedStatus)
         _ <- submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
         _ <- configuration.getPasswordRegex.succeedsWith(".*")
         renderService = stub[ConversationRenderService]
@@ -482,5 +483,73 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         val spliced = s"${forged.takeWhile(_ != '.')}.${serialized.dropWhile(_ != '.').drop(1)}"
         assertTrue(PasskeyEnrollmentTicket.parse(spliced, secret, Instant.EPOCH) == Left("invalid signature"))
       },
+    ),
+    suite("PATCH /settings/password")(
+      controllerTestCase(
+        description = "changes password when current password is correct",
+        request = Request.patch(
+          URL.empty / "settings" / "password",
+          Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, _, _, passwordService) =>
+          passwordService.verifyPassword.succeedsWith(CheckPassword.Success) *>
+            passwordService.setPassword.succeedsWith(()),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(
+            stubs._7.verifyPassword.calls == List((userId, Password("OldPass1!"))),
+            stubs._7.setPassword.calls == List((userId, Password("NewPass1!"))),
+          )),
+      ),
+      controllerTestCase(
+        description = "rejects change when current password is wrong",
+        request = Request.patch(
+          URL.empty / "settings" / "password",
+          Body.fromString("""{"currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.BadRequest,
+        setup = (_, _, _, _, _, _, passwordService) =>
+          passwordService.verifyPassword.succeedsWith(CheckPassword.Failure),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(stubs._7.setPassword.calls.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "rejects a reused password",
+        request = Request.patch(
+          URL.empty / "settings" / "password",
+          Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"OldPass1!"}"""),
+        ).addHeader(Header.ContentType(MediaType.application.json)),
+        expectedStatus = Status.BadRequest,
+        setup = (_, _, _, _, _, _, passwordService) =>
+          passwordService.verifyPassword.succeedsWith(CheckPassword.Success) *>
+            passwordService.setPassword.failsWith(PasswordReuseError(5)),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(stubs._7.setPassword.calls.nonEmpty)),
+      ),
+    ),
+    controllerTestCase(
+      description = "rejects a banned caller without verifying the password",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      isBannedStatus = LimitStatus.Banned,
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._7.verifyPassword.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "records a failed attempt when the current password is wrong",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (_, _, _, _, _, _, passwordService) =>
+        passwordService.verifyPassword.succeedsWith(CheckPassword.Failure),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(
+          stubs._7.setPassword.calls.isEmpty,
+        )),
     ),
   )
