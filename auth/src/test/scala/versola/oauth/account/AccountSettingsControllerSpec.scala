@@ -558,4 +558,17 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           stubs._7.setPassword.calls.isEmpty,
         )),
     ),
+    controllerTestCase(
+      description = "rejects a new password that does not meet the password policy",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"weak"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (configuration, _, _, _, _, _, passwordService) =>
+        configuration.getPasswordRegex.succeedsWith("^(?=.*[A-Z])(?=.*[0-9])(?=.*[!@#$%]).{8,}$") *>
+          passwordService.verifyPassword.succeedsWith(CheckPassword.Success),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._7.setPassword.calls.isEmpty)),
+    ),
   )

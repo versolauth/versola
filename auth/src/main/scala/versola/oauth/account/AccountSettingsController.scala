@@ -59,6 +59,7 @@ object AccountSettingsController extends Controller:
         check <- ZIO.serviceWithZIO[PasswordService](_.verifyPassword(body.userId, Password(body.currentPassword)))
         _ <- check match
           case CheckPassword.Success => ZIO.unit
+          case CheckPassword.Temporary => ZIO.unit
           case _ =>
             ZIO.serviceWithZIO[SubmissionLimiter](_.recordLimit(body.clientId, body.userId.toString, ChallengeType.PasswordSubmit)) *>
             ZIO.fail(BadRequest("current password is incorrect")) 
