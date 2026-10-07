@@ -126,8 +126,6 @@ object TokenEndpointController extends Controller:
     request.headers.toList.filter(_.headerName.equalsIgnoreCase(DpopHeader)).map(_.renderedValue) match
       case Nil =>
         ZIO.none
-      case proofs if proofs.size != 1 =>
-        ZIO.fail(TokenEndpointError.InvalidDpopProof("request must contain exactly one DPoP header"))
       case proof :: Nil =>
         for
           requireNonce <- ZIO.serviceWithZIO[OAuthConfigurationService](_.requireDpopNonce(clientId))
@@ -151,6 +149,8 @@ object TokenEndpointController extends Controller:
             case error: Throwable => error
           }
         yield Some(verified.jkt)
+      case _ =>
+        ZIO.fail(TokenEndpointError.InvalidDpopProof("request must contain exactly one DPoP header"))
 
   private def toTokenResponse(
       tokens: IssuedTokens,
