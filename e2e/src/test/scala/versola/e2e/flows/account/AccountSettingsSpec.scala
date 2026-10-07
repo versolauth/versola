@@ -151,10 +151,20 @@ object AccountSettingsSpec extends E2ESpec:
       yield assertTrue(result.status == Status.BadRequest)
     },
     test("changes the caller's password with correct current password") {
+      val newPassword = "NewSecurePass1!"
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         caller    <- login(s, auth)
-        result    <- auth.changeAccountPassword(caller, s.password, "NewSecurePass1!")
+        result    <- auth.changeAccountPassword(caller, s.password, newPassword)
+        _         <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+                       .assertChallengeRedirect
+                       .flatMap { authorize =>
+                         val cookie = authorize.conversationCookie.get
+                         auth.getChallenge(cookie).assertStep(ConversationStep.Credential).flatMap { challenge =>
+                           auth.submitLoginPassword(cookie, s.login.get, newPassword, challenge.csrf)
+                             .assertRedirect(auth, cookie)
+                         }
+                       }
       yield assertTrue(result.status == Status.NoContent)
     },
     test("rejects a password change when current password is wrong") {
