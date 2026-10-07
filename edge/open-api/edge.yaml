@@ -26,8 +26,9 @@ info:
     * **Native apps** — `/native/{start,complete,token,revoke}/{clientId}`, a back channel for
       mobile apps under FAPI 2.0. Answers `404` for every client unless the edge is configured
       for native clients.
-    * **Operations** — `/liveness`, `/readiness`, `/metrics` and, outside production only,
-      `/service/configuration/sync`.
+    * **Operations** — `/liveness`, `/readiness` and `/metrics`, served on the separate
+      diagnostics port (`DPORT`, default 8081) rather than the public one, and, outside
+      production only, `/service/configuration/sync` on the main port.
 
     ## Authentication of callers
 
@@ -693,6 +694,14 @@ paths:
       description: Answers `200` while the process is running.
       tags: [Operations]
       security: []
+      servers: &diagnosticsServers
+        - url: 'http://{host}:{diagnosticsPort}'
+          description: Diagnostics listener, separate from the public one.
+          variables:
+            host:
+              default: localhost
+            diagnosticsPort:
+              default: '8081'
       responses:
         '200':
           description: Alive.
@@ -704,6 +713,7 @@ paths:
       description: Answers `200` once the edge has loaded its configuration and can serve traffic.
       tags: [Operations]
       security: []
+      servers: *diagnosticsServers
       responses:
         '200':
           description: Ready.
@@ -716,6 +726,7 @@ paths:
       summary: Prometheus metrics
       tags: [Operations]
       security: []
+      servers: *diagnosticsServers
       responses:
         '200':
           description: Metrics in the Prometheus text exposition format.
