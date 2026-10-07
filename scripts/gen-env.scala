@@ -588,12 +588,26 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   //   A deployment that seeded `utils` with a client_secret under an older generator cannot take
   //   this config as is: central refuses a boot that calls for another method than the client
   //   holds (see k8s/README.md, "Upgrading a deployment that already seeded utils").
+  // UTILS_PRIVATE_KEY_JWK (the JWK itself, i.e. the contents of utils.private-key.jwk from an
+  // earlier run) reuses that pair instead of generating one, so a deployment that already holds
+  // its key -- every k8s one, which has nothing like versola-cli's OpenBao to keep it -- gets a
+  // central.conf that still matches it. versola-cli does the equivalent itself from OpenBao.
+  val reusedUtilityKey: Option[(String, String)] =
+    sys.env.get("UTILS_PRIVATE_KEY_JWK").map(_.trim).filter(_.nonEmpty).map: jwk =>
+      def field(name: String): String =
+        s""""$name"\\s*:\\s*"([^"]*)"""".r.findFirstMatchIn(jwk).map(_.group(1)).getOrElse(
+          throw RuntimeException(s"UTILS_PRIVATE_KEY_JWK has no \"$name\" member"),
+        )
+      val kid = s""""kid"\\s*:\\s*"([^"]*)"""".r.findFirstMatchIn(jwk).map(_.group(1)).getOrElse("utils")
+      field("d") // must be a private key
+      val publicJwk = s"""{"kty":"${field("kty")}","crv":"${field("crv")}","x":"${field("x")}","y":"${field("y")}","use":"sig","kid":"$kid","alg":"ES256"}"""
+      (publicJwk, jwk)
   val utilityPublicJwk =
     if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","use":"sig","kid":"utils-local","alg":"ES256"}"""
-    else utilityKey.jwk
+    else reusedUtilityKey.fold(utilityKey.jwk)(_._1)
   val utilityPrivateJwk =
     if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","d":"jWGh5lV46NJ3RwT8kJ5lfBeBTGBtXnM5V3gwgAEYpXM","use":"sig","kid":"utils-local","alg":"ES256"}"""
-    else utilityKey.privateJwk
+    else reusedUtilityKey.fold(utilityKey.privateJwk)(_._2)
   // Several lines rather than one, so unlike the resource-secret line above it supplies its
   // own newlines and nothing follows it on a line.
   val bootstrapUtilityClientLines =
