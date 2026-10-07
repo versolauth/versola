@@ -44,25 +44,43 @@ object SecurityHeaders:
   private def isHtml(response: Response): Boolean =
     response.header(Header.ContentType).exists(_.mediaType.subType.equalsIgnoreCase("html"))
 
-  private def overHttps(request: Request): Boolean =
-    request.url.scheme.contains(Scheme.HTTPS) ||
+  private def overHttps(request: Request, directTls: Boolean): Boolean =
+    directTls ||
+      request.url.scheme.contains(Scheme.HTTPS) ||
       request.headers.get("X-Forwarded-Proto").exists(_.equalsIgnoreCase("https"))
 
-  def apply(request: Request, response: Response): Response =
+  /** @param directTls the listener terminates TLS itself, so the request target carries no scheme
+    *                  and there is no proxy to send `X-Forwarded-Proto` -- the mutual-TLS port. */
+  def apply(request: Request, response: Response, directTls: Boolean = false): Response =
     val wanted =
       always ++
         (if isHtml(response) then html else Nil) ++
-        (if overHttps(request) then List(Header.Custom("Strict-Transport-Security", StrictTransportSecurity)) else Nil)
+        (if overHttps(request, directTls) then List(Header.Custom("Strict-Transport-Security", StrictTransportSecurity)) else Nil)
     val missing = wanted.filterNot(header => response.headers.contains(header.headerName))
     if missing.isEmpty then response else response.addHeaders(Headers(missing))
 
-  val middleware: Middleware[Any] = new Middleware[Any]:
+  val middleware: Middleware[Any] = Decorate(directTls = false)
+
+  /** For a listener that terminates TLS itself. */
+  val tlsMiddleware: Middleware[Any] = Decorate(directTls = true)
+
+  /** Covers the three ways a response leaves a route: returned, failed with a `Response` in the
+    * error channel (`Handler.fail(Response...)`, which `Routes` merges into a response only after
+    * this runs), and the fallback for a path or method no route matches. */
+  private final class Decorate(directTls: Boolean) extends Middleware[Any]:
     def apply[Env1 <: Any, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
-      Routes.fromIterable(routes.routes.map(route => route.transform(decorate)))
+      val decorated = Routes.fromIterable(routes.routes.map(route => route.transform(decorate)))
+      val unmatched = routes.notFound
+      decorated.notFound = Handler.scoped[Any]:
+        Handler.fromFunctionZIO[Request]: request =>
+          unmatched(request).map(SecurityHeaders(request, _, directTls))
+      decorated
 
     private def decorate[Env1](
         handler: Handler[Env1, Response, Request, Response],
     ): Handler[Env1, Response, Request, Response] =
       Handler.scoped[Env1]:
         Handler.fromFunctionZIO[Request]: request =>
-          handler(request).map(SecurityHeaders(request, _))
+          handler(request)
+            .mapError(SecurityHeaders(request, _, directTls))
+            .map(SecurityHeaders(request, _, directTls))

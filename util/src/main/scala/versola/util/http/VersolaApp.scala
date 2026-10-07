@@ -251,7 +251,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
               port <- Server.install {
                 Observability.handleErrors(routes) @@
                   Observability.middleware @@
-                  SecurityHeaders.middleware
+                  SecurityHeaders.tlsMiddleware
               }
               _ <- ready.succeed(port)
               _ <- ZIO.never

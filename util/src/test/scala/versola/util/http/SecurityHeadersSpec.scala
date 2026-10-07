@@ -9,13 +9,20 @@ object SecurityHeadersSpec extends ZIOSpecDefault:
   private val routes = Routes(
     Method.GET / "page" -> handler(Response.html("<p>hi</p>")),
     Method.GET / "data" -> handler(Response.json("{}")),
+    Method.GET / "failed" -> Handler.fail(Response.html("<p>no</p>").status(Status.Forbidden)),
     Method.GET / "custom" -> handler(
       Response.html("<p/>").addHeader(Header.Custom("X-Frame-Options", "SAMEORIGIN")),
     ),
   ) @@ SecurityHeaders.middleware
 
+  private val tlsRoutes = Routes(Method.GET / "data" -> handler(Response.json("{}"))) @@ SecurityHeaders.tlsMiddleware
+
   private def get(path: String, headers: Headers = Headers.empty): UIO[Response] =
     ZIO.scoped(routes.runZIO(Request.get(URL.decode(path).toOption.get).addHeaders(headers)))
+
+  /** What the server does with a request no route took: `Routes#notFound`, not `runZIO`. */
+  private def unmatched(r: Routes[Any, Nothing], path: String): UIO[Response] =
+    ZIO.scoped(r.notFound(Request.get(URL.decode(path).toOption.get)))
 
   def spec = suite("SecurityHeaders")(
     test("every response is told not to be sniffed, to send no referrer and to drop powerful features") {
@@ -52,5 +59,21 @@ object SecurityHeadersSpec extends ZIOSpecDefault:
         plain.rawHeader("Strict-Transport-Security").isEmpty,
         proxied.rawHeader("Strict-Transport-Security").contains(SecurityHeaders.StrictTransportSecurity),
       )
+    },
+      test("a response a handler failed with is decorated like a returned one") {
+      for response <- get("/failed")
+      yield assertTrue(
+        response.status == Status.Forbidden,
+        response.rawHeader("X-Frame-Options").contains("DENY"),
+        response.rawHeader("X-Content-Type-Options").contains("nosniff"),
+      )
+    },
+    test("the fallback for an unknown path is decorated too") {
+      for response <- unmatched(routes, "/nope")
+      yield assertTrue(response.status == Status.NotFound, response.rawHeader("X-Content-Type-Options").contains("nosniff"))
+    },
+    test("a listener that terminates TLS itself sends HSTS with no forwarding header") {
+      for response <- ZIO.scoped(tlsRoutes.runZIO(Request.get(URL.decode("/data").toOption.get)))
+      yield assertTrue(response.rawHeader("Strict-Transport-Security").contains(SecurityHeaders.StrictTransportSecurity))
     },
   )
