@@ -200,6 +200,17 @@ ngx_http_sub_module is compiled into the official nginx images.
 {{- define "versola.consoleNginxConf" -}}
 {{- $basePath := .Values.console.basePath -}}
 {{- $slashless := trimSuffix "/" $basePath -}}
+{{- /*
+Security headers (#473) for the static console. HSTS only when the ingress says the browser used
+https (an empty add_header value is not sent), the rest always. The services set the same set
+themselves on everything proxied; they see X-Forwarded-Proto directly in k8s (no versola-proxy in
+between), so they send HSTS too.
+*/}}
+map $http_x_forwarded_proto $versola_hsts {
+    default "";
+    https "max-age=31536000; includeSubDomains";
+}
+
 server {
     listen {{ .Values.console.port }};
     server_name _;
@@ -225,6 +236,11 @@ server {
         index index.html;
         try_files $uri $uri/ =404;
         add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'; base-uri 'none'; object-src 'none'" always;
+        add_header Strict-Transport-Security $versola_hsts always;
         {{- if eq .Values.console.mode "direct" }}
         sub_filter '<versola-admin>' '<versola-admin console-mode="direct">';
         sub_filter_once on;
