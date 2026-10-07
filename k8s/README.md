@@ -129,10 +129,24 @@ DPoP-bound tokens, which the default tenant's FAPI 2.0 profile admits (versolaut
 `utils.private-key.jwk` (mode 0600), which is *not* a `*.generated-secrets.env` file
 and so is never loaded into central. It is the private key of the `utils` client, for whatever
 authenticates as it: today `loadgen`, which takes its contents as `provision.provisioner-private-key`,
-for example from a Secret of its own. Keep the file
-from the run that first created central's Secret: central seeds `utils` once, so a later `gen-env`
-run produces a pair whose public half central never sees (versolauth/versola#380). Do not
-regenerate it for a deployment that already has one.
+for example from a Secret of its own:
+
+```bash
+kubectl create secret generic versola-utils-key --from-file=private-key.jwk=.local/env/k8s/utils.private-key.jwk
+```
+
+Central seeds `utils` once, so a later `gen-env` run would produce a pair whose public half central
+never sees (versolauth/versola#380). To rerun `gen-env` against a deployment that already has its key, hand it back through the
+environment of that one command (a bare assignment on its own line would not reach `scala-cli`):
+
+```bash
+UTILS_PRIVATE_KEY_JWK="$(kubectl get secret versola-utils-key -o jsonpath='{.data.private-key\.jwk}' | base64 -d)" \
+  scala-cli run scripts/gen-env.scala
+```
+
+`gen-env` then writes that pair's public half into `central.generated-secrets.env` and the same
+private key into `utils.private-key.jwk`, instead of generating a new one. (`versola-cli` does the equivalent for
+`docker-local` and `vps` out of OpenBao, at `secret/versola/<target>/utils`.)
 
 **Upgrading a deployment that already seeded `utils` with a `client_secret`:** a client's
 authentication method is fixed when it is created, so central refuses to start (naming `utils`,
