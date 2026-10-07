@@ -613,6 +613,12 @@ object EdgeService:
       val boundKey = claims.confirmation.flatMap(_.jkt)
       val boundCertificate = claims.confirmation.flatMap(_.certificateThumbprint)
       (boundKey, boundCertificate, authSource) match
+        // Bound to both: the key is only half of what the client proved at issuance, and the
+        // certificate half cannot be shown here, so a valid proof must not be enough.
+        case (Some(_), Some(_), AuthSource.Header(AuthScheme.Dpop)) =>
+          Observability.setError("certificate_bound_token_outside_session") *>
+            ZIO.fail(Outcome.Unauthorized)
+
         case (Some(jkt), _, AuthSource.Header(AuthScheme.Dpop)) =>
           val verified =
             for

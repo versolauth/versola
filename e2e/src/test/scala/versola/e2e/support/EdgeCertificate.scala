@@ -49,6 +49,14 @@ final class EdgeCertificate private (
     * client presents at the TLS handshake. */
   val edgeClientCertificate: String = s"$certificatePem\n$privateKeyPem\n"
 
+  /** The certificate alone, as the header nginx forwards it (`ngx_escape_uri`: everything
+    * outside the unreserved set percent-encoded) -- what a spec presents straight to auth to
+    * be issued a token bound to this certificate, the way edge's own handshake gets one. */
+  val urlEncodedPem: String =
+    certificatePem.flatMap: char =>
+      if char.isLetterOrDigit || "-._~".contains(char) then char.toString
+      else f"%%${char.toInt}%02X"
+
 object EdgeCertificate:
 
   /** @param caDirectory where the issuing CA's `ca.crt`/`ca.key` live, relative to the repo

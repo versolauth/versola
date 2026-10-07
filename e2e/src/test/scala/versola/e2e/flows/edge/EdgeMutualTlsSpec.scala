@@ -3,6 +3,8 @@ package versola.e2e.flows.edge
 import versola.e2e.support.*
 import zio.*
 import zio.http.{Client, Method, Status}
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
 /** An edge fronting a client that authenticates by certificate rather than by secret -- the
@@ -44,6 +46,9 @@ object EdgeMutualTlsSpec
     resourceUri = UpstreamStub.uriOn(UpstreamPort),
     endpoints = List(
       EdgeFixture.Endpoint(name = "items", method = "GET", path = "/items"),
+      // Only the dual-binding test calls this one, so the upstream seeing it at all is that
+      // test's request getting through -- the tests above run alongside and share the stub.
+      EdgeFixture.Endpoint(name = "dual-bound", method = "GET", path = "/dual-bound"),
       // The endpoint that makes edge call `/userinfo` with the token it was issued, and the
       // injected header that proves the call came back with claims rather than a refusal.
       EdgeFixture.Endpoint(
@@ -77,6 +82,42 @@ object EdgeMutualTlsSpec
       f <- fixture
       session <- edgeApi.browserLogin(authApi, f.presetId, f.login, f.password)
     yield session
+
+  /** An authorization code flow for the fixture's user, redeemed over the client's own
+    * certificate *and* under a DPoP key -- the one token `auth` binds to both (RFC 8705 §3 and
+    * RFC 9449 §5 at once). Redeemed here rather than by edge, so nothing is proxied by accident
+    * and the key stays in this spec's hands.
+    */
+  private def doublyBoundToken(
+      prover: DpopProver,
+  ): ZIO[OAuthClient & EdgeApi & EdgeFixture, Throwable, String] =
+    for
+      authApi <- auth
+      edgeApi <- edge
+      f <- fixture
+      certificate <- ZIO.fromOption(f.certificate).orElseFail(RuntimeException("the fixture holds no certificate"))
+      started <- authApi.authorizeRaw(f.clientId, edgeApi.completeUri)
+      conversation <- ZIO.fromOption(started.conversationCookie)
+        .orElseFail(RuntimeException(s"the OP started no conversation (status=${started.response.status})"))
+      challenge <- authApi.getChallenge(conversation)
+      submitted <- authApi.submitLoginPassword(conversation, f.login, f.password, challenge.csrf)
+      code <- submitted.assertRedirect
+      issued <- authApi.token(
+        code,
+        started.verifier,
+        clientId = Some(f.clientId),
+        clientSecret = Some(f.clientSecret),
+        redirectUri = Some(edgeApi.completeUri),
+        dpop = Some(prover),
+        certificate = Some(certificate.urlEncodedPem),
+      ).success
+    yield issued.accessToken
+
+  private def confirmation(accessToken: String): Task[Json.Obj] =
+    for
+      payload <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(1)), "UTF-8"))
+      json <- ZIO.fromEither(payload.fromJson[Json.Obj]).mapError(RuntimeException(_))
+    yield json.get("cnf").collect { case obj: Json.Obj => obj }.getOrElse(Json.Obj())
 
   def spec = suite("edge fronting a self-signed mutual-TLS client")(
     test("signs in with no secret anywhere, over a real TLS handshake through nginx") {
@@ -123,5 +164,38 @@ object EdgeMutualTlsSpec
         response.status == Status.Ok,
         seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
       )
+    },
+    // #452. A token bound to a key and a certificate is protected by the key alone if edge
+    // takes a valid proof as the whole answer -- and the certificate half is the one edge
+    // cannot be shown, since no caller of edge holds the certificate it is bound to.
+    test("refuses a token bound to both a key and a certificate, proof or not") {
+      for
+        f <- fixture
+        stub <- upstream
+        edgeApi <- edge
+        prover <- DpopProver.make
+        token <- doublyBoundToken(prover)
+        cnf <- confirmation(token)
+        htu = edgeApi.proxyUrl(f.resourceId, "/dual-bound")
+        call = (nonce: Option[String]) =>
+          prover.proof(Method.GET, htu, accessToken = Some(token), nonce = nonce)
+            .flatMap(proof => edgeApi.proxy(Method.GET, f.resourceId, "/dual-bound", EdgeAuth.Dpop(token, proof)))
+        // A registered edge demands a nonce by default, so a first proof without one is
+        // answered `use_dpop_nonce` -- which would look like a refusal whether or not the
+        // dual binding is checked. Answer the challenge if there is one, so the call is only
+        // refused for the reason under test.
+        first <- call(None)
+        answered <- DpopProver.nonceOf(first.response) match
+          case None => ZIO.succeed(first)
+          case Some(nonce) => call(Some(nonce))
+        seen <- stub.requests
+      yield assertTrue(
+        cnf.get("jkt").isDefined,
+        cnf.get("x5t#S256").isDefined,
+      ).label(s"the control: this token has to carry both bindings, got $cnf") &&
+        assertTrue(DpopProver.nonceOf(first.response).isEmpty)
+          .label("the certificate rule comes before the proof is looked at, so no nonce is ever offered") &&
+        assertTrue(answered.status == Status.Unauthorized, !seen.exists(_.path == "/dual-bound"))
+          .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
     },
   )

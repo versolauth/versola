@@ -148,8 +148,11 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             .claim("role", role)
             .claim("sid", sid)
             .claim("tenant_id", tenantId)
-          cnfJkt.foreach(v => builder.claim("cnf", java.util.Map.of("jkt", v)))
-          cnfX5t.foreach(v => builder.claim("cnf", java.util.Map.of("x5t#S256", v)))
+          // One `cnf` claim carrying whichever bindings were asked for -- a token may be bound to both.
+          val cnf = new java.util.LinkedHashMap[String, String]()
+          cnfJkt.foreach(cnf.put("jkt", _))
+          cnfX5t.foreach(cnf.put("x5t#S256", _))
+          if !cnf.isEmpty then builder.claim("cnf", cnf)
           acr.foreach(v => builder.claim("acr", v))
           authTime.foreach(v => builder.claim("auth_time", v))
           val javaRoles = new java.util.ArrayList[String]()
@@ -2339,6 +2342,23 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         request = Request.get(URL.empty / "users").addHeader(Header.Authorization.Bearer(token))
         service = env.buildService(client, security)
         response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        upstream <- capture.get
+      yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
+    },
+    test("refuses a token bound to both a key and a certificate on a valid DPoP proof") {
+      // The proof only shows the key half of the binding; the certificate half cannot be shown
+      // to edge, so the token must not pass on the key alone (RFC 8705 §3, #452).
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        capture <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        token <- env.signToken(cnfJkt = Some(dpopJkt), cnfX5t = Some("certificate-thumbprint"))
+        proof <- dpopProof(token, "/users")
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), dpopRequest("/users", token, proof))
         upstream <- capture.get
       yield assertTrue(response.status == Status.Unauthorized, upstream.isEmpty)
     },
