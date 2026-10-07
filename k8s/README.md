@@ -126,9 +126,10 @@ admin API (see [§8](#8-the-load-emulator)). It is seeded as RFC 7523 `private_k
 DPoP-bound tokens, which the default tenant's FAPI 2.0 profile admits (versolauth/versola#424).
 `gen-env` generates a P-256 pair: the public half is `UTILITY_CLIENT_PUBLIC_JWK` in
 `central.generated-secrets.env`, and the private half is written to
-`loadgen.provisioner-private-key.jwk` (mode 0600), which is *not* a `*.generated-secrets.env` file
-and so is never loaded into central. Hand its contents to `loadgen` as
-`provision.provisioner-private-key`, for example from a Secret of loadgen's own. Keep the file
+`utils.private-key.jwk` (mode 0600), which is *not* a `*.generated-secrets.env` file
+and so is never loaded into central. It is the private key of the `utils` client, for whatever
+authenticates as it: today `loadgen`, which takes its contents as `provision.provisioner-private-key`,
+for example from a Secret of its own. Keep the file
 from the run that first created central's Secret: central seeds `utils` once, so a later `gen-env`
 run produces a pair whose public half central never sees (versolauth/versola#380). Do not
 regenerate it for a deployment that already has one.

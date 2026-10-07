@@ -579,7 +579,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   //   - docker-local, vps, k8s: this run's own pair. The public half is placeholdered and
   //     travels in central.generated-secrets.env exactly like JWKS_JSON and EDGE_PUBLIC_JWK, so
   //     OpenBao's existing-value-wins rule keeps central's key stable across runs. The private
-  //     half goes to its own file, `loadgen.provisioner-private-key.jwk`, and is deliberately
+  //     half goes to its own file, `utils.private-key.jwk`, and is deliberately
   //     NOT in any *.generated-secrets.env: versola-cli loads those into the container they
   //     are named for, and central must never hold the key that authenticates as `utils`.
   //     That file is authoritative only for the run that first populated central's OpenBao:
@@ -1330,14 +1330,14 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
       ) ++ edgeExtras)
 
-      // loadgen's half of the `utils` pair -- see bootstrapUtilityClientLines. A bare JWK file,
+      // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
       // owner-readable only, written outside every *.generated-secrets.env on purpose.
-      writeFile(dir, "loadgen.provisioner-private-key.jwk", utilityPrivateJwk + "\n")
+      writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
       java.nio.file.Files.setPosixFilePermissions(
-        File(dir, "loadgen.provisioner-private-key.jwk").toPath,
+        File(dir, "utils.private-key.jwk").toPath,
         java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
       )
-      println("  Keep loadgen.provisioner-private-key.jwk: it is loadgen's provision.provisioner-private-key, and not in any generated-secrets file.")
+      println("  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.")
 
     println(
       s"""
