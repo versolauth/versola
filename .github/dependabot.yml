@@ -2,9 +2,9 @@
 # dependencies in project/Dependencies.scala are covered by the scanning pipeline (#470)
 # until Renovate or an sbt-dependency-submission step is adopted.
 #
-# One grouped PR per ecosystem per week, and no automatic major-version bumps: a major is a
-# migration (TypeScript 5 -> 7, vitest 4 -> 5) that someone schedules, not a weekly chore.
-# Security updates are separate from this file and still arrive for every version.
+# Minor and patch updates are grouped into one PR per ecosystem per week. Majors are not
+# grouped: each one is its own PR, so a major that breaks the build (TypeScript 5 -> 7,
+# vitest 4 -> 5) blocks only itself instead of the whole group.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -15,6 +15,7 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: docker
     directory: /docker
     schedule:
@@ -23,25 +24,22 @@ updates:
     groups:
       base-images:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
   - package-ecosystem: npm
     directory: /central-ui
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
-    ignore:
-      - dependency-name: "*"
-        update-types: ["version-update:semver-major"]
     groups:
       npm:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
