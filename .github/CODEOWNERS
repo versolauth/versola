@@ -1,0 +1,13 @@
+# Every change needs a review from an owner (enforced once branch protection requires
+# code-owner review -- see SECURITY.md / issue #465). Narrow these to teams as they form.
+*                       @goshacodes
+
+# Security-sensitive: authentication, token and certificate handling, deployment and CI.
+/auth/                  @goshacodes
+/central/               @goshacodes
+/edge/                  @goshacodes
+/util/                  @goshacodes
+/docker/                @goshacodes
+/k8s/                   @goshacodes
+/scripts/               @goshacodes
+/.github/               @goshacodes

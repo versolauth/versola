@@ -116,7 +116,6 @@ object PasswordService:
         plaintext <- generateTemporaryPassword(passwordRegex)
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
-        _ <- ZIO.logInfo(s"Generated temporary password for user $userId. Password value - $plaintext").when(!env.isProd)
         _ <- setTemporaryPassword(userId, plaintext, expiresAt)
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)

@@ -1,0 +1,30 @@
+# Dependency and base-image updates (#465). sbt has no Dependabot ecosystem, so the Scala
+# dependencies in project/Dependencies.scala are covered by the scanning pipeline (#470)
+# until Renovate or an sbt-dependency-submission step is adopted.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /docker
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        update-types: ["minor", "patch"]
+  - package-ecosystem: npm
+    directory: /central-ui
+    schedule:
+      interval: weekly
+    groups:
+      npm:
+        update-types: ["minor", "patch"]
