@@ -188,6 +188,21 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.smsProvider.send.calls.isEmpty,
         )
       },
+      test("never writes the temporary password to the log") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom, EnvName.Test("docker-local"))
+          _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.createTemporary.succeedsWith(())
+          revealed <- env.service.resetPassword(userId, None, Some(DeliveryChannel.show))
+          logged <- ZTestLogger.logOutput.map(_.map(_.message()))
+        yield assertTrue(
+          revealed.isDefined,
+          logged.exists(_.contains("Generated temporary password")),
+          !logged.exists(message => revealed.exists(password => message.contains(password.toString))),
+        )
+      },
       test("delivers via email in prod when the channel is email") {
         for
           secureRandom <- ZIO.service[SecureRandom]

@@ -116,7 +116,9 @@ object PasswordService:
         plaintext <- generateTemporaryPassword(passwordRegex)
         ttlSeconds = expiresInSeconds.getOrElse(DefaultTtlSeconds)
         expiresAt <- Clock.instant.map(_.plusSeconds(ttlSeconds))
-        _ <- ZIO.logInfo(s"Generated temporary password for user $userId. Password value - $plaintext").when(!env.isProd)
+        // The value is never logged: a temporary password is a credential, and a log outlives the
+        // environment it was written in. Read it back with the `show` channel (non-prod only).
+        _ <- ZIO.logInfo(s"Generated temporary password for user $userId")
         _ <- setTemporaryPassword(userId, plaintext, expiresAt)
         _ <- deliverPassword(plaintext, ttlSeconds, recipient)
           .tapError(_ => passwordRepository.deleteTemporary(userId).ignore)
