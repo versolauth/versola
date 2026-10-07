@@ -166,6 +166,13 @@ never talk to OpenBao. See `versola-cli`'s `internal/openbao` and
 Secrets live at `secret/versola/<target>/{auth,central,edge}` (KV v2), where
 `<target>` is `local` or `vps` — versola-cli's target names, not `docker-local`.
 
+The private key of the `utils` client (`loadgen provision`'s `provision.provisioner-private-key`)
+is the one value stored apart from those three paths, at `secret/versola/<target>/utils`, because
+nothing under a service's path may be a key central must not hold. A stored key wins over the one
+gen-env generates each run, and central's public half is taken from it, so the pair survives every
+reconfigure. `configure` leaves the resolved key in the bundle directory as `utils.private-key.jwk`
+(mode 0600).
+
 ### Setup is automatic
 
 `versola configure <target> <version>` (and `bootstrap`) starts the

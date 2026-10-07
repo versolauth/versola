@@ -27,24 +27,22 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
 
   private val config = ZIO.service[E2EConfig]
 
-  /** The provisioner's own credential, exchanged for a token bound to central. */
-  private val provisionerToken: ZIO[OAuthClient & E2EConfig, Throwable, String] =
+  /** The provisioner's own credential, exchanged for a DPoP-bound token for central: an RFC
+    * 7523 assertion signed with the key bootstrap registered, which is how `loadgen provision`
+    * authenticates against a default-profile deployment. */
+  private val provisionerToken: ZIO[OAuthClient & E2EConfig, Throwable, ProvisionerSession] =
     for
       auth <- ZIO.service[OAuthClient]
       c <- config
-      issued <- auth.clientCredentials(
-        clientId = c.provisionerClientId,
-        clientSecret = c.provisionerSecret,
-        resources = Some(List("resource://central")),
-      ).success
-    yield issued.accessToken
+      session <- ProvisionerCredential.session(auth, c, List("resource://central"))
+    yield session
 
   def spec = suite("Edge: central's admin API as the provisioner reaches it")(
     test("a token for resource://central reads central's configuration through the proxy") {
       for
         token <- provisionerToken
         edgeApi <- ZIO.service[EdgeApi]
-        listed <- edgeApi.proxy(Method.GET, "central", "/configuration/clients", EdgeAuth.Bearer(token), query = List("tenantId" -> "default"))
+        listed <- edgeApi.proxyDpop(Method.GET, "central", "/configuration/clients", token, query = List("tenantId" -> "default"))
         body <- listed.obj
       yield assertTrue(listed.status == Status.Ok) &&
         assertTrue(body.get("clients").isDefined)
@@ -54,18 +52,17 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
       for
         token <- provisionerToken
         edgeApi <- ZIO.service[EdgeApi]
-        auth = EdgeAuth.Bearer(token)
         resourceId <- CentralApi.id("e2e-provisioned")
-        created <- edgeApi.proxy(
+        created <- edgeApi.proxyDpop(
           Method.POST,
           "central",
           "/configuration/resources",
-          auth,
+          token,
           body = Some(Fixtures.resource(resourceId, s"https://$resourceId.example.test")),
         )
-        listed <- edgeApi.proxy(Method.GET, "central", "/configuration/resources", auth, query = List("tenantId" -> Fixtures.suiteTenant))
+        listed <- edgeApi.proxyDpop(Method.GET, "central", "/configuration/resources", token, query = List("tenantId" -> Fixtures.suiteTenant))
         body <- listed.obj
-        removed <- edgeApi.proxy(Method.DELETE, "central", "/configuration/resources", auth, query = List("resourceId" -> resourceId))
+        removed <- edgeApi.proxyDpop(Method.DELETE, "central", "/configuration/resources", token, query = List("resourceId" -> resourceId))
         present = resources(body).contains(resourceId)
       yield assertTrue(created.status == Status.Created, removed.status == Status.NoContent) &&
         assertTrue(present).label("a resource written through the proxy must be readable through it")
@@ -76,14 +73,13 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
       for
         token <- provisionerToken
         edgeApi <- ZIO.service[EdgeApi]
-        auth = EdgeAuth.Bearer(token)
         // Retried on a 5xx for the reason EdgeApi.syncConfiguration is: the sync makes central
         // call auth over a pooled connection, and one auth closed while it sat idle surfaces
         // here as a 500 on the first attempt.
-        synced <- edgeApi.proxy(Method.POST, "central", "/service/configuration/sync", auth)
+        synced <- edgeApi.proxyDpop(Method.POST, "central", "/service/configuration/sync", token)
           .filterOrFail(_.status.isSuccess)(RuntimeException("sync did not succeed"))
           .retry(Schedule.recurs(3) && Schedule.spaced(1.second))
-        flushed <- edgeApi.proxy(Method.POST, "central", "/service/users/outbox/flush", auth)
+        flushed <- edgeApi.proxyDpop(Method.POST, "central", "/service/users/outbox/flush", token)
       yield assertTrue(synced.status.isSuccess, flushed.status.isSuccess)
     },
     // `users:read` is deliberately absent from the provisioner's permissions: a campaign writes
@@ -92,7 +88,7 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
       for
         token <- provisionerToken
         edgeApi <- ZIO.service[EdgeApi]
-        denied <- edgeApi.proxy(Method.GET, "central", "/users", EdgeAuth.Bearer(token), query = List("tenantId" -> "default"))
+        denied <- edgeApi.proxyDpop(Method.GET, "central", "/users", token, query = List("tenantId" -> "default"))
       yield assertTrue(denied.status == Status.Forbidden)
     },
     // The audience is enforced where it is decided: `resource://central` is issuable only
@@ -104,11 +100,7 @@ object ProvisionerProxySpec extends ZIOSpec[OAuthClient & CentralApi & EdgeApi &
       for
         auth <- ZIO.service[OAuthClient]
         c <- config
-        refused <- auth.clientCredentials(
-          clientId = c.provisionerClientId,
-          clientSecret = c.provisionerSecret,
-          resources = Some(List("resource://auth")),
-        )
+        (refused, _) <- ProvisionerCredential.request(auth, c, List("resource://auth"))
       yield assertTrue(refused.response.status == Status.BadRequest) &&
         assertTrue(errorCode(refused).contains("invalid_target"))
           .label("RFC 8707 §2: an audience the client has no access to is invalid_target")

@@ -22,7 +22,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     accountResourceSecret = "account-resource-secret-for-test",
     edgeInternalSecret = "edge-internal-secret-for-test",
     provisionerClientId = "utils",
-    provisionerSecret = "provisioner-secret-for-test",
+    provisionerPrivateKey = "{}",
     redirectUri = "http://edge.test/complete",
     authMutualTlsUrl = "https://auth-mtls.test",
     authMutualTlsClientCertificate = "client.crt",

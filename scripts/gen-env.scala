@@ -371,7 +371,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     val jwk     = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
     RsaKey(b64std(privKey.getEncoded), jwk, kid)
 
-  case class EcKey(privateB64: String, jwk: String, kid: String)
+  /** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
+    * from a JWK rather than PKCS#8 -- loadgen's `provision.provisioner-private-key`. */
+  case class EcKey(privateB64: String, jwk: String, kid: String, privateJwk: String)
 
   /** P-256 is the only curve ES256 signs on. Unlike an RSA modulus, a coordinate is fixed
     * width (32 bytes here) and never carries a leading sign byte to strip -- `b64url` would
@@ -393,7 +395,8 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
     val x   = coordinate(pubKey.getW.getAffineX)
     val y   = coordinate(pubKey.getW.getAffineY)
     val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
-    EcKey(b64std(privKey.getEncoded), jwk, kid)
+    val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
+    EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
 
   val today = java.time.LocalDate.now.toString
   // JWT signing key: auth signs access tokens with the private half; central serves the
@@ -439,7 +442,9 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   val edgeNativeBlobKey         = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
   val centralResourceSecretGenerated = rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
-  val utilityClientSecretGenerated   = rand(rng, 32) // central: seeds bootstrap.utility-client; must match whatever configures loadgen's own provision.provisioner-secret
+  // central: seeds bootstrap.utility-client with the public half; the private half is loadgen's
+  // provision.provisioner-private-key. See `utilityKey`'s use below for where each half goes.
+  val utilityKey = genEcKey("utils")
 
   // ── Environment ───────────────────────────────────────────────────────────────
   println("\n── Environment ───────────────────────────────────────────────────────")
@@ -564,16 +569,51 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // The utility client `loadgen provision` authenticates as, so that it reaches central's
   // admin API through edge's proxy instead of holding an internal secret. Client id stays
   // a literal on every target -- it isn't secret, and central only needs loadgen's own
-  // config (provision.provisioner-client-id) to name the same string, not to keep it out
-  // of sight. The secret is what a deployment that runs a campaign also has to give
-  // loadgen, out of band, the same way Postgres's password is reused rather than
-  // reconciled. Several lines rather than one, so unlike the line above it supplies its
+  // config (provision.provisioner-client-id) to name the same string.
+  //
+  // It authenticates with RFC 7523 `private_key_jwt` and DPoP-bound tokens, which is what the
+  // default tenant's FAPI 2.0 profile admits (versolauth/versola#424, #445). Central gets the
+  // public half; loadgen gets the private half as `provision.provisioner-private-key`:
+  //   - local: a pinned pair, so e2e and a developer's loadgen can hardcode the private half
+  //     the same way they do every other pinned local secret. Dev only -- it is committed.
+  //   - docker-local, vps, k8s: this run's own pair. The public half is placeholdered and
+  //     travels in central.generated-secrets.env exactly like JWKS_JSON and EDGE_PUBLIC_JWK, so
+  //     OpenBao's existing-value-wins rule keeps central's key stable across runs. The private
+  //     half goes to its own file, `utils.private-key.jwk`, and is deliberately
+  //     NOT in any *.generated-secrets.env: versola-cli loads those into the container they
+  //     are named for, and central must never hold the key that authenticates as `utils`.
+  //     That file is authoritative only for the run that first populated central's OpenBao:
+  //     a later run generates a fresh pair, but central keeps the stored public half, so only
+  //     the file from the first run matches it. Keep that file, not a regenerated one.
+  //   A deployment that seeded `utils` with a client_secret under an older generator cannot take
+  //   this config as is: central refuses a boot that calls for another method than the client
+  //   holds (see k8s/README.md, "Upgrading a deployment that already seeded utils").
+  // UTILS_PRIVATE_KEY_JWK (the JWK itself, i.e. the contents of utils.private-key.jwk from an
+  // earlier run) reuses that pair instead of generating one, so a deployment that already holds
+  // its key -- every k8s one, which has nothing like versola-cli's OpenBao to keep it -- gets a
+  // central.conf that still matches it. versola-cli does the equivalent itself from OpenBao.
+  val reusedUtilityKey: Option[(String, String)] =
+    sys.env.get("UTILS_PRIVATE_KEY_JWK").map(_.trim).filter(_.nonEmpty).map: jwk =>
+      def field(name: String): String =
+        s""""$name"\\s*:\\s*"([^"]*)"""".r.findFirstMatchIn(jwk).map(_.group(1)).getOrElse(
+          throw RuntimeException(s"UTILS_PRIVATE_KEY_JWK has no \"$name\" member"),
+        )
+      val kid = s""""kid"\\s*:\\s*"([^"]*)"""".r.findFirstMatchIn(jwk).map(_.group(1)).getOrElse("utils")
+      field("d") // must be a private key
+      val publicJwk = s"""{"kty":"${field("kty")}","crv":"${field("crv")}","x":"${field("x")}","y":"${field("y")}","use":"sig","kid":"$kid","alg":"ES256"}"""
+      (publicJwk, jwk)
+  val utilityPublicJwk =
+    if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","use":"sig","kid":"utils-local","alg":"ES256"}"""
+    else reusedUtilityKey.fold(utilityKey.jwk)(_._1)
+  val utilityPrivateJwk =
+    if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","d":"jWGh5lV46NJ3RwT8kJ5lfBeBTGBtXnM5V3gwgAEYpXM","use":"sig","kid":"utils-local","alg":"ES256"}"""
+    else reusedUtilityKey.fold(utilityKey.privateJwk)(_._2)
+  // Several lines rather than one, so unlike the resource-secret line above it supplies its
   // own newlines and nothing follows it on a line.
   val bootstrapUtilityClientLines =
     "  utility-client {\n" +
       "    client-id = \"utils\"\n" +
-      (if isLocal then "    secret = \"ZGV2LWxvYWRnZW4tcHJvdmlzaW9uZXItc2VjcmV0MzI\"\n"
-       else s"    secret = ${secretField(useOpenBao, utilityClientSecretGenerated, "UTILITY_CLIENT_SECRET")}\n") +
+      s"    public-key-jwk = ${secretKeyField(useOpenBao, utilityPublicJwk, "UTILITY_CLIENT_PUBLIC_JWK")}\n" +
       "  }\n"
 
   // Same reasoning for the "auth" resource secret: e2e tests call auth's additional
@@ -1302,11 +1342,13 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
         "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
         // Reached only when useOpenBao is true (isLocal, the only other target that ever
-        // sets these two, has its own pinned literals and never runs this far -- see
-        // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholder
-        // these two var names back always resolves to exactly the generated value here.
+        // sets these, has its own pinned literals and never runs this far -- see
+        // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholders
+        // these var names back always resolve to exactly the generated value here.
         "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
-        "UTILITY_CLIENT_SECRET"   -> utilityClientSecretGenerated,
+        // The public half only -- see bootstrapUtilityClientLines for where the private
+        // half goes instead.
+        "UTILITY_CLIENT_PUBLIC_JWK" -> utilityPublicJwk,
         // Not secret in the confidentiality sense (these are public keys),
         // but resolved through OpenBao the same as everything else here
         // regardless -- see the comment on jwks/public-key-jwk above for
@@ -1329,6 +1371,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
         "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
       ) ++ edgeExtras)
+
+    // The private half of the `utils` pair, for whoever authenticates as that client (loadgen provision today) -- see bootstrapUtilityClientLines. A bare JWK file,
+    // owner-readable only, written outside every *.generated-secrets.env on purpose. Written
+    // whether or not secrets are placeholdered: an interactive prod run registers the public half
+    // in central.conf as a literal, and nothing else keeps the private half.
+    writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
+    java.nio.file.Files.setPosixFilePermissions(
+      File(dir, "utils.private-key.jwk").toPath,
+      java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+    )
+    println("  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.")
 
     println(
       s"""

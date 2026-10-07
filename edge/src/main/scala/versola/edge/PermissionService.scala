@@ -21,7 +21,7 @@ trait PermissionService:
   def refreshNow: Task[Unit]
 
 object PermissionService:
-  def live: ZLayer[RolesSyncClient & PermissionsSyncClient & OAuthClientsSyncClient & Scope & EdgeConfig, Throwable, PermissionService] =
+  def live: ZLayer[RolesSyncClient & PermissionsSyncClient & ClientPermissionsSyncClient & Scope & EdgeConfig, Throwable, PermissionService] =
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
@@ -35,21 +35,21 @@ object PermissionService:
       ) ++ // permId → endpointIds
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[ClientId, Set[PermissionId]]](config.configurationCacheRefreshInterval),
         )
       ) ++          // clientId → OAuthClient
       ZLayer.service[RolesSyncClient] ++
       ZLayer.service[PermissionsSyncClient] ++
-      ZLayer.service[OAuthClientsSyncClient]
+      ZLayer.service[ClientPermissionsSyncClient]
     ) >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(
       rolesCache: ReloadingCache[Map[(TenantId, RoleId), Set[PermissionId]]],
       permissionsCache: ReloadingCache[Map[PermissionId, Set[ResourceEndpointId]]],
-      clientsCache: ReloadingCache[Map[ClientId, OAuthClient]],
+      clientsCache: ReloadingCache[Map[ClientId, Set[PermissionId]]],
       rolesSource: RolesSyncClient,
       permissionsSource: PermissionsSyncClient,
-      clientsSource: OAuthClientsSyncClient,
+      clientsSource: ClientPermissionsSyncClient,
   ) extends PermissionService:
 
     private def permissionsFor(
@@ -70,7 +70,7 @@ object PermissionService:
       for
         clients <- clientsCache.get
         permMap <- permissionsCache.get
-        permIds = clients.get(clientId).fold(Set.empty[PermissionId])(_.permissions)
+        permIds = clients.getOrElse(clientId, Set.empty[PermissionId])
       yield permIds.flatMap(permMap.getOrElse(_, Set.empty))
 
     override def getPermissionsForRoles(

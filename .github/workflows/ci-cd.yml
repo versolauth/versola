@@ -1219,6 +1219,9 @@ jobs:
       - name: Check chart secret vars match gen-env
         run: .github/scripts/check-chart-secret-vars.sh
 
+      - name: Check gen-env keeps the utils key pair stable
+        run: .github/scripts/check-utils-key-reuse.sh
+
   # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
   # global values reach every pod, that a component's own value replaces them
   # rather than merging, and that the loadgen coordinator's standby spread

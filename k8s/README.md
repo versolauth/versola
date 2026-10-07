@@ -119,19 +119,45 @@ Output lands in `.local/env/k8s/`:
 | `auth.conf`, `central.conf`, `edge.conf` | configuration with `${VAR}` placeholders |
 | `auth.generated-secrets.env`, … | the values behind those placeholders, as `KEY=value` |
 
-Two of central's generated values need a matching home outside these files entirely:
-`bootstrap.utility-client`'s secret must equal whatever configures `loadgen`'s own
-`provision.provisioner-secret` (`loadgen provision` authenticates as this client to reach
-central's admin API — see [§8](#8-the-load-emulator)), the same kind of out-of-band match a
-Postgres password is. That `client_secret` is not a credential the default tenant's FAPI 2.0
-profile admits, so central seeds it with a warning. To conform, replace the generated secret in
-`central.conf` with `bootstrap.utility-client.public-key-jwk` (a P-256/ES256 public JWK) and give
-`loadgen` the private half as `provision.provisioner-private-key`: it then signs an RFC 7523
-assertion and DPoP proofs instead (versolauth/versola#424). `gen-env` does not generate that pair
-yet. `bootstrap.resource-secret` has no such counterpart to match — central is
-the only reader — but it still has to be present at central's *first* boot: central seeds each
-of the two exactly once, the first time it finds neither configured, and a value added to the
-config later has no effect on one already seeded (versolauth/versola#380).
+Two of central's generated values need a matching home outside these files entirely.
+
+`bootstrap.utility-client` is the client `loadgen provision` authenticates as to reach central's
+admin API (see [§8](#8-the-load-emulator)). It is seeded as RFC 7523 `private_key_jwt` with
+DPoP-bound tokens, which the default tenant's FAPI 2.0 profile admits (versolauth/versola#424).
+`gen-env` generates a P-256 pair: the public half is `UTILITY_CLIENT_PUBLIC_JWK` in
+`central.generated-secrets.env`, and the private half is written to
+`utils.private-key.jwk` (mode 0600), which is *not* a `*.generated-secrets.env` file
+and so is never loaded into central. It is the private key of the `utils` client, for whatever
+authenticates as it: today `loadgen`, which takes its contents as `provision.provisioner-private-key`,
+for example from a Secret of its own:
+
+```bash
+kubectl create secret generic versola-utils-key --from-file=private-key.jwk=.local/env/k8s/utils.private-key.jwk
+```
+
+Central seeds `utils` once, so a later `gen-env` run would produce a pair whose public half central
+never sees (versolauth/versola#380). To rerun `gen-env` against a deployment that already has its key, hand it back through the
+environment of that one command (a bare assignment on its own line would not reach `scala-cli`):
+
+```bash
+UTILS_PRIVATE_KEY_JWK="$(kubectl get secret versola-utils-key -o jsonpath='{.data.private-key\.jwk}' | base64 -d)" \
+  scala-cli run scripts/gen-env.scala
+```
+
+`gen-env` then writes that pair's public half into `central.generated-secrets.env` and the same
+private key into `utils.private-key.jwk`, instead of generating a new one. (`versola-cli` does the equivalent for
+`docker-local` and `vps` out of OpenBao, at `secret/versola/<target>/utils`.)
+
+**Upgrading a deployment that already seeded `utils` with a `client_secret`:** a client's
+authentication method is fixed when it is created, so central refuses to start (naming `utils`,
+both methods and the setting) on a `central.conf` that now carries `public-key-jwk`. Either keep
+the previous `central.conf` for `bootstrap.utility-client`, or delete the `utils` client so the
+next boot registers it again with the new key, and give `loadgen` the new private key.
+
+`bootstrap.resource-secret` has no counterpart to match — central is the only reader — but it
+still has to be present at central's *first* boot: central seeds each of the two exactly once,
+the first time it finds neither configured, and a value added to the config later has no effect
+on one already seeded (versolauth/versola#380).
 
 ### `vps` mode
 

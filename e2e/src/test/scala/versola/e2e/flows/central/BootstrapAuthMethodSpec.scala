@@ -1,11 +1,8 @@
 package versola.e2e.flows.central
 
-import com.nimbusds.jose.jwk.Curve
-import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import versola.e2e.support.{*, given}
 import zio.*
 import zio.http.Client
-import zio.json.ast.Json
 import zio.test.*
 
 import java.nio.file.{Files, Path}
@@ -26,13 +23,17 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
 
   /** Starts central on `override` appended to the running one's configuration, and answers its
     * exit code and output -- `None` for a central still running when it should have stopped. */
-  private def boot(config: E2EConfig, `override`: String): Task[(Option[Int], String)] =
+  private def boot(
+      config: E2EConfig,
+      `override`: String,
+      edit: String => String = identity,
+  ): Task[(Option[Int], String)] =
     ZIO.acquireReleaseWith(
       ZIO.attemptBlocking((Files.createTempFile("e2e-central-", ".conf").nn, Files.createTempFile("e2e-central-", ".log").nn)),
     )((conf, log) => ZIO.attemptBlocking { Files.deleteIfExists(conf); Files.deleteIfExists(log) }.ignore):
       (conf, log) =>
         ZIO.attemptBlocking:
-          Files.writeString(conf, Files.readString(Path.of(config.centralEnvConf)) + "\n" + `override` + "\n")
+          Files.writeString(conf, edit(Files.readString(Path.of(config.centralEnvConf))) + "\n" + `override` + "\n")
           val builder = ProcessBuilder(config.centralLauncher, s"-Denv.path=$conf")
             .redirectErrorStream(true)
             .redirectOutput(log.toFile)
@@ -65,19 +66,24 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
         )).label("the refusal must name the client, both methods and the setting to restore") &&
         assertTrue(after == before).label("the refused boot must leave the client as it was")
     },
-    test("central refuses to start when utils is given a key it was not created with") {
-      val publicKey = ECKeyGenerator(Curve.P_256).keyID("e2e-bootstrap-probe").generate().nn.toPublicJWK.nn.toJSONString.nn
-      for
+    test("central refuses to start when utils is given a secret in place of the key it was created with") {      for
         central <- ZIO.service[CentralApi]
         config <- ZIO.service[E2EConfig]
         before <- authMethodOf(central, config.provisionerClientId)
-        (exit, output) <- boot(config, s"bootstrap.utility-client.public-key-jwk = ${Json.Str(publicKey).toString}")
+        (exit, output) <- boot(
+          config,
+          "bootstrap.utility-client.secret = \"e2e-bootstrap-probe\"",
+          // Removed from the text, not set to `null`: a `null` where an `Option[Json.Obj]` is read
+          // fails central's configuration decoding, which it then reports with an unbounded
+          // cause that exhausts the heap instead of the refusal this test expects.
+          edit = _.replaceFirst("""(?s)(utility-client \{.*?)\n\s*public-key-jwk = [^\n]*""", "$1"),
+        )
         after <- authMethodOf(central, config.provisionerClientId)
-      yield assertTrue(before.contains("client_secret"))
-        .label("the stack must have seeded utils with a secret for this to mean anything") &&
+      yield assertTrue(before.contains("private_key_jwt"))
+        .label("the stack must have seeded utils with its key for this to mean anything") &&
         assertTrue(exit.exists(_ != 0)).label("a central whose configuration contradicts a seeded client must not start") &&
         assertTrue(output.contains(
-          s"'${config.provisionerClientId}' is registered with client_secret, but bootstrap.utility-client calls for private_key_jwt",
+          s"'${config.provisionerClientId}' is registered with private_key_jwt, but bootstrap.utility-client calls for client_secret",
         )).label("the refusal must name the client, both methods and the setting to restore") &&
         assertTrue(after == before).label("the refused boot must leave the client as it was")
     },
