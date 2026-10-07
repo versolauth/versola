@@ -1,0 +1,156 @@
+name: Security
+
+# Supply-chain and code scanning (#470). Separate from ci-cd.yml so a scanner's outage or a newly
+# published CVE never blocks the build/release pipeline; the findings that gate a merge are the
+# ones introduced by the change itself (secrets, new vulnerable dependencies, SAST errors).
+#
+# What gates and what only reports is deliberate and written next to each job. Triage and SLAs
+# are in SECURITY.md ("Vulnerability management").
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 05:00 UTC: new CVEs against what is already released.
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keyed by event too: a push to main must not cancel the weekly/manual image scan running on the same
+# ref (its replacement run skips that job). Only superseded PR runs are cancelled.
+concurrency:
+  group: security-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Verified credentials committed anywhere in the history this PR/push adds. Gates.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Scan for verified secrets
+        uses: trufflesecurity/trufflehog@1aa1871f9ae24a8c8a3a48a9345514acf42beb39 # v3.82.13
+        with:
+          extra_args: --only-verified
+
+  # Known-vulnerable dependencies introduced by a PR (npm, GitHub Actions, and anything else the
+  # dependency graph understands -- sbt is not among them, so the JVM side is covered by the
+  # image scan below). Gates on high and above.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
+        with:
+          fail-on-severity: high
+
+  # The repository as source: vulnerabilities and secrets gate; misconfiguration (Dockerfiles, the
+  # Helm chart) only reports until the hardening in #471 lands, otherwise this job would be red
+  # from day one for findings that issue exists to fix.
+  trivy-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Vulnerabilities and secrets (gating)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          trivyignores: .trivyignore
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          skip-dirs: .claude,node_modules,target
+      - name: Misconfiguration (report only until #471)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: config
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          skip-dirs: .claude,node_modules,target
+
+  # JVM dependencies live inside the released images (sbt has no lockfile Trivy can read), so
+  # this is the software-composition check for auth/central/edge and the rest: the images as
+  # published, on a schedule and on demand. A newly disclosed CVE fails this job rather than an
+  # unrelated PR.
+  images:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [versola-auth, versola-central, versola-edge, versola-gateway, versola-tools]
+    steps:
+      # Only for `.trivyignore`: the accepted findings apply to the images too.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Scan ${{ matrix.image }}:latest
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository_owner }}/${{ matrix.image }}:latest
+          trivyignores: .trivyignore
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # Production npm dependencies of the admin console. Gates on high and above.
+  npm-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: central-ui
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - run: npm audit --omit=dev --audit-level=high
+
+  # CodeQL does not support Scala; it covers the TypeScript of the admin console and the
+  # login forms. Findings appear under Security > Code scanning.
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: github/codeql-action/init@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3
+        with:
+          category: /language:javascript-typescript
+
+  # Scala (auth, central, edge, util): Semgrep's rules. Gates on ERROR severity only to start;
+  # tighten as findings are triaged.
+  semgrep:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install Semgrep
+        run: python3 -m pip install --user semgrep==1.179.0
+      # `use-of-basic-authentication` is excluded: every hit is an OpenAPI description of a scheme
+      # the protocol itself defines (`client_secret_basic`, RFC 6749 §2.3.1) or of central's
+      # internal resource-secret credential. It flags documentation, not code, and says nothing a
+      # reviewer can act on; the choice of credentials is tracked in the security epic.
+      - name: Scan
+        run: ~/.local/bin/semgrep scan --config p/default --severity ERROR --error --sarif --output semgrep.sarif --exclude-rule yaml.openapi.security.use-of-basic-authentication.use-of-basic-authentication --exclude target --exclude node_modules --exclude .claude
+      - name: Upload results
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@1190a975f95ce23525efb6a3fc21ea29567c1b52 # v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

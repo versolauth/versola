@@ -1,0 +1,4 @@
+# Accepted findings. One CVE id per line, each with a comment saying why it does not apply, who
+# accepted it and when it must be re-evaluated -- an entry without all three is not accepted.
+# Example:
+#   CVE-2099-0001  # not reachable: we do not use the affected parser; goshacodes 2026-10-07; revisit 2027-01-07
