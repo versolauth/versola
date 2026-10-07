@@ -154,6 +154,12 @@ lazy val migrateTool = project
       "-indent",
     ),
     libraryDependencies ++= Dependencies.migrateTool,
+    // Flyway pulls Jackson 2.19.1, which has known denial-of-service CVEs (fixed in 2.22.2+).
+    dependencyOverrides ++= Seq(
+      "com.fasterxml.jackson.core" % "jackson-core"        % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-databind"    % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-annotations" % "2.22",
+    ),
     Compile / mainClass := Some("versola.migrate.MigrateTool"),
   )
 
@@ -330,12 +336,12 @@ lazy val commonSettings =
     // occur at runtime (e.g. StreamReadConstraints.validateDocumentLength added in 2.16,
     // CLEAR_CURRENT_TOKEN_ON_CLOSE added in 2.20).
     dependencyOverrides ++= Seq(
-      "com.fasterxml.jackson.core"       % "jackson-core"             % "2.22.0",
-      "com.fasterxml.jackson.core"       % "jackson-databind"         % "2.22.0",
+      "com.fasterxml.jackson.core"       % "jackson-core"             % "2.22.3",
+      "com.fasterxml.jackson.core"       % "jackson-databind"         % "2.22.3",
       "com.fasterxml.jackson.core"       % "jackson-annotations"      % "2.22",
-      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jsr310"  % "2.22.0",
-      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jdk8"    % "2.22.0",
-      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.0",
+      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jsr310"  % "2.22.3",
+      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jdk8"    % "2.22.3",
+      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.3",
     ),
     scalacOptions ++= Seq(
       "-deprecation",
