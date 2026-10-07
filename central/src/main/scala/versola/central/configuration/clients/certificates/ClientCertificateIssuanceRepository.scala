@@ -23,6 +23,10 @@ trait ClientCertificateIssuanceRepository:
 
   def upsert(issuance: ClientCertificateIssuance): Task[Unit]
 
+  /** Updates the issuance of a client central still manages; `false` when there is none -- an
+    * operator replaced the certificate in the meantime, and a renewal must not take it back. */
+  def replace(issuance: ClientCertificateIssuance): Task[Boolean]
+
   def find(clientId: ClientId): Task[Option[ClientCertificateIssuance]]
 
   /** Forgets that central manages this client's certificate: an operator replaced it. */

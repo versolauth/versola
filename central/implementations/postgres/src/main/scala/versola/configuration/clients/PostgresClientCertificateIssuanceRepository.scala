@@ -27,6 +27,15 @@ class PostgresClientCertificateIssuanceRepository(
       """.update.run()
     .unit
 
+  override def replace(issuance: ClientCertificateIssuance): Task[Boolean] =
+    xa.connectMeasured("replace-client-certificate-issuance"):
+      sql"""
+        UPDATE client_certificate_issuance
+        SET serial = ${issuance.serial}, not_after = ${issuance.notAfter}, issued_at = ${issuance.issuedAt}
+        WHERE client_id = ${issuance.clientId}
+      """.update.run()
+    .map(_ > 0)
+
   override def find(clientId: ClientId): Task[Option[ClientCertificateIssuance]] =
     xa.connectMeasured("find-client-certificate-issuance"):
       sql"""

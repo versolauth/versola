@@ -1,6 +1,8 @@
 package versola.central.configuration.clients.certificates
 
 import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.asn1.x500.style.BCStyle
 import org.bouncycastle.asn1.x509.{Extension, ExtensionsGenerator, GeneralName, GeneralNames}
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequestBuilder
@@ -93,9 +95,11 @@ object ClientCertificateRequests:
     val body = Base64.getMimeEncoder(64, "\n".getBytes(StandardCharsets.US_ASCII)).encodeToString(der)
     s"-----BEGIN $label-----\n$body\n-----END $label-----\n"
 
+  /** The decoded common name -- `app,blue` for `CN=app\\,blue`, which is what the request carries and
+    * what a CA compares a token's subject against. */
   private def commonNameOf(principal: X500Principal): Option[String] =
-    principal.getName(X500Principal.RFC2253).split("(?<!\\\\),").toList
-      .find(_.startsWith("CN=")).map(_.stripPrefix("CN="))
+    X500Name.getInstance(principal.getEncoded).getRDNs(BCStyle.CN).headOption
+      .map(rdn => rdn.getFirst.getValue.asInstanceOf[org.bouncycastle.asn1.ASN1String].getString)
 
   private def escape(value: String): String =
     value.flatMap:

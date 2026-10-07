@@ -243,6 +243,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     * service passes a plain registration straight through to the stubbed [[OAuthClientService]]. */
   private object NoIssuances extends ClientCertificateIssuanceRepository:
     def upsert(issuance: ClientCertificateIssuance) = ZIO.unit
+    def replace(issuance: ClientCertificateIssuance) = ZIO.succeed(false)
     def find(clientId: ClientId) = ZIO.none
     def delete(clientId: ClientId) = ZIO.unit
     def expiringBefore(deadline: java.time.Instant) = ZIO.succeed(Vector.empty)

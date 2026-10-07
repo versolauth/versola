@@ -67,7 +67,9 @@ object CertSyncTool:
   def readClients(dir: Path): List[(String, String)] =
     if !Files.isDirectory(dir) then Nil
     else
-      Files.list(dir).nn.iterator.nn.asScala.toList.sortBy(_.toString).flatMap: clientDir =>
+      // Closed after the listing: a long-running loop would otherwise leak a directory handle per pass.
+      val entries = scala.util.Using.resource(Files.list(dir).nn)(_.iterator.nn.asScala.toList)
+      entries.sortBy(_.toString).flatMap: clientDir =>
         val crt = clientDir.resolve("tls.crt")
         val key = clientDir.resolve("tls.key")
         Option.when(Files.isDirectory(clientDir) && Files.isRegularFile(crt) && Files.isRegularFile(key)):

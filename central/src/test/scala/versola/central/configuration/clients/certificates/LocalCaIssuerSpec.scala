@@ -50,6 +50,13 @@ object LocalCaIssuerSpec extends ZIOSpecDefault:
       for material <- issued(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.san_dns, "a.test"), 10.days)
       yield assertTrue(material.leaf.getNotAfter.toInstant == ca.certificate.getNotAfter.toInstant)
     },
+    // A comma inside a value is escaped in the RFC 2253 form and plain in the request, and a CA
+    // compares the request's -- so the subject handed to it must be the decoded one.
+    test("the common name of a DN with an escaped comma is the decoded one") {
+      val dn = """CN=app\,blue,O=Versola"""
+      val subject = ClientCertificateRequests.subjectFor(ClientId("x"), MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, dn))
+      assertTrue(subject.map(_.commonName) == Right("app,blue"))
+    },
     test("the default subject is CN=<client>,OU=<tenant>,O=Versola") {
       val auth = ClientCertificateRequests.defaultAuth(TenantId("tenant-a"), ClientId("mobile-app"))
       assertTrue(auth.subjectType == MutualTlsSubjectType.subject_dn, auth.subjectValue == "CN=mobile-app,OU=tenant-a,O=Versola")

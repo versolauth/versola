@@ -82,7 +82,15 @@ object ClientCertificateService:
             edgeClientCertificate = Some(issued.certificate),
           ))
           now <- Clock.instant
+          // The client is stored by now, so a record that cannot be written would leave a
+          // certificate nothing renews: retry it, and failing that take the registration back, so
+          // that retrying it is possible rather than answered `ClientAlreadyExists`.
           _ <- issuances.upsert(ClientCertificateIssuance(request.id, issued.serial, issued.notAfter, now))
+            .retry(Schedule.recurs(2) && Schedule.spaced(200.millis))
+            .tapError(error =>
+              ZIO.logError(s"could not record the certificate issued to '${request.id}', removing the client: $error") *>
+                clients.deleteClient(request.id).ignore,
+            )
         yield registered
 
     override def renew(clientId: ClientId): IO[InvalidRegistrationConfiguration | Throwable, Boolean] =
@@ -110,10 +118,20 @@ object ClientCertificateService:
         auth <- ZIO.fromOption(record.mtlsAuth)
           .orElseFail(RuntimeException(s"client '$clientId' has no mtlsAuth to issue a certificate for"))
         issued <- issue(clientId, auth)
-        _ <- clients.updateClient(update(clientId, issued.certificate))
-        now <- Clock.instant
-        _ <- issuances.upsert(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
-        _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
+        // An operator may have replaced the certificate while the CA was answering: look again,
+        // and never recreate the record afterwards (`replace` updates only an existing one).
+        // What is left is the instant between this check and the update, which no store here
+        // can close without a transaction across the two tables.
+        stillManaged <- issuances.find(clientId).map(_.isDefined)
+        _ <- if !stillManaged then
+          ZIO.logInfo(s"client '$clientId' is no longer managed by central, discarding the certificate just issued")
+        else
+          for
+            _ <- clients.updateClient(update(clientId, issued.certificate))
+            now <- Clock.instant
+            _ <- issuances.replace(ClientCertificateIssuance(clientId, issued.serial, issued.notAfter, now))
+            _ <- ZIO.logInfo(s"issued certificate ${issued.serial} to client '$clientId', valid until ${issued.notAfter}")
+          yield ()
       yield ()
 
     private def issue(clientId: ClientId, auth: MutualTlsAuth): IO[InvalidRegistrationConfiguration | Throwable, Issued] =

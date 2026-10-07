@@ -92,6 +92,15 @@ object PostgresClientCertificateIssuanceRepositorySpec extends PostgresSpec:
         found <- repository.find(clientId)
       yield assertTrue(found.isEmpty)
     },
+    test("replace updates an existing issuance and never creates one") {
+      for
+        (_, _, repository) <- setup
+        missing <- repository.replace(ClientCertificateIssuance(clientId, "09", t0, t0))
+        _ <- repository.upsert(ClientCertificateIssuance(clientId, "01", t0, t0))
+        replaced <- repository.replace(ClientCertificateIssuance(clientId, "02", t0.plusSeconds(60), t0))
+        found <- repository.find(clientId)
+      yield assertTrue(!missing, replaced, found.map(_.serial) == Some("02"))
+    },
     test("deleting the client removes its issuance") {
       for
         (_, clients, repository) <- setup

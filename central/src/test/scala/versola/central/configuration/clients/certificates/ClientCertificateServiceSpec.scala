@@ -57,6 +57,8 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private class Issuances extends ClientCertificateIssuanceRepository:
     var rows: Map[ClientId, ClientCertificateIssuance] = Map.empty
     def upsert(issuance: ClientCertificateIssuance) = ZIO.succeed { rows += issuance.clientId -> issuance }
+    def replace(issuance: ClientCertificateIssuance) =
+      ZIO.succeed(rows.contains(issuance.clientId) && { rows += issuance.clientId -> issuance; true })
     def find(clientId: ClientId) = ZIO.succeed(rows.get(clientId))
     def delete(clientId: ClientId) = ZIO.succeed { rows -= clientId }
     def expiringBefore(deadline: Instant) =
@@ -277,6 +279,33 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- clients.getAllClients.succeedsWith(Vector(record))
         renewed <- service.renewDue
       yield assertTrue(renewed == 0, clients.updateClient.calls.isEmpty, issuances.rows(clientId).serial == "01")
+    },
+    test("a certificate an operator replaced while the CA was answering is not taken back") {
+      val clients = stub[OAuthClientService]
+      val issuances = Issuances()
+      // The operator's replacement lands while the CA is signing: the row is gone by the time it answers.
+      val slowCa = new ClientCertificateIssuer:
+        private val inner = FakeCa()
+        def sign(request: CertificateSigningRequest) =
+          issuances.delete(clientId) *> inner.sign(request)
+      val service = ClientCertificateService.Impl(slowCa, clients, issuances, config)
+      for
+        now <- Clock.instant
+        _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
+        _ <- clients.getAllClients.succeedsWith(Vector(record))
+        renewed <- service.renewDue
+      yield assertTrue(renewed == 1, clients.updateClient.calls.isEmpty, !issuances.rows.contains(clientId))
+    },
+    test("takes the registration back when the issuance cannot be recorded, so it can be retried") {
+      val clients = stub[OAuthClientService]
+      val failing = new Issuances:
+        override def upsert(issuance: ClientCertificateIssuance) = ZIO.fail(RuntimeException("db down"))
+      val service = ClientCertificateService.Impl(FakeCa(), clients, failing, config)
+      for
+        _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+        _ <- clients.deleteClient.succeedsWith(())
+        exit <- service.register(createRequest).exit.fork.flatMap(fiber => TestClock.adjust(5.seconds) *> fiber.join)
+      yield assertTrue(exit.isFailure, clients.deleteClient.calls == List(clientId))
     },
     test("renew reports a client central does not manage") {
       val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), config)
