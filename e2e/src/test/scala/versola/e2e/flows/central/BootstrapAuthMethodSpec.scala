@@ -23,13 +23,17 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
 
   /** Starts central on `override` appended to the running one's configuration, and answers its
     * exit code and output -- `None` for a central still running when it should have stopped. */
-  private def boot(config: E2EConfig, `override`: String): Task[(Option[Int], String)] =
+  private def boot(
+      config: E2EConfig,
+      `override`: String,
+      edit: String => String = identity,
+  ): Task[(Option[Int], String)] =
     ZIO.acquireReleaseWith(
       ZIO.attemptBlocking((Files.createTempFile("e2e-central-", ".conf").nn, Files.createTempFile("e2e-central-", ".log").nn)),
     )((conf, log) => ZIO.attemptBlocking { Files.deleteIfExists(conf); Files.deleteIfExists(log) }.ignore):
       (conf, log) =>
         ZIO.attemptBlocking:
-          Files.writeString(conf, Files.readString(Path.of(config.centralEnvConf)) + "\n" + `override` + "\n")
+          Files.writeString(conf, edit(Files.readString(Path.of(config.centralEnvConf))) + "\n" + `override` + "\n")
           val builder = ProcessBuilder(config.centralLauncher, s"-Denv.path=$conf")
             .redirectErrorStream(true)
             .redirectOutput(log.toFile)
@@ -66,7 +70,14 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
         central <- ZIO.service[CentralApi]
         config <- ZIO.service[E2EConfig]
         before <- authMethodOf(central, config.provisionerClientId)
-        (exit, output) <- boot(config, "bootstrap.utility-client.public-key-jwk = null\nbootstrap.utility-client.secret = \"e2e-bootstrap-probe\"")
+        (exit, output) <- boot(
+          config,
+          "bootstrap.utility-client.secret = \"e2e-bootstrap-probe\"",
+          // Removed from the text, not set to `null`: a `null` where an `Option[Json.Obj]` is read
+          // fails central's configuration decoding, which it then reports with an unbounded
+          // cause that exhausts the heap instead of the refusal this test expects.
+          edit = _.replaceFirst("""(?s)(utility-client \{.*?)\n\s*public-key-jwk = [^\n]*""", "$1"),
+        )
         after <- authMethodOf(central, config.provisionerClientId)
       yield assertTrue(before.contains("private_key_jwt"))
         .label("the stack must have seeded utils with its key for this to mean anything") &&
