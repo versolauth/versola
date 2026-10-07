@@ -378,5 +378,14 @@ The ports are configured via `PORT`, `DPORT`, `APORT`, and `MPORT` environment v
 as an edge-fronted native client (`applicationType = native`, `tls_client_auth`) straight on
 auth's `MPORT` listener, pinning `auth/dev/mtls/server.crt`. The client certificate edge
 presents is the `edgeClientCertificate` central syncs, and must be issued by a CA in auth's
-`mutual-tls.trusted-certificates` (`auth/dev/mtls/ca.crt` locally) -- zio-http hands auth the
-leaf only. Without the block every native endpoint answers 404.
+`mutual-tls.trusted-certificates` -- zio-http hands auth the leaf only. Without the block every
+native endpoint answers 404.
+
+A registration can ask central to issue that certificate (`issueEdgeClientCertificate`, #440)
+instead of supplying it: central signs one from its `client-certificate-authority` and registers
+the client `tls_client_auth` by its subject (`CN=<client>,OU=<tenant>,O=Versola`). The `local`
+target points that CA at the terminator's (`edge/dev/internal-tls/ca.{crt,key}`), the one issuer
+nginx advertises, and writes `auth/dev/mtls/trusted-clients.crt` -- the listener's own CA plus the
+terminator's -- as the listener's `trusted-certificates`, so one issued certificate serves an
+edge-fronted web client through nginx and a native one on `MPORT`. Without a
+`client-certificate-authority`, central refuses such a registration.

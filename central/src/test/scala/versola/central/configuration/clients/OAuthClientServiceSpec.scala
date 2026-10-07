@@ -210,6 +210,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = None,
     applicationType = None,
+    issueEdgeClientCertificate = false,
   )
 
   /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is
@@ -348,7 +349,16 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       redirectUris = Set(RedirectUri("https://app.example.com/callback")),
     )
 
-  class Env(initial: Vector[OAuthClientRecord] = Vector.empty, envName: EnvName = EnvName.Prod):
+  private val clientCa = TestCertificates.generate(subject = "CN=Versola Test Client CA", ca = true)
+
+  private val testCertificateAuthority =
+    ClientCertificateAuthority.fromPem(clientCa.certificatePem, clientCa.privateKeyPem, 30, Instant.now()).toOption.get
+
+  class Env(
+      initial: Vector[OAuthClientRecord] = Vector.empty,
+      envName: EnvName = EnvName.Prod,
+      certificateAuthority: ClientCertificateAuthority = testCertificateAuthority,
+  ):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(initial)))
     val repository = stub[OAuthClientRepository]
     val tenantRepository = stub[TenantRepository]
@@ -357,7 +367,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
     val config = TestCentralConfig.config
-    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, config, envName)
+    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, certificateAuthority, config, envName)
 
     // Every test not about the security profile registers under a `standard` tenant, so what
     // it asserts is not decided by a profile it never mentions.
@@ -1727,6 +1737,109 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // cnf carries only the device's jkt, never edge's certificate thumbprint.
         !created.bindsAccessTokens,
         lookups == 0,
+      )
+    },
+    // #440: the certificate edge presents, issued by central rather than supplied.
+    test("registerClient issues the edge's certificate from central's CA and registers the client by its subject") {
+      val env = new Env()
+      val request = edgeFrontedNativeRequest(TestCertificates.generate(subject = "CN=unused"))
+        .copy(mtlsAuth = None, edgeClientCertificate = None, issueEdgeClientCertificate = true)
+
+      for
+        _ <- env.terminatesNoMtls
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        result <- env.service.registerClient(request)
+        created = env.repository.createClient.calls.head
+        encrypted = env.securityService.encryptAes256.calls.map((plain, _) => String(plain, java.nio.charset.StandardCharsets.UTF_8))
+        material = encrypted.flatMap(PrivateClientCertificate(_).material.toOption).headOption
+      yield assertTrue(
+        created.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(
+          MutualTlsSubjectType.subject_dn,
+          s"CN=$clientId,OU=$tenantId,O=Versola",
+        )),
+        created.edgeClientCertificate.isDefined,
+        created.isEdgeFrontedNative,
+        // Nothing about the certificate comes back to the caller.
+        result.secret.isEmpty,
+        result.privateKey.isEmpty,
+      ) && assertTrue(
+        material.exists(_.subjectDn == s"CN=$clientId,OU=$tenantId,O=Versola"),
+        material.exists(_.leaf.getIssuerX500Principal == clientCa.certificate.getSubjectX500Principal),
+        material.exists(m => scala.util.Try(m.leaf.verify(clientCa.certificate.getPublicKey)).isSuccess),
+      ).label("the certificate stored for edge is the one issued, signed by the CA")
+    },
+    test("registerClient issues the certificate of an edge-fronted web client too") {
+      val env = new Env()
+
+      for
+        _ <- env.terminatesMtls
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
+          issueEdgeClientCertificate = true,
+        ))
+        created = env.repository.createClient.calls.head
+      yield assertTrue(
+        created.mtlsAuth == Some(MutualTlsAuth.TlsClientAuth(
+          MutualTlsSubjectType.subject_dn,
+          s"CN=$clientId,OU=$tenantId,O=Versola",
+        )),
+        created.edgeClientCertificate.isDefined,
+        created.applicationType == ApplicationType.web,
+      )
+    },
+    test("registerClient refuses to issue a certificate when central has no CA") {
+      val env = new Env(certificateAuthority = ClientCertificateAuthority.Unconfigured)
+
+      for
+        result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
+          issueEdgeClientCertificate = true,
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("client-certificate-authority")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient refuses to issue a certificate once central's CA has expired") {
+      val expiredAt = Instant.parse("2026-01-01T00:00:00Z")
+      val expired = new ClientCertificateAuthority:
+        override def issue(tenantId: TenantId, clientId: ClientId) =
+          ZIO.fail(ClientCertificateAuthority.Expired(expiredAt))
+      val env = new Env(certificateAuthority = expired)
+
+      for
+        result <- env.service.registerClient(createRequest.copy(
+          authMethod = AuthMethod.tls_client_auth,
+          issueEdgeClientCertificate = true,
+        )).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains(s"expired at $expiredAt")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("registerClient refuses to issue a certificate beside a supplied one, before issuing") {
+      val env = new Env()
+      val certificate = TestCertificates.generate(subject = "CN=native-app")
+
+      for
+        result <- env.service.registerClient(
+          edgeFrontedNativeRequest(certificate).copy(mtlsAuth = None, issueEdgeClientCertificate = true),
+        ).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("cannot be combined with edgeClientCertificate")
+          case _ => false,
+        createCalls == 0,
       )
     },
     test("registerClient refuses an edge-fronted native client that does not require PAR") {

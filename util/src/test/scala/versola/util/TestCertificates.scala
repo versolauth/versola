@@ -1,6 +1,6 @@
 package versola.util
 
-import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames}
+import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames, KeyUsage}
 import org.bouncycastle.x509.X509V3CertificateGenerator
 
 import java.math.BigInteger
@@ -52,6 +52,8 @@ object TestCertificates:
     * @param issuer signs the certificate with that authority's key instead of the subject's
     *               own, which is what a TLS stack validating a chain needs -- a self-signed
     *               leaf is trusted by nothing, so a handshake spec cannot be written with one.
+    * @param keyUsage RFC 5280 §4.2.1.3 `KeyUsage` bits (BouncyCastle's `KeyUsage` constants),
+    *                 critical; omitted when `None`.
     */
   def generate(
       subject: String = "CN=edge-mtls-client,O=Versola,C=KZ",
@@ -59,6 +61,7 @@ object TestCertificates:
       algorithm: String = "RSA",
       ca: Boolean = false,
       issuer: Option[Generated] = None,
+      keyUsage: Option[Int] = None,
   ): Generated =
     val keyPair = keys(algorithm)
     val generator = X509V3CertificateGenerator()
@@ -82,6 +85,7 @@ object TestCertificates:
         GeneralNames(GeneralName(GeneralName.dNSName, name)),
       )
     if ca then generator.addExtension(Extension.basicConstraints.nn, true, BasicConstraints(true))
+    keyUsage.foreach(bits => generator.addExtension(Extension.keyUsage.nn, true, KeyUsage(bits)))
     Generated(generator.generate(signingKey).nn, keyPair.getPrivate.nn)
 
   private def keys(algorithm: String): KeyPair =

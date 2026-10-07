@@ -92,14 +92,14 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & CentralConfig & EnvName, Throwable, OAuthClientService] =
+  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName, Throwable, OAuthClientService] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )
       ) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -144,6 +144,7 @@ object OAuthClientService:
       challengeSettingsService: ChallengeSettingsService,
       secureRandom: SecureRandom,
       securityService: SecurityService,
+      certificateAuthority: ClientCertificateAuthority,
       config: CentralConfig,
       envName: EnvName,
   ) extends OAuthClientService:
@@ -193,6 +194,39 @@ object OAuthClientService:
         request: CreateClientRequest,
         presetSecret: Option[Secret] = None,
         enforceSecurityProfile: Boolean = true,
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
+      for
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateIssuedEdgeClientCertificate(
+          request.id,
+          request.issueEdgeClientCertificate,
+          request.authMethod,
+          request.mtlsAuth,
+          request.edgeClientCertificate,
+        ))(ZIO.fail(_))
+        // Issued first and then registered as if supplied, so the client is held to exactly the
+        // rules one carrying its own certificate is.
+        issued <- ZIO.when(request.issueEdgeClientCertificate):
+          certificateAuthority.issue(request.tenantId, request.id)
+            .catchSome { case ClientCertificateAuthority.Expired(at) =>
+              ZIO.fail(InvalidRegistrationConfiguration.clientCertificateAuthorityExpired(request.id, at))
+            }
+            .someOrFail(InvalidRegistrationConfiguration.noClientCertificateAuthority(request.id))
+        registered <- register(
+          issued.fold(request)(certificate =>
+            request.copy(
+              mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn)),
+              edgeClientCertificate = Some(certificate.certificate),
+            ),
+          ),
+          presetSecret,
+          enforceSecurityProfile,
+        )
+      yield registered
+
+    private def register(
+        request: CreateClientRequest,
+        presetSecret: Option[Secret],
+        enforceSecurityProfile: Boolean,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
       for
         _ <- validateConsentUris(

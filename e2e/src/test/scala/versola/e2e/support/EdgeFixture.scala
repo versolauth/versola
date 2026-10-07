@@ -103,6 +103,13 @@ object EdgeFixture:
         * registered: a native app is served by the native endpoints, never by `/login`. Mutually
         * exclusive with `privateKeyJwt` and `mutualTls`. */
       nativeApp: Boolean = false,
+      /** #440: central issues the certificate edge presents, from its own CA, rather than the
+        * fixture supplying one -- `tls_client_auth` by the issued certificate's subject. Alone,
+        * a web client edge authenticates through the TLS terminator; with `nativeApp`, the
+        * native one it authenticates on auth's own listener. The fixture never sees the
+        * certificate, so [[EdgeFixture.certificate]] is empty. Mutually exclusive with
+        * `privateKeyJwt` and `mutualTls`. */
+      issuedCertificate: Boolean = false,
   )
 
   def layer(config: Config): ZLayer[OAuthClient & CentralApi & EdgeApi, Throwable, EdgeFixture] =
@@ -129,7 +136,9 @@ object EdgeFixture:
       signer <- ZIO.when(config.privateKeyJwt)(AssertionSigner.make)
       certificate <- ZIO.when(config.mutualTls)(EdgeCertificate.make())
       nativeCommonName = s"e2e-native-${clientId.takeRight(12)}"
-      nativeCertificate <- ZIO.when(config.nativeApp)(EdgeCertificate.forAuthListener(nativeCommonName))
+      nativeCertificate <- ZIO.when(config.nativeApp && !config.issuedCertificate)(
+        EdgeCertificate.forAuthListener(nativeCommonName),
+      )
 
       // Central refuses to register an mtlsAuth client until the tenant names a header for
       // it (`ClientController`'s own check) -- and `EdgeSpec`'s bootstrap, unlike
@@ -137,7 +146,7 @@ object EdgeFixture:
       // the exact one `Flows.layer` uses, not this fixture's own choice: this call
       // overwrites every field, and a spec run after `Flows.layer` has already configured
       // the tenant must not clear it out from under specs that share this same backend.
-      _ <- ZIO.when(config.mutualTls)(
+      _ <- ZIO.when(config.mutualTls || (config.issuedCertificate && !config.nativeApp))(
         auth.upsertChallengeSettings(
           acrVocabulary = Map(
             Acr.OtpLevel -> List("otp"),
@@ -160,10 +169,11 @@ object EdgeFixture:
         authMethod =
           if config.privateKeyJwt then "private_key_jwt"
           else if config.mutualTls then "self_signed_tls_client_auth"
-          else if config.nativeApp then "tls_client_auth"
+          else if config.nativeApp || config.issuedCertificate then "tls_client_auth"
           else "client_secret",
         mtlsAuth =
           if config.mutualTls then Some(Fixtures.selfSignedTlsClientAuth)
+          else if config.issuedCertificate then None
           else if config.nativeApp then Some(Fixtures.mutualTlsAuth("subject_dn", s"CN=$nativeCommonName"))
           else None,
         jwks = signer.map(_.jwks).orElse(certificate.map(_.jwks)),
@@ -173,6 +183,7 @@ object EdgeFixture:
         requirePushedAuthorizationRequests = config.requirePushedAuthorizationRequests || config.nativeApp,
         dpopBoundAccessTokens = config.nativeApp,
         applicationType = Option.when(config.nativeApp)("native"),
+        issueEdgeClientCertificate = config.issuedCertificate,
       ).success
 
       userId <- auth.registerUser(login = Some(login))
