@@ -52,14 +52,14 @@ object ClientCertificateIssuer:
       for
         config <- ZIO.service[CentralConfig]
         client <- ZIO.service[Client]
-        issuer <- (config.clientCertificates, config.clientCertificateAuthority) match
+        issuer <- (config.certificateBackends, config.clientCertificateAuthority) match
           case (Some(settings), _) =>
             (settings.stepCa, settings.certManager) match
               case (Some(stepCa), None) => StepCaIssuer.make(stepCa, client)
               case (None, Some(certManager)) => CertManagerIssuer.make(certManager, client)
               case _ =>
                 ZIO.fail(IllegalArgumentException(
-                  "`client-certificates` must name exactly one of `step-ca` and `cert-manager`",
+                  "`client-certificates` names both `step-ca` and `cert-manager`; it must name exactly one",
                 ))
           // The earlier setting: central holds the CA's own key. Kept for a deployment that has it.
           case (None, Some(authority)) => LocalCaIssuer.make(authority)

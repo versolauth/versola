@@ -25,7 +25,12 @@ case class CentralConfig(
     /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
       * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
     clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
-)
+):
+  /** `client-certificates` only where it names a CA. A config with no such block still decodes to
+    * `Some(defaults)` -- every field has a default, so an absent block parses -- and must read as
+    * absent, not as a block with no backend. */
+  def certificateBackends: Option[CentralConfig.ClientCertificatesConfig] =
+    clientCertificates.filter(settings => settings.stepCa.isDefined || settings.certManager.isDefined)
 
 object CentralConfig:
   val centralClientId: ClientId = ClientId("central-admin")

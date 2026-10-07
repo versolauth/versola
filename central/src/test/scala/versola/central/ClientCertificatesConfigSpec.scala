@@ -58,4 +58,13 @@ object ClientCertificatesConfigSpec extends ZIOSpecDefault:
         config.stepCa.isEmpty,
       )
     },
+    // The `local` stack's central.conf has no such block. Every field has a default, so the optional
+    // field decodes to `Some(defaults)` -- which must read as "not configured", or central cannot
+    // start (it did not, in CI).
+    test("a config without the block decodes to a config with no backend") {
+      val optional = deriveConfig[Option[CentralConfig.ClientCertificatesConfig]].nested("client-certificates")
+      for decoded <- TypesafeConfigProvider.fromHoconString("""other = 1""").kebabCase.load(optional)
+      yield assertTrue(decoded.forall(settings => settings.stepCa.isEmpty && settings.certManager.isEmpty))
+        && assertTrue(TestCentralConfig.config.copy(clientCertificates = decoded).certificateBackends.isEmpty)
+    },
   )

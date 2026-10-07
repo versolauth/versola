@@ -54,7 +54,7 @@ object ClientCertificateService:
     /** `client-certificates`, or -- for a deployment that only has the earlier
       * `client-certificate-authority` -- its own validity with the renewal defaults. */
     private val settings: CentralConfig.ClientCertificatesConfig =
-      config.clientCertificates.getOrElse:
+      config.certificateBackends.getOrElse:
         val defaults = CentralConfig.ClientCertificatesConfig()
         config.clientCertificateAuthority.fold(defaults): authority =>
           defaults.copy(validity = Duration.fromSeconds(
@@ -201,7 +201,7 @@ object ClientCertificateService:
       for
         config <- ZIO.service[CentralConfig]
         service <- ZIO.service[ClientCertificateService]
-        settings = config.clientCertificates.orElse(
+        settings = config.certificateBackends.orElse(
           config.clientCertificateAuthority.map(_ => CentralConfig.ClientCertificatesConfig()),
         )
         _ <- ZIO.foreachDiscard(settings): settings =>
