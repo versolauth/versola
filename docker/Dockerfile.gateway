@@ -20,6 +20,6 @@
 # Stock nginx already does `try_files $uri $uri/ =404` and serves
 # index.html for directory requests by default -- no custom nginx.conf
 # needed in this image itself, only the files.
-FROM nginx:1.27-alpine
+FROM nginx:1.31-alpine
 
 COPY central-ui/dist /usr/share/nginx/html/central/admin
