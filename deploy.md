@@ -319,6 +319,11 @@ server {
 
     client_max_body_size 8m;
 
+    # #473: the one security header only the TLS terminator can set. The services and
+    # versola-proxy send the rest (nosniff, Referrer-Policy, frame-ancestors/X-Frame-Options on
+    # HTML), and pass them through untouched.
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+
     location / {
         proxy_pass http://127.0.0.1:2821;
         proxy_http_version 1.1;
@@ -338,6 +343,10 @@ server {
 - `X-Forwarded-For $proxy_add_x_forwarded_for` — `versola-proxy` trusts it only from `127.0.0.1`
   and restores the real client address from it; `auth` uses that address for rate limiting.
 - `X-Forwarded-Proto $scheme` — the scheme the browser used; standard for a TLS-terminating proxy (the services themselves take the scheme from configuration).
+- `Strict-Transport-Security` — set here, not by the services: `versola-proxy` overwrites
+  `X-Forwarded-Proto` with its own (plain http) scheme, so the services cannot tell a request came
+  in over https and send HSTS only on a direct https connection (the mutual-TLS listener).
+  `includeSubDomains` assumes every host under the domain is https-only; drop it if not.
 - `client_max_body_size 8m` — the host nginx must allow the same body size as `versola-proxy`
   (themes, JWKS and resource definitions are POSTed through the console).
 

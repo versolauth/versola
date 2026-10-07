@@ -218,7 +218,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
             for
               port <- Server.install {
                 Observability.handleErrors(routes) @@
-                  Observability.middleware
+                  Observability.middleware @@
+                  SecurityHeaders.middleware
               }
               _ <- ready.succeed(port)
               _ <- ZIO.never
@@ -249,7 +250,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
             for
               port <- Server.install {
                 Observability.handleErrors(routes) @@
-                  Observability.middleware
+                  Observability.middleware @@
+                  SecurityHeaders.middleware
               }
               _ <- ready.succeed(port)
               _ <- ZIO.never
@@ -276,7 +278,8 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
           port <- Server.install {
             Observability.handleErrors(routes) @@
-              Observability.middleware
+              Observability.middleware @@
+              SecurityHeaders.middleware
           }
           _ <- ZIO.logInfo(s"Application server is started and ready to use on $port")
           // Warmup.run's fiber can still be running past its own budget -- that is the point,
