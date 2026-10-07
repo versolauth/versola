@@ -107,6 +107,9 @@ object Fixtures:
         "requireSignedRequestObject" -> Json.Bool(requireSignedRequestObject),
         "requirePushedAuthorizationRequests" -> Json.Bool(requirePushedAuthorizationRequests),
         "dpopSigningAlgs" -> strings(dpopSigningAlgs),
+        // Mandatory on `CreateClientRequest` too: this fixture registers clients that carry
+        // their own certificate or none, never one central issues.
+        "issueEdgeClientCertificate" -> Json.Bool(false),
       ) ++ Chunk.fromIterable(
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
