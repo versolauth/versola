@@ -22,6 +22,9 @@ case class CentralConfig(
       * registration is refused, and edge-fronted mTLS clients need an operator-supplied
       * certificate as before. */
     clientCertificateAuthority: Option[CentralConfig.ClientCertificateAuthorityConfig] = None,
+    /** #440: how central issues and renews edge-fronted clients' certificates. Absent leaves
+      * issuance to the operator, who supplies `edgeClientCertificate` PEMs as before. */
+    clientCertificates: Option[CentralConfig.ClientCertificatesConfig] = None,
 )
 
 object CentralConfig:
@@ -41,6 +44,54 @@ object CentralConfig:
       certificate: String,
       privateKey: String,
       validityDays: Option[Int],
+  )
+
+  /** Exactly one of [[stepCa]] and [[certManager]] names the CA that signs; central holds no
+    * CA key itself (#440). Certificates are short-lived and renewed by central before they
+    * expire, so revocation is expiry.
+    *
+    * @param validity lifetime requested for each certificate.
+    * @param renewBefore a certificate with less than this left is renewed.
+    * @param checkInterval how often stored certificates are examined for renewal.
+    */
+  case class ClientCertificatesConfig(
+      validity: Duration = Duration.fromSeconds(14 * 24 * 3600L),
+      renewBefore: Duration = Duration.fromSeconds(4 * 24 * 3600L),
+      checkInterval: Duration = Duration.fromSeconds(3600),
+      stepCa: Option[StepCaConfig] = None,
+      certManager: Option[CertManagerConfig] = None,
+  )
+
+  /** step-ca's `/1.0/sign` with a one-time token from a JWK provisioner.
+    *
+    * @param url the CA's address.
+    * @param rootCertificate PEM path of the CA's root, which the connection is validated against
+    *   and whose fingerprint the token names.
+    * @param provisioner the JWK provisioner's name.
+    * @param provisionerKey path of the provisioner's private key, a JSON Web Key (unencrypted).
+    */
+  case class StepCaConfig(
+      url: URL,
+      rootCertificate: String,
+      provisioner: String,
+      provisionerKey: String,
+  )
+
+  /** cert-manager's `CertificateRequest`, created through the Kubernetes API with the pod's own
+    * service account.
+    *
+    * @param issuerName the (Cluster)Issuer that signs.
+    * @param namespace where requests are created; absent reads the pod's own namespace.
+    */
+  case class CertManagerConfig(
+      issuerName: String,
+      issuerKind: String = "ClusterIssuer",
+      issuerGroup: String = "cert-manager.io",
+      namespace: Option[String] = None,
+      apiUrl: String = "https://kubernetes.default.svc",
+      tokenPath: String = "/var/run/secrets/kubernetes.io/serviceaccount/token",
+      caPath: String = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt",
+      namespacePath: String = "/var/run/secrets/kubernetes.io/serviceaccount/namespace",
   )
 
   case class PasskeyConfig(

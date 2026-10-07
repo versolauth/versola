@@ -683,7 +683,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
         "  }\n"
     else ""
   val edgeInternalTrustLine =
-    edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = "$path"\n""")
+    edgeInternalTrustPath.fold("")(path => s"""versola-internal-trusted-certificates = ["$path"]\n""")
   // #440: the CA central issues edge client certificates from, for a registration that asks for
   // one. The terminator's own, for the reason central-admin's certificate is signed by it: it is
   // the one issuer nginx advertises, so the only one edge will present a certificate from. Auth's
@@ -711,6 +711,18 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // docker-local/vps/interactive are left exactly as before -- absent, no listener -- until
   // whoever operates one decides what certificate it should present. e2e's own client
   // certificate is signed by the same CA and generated alongside it below.
+  // Everywhere but `local`: where the listener's files are mounted, and the address edge reaches
+  // it on -- auth's own host (authInternalUrl's) on the mutual-TLS port. docker-local/vps get the
+  // files from the bundle's `mtls-init` service (a shared volume at /app/mtls); k8s from the
+  // chart's `pki` block, which mounts a cert-manager Secret per purpose.
+  val mtlsServerCertificate = if isKubernetes then "/app/mtls/server/tls.crt" else "/app/mtls/server.crt"
+  val mtlsServerKey = if isKubernetes then "/app/mtls/server/tls.key" else "/app/mtls/server.key"
+  val mtlsTrustedCertificates = if isKubernetes then "/app/mtls/trust/ca.crt" else "/app/mtls/ca.crt"
+  val mtlsAuthPin = if isKubernetes then "/app/mtls/auth-pin/tls.crt" else "/app/mtls/server.crt"
+  // vps: authInternalUrl is the public domain there, which nothing proxies to this port -- edge
+  // is on the same host and reaches the listener (bound to BIND_HOST) on loopback.
+  val mtlsExternalUrl =
+    if isVps then "https://127.0.0.1:8083" else s"https://${URI.create(authInternalUrl).getHost}:8083"
   val authMutualTlsDir = File("auth/dev/mtls")
   val authMutualTlsPort = 9008
   val authMutualTlsUrl = s"https://localhost:$authMutualTlsPort"
@@ -728,7 +740,18 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
          |  external-url           = "$authMutualTlsUrl"
          |}
          |""".stripMargin
-    else ""
+    else
+      s"""
+         |# RFC 8705 §5's listener (MPORT, #440). The files are put there by whatever issues them:
+         |# the `mtls-init` service in the compose bundle (step-ca), or the chart's `pki` block
+         |# (cert-manager) -- see develop.md "Certificate storage and rotation".
+         |mutual-tls {
+         |  certificate            = "$mtlsServerCertificate"
+         |  private-key            = "$mtlsServerKey"
+         |  trusted-certificates   = "$mtlsTrustedCertificates"
+         |  external-url           = "$mtlsExternalUrl"
+         |}
+         |""".stripMargin
 
   // #420: edge's native-app back channel, straight to the listener above -- no terminator in
   // between. `trusted-certificates` pins the listener's own server certificate (a leaf, which
@@ -738,11 +761,20 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
       s"""
          |native {
          |  auth-mutual-tls-url   = "$authMutualTlsUrl"
-         |  trusted-certificates  = "${File(authMutualTlsDir, "server.crt").getAbsolutePath}"
+         |  trusted-certificates  = ["${File(authMutualTlsDir, "server.crt").getAbsolutePath}"]
          |  blob-key              = "$edgeNativeBlobKey"
          |}
          |""".stripMargin
-    else ""
+    else
+      s"""
+         |# #420/#440: edge's native-app back channel, straight to auth's mutual-TLS listener. The
+         |# pin is a list so auth's listener certificate can be rotated with an overlap window.
+         |native {
+         |  auth-mutual-tls-url   = "$mtlsExternalUrl"
+         |  trusted-certificates  = ["$mtlsAuthPin"]
+         |  blob-key              = "$edgeNativeBlobKey"
+         |}
+         |""".stripMargin
 
   // centralUrl IS a real network call from both auth and edge, so it needs
   // the same treatment.
@@ -1081,13 +1113,52 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}
        |""".stripMargin
 
+  // #440: central issues and renews edge-fronted clients' certificates through a CA it holds no
+  // key of. docker-local/vps: step-ca, through the provisioner key and root `mtls-init` copies
+  // into central's volume (compose.fragment*.yml.template). k8s: cert-manager, through the
+  // chart's issuer (the chart sets CLIENT_CERT_ISSUER_NAME). `local` has no CA and issues nothing.
+  val clientCertificatesBlock =
+    if isLocal then ""
+    else if isKubernetes then
+      """
+        |# Certificates for edge-fronted clients (#440), issued through cert-manager with the pod's
+        |# own service account. The chart sets CLIENT_CERT_ISSUER_NAME to its client CA issuer.
+        |client-certificates {
+        |  validity     = "14 days"
+        |  renew-before = "4 days"
+        |  cert-manager {
+        |    issuer-name  = ${CLIENT_CERT_ISSUER_NAME}
+        |    issuer-kind  = ${?CLIENT_CERT_ISSUER_KIND}
+        |    issuer-group = ${?CLIENT_CERT_ISSUER_GROUP}
+        |  }
+        |}
+        |""".stripMargin
+    else
+      val stepCaUrl = if isVps then "https://127.0.0.1:9000" else "https://step-ca:9000"
+      s"""
+         |# Certificates for edge-fronted clients (#440): central generates the key and the request,
+         |# step-ca signs it through the `central` JWK provisioner, and central renews the
+         |# certificate before it expires. Only the provisioner key is central's -- the CA's own
+         |# keys stay in step-ca.
+         |client-certificates {
+         |  validity     = "14 days"
+         |  renew-before = "4 days"
+         |  step-ca {
+         |    url             = "$stepCaUrl"
+         |    root-certificate = "/app/ca/root_ca.crt"
+         |    provisioner     = "central"
+         |    provisioner-key = "/app/ca/provisioner.json"
+         |  }
+         |}
+         |""".stripMargin
+
   val centralConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
        |
        |# otel-exporter = "http://localhost:4317"
-       |
+       |$clientCertificatesBlock
        |bootstrap {
        |  login = "$bootstrapLogin"
        |  admin-user-id = "$adminUserId"

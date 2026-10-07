@@ -62,6 +62,11 @@ object Dependencies {
     "com.yubico" % "webauthn-server-attestation" % Versions.webauthn,
   )
 
+  // PKCS#10 requests for client certificates central has a CA sign (#440).
+  val certificates = Seq(
+    "org.bouncycastle" % "bcpkix-jdk18on" % Versions.bouncyCastle,
+  )
+
   val http = Seq(
     "dev.zio" %% "zio-http" % Versions.zioHttp,
     "dev.zio" %% "zio-http-testkit" % Versions.zioHttp % Test,

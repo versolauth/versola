@@ -157,7 +157,9 @@ object SSOClient:
       * the only untrusted option zio-http offers is one that authenticates no server at all.
       */
     private val internalTrust: Option[ClientSSLConfig] =
-      config.versolaInternalTrustedCertificates.map(ClientSSLConfig.FromCertFile.apply)
+      Option.when(config.versolaInternalTrustedCertificates.nonEmpty)(
+        EdgeConfig.pinnedTrust(config.versolaInternalTrustedCertificates),
+      )
 
     override def authorizeUri(
         preset: AuthorizationPreset,

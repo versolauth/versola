@@ -104,7 +104,7 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
     configurationCacheRefreshInterval = 5.minutes,
     native = Some(EdgeConfig.Native(
       authMutualTlsUrl = URL.decode(s"https://localhost:${listening.port}").toOption.get,
-      trustedCertificates = listening.serverPin.toString,
+      trustedCertificates = Set(listening.serverPin.toString),
       blobKey = Secret.Bytes32(Array.fill(32)(7.toByte)),
     )),
   )
@@ -149,6 +149,22 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
         result <- authClient.par("mobile-app", material(client), Form(FormField.simpleField("scope", "openid"))).either
         seen <- listening.seen.get
       yield assertTrue(result.isLeft, seen.isEmpty)
+    },
+    // The rotation window: the outgoing pin and the incoming one are both published, and auth
+    // may be presenting either. A peer matching any entry is accepted.
+    test("accepts the listener when its certificate is any one of several pins") {
+      for
+        listening <- ZIO.service[Listener]
+        paths <- ZIO.service[(Path, Path, Path, Path)]
+        httpClient <- ZIO.service[Client]
+        certificateFiles <- ZIO.service[ClientCertificateFiles]
+        otherPin <- write(paths._4.getParent, "other-rotated.crt", TestCertificates.generate(subject = "CN=outgoing").certificatePem)
+        config = edgeConfig(listening).copy(native = edgeConfig(listening).native.map(native =>
+          native.copy(trustedCertificates = Set(otherPin.toString, listening.serverPin.toString)),
+        ))
+        authClient = NativeAuthClient.Impl(httpClient, config, certificateFiles)
+        relayed <- authClient.par("mobile-app", material(client), Form(FormField.simpleField("scope", "openid")))
+      yield assertTrue(relayed.status == Status.BadRequest)
     },
   ).provideSome[Scope](
     files,
