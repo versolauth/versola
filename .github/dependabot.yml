@@ -1,12 +1,17 @@
 # Dependency and base-image updates (#465). sbt has no Dependabot ecosystem, so the Scala
 # dependencies in project/Dependencies.scala are covered by the scanning pipeline (#470)
 # until Renovate or an sbt-dependency-submission step is adopted.
+#
+# One grouped PR per ecosystem per week, and no automatic major-version bumps: a major is a
+# migration (TypeScript 5 -> 7, vitest 4 -> 5) that someone schedules, not a weekly chore.
+# Security updates are separate from this file and still arrive for every version.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
     groups:
       actions:
         patterns: ["*"]
@@ -14,17 +19,29 @@ updates:
     directory: /docker
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      base-images:
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
-        update-types: ["minor", "patch"]
+        patterns: ["*"]
   - package-ecosystem: npm
     directory: /central-ui
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       npm:
-        update-types: ["minor", "patch"]
+        patterns: ["*"]
