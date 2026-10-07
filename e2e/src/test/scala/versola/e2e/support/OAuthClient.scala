@@ -1793,5 +1793,5 @@ object OAuthClient:
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
       applicationType: Option[String] = None,
-      issueEdgeClientCertificate: Boolean = false,
+      issueEdgeClientCertificate: Boolean,
   ) derives JsonEncoder

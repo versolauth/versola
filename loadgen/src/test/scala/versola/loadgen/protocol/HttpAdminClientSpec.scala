@@ -102,12 +102,15 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           state <- fake.snapshot
           create = state.clients(webClient.clientId).spec
           update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+          posted = parse(state.callsTo(Method.POST, "/configuration/clients").head.body)
         yield assertTrue(
           bool(create, "certificateBoundAccessTokens").contains(false),
           field(create, "dpopSigningAlgs").contains(Json.Arr()),
           bool(create, "dpopBoundAccessTokens").contains(false),
           bool(create, "requireSignedRequestObject").contains(false),
           bool(create, "requirePushedAuthorizationRequests").contains(false),
+          // Create-only: the update DTO has no such member, so it is read from the POST itself.
+          bool(posted, "issueEdgeClientCertificate").contains(false),
           str(create, "applicationType") == "web",
           // Written on the update too, so a client left bound by a previous configuration is
           // converged rather than left holding a setting the campaign cannot satisfy.

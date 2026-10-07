@@ -467,7 +467,7 @@ case class CreateClientRequest(
       * (`ClientCertificateAuthority`), instead of [[edgeClientCertificate]] supplying one. The
       * client is registered `tls_client_auth` by that certificate's subject, so [[mtlsAuth]] is
       * left out too. The certificate reaches the edge alone: nothing hands it back here. */
-    issueEdgeClientCertificate: Boolean = false,
+    issueEdgeClientCertificate: Boolean,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */

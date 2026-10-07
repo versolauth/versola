@@ -377,6 +377,7 @@ object FakeCentral:
       "dpopBoundAccessTokens",
       "requireSignedRequestObject",
       "requirePushedAuthorizationRequests",
+      "issueEdgeClientCertificate",
     ),
     (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
     (Method.POST, "/configuration/resources") -> Set(
