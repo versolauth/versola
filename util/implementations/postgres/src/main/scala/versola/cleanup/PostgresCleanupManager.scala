@@ -56,9 +56,12 @@ object PostgresCleanupManager:
           config <- ZIO.service[CleanupConfig]
           fibers <- Ref.make(List.empty[Fiber.Runtime[Throwable, Long]])
           cleanupManager = PostgresCleanupManager(xa, config, fibers)
-          _ <- cleanupManager.start()
         yield cleanupManager
       )(_.stop())
+        // Outside `acquire` on purpose: acquire runs uninterruptibly, and fibers forked there
+        // inherit that, so `stop()`'s `fiber.interrupt` would wait for them forever (every
+        // shutdown then ran into the 15 s `gracefulShutdownTimeout`).
+        .tap(_.start())
 
   private def cleanupConfig: ZLayer[ConfigProvider, Config.Error, CleanupConfig] =
     ZLayer.fromZIO:
