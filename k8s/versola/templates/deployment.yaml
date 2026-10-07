@@ -18,9 +18,11 @@ spec:
         {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 8 }}
       {{- $secretAnn := include "versola.secretRestartAnnotations" (dict "root" $ "service" $name) | trim }}
       {{- $scrapeAnn := include "versola.scrapeAnnotations" (dict "root" $ "port" $svc.diagnosticsPort) | trim }}
-      {{- if or $secretAnn $scrapeAnn }}
+      {{- $pkiAnn := include "versola.pki.annotations" (dict "root" $ "service" $name) | trim }}
+      {{- if or $secretAnn $scrapeAnn $pkiAnn }}
       annotations:
         {{- if $secretAnn }}{{ $secretAnn | nindent 8 }}{{- end }}
+        {{- if $pkiAnn }}{{ $pkiAnn | nindent 8 }}{{- end }}
         {{- if $scrapeAnn }}{{ $scrapeAnn | nindent 8 }}{{- end }}
       {{- end }}
     spec:
@@ -46,6 +48,11 @@ spec:
       # terminationGracePeriodSeconds for why this has to cover both the
       # preStop sleep below and VersolaApp's own gracefulShutdownTimeout.
       terminationGracePeriodSeconds: {{ $.Values.terminationGracePeriodSeconds }}
+      {{- if and $.Values.pki.enabled (eq $name "central") }}
+      # Central creates cert-manager CertificateRequests with its own service account, which
+      # templates/pki.yaml gives exactly that and nothing else.
+      serviceAccountName: {{ include "versola.fullname" $ }}-central
+      {{- end }}
       containers:
         - name: {{ $name }}
           image: {{ include "versola.image" (dict "global" $.Values.global "svc" $svc "chart" $.Chart) }}
@@ -58,6 +65,10 @@ spec:
             {{- if $svc.additionalPort }}
             - name: additional
               containerPort: {{ $svc.additionalPort }}
+            {{- end }}
+            {{- if $svc.mutualTlsPort }}
+            - name: mtls
+              containerPort: {{ $svc.mutualTlsPort }}
             {{- end }}
           env:
             - name: PORT
@@ -75,6 +86,14 @@ spec:
             - name: APORT
               value: {{ $svc.additionalPort | quote }}
             {{- end }}
+            {{- if $svc.mutualTlsPort }}
+            # RFC 8705 §5's listener (VersolaApp.mutualTlsPort): auth terminates TLS
+            # itself here and demands a client certificate in the handshake. Served
+            # only when auth's env.conf carries a `mutual-tls` block -- see
+            # values.yaml's `pki` block for the files this chart mounts for it.
+            - name: MPORT
+              value: {{ $svc.mutualTlsPort | quote }}
+            {{- end }}
             # See VersolaApp.scala's bindHost comment and #207: prod's VPS
             # sets this to 127.0.0.1 because of network_mode: host, which
             # would make every pod unreachable here. Deliberately not a
@@ -87,6 +106,11 @@ spec:
             # replica stays a plain server until that lands.
             - name: RUN_MIGRATIONS
               value: "false"
+            {{- if and $.Values.pki.enabled (eq $name "central") }}
+            # Which issuer signs the certificates central issues to edge-fronted clients
+            # (central.conf's `client-certificates.cert-manager`).
+            {{- include "versola.pki.issuerEnv" $ | nindent 12 }}
+            {{- end }}
             {{- include "versola.secretEnv" (dict "root" $ "service" $name) | nindent 12 }}
             {{- with $svc.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -100,6 +124,10 @@ spec:
             - name: config
               mountPath: /app/config
               readOnly: true
+            {{- end }}
+            {{- include "versola.pki.volumeMounts" (dict "root" $ "service" $name) | nindent 12 }}
+            {{- with $svc.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
             # Where the heap dump and GC log go (docker/Dockerfile.*'s
             # JAVA_OPTS). A volume rather than the container's own filesystem
@@ -141,6 +169,10 @@ spec:
             items:
               - key: {{ $svc.config.secretKey }}
                 path: env.conf
+        {{- end }}
+        {{- include "versola.pki.volumes" (dict "root" $ "service" $name) | nindent 8 }}
+        {{- with $svc.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}
         - name: diagnostics
           emptyDir:

@@ -37,7 +37,7 @@
 # is ever rebuilt.
 
 # ── jlink stage: build a minimal custom JRE ──────────────────────────────
-FROM eclipse-temurin:25-jdk-alpine@sha256:5ecfde8e5ecde5954ea3721155b345ef56c1d579b940c761318ad4c05959a151 AS jlink
+FROM eclipse-temurin:25-jdk-alpine@sha256:3fd2d245c4e0eba615fe366a71b8bd25f5db7104f53e4026b24bf508b880bd2a AS jlink
 
 WORKDIR /work
 COPY scripts/target/universal/stage stage
@@ -82,7 +82,7 @@ RUN jdeps --multi-release 25 --recursive --ignore-missing-deps --print-module-de
       --output /opt/jre-minimal
 
 # ── runtime stage ─────────────────────────────────────────────────────────
-FROM alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
 
 ARG VERSION=dev
 ENV VERSION=${VERSION}

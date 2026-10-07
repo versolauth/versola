@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
+import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -14,13 +15,14 @@ import zio.schema.*
 import zio.prelude.These
 
 object ClientController extends Controller:
-  type Env = Tracing & OAuthClientService & ResourceService & CentralConfig & SecurityService & EdgeService
+  type Env = Tracing & OAuthClientService & ClientCertificateService & ResourceService & CentralConfig & SecurityService & EdgeService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
     getAllClientsSyncEndpoint,
     createClientEndpoint,
     updateClientEndpoint,
+    renewEdgeCertificateEndpoint,
     rotateSecretEndpoint,
     deletePreviousSecretEndpoint,
     deleteClientEndpoint,
@@ -151,11 +153,11 @@ object ClientController extends Controller:
     Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
-        service <- ZIO.service[OAuthClientService]
+        service <- ZIO.service[ClientCertificateService]
         body <- request.bodyAs[CreateClientRequest]
         _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
           ZIO.fail(InvalidClientLogoutConfiguration(body.id))
-        registered <- service.registerClient(body)
+        registered <- service.register(body)
         response = CreateClientResponse(
           registered.secret.map(Base64Url.encode),
           registered.createdAt,
@@ -185,10 +187,14 @@ object ClientController extends Controller:
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
+        certificates <- ZIO.service[ClientCertificateService]
         body <- request.bodyAs[UpdateClientRequest]
         _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
           ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
         _ <- service.updateClient(body)
+        // After the update has been accepted: an operator-supplied certificate is theirs from
+        // here on, and central stops renewing the one it issued.
+        _ <- certificates.forgetIfReplaced(body)
       yield Response.status(Status.NoContent))
         .catchAll {
           case error: InvalidClientLogoutConfiguration =>
@@ -222,6 +228,26 @@ object ClientController extends Controller:
   private def secretlessClientConflict(error: ClientHasNoSecret): Response =
     Response.text(s"Client '${error.clientId}' has no secret")
       .status(Status.Conflict)
+
+  /** #440: issues a new certificate for a client whose certificate central manages, now rather
+    * than at its renewal time -- after a CA change, say. 404 for a client central does not
+    * manage the certificate of. */
+  val renewEdgeCertificateEndpoint =
+    Method.POST / "configuration" / "clients" / "edge-certificate" / "renew" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ClientCertificateService]
+        clientId <- request.url.queryZIO[ClientId]("clientId")
+        renewed <- service.renew(clientId)
+      yield
+        if renewed then Response.status(Status.NoContent)
+        else Response.text(s"Central does not manage the certificate of client '$clientId'").status(Status.NotFound))
+        .catchAll {
+          case error: InvalidRegistrationConfiguration =>
+            ZIO.succeed(Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest))
+          case error: Throwable => ZIO.fail(error)
+        }
+    }
 
   val rotateSecretEndpoint =
     Method.POST / "configuration" / "clients" / "rotate-secret" -> handler { (request: Request) =>

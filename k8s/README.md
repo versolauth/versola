@@ -404,7 +404,70 @@ broken rather than like a configuration mistake.
 
 ---
 
-## 9. Known rough edges
+## 9. Certificates for mutual TLS
+
+On by default (`pki.enabled: true`), so **cert-manager and trust-manager have to be installed before this chart** —
+their `ClusterIssuer`/`Certificate`/`Bundle` CRDs are rendered. It wires up [cert-manager](https://cert-manager.io/)
+for the three certificate relationships described in
+[`../develop.md`](../develop.md#certificate-storage-and-rotation-440). The chart consumes
+cert-manager (and, optionally, trust-manager); it installs neither. Opt out with
+`pki.enabled: false`.
+
+Out of the box you get: auth's mutual-TLS listener on `8083` (container and Service port), the
+Versola Client CA (a `ClusterIssuer`, its Secret in cert-manager's namespace so trust-manager can
+read it), auth's listener certificate, a trust-manager `Bundle` that auth mounts as its trust
+anchors, Reloader annotations on auth and edge, and a service account for central that may create
+cert-manager `CertificateRequest`s in the release namespace — nothing else. Central uses it to
+issue and renew edge-fronted clients' certificates itself: register the client with
+`issueEdgeClientCertificate: true` and an `mtlsAuth`, and it asks the issuer named by
+`CLIENT_CERT_ISSUER_NAME` (set by the chart; `scripts/gen-env.scala`'s `k8s` target writes the
+`client-certificates` block that reads it) for a 14-day certificate, renewed at 4 days left.
+`scripts/gen-env.scala` also writes the `mutual-tls` and `native` blocks with the paths below.
+
+`pki.clients` and `pki.certSync` are for certificates issued *outside* central (a cert-manager
+`Certificate` per client, copied into central by `cert-sync`), and are off by default.
+
+```yaml
+# Everything below except `clients` is already the default.
+services:
+  auth:
+    mutualTlsPort: 8083      # container + Service port, MPORT env
+pki:
+  enabled: true
+  trustBundle:
+    enabled: true
+    sources: []              # additional CAs only, e.g. the incoming one during a rotation
+  reloader: true             # Stakater Reloader restarts auth/edge on renewal
+```
+
+What that renders: a self-signed root and a CA `ClusterIssuer` (the "Versola Client CA" -- or point
+`pki.issuerRef` at an issuer you already run), a leaf `Certificate` for auth's listener
+(`<release>-versola-auth-mtls`, PKCS#8), the trust-manager `Bundle`, and central's service account,
+`Role` and `RoleBinding`.
+
+The chart generates no `env.conf`, so point yours at the files it mounts:
+
+| Service | Mounted at | Use as |
+|---|---|---|
+| `auth` | `/app/mtls/server/tls.crt`, `tls.key` | `mutual-tls.certificate`, `.private-key` |
+| `auth` | `/app/mtls/trust/ca.crt` | `mutual-tls.trusted-certificates` (the trust-manager bundle if enabled, else the issuing CA) |
+| `edge` | `/app/mtls/auth-pin/tls.crt` | `native.trusted-certificates = ["/app/mtls/auth-pin/tls.crt"]` (a leaf pin; edge gets only the certificate, never the key) |
+
+Both auth and edge read these once at startup, so a renewal needs a restart: set
+`pki.reloader` with Stakater Reloader, or `kubectl rollout restart` after cert-manager renews. A
+renewal restarts auth and edge together, so for zero-downtime rotation of auth's listener
+certificate use the two-pin procedure (publish the next leaf on every edge before auth switches)
+instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add the incoming CA's
+Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
+clients, then remove the outgoing source.
+
+Registering a native client that central should issue for needs no certificate in the request — see
+above. A client whose certificate you supply yourself (`edgeClientCertificate`) is left alone: central
+renews only the certificates it issued.
+
+---
+
+## 10. Known rough edges
 
 All of these have open issues; none of them has a fix in the chart yet.
 

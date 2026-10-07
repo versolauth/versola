@@ -181,7 +181,7 @@ object ClientCertificateAuthority:
       .flatMap(m => Try(Base64.getMimeDecoder.decode(m.group(1))).toOption)
       .toList
 
-  private def readCertificate(pem: String): Either[String, X509Certificate] =
+  def readCertificate(pem: String): Either[String, X509Certificate] =
     blocks(pem, "CERTIFICATE") match
       case der :: Nil =>
         Try(CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(der)))
@@ -192,7 +192,7 @@ object ClientCertificateAuthority:
       case Nil => Left("certificate must contain a CERTIFICATE block")
       case _ => Left("certificate must contain exactly one CERTIFICATE block, the CA's own")
 
-  private def readPrivateKey(pem: String): Either[String, PrivateKey] =
+  def readPrivateKey(pem: String): Either[String, PrivateKey] =
     blocks(pem, "PRIVATE KEY") match
       case der :: Nil =>
         val spec = PKCS8EncodedKeySpec(der)

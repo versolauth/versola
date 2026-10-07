@@ -97,7 +97,7 @@ object NativeServiceSpec extends ZIOSpecDefault:
       EdgeConfig.Native(
         authMutualTlsUrl = URL.decode("https://auth-internal:9008").toOption.get,
         authMutualTlsExternalUrl = Some(URL.decode(MtlsUrl).toOption.get),
-        trustedCertificates = "/unused/in/this/spec.pem",
+        trustedCertificates = Set("/unused/in/this/spec.pem"),
         blobKey = blobKey,
       ),
     ),

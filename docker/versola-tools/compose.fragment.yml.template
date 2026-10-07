@@ -146,6 +146,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Reads its provisioner key and the CA root from /app/ca at startup (`client-certificates`
+      # in central.conf).
+      mtls-init:
+        condition: service_completed_successfully
     environment:
       PORT: 8090
       DPORT: 8091
@@ -175,6 +179,7 @@ services:
     volumes:
       - ./central.conf:/app/config/env.conf:ro
       - versola-central-diagnostics-local:/diagnostics
+      - versola-central-ca-local:/app/ca:ro
     ports:
       # Only the diagnostic port (readiness) is published, not 8090 itself
       # -- nginx is still the only path to real traffic. "versola
@@ -204,19 +209,29 @@ services:
     # the same two-stage sequence the manual bootstrap test used by hand.
     # Do not rely on Docker's restart policy to recover from this.
     depends_on:
-      - central
+      central:
+        condition: service_started
+      mtls-init:
+        condition: service_completed_successfully
     environment:
       PORT: 8080
       DPORT: 8081
       APORT: 8082
+      # RFC 8705 §5's listener: served only if auth.conf carries a `mutual-tls` block, which
+      # `configure` writes -- see deploy.md "Certificates for mutual TLS". Reachable by
+      # edge as https://auth:8083 inside this project's network and deliberately not published.
+      MPORT: 8083
       CONFIG_PATH: /app/config/env.conf
       # See central's own RUN_MIGRATIONS comment above.
       RUN_MIGRATIONS: "false"
+    expose:
+      - "8083"
     env_file:
       - ./auth.secrets.env
     volumes:
       - ./auth.conf:/app/config/env.conf:ro
       - versola-auth-diagnostics-local:/diagnostics
+      - versola-mtls-local:/app/mtls:ro
     ports:
       - "8081:8081"
 
@@ -228,7 +243,10 @@ services:
     # would SIGKILL a JVM still finishing requests.
     stop_grace_period: 20s
     depends_on:
-      - central
+      central:
+        condition: service_started
+      mtls-init:
+        condition: service_completed_successfully
     environment:
       PORT: 8095
       DPORT: 8096
@@ -240,8 +258,99 @@ services:
     volumes:
       - ./edge.conf:/app/config/env.conf:ro
       - versola-edge-diagnostics-local:/diagnostics
+      - versola-mtls-local:/app/mtls:ro
     ports:
       - "8096:8096"
+
+  # ---- Certificates for mutual TLS (#440) ---------------------------------------------------------
+  # Three certificate relationships, each with its own rotation -- see develop.md "Certificate
+  # storage and rotation". On by default: a small internal CA (smallstep step-ca) and a one-shot
+  # `mtls-init` that signs auth's mutual-TLS listener certificate with it and hands central its
+  # provisioner key -- central issues and renews edge-fronted clients' certificates through it.
+  # auth.conf's `mutual-tls` block and edge.conf's `native` block already point at the files.
+  step-ca:
+    image: smallstep/step-ca:0.28.4
+    container_name: versola-step-ca
+    restart: unless-stopped
+    environment:
+      DOCKER_STEPCA_INIT_NAME: "Versola Client CA"
+      DOCKER_STEPCA_INIT_DNS_NAMES: "localhost,step-ca"
+      DOCKER_STEPCA_INIT_PROVISIONER_NAME: versola
+      DOCKER_STEPCA_INIT_ADDRESS: "0.0.0.0:9000"
+    volumes:
+      - versola-step-ca-local:/home/step
+    # After the image's own init (which has written ca.json), add the JWK provisioner central
+    # signs client certificates through -- once, with a key only central is given (see
+    # `mtls-init`), valid for at most 14 days a certificate -- then run the CA as the image would.
+    command:
+      - /bin/sh
+      - -ec
+      - |
+        # Keep the request's subject (the default template would rewrite it to the bare CN) and
+        # restrict the certificate to client authentication. The subject is only as trustworthy
+        # as the one party that can ask -- central, with its own provisioner key.
+        mkdir -p /home/step/templates
+        cat > /home/step/templates/client.tpl <<'TPL'
+        {
+          "subject": {{ toJson .Insecure.CR.Subject }},
+          "sans": {{ toJson .SANs }},
+          "keyUsage": ["digitalSignature"],
+          "extKeyUsage": ["clientAuth"]
+        }
+        TPL
+        if [ ! -f /home/step/secrets/central-provisioner.json ]; then
+          step crypto jwk create /home/step/certs/central-provisioner.pub.json \
+            /home/step/secrets/central-provisioner.json --kty EC --crv P-256 --use sig --no-password --insecure
+          step ca provisioner add central --type JWK --public-key=/home/step/certs/central-provisioner.pub.json \
+            --ca-config=/home/step/config/ca.json --x509-template=/home/step/templates/client.tpl --x509-max-dur=336h --x509-default-dur=336h
+        fi
+        exec /usr/local/bin/step-ca --password-file /home/step/secrets/password /home/step/config/ca.json
+    healthcheck:
+      test: ["CMD-SHELL", "step ca health --ca-url https://step-ca:9000 --root /home/step/certs/root_ca.crt"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  # Signs auth's listener certificate once (offline, with the CA's intermediate key -- no provisioner
+  # password involved) into `versola-mtls-local`, which auth mounts as /app/mtls and edge pins from.
+  # A restart finds the files and leaves them alone: re-issuing would change the leaf edge pins.
+  # To rotate it, see develop.md ("Pin rotation"). `ca.crt` holds root and intermediate, because
+  # zio-http presents only a client's leaf and auth must be able to complete the chain itself.
+  mtls-init:
+    image: smallstep/step-ca:0.28.4
+    container_name: versola-mtls-init
+    restart: "no"
+    user: root
+    depends_on:
+      step-ca:
+        condition: service_healthy
+    volumes:
+      - versola-step-ca-local:/home/step:ro
+      - versola-mtls-local:/mtls
+      - versola-central-ca-local:/central-ca
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        # What central needs to ask step-ca for client certificates: its provisioner key and the
+        # root it validates the CA by. Its own volume, because the CA's volume holds the CA keys.
+        cp /home/step/secrets/central-provisioner.json /central-ca/provisioner.json
+        cp /home/step/certs/root_ca.crt /central-ca/root_ca.crt
+        chmod 600 /central-ca/provisioner.json
+        if [ -f /mtls/server.crt ] && [ -f /mtls/server.key ] && [ -f /mtls/ca.crt ]; then
+          echo "mtls-init: certificates already present, leaving them"; exit 0
+        fi
+        step certificate create localhost /mtls/server.crt /mtls/server.pem \
+          --ca /home/step/certs/intermediate_ca.crt --ca-key /home/step/secrets/intermediate_ca_key \
+          --ca-password-file /home/step/secrets/password \
+          --san auth --san localhost --san 127.0.0.1 \
+          --kty RSA --size 2048 --not-after 17520h --insecure --no-password --force
+        # Netty reads PKCS#8 only; step writes PKCS#1.
+        step crypto key format --pkcs8 --pem --insecure --no-password /mtls/server.pem > /mtls/server.key
+        rm /mtls/server.pem
+        cat /home/step/certs/root_ca.crt /home/step/certs/intermediate_ca.crt > /mtls/ca.crt
+        chmod 644 /mtls/server.crt /mtls/ca.crt
+        chmod 600 /mtls/server.key
+        echo "mtls-init: issued auth's listener certificate"
 
   # versola-gateway bakes central-ui's static build into an nginx image at
   # release time (see docker/Dockerfile.gateway in the versola repo) --
@@ -302,3 +411,8 @@ volumes:
   versola-central-diagnostics-local:
   versola-auth-diagnostics-local:
   versola-edge-diagnostics-local:
+  # step-ca's state, auth's
+  # listener certificate (mtls-init writes it; auth and edge mount it), and central's access to the CA.
+  versola-step-ca-local:
+  versola-central-ca-local:
+  versola-mtls-local:

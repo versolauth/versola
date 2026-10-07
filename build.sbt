@@ -101,7 +101,8 @@ lazy val central = project
     name := "central",
     commonSettings,
     libraryDependencies ++= Dependencies.core,
-    libraryDependencies ++= Dependencies.http
+    libraryDependencies ++= Dependencies.http,
+    libraryDependencies ++= Dependencies.certificates,
   )
   .dependsOn(
     util % CompileTest

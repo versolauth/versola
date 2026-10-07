@@ -30,20 +30,20 @@
   "dependencies": {
     "@marcbachmann/cel-js": "^7.6.1",
     "@types/prismjs": "^1.26.6",
-    "libphonenumber-js": "^1.13.3",
+    "libphonenumber-js": "^1.13.14",
     "lit": "^3.2.1",
     "prismjs": "^1.30.0"
   },
   "devDependencies": {
     "@babel/core": "^7.29.7",
-    "@playwright/test": "^1.61.0",
+    "@playwright/test": "^1.63.0",
     "@types/node": "^22.10.2",
-    "babel-preset-solid": "^1.9.12",
-    "esbuild": "^0.28.0",
+    "babel-preset-solid": "^1.9.15",
+    "esbuild": "^0.28.2",
     "esbuild-plugin-solid": "^0.6.0",
-    "solid-js": "^1.9.13",
+    "solid-js": "^1.9.17",
     "typescript": "^5.7.2",
     "vite": "^6.0.5",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.3"
   }
 }
