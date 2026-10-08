@@ -4,8 +4,6 @@ import versola.auth.model.{CredentialId, PasskeyName}
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
-import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService
@@ -31,7 +29,7 @@ import java.security.MessageDigest
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
     PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
-    PasswordService & SubmissionLimiter
+    PasswordService & AccountSettingsService
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -51,25 +49,15 @@ object AccountSettingsController extends Controller:
       for
         _ <- authorizeResource(request)
         body <- request.bodyAs[ChangePasswordRequest]
-        ban <- ZIO.serviceWithZIO[SubmissionLimiter](_.isBanned(body.clientId, body.userId.toString, ChallengeType.PasswordSubmit))
-        _ <- ban match
-          case LimitStatus.Banned             => ZIO.fail(BadRequest("too many failed attempts"))
-          case LimitStatus.RateLimited(after) => ZIO.fail(BadRequest(s"too many failed attempts, retry after $after seconds"))
-          case LimitStatus.Allowed            => ZIO.unit
-        check <- ZIO.serviceWithZIO[PasswordService](_.verifyPassword(body.userId, Password(body.currentPassword)))
-        _ <- check match
-          case CheckPassword.Success => ZIO.unit
-          case CheckPassword.Temporary => ZIO.unit
-          case _ =>
-            ZIO.serviceWithZIO[SubmissionLimiter](_.recordLimit(body.clientId, body.userId.toString, ChallengeType.PasswordSubmit)) *>
-            ZIO.fail(BadRequest("current password is incorrect")) 
         passwordRegex <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
         _ <- ZIO.fail(BadRequest("new password does not meet policy requirements"))
-               .unless(scala.util.Try(body.newPassword.matches(passwordRegex)).getOrElse(true))
-        _ <- ZIO.serviceWithZIO[PasswordService](_.setPassword(body.userId, Password(body.newPassword)))
-          .mapError:
-            case PasswordReuseError(n) => BadRequest(s"Password reuse: must differ from last $n passwords")
-            case t: Throwable          => t
+              .unless(scala.util.Try(body.newPassword.matches(passwordRegex)).getOrElse(true))
+        _ <- ZIO.serviceWithZIO[AccountSettingsService](_.changePassword(
+              body.userId, body.clientId, body.currentPassword, body.newPassword,
+            )).mapError:
+              case e: versola.oauth.challenge.password.model.PasswordReuseError =>
+                BadRequest(s"Password reuse: must differ from last ${e.numDifferent} passwords")
+              case t: Throwable => t
       yield Response.status(Status.NoContent)
     }
 
