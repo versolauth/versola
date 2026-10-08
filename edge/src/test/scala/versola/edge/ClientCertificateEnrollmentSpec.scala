@@ -26,7 +26,7 @@ object ClientCertificateEnrollmentSpec extends ZIOSpecDefault:
 
   private val ca = TestCertificates.generate(subject = "CN=client-ca", ca = true)
   private val clientId = ClientId("mobile-app")
-  private val subject = CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("mobile-app.clients.versola.test"))
+  private val subject = CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("mobile-app.clients.versola.test"), uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
 
   private case class SignRequest(clientId: String, csr: String) derives JsonCodec
   private case class SignResponse(certificate: String) derives JsonCodec

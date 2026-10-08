@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.ClientId
 import versola.util.{CertificateSubject, PrivateClientCertificate}
+import versola.util.http.Observability
 import zio.*
 import zio.http.{Body, Client, Header, MediaType, Request, URL}
 import zio.json.*
@@ -12,8 +13,11 @@ import java.time.Instant
   * here, which never leaves this process, and a certificate central had its CA sign for a request
   * made with it.
   *
-  * Nothing is persisted: a restart enrols again, which costs one signing per client and keeps the
-  * key out of any file. Each replica enrols for itself, so each has its own key -- the certificates
+  * Enrolment keeps nothing of its own: the key lives in this process and is sent nowhere, and a restart
+  * enrols again, which costs one signing per client. It does reach the disk, though -- zio-http takes a
+  * client certificate as file paths, so `ClientCertificateFiles` writes it to an owner-only directory
+  * removed on a graceful shutdown (and left behind by an unclean one, as for every other client
+  * certificate this edge presents). Each replica enrols for itself, so each has its own key -- the certificates
   * differ and all carry the subject the client is registered by, which is what auth recognises it by.
   *
   * Driven by the client sync that already runs on an interval: a certificate with less than a third
@@ -74,7 +78,10 @@ object ClientCertificateEnrollment:
             case Some(existing) if existing.valid(now) =>
               enroll(clientId, subject).map(fresh => fresh.material -> current.updated(clientId, fresh))
                 .catchAll: error =>
-                  ZIO.logWarning(s"renewing the certificate of client '$clientId' failed, keeping the current one until ${existing.notAfter}: $error")
+                  Observability.setError(
+                    "edge_certificate_renewal_failed",
+                    Some(s"client '$clientId', keeping the current one until ${existing.notAfter}: $error"),
+                  )
                     .as(existing.material -> current)
             case _ =>
               enroll(clientId, subject).map(fresh => fresh.material -> current.updated(clientId, fresh))

@@ -196,7 +196,8 @@ object ClientController extends Controller:
         body <- request.bodyAs[UpdateClientRequest]
         _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
           ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
-        _ <- service.updateClient(body)
+        enrolled <- certificates.isEnrolled(body.clientId)
+        _ <- service.updateClient(body, edgeCertificateEnrolled = enrolled)
         // After the update has been accepted: an operator-supplied certificate is theirs from
         // here on, and central stops renewing the one it issued.
         _ <- certificates.forgetIfReplaced(body)

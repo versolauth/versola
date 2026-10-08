@@ -102,6 +102,7 @@ final class HttpAdminClient(
       template = None,
       applicationType = applicationType(spec),
       issueEdgeClientCertificate = false,
+      enrollEdgeClientCertificate = false,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
@@ -682,6 +683,7 @@ object HttpAdminClient:
       template: Option[Json],
       applicationType: String,
       issueEdgeClientCertificate: Boolean,
+      enrollEdgeClientCertificate: Boolean,
   ) derives JsonEncoder
 
   private case class UpdateClientBody(

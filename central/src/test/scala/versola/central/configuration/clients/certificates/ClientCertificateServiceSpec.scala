@@ -113,6 +113,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
+    enrollEdgeClientCertificate = false,
   )
 
   private def record =
@@ -378,7 +379,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), enrollments, config)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
-          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
           generated <- CertificateSubject.generate(subject)
           chain <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem)
           material <- ZIO.fromEither(PrivateClientCertificate(chain + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
@@ -386,6 +387,28 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
           material.subjectValues("san_dns") == Set(dnsName),
           enrollments.issued.map(entry => (entry._1, entry._3)) == List((clientId, EdgeId("edge-1"))),
         )
+      },
+      test("refuses a client the edge is not served, whatever the CSR says") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val fakeCa = FakeCa()
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          // The sync filter, by tenant, does not list the client for this edge.
+          _ <- clients.getClientsForSync.succeedsWith(Vector.empty)
+          generated <- CertificateSubject.generate(subject)
+          exit <- service.sign(EdgeId("edge-of-another-tenant"), clientId, generated.csrPem).exit
+        yield assertTrue(exit.isFailure, fakeCa.requests.isEmpty, clients.getClientsForSync.calls == List(Some(EdgeId("edge-of-another-tenant"))))
+      },
+      test("is refused for a web client, whose tokens are bound to a certificate replicas would not share") {
+        val clients = stub[OAuthClientService]
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        for exit <- service.register(createRequest.copy(
+            issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true, applicationType = Some(ApplicationType.web),
+          )).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("issueEdgeClientCertificate"), clients.registerClient.calls.isEmpty)
       },
       test("refuses a client that is not enrolled") {
         val clients = stub[OAuthClientService]
@@ -405,7 +428,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
         val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
         for
-          _ <- clients.getAllClients.succeedsWith(Vector(record))
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
           other <- CertificateSubject.generate(subject.copy(distinguishedName = "CN=someone-else"))
           wider <- CertificateSubject.generate(subject.copy(dnsNames = List(dnsName, "extra.test")))
           otherExit <- service.sign(EdgeId("edge-1"), clientId, other.csrPem).exit

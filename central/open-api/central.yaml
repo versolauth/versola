@@ -11,14 +11,9 @@ info:
     Central is an internal service. It is never exposed to end users or to browser
     traffic — only to the admin console (`central-ui`).
 
-    This reference covers the admin console surface. Central also serves internal endpoints
-    that auth and edge call with a signed bearer token rather than the admin Basic credential,
-    and those are not part of this document: every `GET .../sync` configuration pull
-    (including `/configuration/jwks/signing-keys/sync` and `/configuration/edges/dpop/sync`),
-    the `GET /configuration/resources/registry` and `GET /configuration/edges/registry`
-    registries, `POST /users/registrations` (auth indexing a self-service account) and
-    `POST /configuration/clients/edge-certificate/sign` (an edge asking for a certificate
-    for a client it enrolled).
+    This reference covers the admin console surface. Central also exposes internal
+    replication endpoints (`/sync`, `/registry`) that auth and edge use to pull configuration;
+    those are not part of this document.
 
     ## Authentication
 
@@ -35,12 +30,6 @@ info:
       means "leave unchanged", `null` means "clear", a value means "set" — but others are
       plain optional overwrites where `null` and absent both mean "leave unchanged"; each
       operation states which applies to which field.
-    * Errors: a body that is not valid JSON for the schema, a missing or malformed query
-      parameter, or a value rejected by an identifier type's pattern is answered with
-      `400 Bad Request` and a plain-text message, on every operation that takes one — it is
-      not repeated on each operation below, which list only the `400`s that carry
-      operation-specific meaning. Missing or wrong credentials are `401 Unauthorized`.
-      Anything unexpected is a bodyless `500`.
     * Secrets and private keys are returned exactly once, at creation or rotation time.
       Central stores only encrypted copies and cannot show them again.
   license:
@@ -99,7 +88,7 @@ tags:
   - name: Edges
     description: Registered edge deployments and their signing keys.
   - name: Service
-    description: Operational endpoints that return `404 Not Found` in production, before credentials are checked.
+    description: Operational endpoints that return `404 Not Found` in production.
 
 paths:
   # ─────────────────────────────── Tenants ───────────────────────────────
@@ -130,14 +119,6 @@ paths:
       responses:
         '201':
           description: Tenant created.
-        '400':
-          description: |
-            The tenant already exists under a different `securityProfile`, which cannot be
-            changed after creation. Posting an existing tenant otherwise re-seeds it.
-          content:
-            text/plain:
-              schema:
-                type: string
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
@@ -210,10 +191,7 @@ paths:
         '400':
           description: |
             The configuration was rejected: both logout URIs set at once, a consent URI that
-            is not an absolute HTTPS URL, a registration flow auth cannot run, or any other
-            registration rule (credential and `authMethod` disagreeing, `issueEdgeClientCertificate`
-            with no CA configured, `issueEdgeClientCertificate` / `enrollEdgeClientCertificate`
-            combined with each other or with `edgeClientCertificate`, ...).
+            is not an absolute HTTPS URL, or a registration flow auth cannot run.
           content:
             text/plain:
               schema:
@@ -275,14 +253,6 @@ paths:
                 $ref: '#/components/schemas/RotateSecretResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: |
-            The client holds no secret to act on: only a client registered with the
-            `client_secret` method has one.
-          content:
-            text/plain:
-              schema:
-                type: string
 
   /configuration/clients/previous-secret:
     delete:
@@ -296,44 +266,6 @@ paths:
           description: Previous secret removed.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: |
-            The client holds no secret to act on: only a client registered with the
-            `client_secret` method has one.
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /configuration/clients/edge-certificate/renew:
-    post:
-      tags: [Clients]
-      summary: Renew a managed edge client certificate now
-      description: |
-        Replaces, immediately rather than at its renewal time, the certificate central issued
-        for a client registered with `issueEdgeClientCertificate` — after a CA change, say.
-        A certificate central does not manage (one supplied as `edgeClientCertificate`, or one
-        an edge enrols for itself) is not renewable here.
-      operationId: renewClientEdgeCertificate
-      parameters:
-        - $ref: '#/components/parameters/ClientIdQuery'
-      responses:
-        '204':
-          description: A new certificate was issued.
-        '400':
-          description: The client's registration can no longer be issued for, e.g. central has no usable CA.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          description: Central does not manage this client's certificate.
-          content:
-            text/plain:
-              schema:
-                type: string
 
   /configuration/auth-request-presets:
     get:
@@ -1287,12 +1219,11 @@ paths:
         '204':
           description: Default set.
         '400':
-          description: The locale is unknown (`NotFound`) or not active (`Inactive`).
+          description: The locale is unknown or not active.
           content:
             application/json:
               schema:
-                type: string
-                enum: [NotFound, Inactive]
+                $ref: '#/components/schemas/LocaleActivationError'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1357,7 +1288,7 @@ paths:
         '204':
           description: Theme deleted.
         '400':
-          description: The theme is the built-in `default` theme, which cannot be deleted.
+          description: The theme id is invalid.
           content:
             application/json:
               schema:
@@ -1444,64 +1375,6 @@ paths:
           description: Key deleted.
         '401':
           $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: |
-            A tenant still signs with this key; move it to another key first. The message names
-            the tenants.
-          content:
-            text/plain:
-              schema:
-                type: string
-
-  /configuration/jwks/keys:
-    get:
-      tags: [JWKS]
-      summary: List key summaries
-      description: |
-        One row per key with its `alg` and `kty` and whether central holds the private half,
-        for choosing a tenant's signing key. Carries no key material.
-      operationId: listJwksKeys
-      responses:
-        '200':
-          description: The keys.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/KeysResponse'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-
-  /configuration/jwks/generate:
-    post:
-      tags: [JWKS]
-      summary: Generate and publish a key pair
-      description: |
-        Generates a key pair for the algorithm, publishes the public half and keeps the
-        private half (encrypted) so central can sign with it. The private key is never
-        returned.
-      operationId: generateJwk
-      parameters:
-        - name: alg
-          in: query
-          required: true
-          schema:
-            type: string
-            enum: [RS256, PS256, ES256]
-      responses:
-        '201':
-          description: Key generated and published.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GeneratedKey'
-        '400':
-          description: The algorithm is unsupported — `HS256` is a shared secret, not a JWKS key.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
 
   /configuration/server-metadata:
     get:
@@ -1568,7 +1441,7 @@ paths:
         '204':
           description: Settings stored.
         '400':
-          description: '`identityProviderLogo` is not an absolute HTTP(S) URL.'
+          description: The password policy is not usable, e.g. `passwordRegex` does not compile.
           content:
             text/plain:
               schema:
@@ -1932,42 +1805,6 @@ components:
             $ref: '#/components/schemas/Jwk'
       required: [keys]
 
-    KeysResponse:
-      type: object
-      properties:
-        keys:
-          type: array
-          items:
-            $ref: '#/components/schemas/KeySummary'
-      required: [keys]
-    KeySummary:
-      type: object
-      properties:
-        kid:
-          type: string
-        algorithm:
-          type: [string, 'null']
-          description: The key's `alg`, when it has one.
-        keyType:
-          type: [string, 'null']
-          description: The key's `kty`.
-        curve:
-          type: [string, 'null']
-          description: The key's `crv`, for an EC key.
-        canSign:
-          type: boolean
-          description: Whether central holds the private half and can sign with this key.
-      required: [kid, canSign]
-    GeneratedKey:
-      type: object
-      properties:
-        kid:
-          type: string
-        alg:
-          type: string
-          enum: [RS256, PS256, ES256]
-      required: [kid, alg]
-
     # ───────────────────────────── Patches ─────────────────────────────
     PatchDescription:
       type: object
@@ -2008,23 +1845,6 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/RedirectUri'
-      required: [add, remove]
-    PatchAudience:
-      type: object
-      description: |
-        Clients to add to and remove from a resource's audience. Order-preserving and
-        idempotent: a client already in the audience is not duplicated.
-      properties:
-        add:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/ClientId'
-        remove:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/ClientId'
       required: [add, remove]
     PatchClientScope:
       type: object
@@ -2417,7 +2237,6 @@ components:
         - requireSignedRequestObject
         - requirePushedAuthorizationRequests
         - createdAt
-        - applicationType
     GetAllClientsResponse:
       type: object
       properties:
@@ -2583,37 +2402,6 @@ components:
             The private key an edge fronting this client signs and authenticates as it with.
             Must be the private half of a key `jwks` publishes - a pair that cannot verify is
             refused at registration. `null` for a client no edge fronts.
-        edgeClientCertificate:
-          oneOf:
-            - $ref: '#/components/schemas/PrivateClientCertificate'
-            - type: 'null'
-          description: |
-            The certificate, with its private key, an edge fronting this client presents at the
-            TLS handshake. Needs `mtlsAuth`, and the certificate must carry the subject a
-            `tls_client_auth` registration names (or, for `self_signed_tls_client_auth`, hold a key
-            `jwks` publishes). Cannot be combined with `requireSignedRequestObject`,
-            `issueEdgeClientCertificate` or `enrollEdgeClientCertificate`. `null` for a client no
-            edge presents a certificate for.
-        issueEdgeClientCertificate:
-          type: boolean
-          default: false
-          description: |
-            Have central issue the certificate the edge presents: it generates the key pair,
-            its CA signs the request, and the certificate is renewed before it expires (see
-            `POST /configuration/clients/edge-certificate/renew`). Needs `authMethod`
-            `tls_client_auth` and a CA configured on central. Where `mtlsAuth` is omitted the
-            client is registered by `CN=<clientId>,OU=<tenantId>,O=Versola`; where given it is
-            the subject the certificate is issued for. Mutually exclusive with
-            `edgeClientCertificate` and `enrollEdgeClientCertificate`.
-        enrollEdgeClientCertificate:
-          type: boolean
-          default: false
-          description: |
-            Have the edge fronting this client generate its own key and enrol for a certificate:
-            central stores no certificate and no key, only that the client is enrolled, and signs
-            the request an authenticated edge later sends for the subject `mtlsAuth` registers
-            (the default subject above where omitted). Needs `authMethod` `tls_client_auth`.
-            Mutually exclusive with `issueEdgeClientCertificate` and `edgeClientCertificate`.
         template:
           oneOf:
             - $ref: '#/components/schemas/ClientTemplate'
@@ -2644,8 +2432,7 @@ components:
       description: |
         `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
         `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
-        `logoUri`, `policyUri`, `tosUri`, `consentFlow`, `dpopMinRsaKeySize`, `mtlsAuth`, `jwks`,
-        `edgeSigningKey` and `edgeClientCertificate` follow merge-patch semantics: absent
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it.
 
         Every other member is a plain optional overwrite: absent *or* `null` both leave the
@@ -2774,15 +2561,6 @@ components:
           description: |
             Merge-patch: absent leaves the stored key unchanged, `null` clears it, a value
             replaces it. Checked against the resulting `jwks` exactly as a registration is.
-        edgeClientCertificate:
-          oneOf:
-            - $ref: '#/components/schemas/PrivateClientCertificate'
-            - type: 'null'
-          description: |
-            Merge-patch: absent leaves the stored certificate unchanged, `null` clears it, a
-            value replaces it. Checked against the resulting `mtlsAuth` exactly as a
-            registration is. Supplying one for a client whose certificate central issues makes
-            it the operator's from then on: central stops renewing the one it issued.
       required: [clientId, redirectUris, scope, permissions]
     CreateClientResponse:
       type: object
@@ -2908,12 +2686,6 @@ components:
             it -- an RSA key signs `RS256` or `PS256`, and guessing would pin a deployment to
             the one it excluded.
           enum: [ES256, PS256, RS256]
-    PrivateClientCertificate:
-      type: string
-      description: |
-        A single PEM document holding a certificate chain (leaf first) and exactly one
-        unencrypted PKCS#8 `PRIVATE KEY` block, which must belong to the leaf. Never listed
-        back: a stored one leaves central encrypted to the requesting edge's public key.
     AuthorizationPresetInput:
       type: object
       properties:
@@ -3106,7 +2878,9 @@ components:
             - $ref: '#/components/schemas/ResourceUri'
             - type: 'null'
         audience:
-          $ref: '#/components/schemas/PatchAudience'
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/ClientId'
         deleteEndpoints:
           type: array
           uniqueItems: true
@@ -3116,7 +2890,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
-      required: [resourceId, audience, deleteEndpoints, createEndpoints]
+      required: [resourceId, deleteEndpoints, createEndpoints]
     CreateResourceResponse:
       type: object
       properties:
@@ -3880,7 +3654,6 @@ components:
         - postLogoutRedirectUris
         - requireDpopNonce
         - clientAssertionMaxLifetimeSeconds
-        - securityProfile
     MtlsCertificateEncoding:
       type: [string, 'null']
       description: How the certificate in mtlsCertificateHeader is encoded. Null iff mtlsCertificateHeader is null.
@@ -4188,9 +3961,6 @@ components:
           description: How many characters a new password must differ by.
         identityProviderLogo:
           type: [string, 'null']
-          description: |
-            An absolute `http` or `https` URL. Surrounding whitespace is trimmed and a blank
-            value is stored as `null`; anything else is refused with `400`.
       required: [passwordRegex, passwordHistorySize, passwordNumDifferent]
 
     # ─────────────────────────────── Edges ───────────────────────────────

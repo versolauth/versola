@@ -1798,5 +1798,5 @@ object OAuthClient:
       edgeClientCertificate: Option[String],
       applicationType: Option[String] = None,
       issueEdgeClientCertificate: Boolean,
-      enrollEdgeClientCertificate: Boolean = false,
+      enrollEdgeClientCertificate: Boolean,
   ) derives JsonEncoder

@@ -11,13 +11,7 @@ info:
 
     Either the request carries its parameters inline, or it carries a single `request_uri`
     obtained from `POST /par` alongside `client_id`; in the latter case the pushed payload
-    replaces every other parameter and is consumed on first use. A third form carries a signed
-    JWT-Secured Authorization Request (RFC 9101) in `request`, again alongside `client_id`;
-    the object's claims then replace every other parameter.
-
-    PKCE is mandatory and only `S256` is accepted. The authorization response always carries
-    the RFC 9207 `iss` parameter, and may be returned as a signed JARM `response` JWT
-    depending on `response_mode`.
+    replaces every other parameter and is consumed on first use.
   license:
     name: Business Source License 1.1
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -39,7 +33,6 @@ paths:
         - $ref: '#/components/parameters/ClientId'
         - $ref: '#/components/parameters/RedirectUri'
         - $ref: '#/components/parameters/ResponseType'
-        - $ref: '#/components/parameters/ResponseMode'
         - $ref: '#/components/parameters/Scope'
         - $ref: '#/components/parameters/CodeChallenge'
         - $ref: '#/components/parameters/CodeChallengeMethod'
@@ -56,7 +49,6 @@ paths:
         - $ref: '#/components/parameters/AuthorizationDetails'
         - $ref: '#/components/parameters/DpopJkt'
         - $ref: '#/components/parameters/RequestUri'
-        - $ref: '#/components/parameters/Request'
         - $ref: '#/components/parameters/UserAgent'
         - $ref: '#/components/parameters/SessionCookie'
         - $ref: '#/components/parameters/UserAgentCookie'
@@ -97,9 +89,7 @@ components:
       name: client_id
       in: query
       required: true
-      description: |
-        Identifier of the registered client. Required even when `request_uri` or `request` is
-        used, and must then match the client that pushed or signed the request.
+      description: Identifier of the registered client. Required even when `request_uri` is used.
       schema:
         type: string
       example: web-app
@@ -110,8 +100,8 @@ components:
       required: false
       description: |
         Absolute URI without a fragment, exactly matching one of the client's registered
-        redirect URIs. Required unless `request_uri` or `request` is used, in which case it
-        comes from the pushed payload or the request object.
+        redirect URIs. Required unless `request_uri` is used, in which case it comes from the
+        pushed payload.
       schema:
         type: string
         format: uri
@@ -123,28 +113,11 @@ components:
       required: false
       description: |
         `code` for the plain authorization code flow, `code id_token` to additionally receive an
-        ID token in the redirect (OIDC hybrid; `nonce` is then required and the response
-        defaults to the fragment). Required unless `request_uri` or `request` is used. Any
-        other value fails with `unsupported_response_type`.
+        ID token in the redirect (OIDC hybrid). Required unless `request_uri` is used.
       schema:
         type: string
         enum: [code, code id_token]
       example: code
-
-    ResponseMode:
-      name: response_mode
-      in: query
-      required: false
-      description: |
-        Where the authorization response is placed, and whether it is a signed JARM `response`
-        JWT. Defaults to `query` for `code` and `fragment` for `code id_token`. `query` and
-        `query.jwt` are refused for `code id_token`, as is any unknown value
-        (`invalid_request`). `jwt` is shorthand for `fragment.jwt` when the response type
-        returns an `id_token` and `query.jwt` otherwise.
-      schema:
-        type: string
-        enum: [query, fragment, jwt, query.jwt, fragment.jwt]
-      example: query
 
     Scope:
       name: scope
@@ -153,8 +126,7 @@ components:
       description: |
         Space-delimited scope tokens. Include `openid` to obtain an ID token from `/token`
         and to be allowed to call `/userinfo`. Omitting it defaults to the client's full
-        registered scope, both here and when the request arrives via `request_uri` or
-        `request`.
+        registered scope, both here and when the request arrives via `request_uri`.
 
         Every token must be one the client is registered for; naming any other fails the
         request with `invalid_scope`.
@@ -167,12 +139,11 @@ components:
       in: query
       required: false
       description: |
-        PKCE code challenge (RFC 7636 §4.2): the unpadded base64url encoding of a SHA-256
-        digest, so exactly 43 characters. Required unless `request_uri` or `request` is used,
-        in which case it comes from the pushed payload or the request object.
+        PKCE code challenge (RFC 7636 §4.2). Required unless `request_uri` is used, in which
+        case it comes from the pushed payload.
       schema:
         type: string
-        pattern: '^[A-Za-z0-9_-]{43}$'
+        pattern: '^[A-Za-z0-9\-._~]{43,128}$'
       example: E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM
 
     CodeChallengeMethod:
@@ -180,12 +151,12 @@ components:
       in: query
       required: false
       description: |
-        Transformation applied to the code verifier. Only `S256` is accepted; there is no
-        default, so omitting it fails with `invalid_request` just like any other value.
-        Required unless `request_uri` or `request` is used.
+        Transformation applied to the code verifier. Defaults to `plain` when omitted; `S256`
+        is strongly recommended and is the only method advertised in server metadata.
       schema:
         type: string
-        enum: [S256]
+        enum: [S256, plain]
+        default: plain
       example: S256
 
     State:
@@ -204,9 +175,7 @@ components:
       name: nonce
       in: query
       required: false
-      description: |
-        Value bound into the ID token to associate it with this client session. Required when
-        `response_type` is `code id_token`.
+      description: Value bound into the ID token to associate it with this client session.
       schema:
         type: string
 
@@ -239,8 +208,7 @@ components:
       required: false
       description: |
         Space-delimited Authentication Context Class Reference values, in order of preference.
-        Present but empty is rejected. A value the client's auth flow cannot satisfy fails
-        with `unmet_authentication_requirements`.
+        Present but empty is rejected.
       schema:
         type: string
 
@@ -248,9 +216,7 @@ components:
       name: ui_locales
       in: query
       required: false
-      description: |
-        Space-delimited BCP 47 language tags, in order of preference. If none of them is
-        supported the request fails with `invalid_request`.
+      description: Space-delimited BCP 47 language tags, in order of preference.
       schema:
         type: string
       example: ru en
@@ -261,8 +227,7 @@ components:
       required: false
       description: |
         OIDC claims request as a JSON object (OpenID Connect Core §5.5), selecting individual
-        claims for the ID token and the UserInfo response. A value that is not valid JSON of
-        that shape fails with `invalid_request`.
+        claims for the ID token and the UserInfo response.
       schema:
         type: string
         contentMediaType: application/json
@@ -284,10 +249,7 @@ components:
       name: id_token_hint
       in: query
       required: false
-      description: |
-        Previously issued ID token identifying the user the client expects to authenticate.
-        One that cannot be verified fails with `invalid_request`, and it must not be combined
-        with `login_hint` (also `invalid_request`).
+      description: Previously issued ID token identifying the user the client expects to authenticate.
       schema:
         type: string
 
@@ -359,30 +321,12 @@ components:
       required: false
       description: |
         Reference returned by `POST /par`. Replaces every other authorization parameter except
-        `client_id`, which is required and must match the client that pushed the request.
-        Single-use; an unknown, expired, already used or mismatched reference is answered
-        with the `400` below, since the pushed payload (and so its `redirect_uri`) cannot be
-        trusted.
+        `client_id`, which must match the client that pushed the request. Single-use and
+        rejected once expired.
       schema:
         type: string
         pattern: '^urn:ietf:params:oauth:request_uri:'
       example: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
-
-    Request:
-      name: request
-      in: query
-      required: false
-      description: |
-        RFC 9101 signed request object (JWT) carrying the authorization parameters as claims,
-        signed with a key from the client's registered JWK Set using an algorithm listed in
-        `request_object_signing_alg_values_supported`. `client_id` must accompany it. When
-        present, the object's claims replace every other parameter; anything added outside
-        the signature is ignored. `iss`, `aud`, `exp` and `jti` are validated and a `jti` may
-        be used only once. A request object that fails verification is answered with `400`
-        and `invalid_request_object`. Must not be repeated, and is not combined with
-        `request_uri`.
-      schema:
-        type: string
 
     UserAgent:
       name: User-Agent
@@ -415,10 +359,9 @@ components:
     AuthorizeRequest:
       type: object
       description: |
-        Only `client_id` is unconditionally required. `redirect_uri`, `response_type` and
-        `code_challenge` (with `code_challenge_method`) are required inline, but come from the
-        pushed payload when `request_uri` is used, or from the request object when `request`
-        is used. `scope` may always be omitted.
+        Only `client_id` is unconditionally required. `redirect_uri`, `response_type`, `scope`
+        and `code_challenge` are required inline, but come from the pushed payload when
+        `request_uri` is used.
       required: [client_id]
       properties:
         client_id:
@@ -429,17 +372,14 @@ components:
         response_type:
           type: string
           enum: [code, code id_token]
-        response_mode:
-          type: string
-          enum: [query, fragment, jwt, query.jwt, fragment.jwt]
         scope:
           type: string
         code_challenge:
           type: string
-          pattern: '^[A-Za-z0-9_-]{43}$'
         code_challenge_method:
           type: string
-          enum: [S256]
+          enum: [S256, plain]
+          default: plain
         state:
           type: string
           maxLength: 128
@@ -474,32 +414,25 @@ components:
           pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
         request_uri:
           type: string
-        request:
-          type: string
-          description: RFC 9101 signed request object (JWT).
 
   responses:
     SeeOther:
       description: |
         Every outcome is a redirect. There are three shapes:
 
-        - **Authorized** — back to `redirect_uri` with `code`, `iss` (RFC 9207), and `state`
-          and `id_token` when applicable (`id_token` only for `response_type=code id_token`).
-          Placed in the query or the fragment according to `response_mode`; under a `.jwt`
-          mode every parameter instead travels as claims of a single signed `response` JWT.
+        - **Authorized** — back to `redirect_uri` with `code` (and `state`, and `id_token`
+          when `response_type=code id_token`).
         - **Authentication required** — to `/challenge`, setting the `SSO_CONVERSATION`
           cookie that carries the pending authorization request.
         - **Failed** — back to `redirect_uri` with `error`, `error_description`, `error_uri`
-          (when available), `iss` and `state`, placed like a successful response.
+          and `state`.
 
         Failures that cannot be attributed to a registered redirect URI are answered with
         `400` instead, since redirecting them would be an open redirect.
 
         Error codes returned on the redirect: `invalid_request`, `unsupported_response_type`,
-        `invalid_scope`, `login_required`, `consent_required`, `interaction_required`,
-        `access_denied`, `invalid_target`, `invalid_authorization_details`,
-        `unmet_authentication_requirements`. The `*_required` codes are only returned for
-        `prompt=none`.
+        `invalid_scope`, `login_required`, `access_denied`, `invalid_target`,
+        `invalid_authorization_details`, `unmet_authentication_requirements`.
 
         A client registered with `requireSignedRequestObject` (RFC 9101 §10.5) or
         `requirePushedAuthorizationRequests` (RFC 9126 §6.2) is redirected `invalid_request`
@@ -524,38 +457,16 @@ components:
         Set-Cookie:
           description: |
             `SSO_CONVERSATION`, set only when redirecting to `/challenge`. Holds the pending
-            authorization request and expires with the client's conversation TTL. `/challenge`
-            and the other conversation endpoints are the browser sign-in UI and are not part
-            of this specification.
+            authorization request and expires with the client's conversation TTL.
           schema:
             type: string
 
     BadRequest:
       description: |
-        Answered directly, without a redirect, when the request cannot be attributed to a
-        verified redirect URI or cannot be trusted to name one:
-
-        - `client_id` or `redirect_uri` is missing, malformed, supplied more than once, or not
-          registered for the client; or `request_uri` is unknown, expired, already used or
-          belongs to another client. The body is a plain-text message.
-        - the `request` object failed verification (bad signature, algorithm, audience,
-          expiry, replayed `jti`, unknown client, ...). The body is JSON with
-          `invalid_request_object`; the cause is never disclosed.
+        `client_id` or `redirect_uri` is missing, malformed, supplied more than once, or not
+        registered for the client — so there is no verified URI to redirect the error to.
       content:
         text/plain:
           schema:
             type: string
           example: Either client_id or redirect_uri is somehow missing, invalid, provided multiple times or not registered
-        application/json:
-          schema:
-            type: object
-            required: [error, error_description]
-            properties:
-              error:
-                type: string
-                const: invalid_request_object
-              error_description:
-                type: string
-          example:
-            error: invalid_request_object
-            error_description: The request parameter does not contain a valid Request Object for this client

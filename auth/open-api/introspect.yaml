@@ -9,20 +9,9 @@ info:
     Both access tokens (JWTs) and refresh tokens (opaque) are accepted; the token format is
     detected automatically, so `token_type_hint` is unnecessary.
 
-    A token that cannot be verified, has expired, is unknown, or is an access token the
-    calling client may not introspect is reported as `{"active": false}` rather than as an
-    error — the caller is never told why a token is not active. A refresh token that was
-    issued to a different client is the exception: it is answered with `401 invalid_client`.
-    Access tokens are verified by signature, type and expiry; the endpoint does not consult the
-    access-token revocation list, while a revoked refresh token is unknown and so inactive.
-
-    The calling client must be a resource server or client with its own credentials: unlike
-    `/token`, `/par` and `/revoke`, a bare `client_id` is not accepted.
-
-    An access token is only active for a caller that can use one of the token's audiences:
-    the response `aud` is narrowed to the resources registered for the calling client (the
-    `resource://edge` indicator expands to the issuing client's internal resources the caller
-    has access to), and a token with an empty narrowed audience is reported as inactive.
+    A token that cannot be verified, has expired, was revoked, or does not belong to the
+    calling client is reported as `{"active": false}` rather than as an error — the caller is
+    never told why a token is not active.
   license:
     name: Business Source License 1.1
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -37,17 +26,12 @@ paths:
       operationId: introspect
       summary: Introspect a token
       description: |
-        The caller authenticates with `client_secret_basic` (the `Authorization` header),
-        `client_secret_post` (`client_id` and `client_secret` as form fields),
-        `private_key_jwt` (`client_assertion_type` and `client_assertion` form fields), or a
-        client certificate (`tls_client_auth` / `self_signed_tls_client_auth`, RFC 8705).
-        A secret is mandatory unless the client authenticates with an assertion or a
-        certificate; a `client_id` alone is refused with `invalid_client`. At most one method
-        may be used per request. The empty security requirement below stands for the
-        form-field and certificate cases, which OpenAPI cannot express as a security scheme.
-
-        The endpoint is also served at the `mtls_endpoint_aliases` address advertised in the
-        discovery document.
+        Client authentication is `client_secret_basic` (the `Authorization` header),
+        `client_secret_post` (`client_id` and `client_secret` as form fields of the request
+        body), or, for a public client, `client_id` alone with no secret at all. At most one
+        of the two credentialed methods may be used per request. The empty security
+        requirement below stands for the form-field cases, which OpenAPI cannot express as a
+        security scheme.
       tags: [Token]
       security:
         - clientSecretBasic: []
@@ -84,30 +68,19 @@ components:
           type: string
           description: |
             The token to introspect. A value in JWT form is treated as an access token,
-            anything else as an opaque refresh token. A value that is neither is `invalid_request`.
+            anything else as an opaque refresh token.
         client_id:
           type: string
-          description: Required for `client_secret_post`.
+          description: Required for `client_secret_post` and for public clients.
         client_secret:
           type: string
-          description: Clients using `client_secret_post`.
-        client_assertion_type:
-          type: string
-          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
-          description: Clients using `private_key_jwt`; sent together with `client_assertion`.
-        client_assertion:
-          type: string
-          description: Signed client assertion JWT (RFC 7523) for `private_key_jwt`.
-        token_type_hint:
-          type: string
-          description: Accepted but ignored; the token format is detected from its shape.
+          description: Confidential clients using `client_secret_post`.
 
     IntrospectionResponse:
       type: object
       required: [active]
       description: |
         Only `active` is guaranteed. When `active` is `false` every other member is absent.
-        For a refresh token `nbf` and `jti` are absent and `exp` is the refresh token's expiry.
       properties:
         active:
           type: boolean
@@ -121,16 +94,7 @@ components:
           type: string
         token_type:
           type: string
-          enum: [Bearer, DPoP]
-          description: |
-            `DPoP` when the token is bound to a DPoP key (RFC 9449 §6.2), `Bearer` otherwise
-            (including certificate-bound tokens). Also present for refresh tokens.
-        cnf:
-          type: object
-          additionalProperties: true
-          description: |
-            Confirmation claim of a sender-constrained token: `jkt` for a DPoP-bound token
-            (RFC 9449 §6.2), `x5t#S256` for a certificate-bound one (RFC 8705 §3.1).
+          description: '`Bearer` for access tokens.'
         exp:
           type: integer
           format: int64
@@ -150,12 +114,10 @@ components:
           type: array
           items:
             type: string
-          description: Audiences of the token that are visible to the calling client.
         iss:
           type: string
         jti:
           type: string
-          description: Present for access tokens only.
         authorization_details:
           type: array
           items:
@@ -173,8 +135,6 @@ components:
           enum: [invalid_request, invalid_client]
         error_description:
           type: string
-          description: |
-            No `error_uri` is returned.
 
   responses:
     Introspection:
@@ -217,7 +177,7 @@ components:
                 active: false
 
     InvalidRequest:
-      description: The body is not a readable form, or the `token` field is missing or is neither a JWT nor a well-formed refresh token.
+      description: The body is not a readable form, or the `token` field is missing.
       headers:
         Cache-Control:
           schema:
@@ -232,12 +192,7 @@ components:
             error_description: Request is missing a required parameter or is otherwise malformed
 
     InvalidClient:
-      description: |
-        Client authentication failed (unknown client, bad or missing credentials, a
-        `client_id` without a secret, more than one method, or an unreadable client
-        certificate), or a refresh token that belongs to another client was presented. The
-        description reads `Client is not authorized to introspect this token` in the latter
-        case.
+      description: Client authentication failed.
       headers:
         Cache-Control:
           schema:

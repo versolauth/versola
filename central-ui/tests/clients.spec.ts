@@ -333,6 +333,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     // Step 1's combination, stored so the edit page can show the client against it.
     template: { kind: 'web', tier: 'compat' },
     issueEdgeClientCertificate: false,
+    enrollEdgeClientCertificate: false,
   });
 });
 
@@ -1564,6 +1565,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     requirePushedAuthorizationRequests: false,
     template: { kind: 'web', tier: 'compat' },
     issueEdgeClientCertificate: false,
+    enrollEdgeClientCertificate: false,
   });
 
   // The client should NOT be added to the list
