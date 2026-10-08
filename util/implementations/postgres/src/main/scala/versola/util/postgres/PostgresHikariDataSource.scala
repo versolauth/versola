@@ -26,9 +26,17 @@ object PostgresHikariDataSource:
       migrationLocations: Option[Seq[String]] = None,
       configPath: Seq[String] = Seq("postgres"),
   ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
-    ZLayer(ZIO.serviceWithZIO[ConfigProvider](_.load(nestedConfig(configPath)))) >+>
-      layer(serviceName, migrate, validateOnMigrate, migrationLocations) >+>
-      TransactorZIO.layer
+    ZLayer.scopedEnvironment[Scope & ConfigProvider]:
+      for
+        provider <- ZIO.service[ConfigProvider]
+        config <- provider.load(nestedConfig(configPath))
+        // Same `env` key `VersolaApp` reads, so a prod deployment refuses an unverified database
+        // connection without every caller having to thread the environment name down here.
+        prod <- provider.load(Config.string("env")).map(_ == "prod")
+        dataSource <- layer(serviceName, migrate, validateOnMigrate, migrationLocations, requireVerifiedTls = prod)
+          .build.provideSomeEnvironment[Scope](_ ++ ZEnvironment(config))
+      yield dataSource ++ ZEnvironment(config)
+    >+> TransactorZIO.layer
 
   /** `Config.Nested` applied right-to-left, so `Seq("store", "postgres")` reads
     * `store.postgres`. An empty path reads a `PostgresConfig` at the root of the file, which no
@@ -55,6 +63,9 @@ object PostgresHikariDataSource:
     *   all of them and hand Flyway a mix of unrelated schemas' migrations, exactly the bug diagnosed
     *   in the CI e2e OOM investigation (`sbt test` from the repo root picking up all three services'
     *   migrations directories together against one shared schema).
+    * @param requireVerifiedTls
+    *   Refuse to start when `url` or `notifications-url` does not verify the database's certificate
+    *   (see [[PostgresTls]]) instead of only logging a warning. `transactor` sets it in prod.
     * @return
     *   A ZLayer that provides HikariDataSource
     */
@@ -63,12 +74,20 @@ object PostgresHikariDataSource:
       migrate: Boolean,
       validateOnMigrate: Boolean = true,
       migrationLocations: Option[Seq[String]] = None,
+      requireVerifiedTls: Boolean = false,
   ): ZLayer[Scope & PostgresConfig, Throwable, HikariDataSource] =
     ZLayer:
       ZIO.acquireRelease(
         for
           postgres <- ZIO.service[PostgresConfig]
           _ <- ZIO.fromEither(validate(postgres)).mapError(msg => new IllegalArgumentException(msg))
+          tlsWeaknesses = (postgres.url :: postgres.notificationsUrl.toList).distinct
+            .flatMap(url => PostgresTls.weakness(url).map(reason => s"${redact(url)}: $reason"))
+          _ <-
+            if tlsWeaknesses.isEmpty then ZIO.unit
+            else if requireVerifiedTls then
+              ZIO.fail(IllegalStateException(s"Refusing to start in prod with unverified Postgres TLS (${tlsWeaknesses.mkString("; ")})"))
+            else ZIO.foreachDiscard(tlsWeaknesses)(weakness => ZIO.logWarning(s"Postgres TLS is not verified, $weakness"))
           _ <- ZIO.logInfo("Acquiring HikariDataSource...")
           // Built here, and not beside the publishing fiber below, because HikariCP's tracker and
           // that fiber are the two ends of one accumulator: the tracker has to be installed on the
@@ -82,6 +101,8 @@ object PostgresHikariDataSource:
             // Secret is an opaque Array[Byte] newtype (kept out of toString/logging); HikariConfig
             // needs a plain String, so it's decoded back here at the point of use only.
             config.setPassword(new String(postgres.password, StandardCharsets.UTF_8))
+            // Hands pgjdbc `sslmode=verify-full` (and `sslrootcert`) unless the URL sets its own.
+            config.setDataSourceProperties(PostgresTls.properties(postgres.url, postgres.sslRootCert))
             config.setMaximumPoolSize(postgres.maximumPoolSize)
             config.setMinimumIdle(postgres.minimumIdle)
             config.setConnectionTimeout(postgres.connectionTimeout.toMillis)
@@ -167,6 +188,8 @@ object PostgresHikariDataSource:
         s"connection-timeout must be >= 250ms, got ${postgres.connectionTimeout}",
       Option.when(postgres.maxLifetime.toMillis != 0 && postgres.maxLifetime.toMillis < 30000):
         s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}",
+      Option.when(postgres.sslRootCert.exists(_.isBlank)):
+        "ssl-root-cert must be a file path when set, or absent to use the JVM trust store",
       Option.when(postgres.notificationsUrl.exists(_.isBlank)):
         "notifications-url must be a JDBC URL when set, or absent to reuse url",
       Option.when(postgres.leakDetectionThreshold.toMillis < 0):
@@ -191,6 +214,9 @@ object PostgresHikariDataSource:
 
     if errors.isEmpty then Right(())
     else Left(s"Invalid postgres pool config: ${errors.mkString("; ")}")
+
+  /** Host only: a JDBC URL may carry credentials in its query string. */
+  private def redact(url: String): String = url.takeWhile(_ != '?')
 
   private def detectMigrationDirectories(): List[String] =
     import java.nio.file.{Files, Path, Paths}

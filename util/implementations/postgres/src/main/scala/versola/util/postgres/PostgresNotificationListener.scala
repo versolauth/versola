@@ -415,7 +415,8 @@ object PostgresNotificationListener:
     * which looks identical to "nothing has been revoked lately".
     */
   private def open(config: PostgresConfig): Connection =
-    val properties = Properties()
+    val url = config.notificationsUrl.getOrElse(config.url)
+    val properties = PostgresTls.properties(url, config.sslRootCert)
     properties.setProperty("user", config.user)
     // Secret is an opaque Array[Byte] newtype (kept out of toString/logging); the driver needs
     // a plain String, so it's decoded back here at the point of use only.
@@ -423,7 +424,7 @@ object PostgresNotificationListener:
     properties.setProperty("tcpKeepAlive", "true")
     properties.setProperty("socketTimeout", SocketTimeout.toSeconds.toString)
     properties.setProperty("ApplicationName", "versola-notification-listener")
-    DriverManager.getConnection(config.notificationsUrl.getOrElse(config.url), properties)
+    DriverManager.getConnection(url, properties)
 
   private def execute(connection: Connection, statements: List[String]): Unit =
     val statement = connection.createStatement()
