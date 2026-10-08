@@ -19,10 +19,11 @@ const REQUIRED_JWK_FIELDS = ['kid', 'kty'];
 
 // The algorithms a key can be generated for, most preferred first. FAPI 2.0 permits PS256
 // and ES256 equally; PS256 leads because verification runs on the edge's proxy path for
-// every request while signing runs once per token. RS256 is absent -- FAPI disallows its
-// PKCS#1 v1.5 padding, and central refuses both to generate it and to sign a tenant's tokens
-// under it.
-const GENERATABLE_ALGORITHMS = ['PS256', 'ES256'];
+// every request while signing runs once per token. RS256 is last -- FAPI disallows its
+// PKCS#1 v1.5 padding, so only a standard-profile tenant may sign under it (central refuses
+// the selection for a fapi2 one), but OpenID Connect makes it the algorithm every OP must
+// support and certification fails an OP that cannot.
+const GENERATABLE_ALGORITHMS = ['PS256', 'ES256', 'RS256'];
 
 // RFC 8414 authorization server metadata: minimal set of fields needed for
 // OAuth/OIDC discovery to work end-to-end.
