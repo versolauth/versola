@@ -3,6 +3,7 @@ package versola.util.postgres
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.{HikariConfig, HikariDataSource}
 import org.flywaydb.core.Flyway
+import versola.util.EnvName
 import zio.*
 import zio.config.magnolia.deriveConfig
 
@@ -25,14 +26,13 @@ object PostgresHikariDataSource:
       validateOnMigrate: Boolean = true,
       migrationLocations: Option[Seq[String]] = None,
       configPath: Seq[String] = Seq("postgres"),
-  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
-    ZLayer.scopedEnvironment[Scope & ConfigProvider]:
+  ): ZLayer[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
+    ZLayer.scopedEnvironment[Scope & ConfigProvider & EnvName]:
       for
         provider <- ZIO.service[ConfigProvider]
         config <- provider.load(nestedConfig(configPath))
-        // Same `env` key `VersolaApp` reads, so a prod deployment refuses an unverified database
-        // connection without every caller having to thread the environment name down here.
-        prod <- provider.load(Config.string("env")).map(_ == "prod")
+        // A prod deployment refuses an unverified database connection instead of only warning.
+        prod <- ZIO.serviceWith[EnvName](_.isProd)
         dataSource <- layer(serviceName, migrate, validateOnMigrate, migrationLocations, requireVerifiedTls = prod)
           .build.provideSomeEnvironment[Scope](_ ++ ZEnvironment(config))
       yield dataSource ++ ZEnvironment(config)
