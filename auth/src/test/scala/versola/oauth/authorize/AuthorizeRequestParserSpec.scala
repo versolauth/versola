@@ -17,7 +17,7 @@ import versola.oauth.model.{
   UserAgentData,
 }
 import versola.oauth.session.model.{SessionId, UserAgentDetails, UserAgentId}
-import versola.oauth.userinfo.model.RequestedClaims
+import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.user.model.UserId
 import versola.util.*
 import versola.oauth.client.model.SecurityProfile
@@ -1275,6 +1275,65 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
         yield assertTrue(result.requestedClaims == Some(RequestedClaims(Map.empty, Map.empty)))
+      },
+      // OIDC Core §5.5: a request may name just one of the two members. The conformance suite's
+      // oidcc-claims-essential sends exactly this, and was told "must be valid JSON".
+      test("accepts a request that names only the userinfo member") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(
+          validParams ++ Map("claims" -> """{"userinfo":{"name":{"essential":true}}}"""),
+        ))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.requestedClaims == Some(RequestedClaims(
+            userinfo = Map(Claim("name") -> ClaimRequest(Some(true), None, None)),
+            idToken = Map.empty,
+          )),
+        )
+      },
+      test("accepts a request that names only the id_token member") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(
+          validParams ++ Map("claims" -> """{"id_token":{"email":{"essential":true}}}"""),
+        ))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.requestedClaims == Some(RequestedClaims(
+            userinfo = Map.empty,
+            idToken = Map(Claim("email") -> ClaimRequest(Some(true), None, None)),
+          )),
+        )
+      },
+      // §5.5.1: `null` means the claim is requested with no constraints.
+      test("reads a null claim request as the claim with no constraints") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(
+          validParams ++ Map("claims" -> """{"userinfo":{"nickname":null,"email":{"essential":true}}}"""),
+        ))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.requestedClaims == Some(RequestedClaims(
+            userinfo = Map(
+              Claim("nickname") -> ClaimRequest.default,
+              Claim("email") -> ClaimRequest(Some(true), None, None),
+            ),
+            idToken = Map.empty,
+          )),
+        )
+      },
+      test("still rejects a claims object whose member is not an object") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("claims" -> """{"userinfo":"name"}""")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidClaims(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },
       test("rejects claims that are not valid JSON") {
         val env = Env()
