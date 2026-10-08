@@ -71,8 +71,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     userId = userId1,
     redirectUri = redirectUri1,
     scope = scope1,
-    codeChallenge = codeChallenge1,
-    codeChallengeMethod = CodeChallengeMethod.S256,
+    codeChallenge = Some(codeChallenge1),
+    codeChallengeMethod = Some(CodeChallengeMethod.S256),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -93,8 +93,8 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
     userId = userId1,
     redirectUri = redirectUri1,
     scope = scope1,
-    codeChallenge = codeChallenge1,
-    codeChallengeMethod = CodeChallengeMethod.S256,
+    codeChallenge = Some(codeChallenge1),
+    codeChallengeMethod = Some(CodeChallengeMethod.S256),
     requestedClaims = Some(requestedClaims1),
     uiLocales = Some(uiLocales1),
     nonce = None,
@@ -120,6 +120,13 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           found === Some(record),
           foundAfterDelete.isEmpty,
         )
+      },
+      test("persist and retrieve an authorization code that committed to no PKCE challenge") {
+        val withoutPkce = record.copy(codeChallenge = None, codeChallengeMethod = None)
+        for
+          _ <- env.repository.create(code1, withoutPkce, ttl)
+          found <- env.repository.find(code1)
+        yield assertTrue(found === Some(withoutPkce))
       },
       test("find returns None for expired code") {
         for

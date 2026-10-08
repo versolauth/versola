@@ -140,7 +140,12 @@ components:
       required: false
       description: |
         PKCE code challenge (RFC 7636 §4.2). Required unless `request_uri` is used, in which
-        case it comes from the pushed payload.
+        case it comes from the pushed payload. Optional only for a confidential client of a
+        `standard`-profile tenant. Refused with `invalid_request` when absent for a public
+        client, for an edge-fronted native client (`application_type=native` authenticating with
+        `tls_client_auth` -- confidential on paper, but the certificate is edge's and shared by
+        every install of the app), and for any client of a `fapi2` tenant. When sent, `code_challenge_method`
+        must be sent with it, and a method without a challenge is refused.
       schema:
         type: string
         pattern: '^[A-Za-z0-9\-._~]{43,128}$'
@@ -360,8 +365,8 @@ components:
       type: object
       description: |
         Only `client_id` is unconditionally required. `redirect_uri`, `response_type`, `scope`
-        and `code_challenge` are required inline, but come from the pushed payload when
-        `request_uri` is used.
+        and `code_challenge` (see its parameter for who may omit it) are required inline, but
+        come from the pushed payload when `request_uri` is used.
       required: [client_id]
       properties:
         client_id:
