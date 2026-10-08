@@ -432,7 +432,7 @@ bare-string form (`trusted-certificates = "/path"`) no longer parses -- wrap it 
 `"enrollEdgeClientCertificate": true` (and `mtlsAuth`, or none for `CN=<client>,OU=<tenant>,O=Versola`).
 Central stores **neither a certificate nor a key** -- only that the client is enrolled
 (`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
-replica generates its own EC P-256 key (kept in memory, never sent anywhere), and the client sync tells it
+replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
 what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
 `POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
 syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
@@ -441,7 +441,7 @@ alternative names, has the CA sign it (below), checks the result carries what `m
 returns the chain. The edge renews when a third of the lifetime is left -- on its ordinary client sync, so
 no new schedule -- keeps the current certificate if the CA is briefly unavailable, and enrols again after a
 restart. Replicas hold different certificates carrying the same subject, which is what auth recognises the
-client by. Mutually exclusive with `issueEdgeClientCertificate` and with supplying `edgeClientCertificate`.
+client by. Mutually exclusive with `issueEdgeClientCertificate` and with supplying `edgeClientCertificate`, and only for a native app fronted by edge (`applicationType: native`): a web client's tokens are bound to its certificate (RFC 8705 §3) and replicas enrolling separately would not share it, so a web client takes `issueEdgeClientCertificate`.
 
 **(3b) Client certificates issued by central** (`issueEdgeClientCertificate`), where central generates the key
 pair and stores the certificate and key encrypted, then renews it itself. Kept for deployments that have

@@ -14,6 +14,7 @@ import zio.schema.*
 
 import java.io.StringReader
 import java.nio.charset.StandardCharsets
+import java.net.InetAddress
 import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
@@ -53,6 +54,9 @@ object CertificateSubject:
   /** A fresh EC P-256 key pair and the PKCS#10 request for [[CertificateSubject]] it signs. */
   case class Generated(privateKeyPem: String, csrPem: String)
 
+  private val KnownKinds: Set[Int] =
+    Set(GeneralName.dNSName, GeneralName.uniformResourceIdentifier, GeneralName.rfc822Name, GeneralName.iPAddress)
+
   def generate(subject: CertificateSubject): Task[Generated] =
     ZIO.attemptBlocking:
       val generator = KeyPairGenerator.getInstance("EC")
@@ -81,11 +85,23 @@ object CertificateSubject:
       val requested = Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName)))
         .map(extension => GeneralNames.getInstance(extension.getParsedValue).getNames.toList)
         .getOrElse(Nil)
-      def names(tag: Int): Set[String] = requested.filter(_.getTagNo == tag).map(name => GeneralName.getInstance(name).getName.toString).toSet
-      def sans(dns: Set[String], uris: Set[String], mails: Set[String], ips: Set[String]) =
-        names(GeneralName.dNSName) == dns && names(GeneralName.uniformResourceIdentifier) == uris &&
-          names(GeneralName.rfc822Name) == mails && names(GeneralName.iPAddress) == ips
-      (signedByItsKey, sameSubject, sans(subject.dnsNames.toSet, subject.uris.toSet, subject.emailAddresses.toSet, subject.ipAddresses.toSet))
+      // An IP address is an octet string, not text: render it as an address, on both sides.
+      def render(name: GeneralName): String = name.getTagNo match
+        case GeneralName.iPAddress =>
+          InetAddress.getByAddress(org.bouncycastle.asn1.ASN1OctetString.getInstance(name.getName).getOctets).getHostAddress
+        case _ => name.getName.toString
+      def names(tag: Int): Set[String] = requested.filter(_.getTagNo == tag).map(render).toSet
+      // The four kinds a subject can register, and nothing else: a name of another kind (an
+      // otherName, a directoryName) is an identity the client never registered, and a CA that copies
+      // the extension would sign it.
+      val onlyKnownKinds = requested.forall(name => KnownKinds.contains(name.getTagNo))
+      val expectedIps = subject.ipAddresses.map(ip => InetAddress.getByName(ip).getHostAddress).toSet
+      val sans = onlyKnownKinds &&
+        names(GeneralName.dNSName) == subject.dnsNames.toSet &&
+        names(GeneralName.uniformResourceIdentifier) == subject.uris.toSet &&
+        names(GeneralName.rfc822Name) == subject.emailAddresses.toSet &&
+        names(GeneralName.iPAddress) == expectedIps
+      (signedByItsKey, sameSubject, sans)
     .toEither.left.map(error => s"the request is not a readable PKCS#10: ${error.getMessage}").flatMap:
       case (false, _, _) => Left("the request is not signed by the key it names")
       case (_, false, _) => Left("the request's subject is not the one the client is registered by")

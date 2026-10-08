@@ -10,17 +10,9 @@ info:
     invalidates the tokens derived from it.
 
     Per RFC 7009 §2.2 the endpoint answers `200` for a token that is unknown, already expired,
-    already revoked, malformed, or whose signature does not verify: the client's goal — that
-    the token is no longer usable — is satisfied either way. Client authentication is still
-    enforced first in every case.
-
-    Errors are reported for a client authentication failure (`401`), for a token that was
-    issued to a different client (`401 invalid_client`, RFC 7009 §2.1), and for a request
-    without a `token` field (`400`).
-
-    Revoking an access token (or a refresh token, for the access tokens of its family) also
-    notifies the client's back channel, so the token is rejected there until it would have
-    expired.
+    already revoked, or issued to a different client: the client's goal — that the token is no
+    longer usable — is satisfied either way, and distinguishing the cases would leak whether a
+    token exists. Only a client authentication failure is reported as an error.
   license:
     name: Business Source License 1.1
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
@@ -35,16 +27,12 @@ paths:
       operationId: revoke
       summary: Revoke a token
       description: |
-        The client authenticates with the method it registered: `client_secret_basic` (the
-        `Authorization` header), `client_secret_post` (`client_id` and `client_secret` as form
-        fields), `private_key_jwt` (`client_assertion_type` and `client_assertion` form
-        fields), a client certificate (`tls_client_auth` / `self_signed_tls_client_auth`, RFC
-        8705), or, for a public client, `client_id` alone with no secret at all. At most one
-        method may be used per request. The empty security requirement below stands for the
-        form-field and certificate cases, which OpenAPI cannot express as a security scheme.
-
-        The endpoint is also served at the `mtls_endpoint_aliases` address advertised in the
-        discovery document.
+        Client authentication is `client_secret_basic` (the `Authorization` header),
+        `client_secret_post` (`client_id` and `client_secret` as form fields of the request
+        body), or, for a public client, `client_id` alone with no secret at all. At most one
+        of the two credentialed methods may be used per request. The empty security
+        requirement below stands for the form-field cases, which OpenAPI cannot express as a
+        security scheme.
       tags: [Token]
       security:
         - clientSecretBasic: []
@@ -60,8 +48,6 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Revoked'
-        '400':
-          $ref: '#/components/responses/InvalidRequest'
         '401':
           $ref: '#/components/responses/InvalidClient'
 
@@ -88,16 +74,6 @@ components:
         client_secret:
           type: string
           description: Confidential clients using `client_secret_post`.
-        client_assertion_type:
-          type: string
-          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
-          description: Clients using `private_key_jwt`; sent together with `client_assertion`.
-        client_assertion:
-          type: string
-          description: Signed client assertion JWT (RFC 7523) for `private_key_jwt`.
-        token_type_hint:
-          type: string
-          description: Accepted but ignored; the token format is detected from its shape.
 
     ErrorResponse:
       type: object
@@ -105,12 +81,9 @@ components:
       properties:
         error:
           type: string
-          enum: [invalid_client, invalid_request]
+          enum: [invalid_client, unsupported_token_type]
         errorDescription:
           type: string
-          description: |
-            Note the camelCase member name: unlike the other endpoints, this one does not use
-            `error_description`.
 
   responses:
     Revoked:
@@ -118,20 +91,9 @@ components:
         The token is not usable. Returned both when it was revoked by this call and when it
         was already unusable, with an empty body.
 
-    InvalidRequest:
-      description: The body is not a readable form, or the `token` field is missing.
-      content:
-        application/json:
-          schema:
-            $ref: '#/components/schemas/ErrorResponse'
-          example:
-            error: invalid_request
-            errorDescription: The request is missing the required 'token' parameter
-
     InvalidClient:
       description: |
-        Client authentication failed (including an unreadable client certificate), or the
-        token belongs to a different client.
+        Client authentication failed, or the `token` field is missing or malformed.
       content:
         application/json:
           schema:

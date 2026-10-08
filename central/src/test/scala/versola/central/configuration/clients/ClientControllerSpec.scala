@@ -804,7 +804,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List((updateRequest, true))),
+          assertTrue(service.updateClient.calls == List((updateRequest, true, false))),
         ),
     ),
     controllerTestCase(
@@ -830,7 +830,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(
-            service.updateClient.calls == List((updateRequest.copy(registrationFlow = Some(Patch.Deleted)), true)),
+            service.updateClient.calls == List((updateRequest.copy(registrationFlow = Some(Patch.Deleted)), true, false)),
           ),
         ),
     ),
@@ -884,7 +884,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
-          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true))),
+          assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true, false))),
         ),
     ),
     controllerTestCase(

@@ -62,10 +62,14 @@ trait OAuthClientService:
   /** @param enforceSecurityProfile holds the client, as the patch leaves it, to its tenant's
     *                               [[SecurityProfile]]. Only bootstrap turns it off, and only
     *                               for a seeded client it cannot yet make conformant -- every
-    *                               API caller is held to the profile. */
+    *                               API caller is held to the profile.
+    * @param edgeCertificateEnrolled the client has its edge generate the certificate (#463), so
+    *                                none is stored on it and an update must not read that as a
+    *                                native client missing one. */
   def updateClient(
       request: UpdateClientRequest,
       enforceSecurityProfile: Boolean = true,
+      edgeCertificateEnrolled: Boolean = false,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
@@ -354,6 +358,7 @@ object OAuthClientService:
     override def updateClient(
         request: UpdateClientRequest,
         enforceSecurityProfile: Boolean = true,
+        edgeCertificateEnrolled: Boolean = false,
     ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
       for
         _ <- validateConsentUris(
@@ -422,7 +427,7 @@ object OAuthClientService:
             clientId = request.clientId,
             applicationType = applicationType,
             authMethod = authMethod,
-            hasEdgeClientCertificate = edgeCertificate.isDefined,
+            hasEdgeClientCertificate = edgeCertificate.isDefined || edgeCertificateEnrolled,
             requirePushedAuthorizationRequests =
               request.requirePushedAuthorizationRequests.getOrElse(client.requirePushedAuthorizationRequests),
             dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
