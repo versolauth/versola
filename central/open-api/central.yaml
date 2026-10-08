@@ -1111,7 +1111,9 @@ paths:
         '400':
           description: |
             Refused, with nothing stored -- among other reasons, because `securityProfile` names
-            a profile other than the one the tenant was created with, which cannot be changed.
+            a profile other than the one the tenant was created with, which cannot be changed,
+            or because `signingKeyId` names an RS256 key for a tenant on the `fapi2` profile
+            (FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding; a `standard` tenant may select one).
 
   /configuration/forms:
     get:
@@ -3748,7 +3750,10 @@ components:
           type: [string, 'null']
           description: >-
             Keeps the stored selection when omitted; null clears it, falling back to auth's
-            configured private key. Refused unless central holds a private key for that kid.
+            configured private key. Refused unless central holds a private key for that kid,
+            and refused for an RS256 key when the tenant is on the `fapi2` profile -- a
+            `standard` tenant may sign under RS256, which OpenID Connect Core requires every OP
+            to support.
         clientAssertionMaxLifetimeSeconds:
           type: [integer, 'null']
           description: >-

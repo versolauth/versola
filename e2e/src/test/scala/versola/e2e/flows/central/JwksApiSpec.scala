@@ -122,18 +122,19 @@ object JwksApiSpec extends CentralApiSpec:
         assertTrue(before == after)
           .label("a rejected generation must not leave a key behind")
     },
-    // RS256 is a well-formed JWKS algorithm this server refuses on policy rather than on
-    // shape, so nothing but the live endpoint shows an operator cannot obtain one.
-    test("generating an RS256 key is refused") {
+    // RS256 is the one algorithm OpenID Connect Core makes every OP support, so a `standard`
+    // tenant has to be able to sign under it; the `fapi2` refusal is at selection time, not here.
+    test("an RS256 key can be generated and is published under that alg") {
       for
         central <- api
-        before <- summaries(central).map(_.size)
-        rejected <- central.postEmpty(generatePath, "alg" -> "RS256")
-        after <- summaries(central).map(_.size)
-      yield assertTrue(rejected.status == Status.BadRequest)
-        .label(s"FAPI disallows RS256, so it must not be generated, got ${rejected.status}") &&
-        assertTrue(before == after)
-          .label("a refused generation must not leave a key behind")
+        (status, kid) <- generate(central, "RS256")
+        published <- eventually(central.get(jwksPath).flatMap(_.items("keys")))(_.exists(_.str("kid").contains(kid)))
+        generated = published.filter(_.str("kid").contains(kid))
+        _ <- central.delete(jwksPath, "kid" -> kid)
+      yield assertTrue(status == Status.Created)
+        .label(s"RS256 must be generatable, got $status") &&
+        assertTrue(generated.flatMap(_.str("alg")).toList == List("RS256"))
+          .label("the generated key must be published as RS256")
     },
     test("generating without the alg parameter is rejected") {
       for
