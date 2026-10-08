@@ -185,17 +185,33 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val firstInstallOnly = notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(_.name).toSet
         assertTrue(
           firstInstallOnly == Set(
-            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "CLIENT_SECRETS_SECRET", "CENTRAL_RESOURCE_SECRET",
+            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "REFRESH_TOKENS_SECRET", "CLIENT_SECRETS_SECRET",
+            "CENTRAL_RESOURCE_SECRET", "EDGE_TOKEN_ENC_KEY",
             "JWT_PRIVATE_KEY", "JWKS_JSON", "EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_PUBLIC_JWK",
+            "UTILITY_CLIENT_PUBLIC_JWK", "UTILS_PRIVATE_KEY_JWK",
           ),
-          // the ones whose loss only signs users out or invalidates in-flight tokens stay generated
-          Set("REFRESH_TOKENS_SECRET", "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET", "ACCOUNT_RESOURCE_SECRET")
-            .forall(specNamed(_).onMissing == OnMissing.Generate),
+          // the ones whose loss only signs users out, fails in-flight codes, or that nothing stored depends on
+          Set(
+            "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET", "ACCOUNT_RESOURCE_SECRET",
+            "CONVERSATION_COOKIE_SECRET", "SESSION_COOKIE_SECRET", "USER_AGENT_COOKIE_SECRET", "DPOP_NONCES_SECRET",
+            "EDGE_SESSIONS_SECRET", "EDGE_INTERNAL_SECRET", "EDGE_DPOP_NONCE_SALT", "EDGE_NATIVE_BLOB_KEY",
+            "ACCESS_TOKENS_SECRET", "CENTRAL_SECRET_KEY",
+          ).forall(specNamed(_).onMissing == OnMissing.Generate),
           notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).filter(_.name == "POSTGRES_PASSWORD")
             .map(_.targets) == List(Set(SecretTarget.Vps)),
           notGenerated.filter(_.onMissing == OnMissing.External).forall(_.targets == Set(SecretTarget.K8s)),
           notGenerated.filter(_.onMissing == OnMissing.External).map(_.name).toSet ==
             Set("POSTGRES_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"),
+        )
+      },
+      test("a size is promised only where the services' decoder enforces it; plain `Secret` values are opaque") {
+        val decodedAsPlainSecret = Set("ACCOUNT_RESOURCE_SECRET", "CENTRAL_RESOURCE_SECRET", "EDGE_INTERNAL_SECRET")
+        assertTrue(
+          decodedAsPlainSecret.forall(name => specNamed(name).tpe == SecretType.Opaque && specNamed(name).size.isEmpty),
+          // Secret.Bytes16 / Bytes32 in the config decoders
+          specNamed("PASSWORDS_SECRET").size.contains(16),
+          specNamed("CLIENT_SECRETS_SECRET").size.contains(16),
+          specNamed("EDGE_TOKEN_ENC_KEY").size.contains(32),
         )
       },
       test("the utils private key is held by `utils` and written to its own file") {
@@ -236,11 +252,20 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val found = SecretSchema.problems(List(sound.copy(services = Nil, targets = Set.empty)))
         assertTrue(found.exists(_.contains("no services")), found.exists(_.contains("no targets")))
       },
-      test("a base64url or RSA entry without a size, and a size where none belongs") {
+      test("a base64url entry without a size, and a size where none belongs") {
         assertTrue(
           SecretSchema.problems(List(sound.copy(size = None))).exists(_.contains("needs a size")),
           SecretSchema.problems(List(sound.copy(size = Some(0)))).exists(_.contains("size must be positive")),
           SecretSchema.problems(List(sound.copy(tpe = SecretType.PublicJwk))).exists(_.contains("takes no size")),
+        )
+      },
+      test("an RSA private key has no size: an imported 3072 or 4096-bit key is as valid as a generated one") {
+        val rsa = sound.copy(tpe = SecretType.RsaPrivateKey, size = None)
+        assertTrue(
+          SecretSchema.problems(List(rsa)) == Nil,
+          SecretSchema.problems(List(rsa.copy(size = Some(2048)))).exists(_.contains("takes no size")),
+          SecretSchema.specs.filter(_.tpe == SecretType.RsaPrivateKey).map(s => (s.name, s.size)) ==
+            List(("JWT_PRIVATE_KEY", None), ("EDGE_PRIVATE_KEY", None)),
         )
       },
       test("a file that doesn't match who holds the value") {

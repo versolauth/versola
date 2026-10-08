@@ -368,9 +368,14 @@ def writeGeneratedSecrets(dir: File, target: SecretTarget, service: String, secr
 
 /** How a value is shaped. `json` is the name written to secrets.schema.json. */
 enum SecretType(val json: String):
-  /** N random bytes, URL-safe base64 without padding (`rand`); `size` is N. */
+  /** `size` bytes in URL-safe base64. gen-env writes it without padding, but the services decode it
+    * with Java's URL decoder, which also accepts `=` padding: a consumer validates the DECODED
+    * length (padding optional), not the number of characters. Only for values whose decoder
+    * enforces that length (`Secret.Bytes16/Bytes32`); anything looser is `Opaque`. */
   case Base64Url extends SecretType("base64url")
-  /** RSA private key, PKCS#8 DER in standard base64; `size` is the modulus in bits. */
+  /** RSA private key, PKCS#8 DER in standard base64. No `size`: gen-env generates 2048 bits, but
+    * `PrivateKeyUtil.parse` accepts any modulus and an imported key (develop.md, "Onboarding") may
+    * be 3072 or 4096, so the modulus is not a promise about every value the store may hold. */
   case RsaPrivateKey extends SecretType("rsa-private-key")
   /** `{"keys":[...]}`: public JWKs, wrapped the way central's bootstrap.jwks expects. */
   case JwkSet extends SecretType("jwk-set")
@@ -392,8 +397,8 @@ enum OnMissing(val json: String):
   /** Take the candidate on a first install only; on an upgrade a missing value is an
     * error, because something already depends on the real one: either something outside the
     * store holds it (POSTGRES_PASSWORD: the role in Postgres has a password of its own), or
-    * data it protects is stored (PASSWORDS_SECRET, CLIENT_SECRETS_SECRET, the signing and edge
-    * key pairs). */
+    * data it protects is stored (PASSWORDS_SECRET, REFRESH_TOKENS_SECRET, CLIENT_SECRETS_SECRET,
+    * EDGE_TOKEN_ENC_KEY, CENTRAL_RESOURCE_SECRET, the signing, edge and utils key pairs). */
   case GenerateOnFirstInstallOnly extends OnMissing("generate-on-first-install-only")
   /** Never generated here; the operator supplies it. */
   case External extends OnMissing("external")
@@ -411,7 +416,7 @@ enum SecretTarget(val json: String):
   *                 consumer keys a secret by (name, service), never by name alone.
   *                 `utils` is not a service but the holder of the `utils` client's private
   *                 key; it never reaches a *.generated-secrets.env (see `file`).
-  * @param size     Base64Url: bytes before encoding; RsaPrivateKey: bits; otherwise None.
+  * @param size     Base64Url: bytes before encoding; otherwise None.
   * @param group    secrets that only work as a set (a key pair split across services,
   *                 tied together by a kid): all of a group's members are taken, or none.
   * @param file     the file this script writes the value to instead of a
@@ -461,6 +466,11 @@ object SecretSchema:
   private def bound(name: String, services: List[String], bytes: Int): SecretSpec =
     base64Url(name, services, bytes, OnMissing.GenerateOnFirstInstallOnly)
 
+  /** A value the services decode as a plain `Secret` (base64url of ANY length) or as text: the
+    * generated one has a size, but nothing rejects another, so no size is promised. */
+  private def opaque(name: String, services: List[String], onMissing: OnMissing = OnMissing.Generate): SecretSpec =
+    SecretSpec(name, services, SecretType.Opaque, None, None, onMissing, everywhere)
+
   private def grouped(
       name: String,
       services: List[String],
@@ -479,8 +489,11 @@ object SecretSchema:
     base64Url("ACCESS_TOKENS_SECRET", List("auth"), 32),
     // The AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with.
     bound("CLIENT_SECRETS_SECRET", List("auth", "central"), 16),
-    // Losing the next four only signs users out or invalidates in-flight tokens; they stay `generate`.
-    base64Url("REFRESH_TOKENS_SECRET", List("auth"), 32),
+    // The MAC key of every stored refresh token: a fresh one turns each of them, the long-lived
+    // on-device offline_access ones included, into invalid_grant for good.
+    bound("REFRESH_TOKENS_SECRET", List("auth"), 32),
+    // Losing the next three (and the cookie and DPoP secrets below) only signs users out or
+    // fails in-flight codes and requests, which expire within minutes; they stay `generate`.
     base64Url("AUTH_CODES_SECRET", List("auth"), 32),
     base64Url("SESSIONS_SECRET", List("auth"), 32),
     // The key every stored password hash is computed with: a new one fails every login.
@@ -490,34 +503,45 @@ object SecretSchema:
     base64Url("USER_AGENT_COOKIE_SECRET", List("auth"), 32),
     base64Url("PAR_REQUESTS_SECRET", List("auth"), 32),
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
-    // The signing key auth holds and the public JWKS central serves for it: tied by the kid.
+    // The signing key auth holds and the public JWKS central serves for it: auth matches the
+    // key to its JWKS entry by RSA modulus, and the entry needs a usable `alg`.
     // (a fresh pair next to the real one leaves two kids in play -- develop.md, "Onboarding")
-    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, Some(2048), "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
+    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
     // central
-    base64Url("ACCOUNT_RESOURCE_SECRET", List("central"), 32),
-    // Seeded into central's database once (seedCentralResource creates the resource only if it is
-    // absent) and checked there by authorizeBasic; edge and cert-sync present the value from here,
-    // so a fresh one after the first install is a 401 everywhere. ACCOUNT_RESOURCE_SECRET above is
-    // different: auth reads that one back from central's registry sync, so it stays `generate`.
-    bound("CENTRAL_RESOURCE_SECRET", List("central"), 32),
+    // central decodes it as a plain `Secret` (any length), and keeps the stored one once the
+    // resource exists (seedAuthResource); auth reads it back by sync, so `generate` is harmless.
+    opaque("ACCOUNT_RESOURCE_SECRET", List("central")),
+    // Seeded into central's database once, AES-encrypted (seedCentralResource creates the resource
+    // only if it is absent) and checked there by authorizeBasic. Edge gets it by sync, but cert-sync
+    // and operator tools present the value from the store, so a fresh one after the first install
+    // is a 401 for them. (A rotation through the admin API changes central's copy, not the store's.)
+    opaque("CENTRAL_RESOURCE_SECRET", List("central"), OnMissing.GenerateOnFirstInstallOnly),
     grouped("JWKS_JSON", List("central"), SecretType.JwkSet, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // The edge's key pair: the private half and its kid at the edge, the public half at central.
     // (central already trusts the real public key: a fresh edge pair makes every sync call 401)
     grouped("EDGE_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // The `utils` client's key pair: the public half at central, the private half in the file
-    // below (and, once versola-cli stores it, under the pseudo-service `utils`).
-    grouped("UTILITY_CLIENT_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "utils"),
+    // below (and, once versola-cli stores it, under the pseudo-service `utils`). central re-applies
+    // the public half on every boot (seedUtilityClient), and loadgen/versola-cli hold the private
+    // half outside the store, so a fresh pair on an upgrade silently locks them out.
+    grouped("UTILITY_CLIENT_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "utils", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // edge
-    grouped("EDGE_PRIVATE_KEY", List("edge"), SecretType.RsaPrivateKey, Some(2048), "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
+    grouped("EDGE_PRIVATE_KEY", List("edge"), SecretType.RsaPrivateKey, None, "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     grouped("EDGE_KEY_ID", List("edge"), SecretType.KeyId, None, "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
-    base64Url("EDGE_TOKEN_ENC_KEY", List("edge"), 32),
+    // Encrypts the refresh tokens edge keeps in its session table (EdgeService.storeSession). With a
+    // fresh key every existing session fails AES-GCM decryption in refreshSession, which surfaces as
+    // a server error rather than a re-login. EDGE_SESSIONS_SECRET and EDGE_NATIVE_BLOB_KEY below
+    // are not like this: the first is not read by edge today, the second seals short-lived blobs
+    // that fail cleanly as `Unreadable`.
+    bound("EDGE_TOKEN_ENC_KEY", List("edge"), 32),
     base64Url("EDGE_SESSIONS_SECRET", List("edge"), 32),
-    base64Url("EDGE_INTERNAL_SECRET", List("edge"), 32),
+    // edge decodes it as a plain `Secret` (any length) and only compares it, so no size is promised.
+    opaque("EDGE_INTERNAL_SECRET", List("edge")),
     base64Url("EDGE_DPOP_NONCE_SALT", List("edge"), 32),
     // The AES-256-GCM key edge seals the native-app blob with (`native.blob-key`).
     base64Url("EDGE_NATIVE_BLOB_KEY", List("edge"), 32),
-    // vps: one Postgres host and role, so one generated value shared by all three services.
+    // vps: one password for all three services (verifySharedPostgresPassword), generated once.
     // Opaque although vps generates 24 random bytes (`rand(rng, 24)`): --*-postgres-password
     // overrides it, and an existing deployment's real password (develop.md, "Onboarding") is
     // whatever it is. The type is a promise about every value the store may hold, so a
@@ -557,6 +581,7 @@ object SecretSchema:
       None,
       "utils",
       file = Some("utils.private-key.jwk"),
+      onMissing = OnMissing.GenerateOnFirstInstallOnly,
     ),
   )
 
@@ -568,19 +593,19 @@ object SecretSchema:
   def keysFor(target: SecretTarget, service: String): Set[String] =
     forTarget(target).filter(_.services.contains(service)).map(_.name).toSet
 
-  /** Stops the run when `written` (the keys about to be written, names only) isn't exactly the
-    * schema's set for `service` on `target`. The message names keys and nothing else. */
   /** vps's schema entry for POSTGRES_PASSWORD is one value for auth, central and edge. The three
     * `--*-postgres-password` flags are accepted there too, so this stops a run that gives them
     * different values. Names the flags, never the values. */
   def verifySharedPostgresPassword(auth: String, central: String, edge: String): Unit =
     if auth != central || auth != edge then
       throw RuntimeException(
-        "on vps auth, central and edge share one Postgres role, so --auth-postgres-password, " +
+        "on vps auth, central and edge share one Postgres password, so --auth-postgres-password, " +
           "--central-postgres-password and --edge-postgres-password must be the same value " +
           "(or all left out); k8s is the target with a password per service",
       )
 
+  /** Stops the run when `written` (the keys about to be written, names only) isn't exactly the
+    * schema's set for `service` on `target`. The message names keys and nothing else. */
   def verifyKeys(target: SecretTarget, service: String, written: Seq[String]): Unit =
     val expected   = keysFor(target, service)
     val actual     = written.toSet
@@ -607,9 +632,9 @@ object SecretSchema:
         spec.services.filterNot(Holders.contains).map(service => s"${spec.name}: unknown service $service")
       val noTargets = if spec.targets.isEmpty then List(s"${spec.name}: no targets") else Nil
       val sizeProblem = (spec.tpe, spec.size) match
-        case (SecretType.Base64Url | SecretType.RsaPrivateKey, None) => List(s"${spec.name}: ${spec.tpe.json} needs a size")
-        case (SecretType.Base64Url | SecretType.RsaPrivateKey, Some(size)) if size <= 0 => List(s"${spec.name}: size must be positive")
-        case (SecretType.Base64Url | SecretType.RsaPrivateKey, Some(_)) => Nil
+        case (SecretType.Base64Url, None) => List(s"${spec.name}: ${spec.tpe.json} needs a size")
+        case (SecretType.Base64Url, Some(size)) if size <= 0 => List(s"${spec.name}: size must be positive")
+        case (SecretType.Base64Url, Some(_)) => Nil
         case (_, Some(_)) => List(s"${spec.name}: ${spec.tpe.json} takes no size")
         case (_, None) => Nil
       // A secret that isn't in a *.generated-secrets.env must say which file holds it, and
@@ -754,8 +779,8 @@ object SecretSchema:
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
 
   // ── Random secrets ────────────────────────────────────────────────────────────
-  val centralSecretKey          = rand(rng, 32) // shared: auth↔central & edge↔central
-  val clientSecretsSecret       = rand(rng, 16) // shared: auth + central (client MAC)
+  val centralSecretKey          = rand(rng, 32) // shared: auth↔central (edge doesn't read it)
+  val clientSecretsSecret       = rand(rng, 16) // shared: auth + central (central: AES key of client secrets, signing keys, resource secrets at rest)
   val accessTokensSecret        = rand(rng, 32)
   val refreshTokensSecret       = rand(rng, 32)
   val authCodesSecret           = rand(rng, 32)
@@ -882,9 +907,11 @@ object SecretSchema:
 
   // central refuses to seed itself an admin API nobody can call: both blocks below are
   // always emitted (bootstrap.resource-secret and bootstrap.utility-client), never left
-  // empty, regardless of target -- BootstrapService only fills either in ONCE, the first
-  // time the resource/client doesn't exist yet, so a value that isn't here at first boot
-  // has no later config-only recovery (versolauth/versola#380). Pinned in local dev so
+  // empty, regardless of target -- BootstrapService fills the resource secret in ONCE, the
+  // first time the resource doesn't exist yet, so a value that isn't here at first boot has
+  // no later config-only recovery (versolauth/versola#380). The utility client's public key
+  // is different: seedUtilityClient re-applies it on EVERY boot, so a pair that changes
+  // between runs replaces the key central trusts. Pinned in local dev so
   // e2e tests can rely on a stable value they can hardcode against; every other target
   // gets this run's own freshly generated one, placeholdered out exactly like every other
   // secret when useOpenBao is set (see secretField's own comment for what resolves it on
@@ -916,8 +943,10 @@ object SecretSchema:
   //     NOT in any *.generated-secrets.env: versola-cli loads those into the container they
   //     are named for, and central must never hold the key that authenticates as `utils`.
   //     That file is authoritative only for the run that first populated central's OpenBao:
-  //     a later run generates a fresh pair, but central keeps the stored public half, so only
-  //     the file from the first run matches it. Keep that file, not a regenerated one.
+  //     a later run generates a fresh pair, and where the stored public half is not the one
+  //     placeholdered (no OpenBao: k8s) central would take the new one on its next boot, so
+  //     only the file from the first run matches what central trusts. Keep that file, not a
+  //     regenerated one -- which is why the schema marks the pair first-install-only.
   //   A deployment that seeded `utils` with a client_secret under an older generator cannot take
   //   this config as is: central refuses a boot that calls for another method than the client
   //   holds (see k8s/README.md, "Upgrading a deployment that already seeded utils").
@@ -1235,8 +1264,9 @@ object SecretSchema:
   val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
   val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
   val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
-  // The schema says vps has one POSTGRES_PASSWORD for all three services (one Postgres role), and
-  // versola-cli stores it as one value; the three flags would let a run say otherwise.
+  // The schema says vps has one POSTGRES_PASSWORD for all three services, and versola-cli stores
+  // it as one value; the three flags would let a run say otherwise. Only the password is
+  // checked: the users and URLs have their own flags and are not secrets.
   if isVps then SecretSchema.verifySharedPostgresPassword(authPgPass, centralPgPass, edgePgPass)
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
@@ -1730,7 +1760,7 @@ object SecretSchema:
       val secretTarget = SecretSchema.parseTarget(target).getOrElse(
         throw RuntimeException(s"no secret schema for target '$target' (placeholders are only written for docker-local, vps and k8s)"),
       )
-      // A schema that contradicts itself must stop the run before anything is written.
+      // A schema that contradicts itself must stop the run before any secrets file is written.
       SecretSchema.problems(SecretSchema.specs) match
         case Nil => ()
         case found => throw RuntimeException("secret schema is inconsistent: " + found.mkString("; "))

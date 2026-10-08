@@ -182,21 +182,29 @@ Each entry says what the secret is called (`name`), which services receive it (`
 shared by several is listed once, and the same name in several entries is separate values — k8s has
 a `POSTGRES_PASSWORD` entry per service, so a consumer keys a secret by `(name, service)`, never by
 name alone; `utils` is the holder of the `utils` client's private key, stored
-under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`: `base64url` is URL-safe
-base64 without padding of `size` random bytes; `opaque` has no shape and no size: it marks a value
-an operator can set — by a prompt, a `--*-password` flag or an imported existing password, like
-`POSTGRES_PASSWORD` and `ADMIN_BOOTSTRAP_PASSWORD` — even where gen-env generates a random one, since a
-type is a promise about every value the store may hold), whether it belongs to a `group` (secrets that only
-work as a set, e.g. a private key and the public JWKS that carries its `kid`: take all of them or
-none), what to do when it is missing from the store (`onMissing`: `generate`,
-`generate-on-first-install-only` — for a value something already depends on, so that missing it on an
-upgrade is an error: one something outside the store holds, like `POSTGRES_PASSWORD`, which Postgres
-has its own copy of, or one that protects stored data, like `PASSWORDS_SECRET` (the key of every
-password hash), `CLIENT_SECRETS_SECRET` (the AES key of client secrets and signing keys in central)
-`CENTRAL_RESOURCE_SECRET` (central stores its verifier once; edge and cert-sync present the value
-from the store) and the JWT and edge key pairs; a group has one policy for all its members — or `external`) and the `file` it is written
-to when it isn't in a `*.generated-secrets.env`. `versola-cli` uses it to find the secrets a new
-version needs that the store doesn't have yet.
+under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`). A type is a promise about
+every value the store may hold, not about the one gen-env generates, so it is made only where the
+services enforce it: `base64url` is URL-safe base64 of exactly `size` bytes, as the `Secret.Bytes16`
+and `Bytes32` config decoders require (gen-env writes it without padding, the services also accept
+`=` padding — validate the decoded length, not the characters); `rsa-private-key` is PKCS#8 in
+standard base64 of any modulus size; `opaque` has no shape and no size — for values an operator
+can set (a prompt, a `--*-password` flag, an imported existing password: `POSTGRES_PASSWORD`,
+`ADMIN_BOOTSTRAP_PASSWORD`) and for values the services decode as a plain `Secret` of any length
+(`ACCOUNT_RESOURCE_SECRET`, `CENTRAL_RESOURCE_SECRET`, `EDGE_INTERNAL_SECRET`). An entry may also
+belong to a `group` (secrets that only work as a set, e.g. a signing key and the public JWKS that
+carries it; one `onMissing` for all members: take all of them or none), and says what to do when it
+is missing from the store (`onMissing`): `generate`; `generate-on-first-install-only`, for a value
+something already depends on, so that missing it on an upgrade is an error — either something
+outside the store holds it (`POSTGRES_PASSWORD`, which Postgres has its own copy of; the `utils`
+key pair, whose private half loadgen and versola-cli hold), or it protects stored data:
+`PASSWORDS_SECRET` (the key of every password hash), `REFRESH_TOKENS_SECRET` (the MAC of every stored
+refresh token), `CLIENT_SECRETS_SECRET` (the AES key of client secrets and signing keys in central),
+`CENTRAL_RESOURCE_SECRET` (central keeps its copy from the first boot), `EDGE_TOKEN_ENC_KEY` (it
+encrypts the refresh tokens in edge's session table) and the JWT and edge key pairs; or `external`,
+supplied by the operator. The `file` field names where a value is written when it isn't in a
+`*.generated-secrets.env`. `versola-cli` uses the schema to find the secrets a new version needs
+that the store doesn't have yet. On vps `POSTGRES_PASSWORD` is one value for all three services;
+the users and URLs are separate flags and are not checked.
 
 Adding a secret takes four edits that must agree: a `SecretSpec` in `SecretSchema.specs`, a
 `secretField`/`secretKeyField` placeholder in the service's config, an entry in that service's
@@ -308,7 +316,7 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
   bao kv patch -mount=secret versola/vps/<service> KEY='<value>'
 ```
 
-`POSTGRES_PASSWORD` is shared by all three services (one Postgres role) and
+`POSTGRES_PASSWORD` is shared by all three services (one password) and
 must be identical under `auth`, `central` and `edge`; `configure` refuses to
 continue if the stored values disagree, and gen-env stops on vps when the three
 `--*-postgres-password` flags are given different values (k8s is the target with a
@@ -326,17 +334,33 @@ counterparts that a fresh one won't match, and each mismatch fails differently:
 - **`JWT_PRIVATE_KEY`** — central is the source of truth for signing keys
   (`JwksRepository`; auth only caches a synced copy). Central's bootstrap
   seeding adds a key by `kid` rather than replacing, so a fresh one ends up
-  *alongside* the real one, and which of the two signs new tokens depends on
-  list order (`JWT.PublicKeys.active`) — it can work today and break after a
-  restart. Seed the real key so only one `kid` is in play.
+  *alongside* the real one, publishing a key nobody holds, and auth matches
+  its configured private key to a JWKS entry by RSA modulus (the entry needs a
+  usable `alg`). Seed the real key so only one `kid` is in play.
 - **`CLIENT_SECRETS_SECRET`** — existing OAuth client secrets in central are
   encrypted with it; a fresh one can't decrypt them.
 - **`PASSWORDS_SECRET`** — the key every stored password hash was computed with
   (`PasswordService`); a fresh one fails every existing user's login.
+- **`REFRESH_TOKENS_SECRET`** — the MAC key of every stored refresh token; a
+  fresh one turns each of them, including on-device `offline_access` tokens,
+  into `invalid_grant`.
+- **`EDGE_TOKEN_ENC_KEY`** — the AES key of the refresh tokens in edge's session
+  table (exactly 32 bytes, base64url); with a fresh one every existing session
+  fails to decrypt in `refreshSession`, a server error rather than a re-login.
+- **`CENTRAL_RESOURCE_SECRET`** — central keeps its copy from the first boot
+  (create-only, AES-encrypted); cert-sync and operator tools present the store's
+  value, so a fresh one is a 401 for them. Edge gets the secret by sync. A rotation
+  through the admin API changes central's copy, not the store's.
 - **`EDGE_PRIVATE_KEY` / `EDGE_KEY_ID` / `EDGE_PUBLIC_JWK` / `JWKS_JSON`** —
-  central already trusts the real edge's public key; a fresh edge key pair makes
-  every edge→central sync call 401. `JWKS_JSON` is auth's public key wrapped as
-  `{"keys":[<jwk>]}`, whose `kid` must match `JWT_PRIVATE_KEY`.
+  central already trusts the real edge's public key (its `kid` must equal
+  `EDGE_KEY_ID`, and central needs it to be an RSA key); a fresh edge key pair
+  makes every edge→central sync call 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}`
+  holding the public key of `JWT_PRIVATE_KEY` (same RSA modulus) with an `alg`.
+- **`UTILITY_CLIENT_PUBLIC_JWK` / `UTILS_PRIVATE_KEY_JWK`** — central re-applies the
+  utility client's public key on every boot, so a fresh pair silently replaces the
+  key loadgen and versola-cli authenticate with. Reuse the existing pair (an EC
+  P-256 private JWK for gen-env's reuse path; k8s/README.md covers a client
+  that was seeded with a `client_secret`).
 
 Existing values in OpenBao always win, but with automatic setup OpenBao only
 exists once `configure` has run — and that same first run already stores
@@ -353,14 +377,17 @@ generated values. So the order is:
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/auth \
     POSTGRES_PASSWORD='<real password>' JWT_PRIVATE_KEY='<real private key, base64>' \
-    CLIENT_SECRETS_SECRET='<real value>' PASSWORDS_SECRET='<real value>'
+    CLIENT_SECRETS_SECRET='<real value>' PASSWORDS_SECRET='<real value>' \
+    REFRESH_TOKENS_SECRET='<real value>'
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/central \
     POSTGRES_PASSWORD='<real password>' CLIENT_SECRETS_SECRET='<real value>' \
-    EDGE_PUBLIC_JWK='<real public JWK, single-line JSON>' JWKS_JSON='{"keys":[<real auth public JWK>]}'
+    EDGE_PUBLIC_JWK='<real public JWK, single-line JSON>' JWKS_JSON='{"keys":[<real auth public JWK>]}' \
+    CENTRAL_RESOURCE_SECRET='<real value>'
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/edge \
-    POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>'
+    POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>' \
+    EDGE_TOKEN_ENC_KEY='<real 32-byte base64url value>'
 ```
 
 3. Run the same `versola configure vps …` again — it now resolves the real
