@@ -122,7 +122,8 @@ components:
             type: string
           description: |
             Always includes `S256`. PKCE is mandatory except for a confidential client of a
-            `standard`-profile tenant, which may omit it.
+            `standard`-profile tenant, which may omit it -- public clients, edge-fronted native
+            clients and every client of a `fapi2` tenant still need it.
         token_endpoint_auth_methods_supported:
           type: array
           items:

@@ -2,7 +2,7 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.Status
+import zio.http.{Status, URL}
 import zio.test.*
 
 /** Negative test cases for the /authorize endpoint.
@@ -50,6 +50,36 @@ object AuthorizeNegativeSpec extends E2ESpec:
           omitCodeChallenge = true,
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
+    },
+
+    // A native client behind edge is confidential on paper (`tls_client_auth`), but the
+    // certificate is edge's and the same for every install, so it proves nothing about the app.
+    // The rule reads `applicationType`, which only reaches auth through central's sync -- so this
+    // is the case that fails if that column is lost on the way. The description is asserted, not
+    // just the code: a native client also has to push (`/par`), and an `invalid_request` for
+    // that would pass without PKCE ever being the reason.
+    test("an edge-fronted native client of a standard tenant must still send code_challenge") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        clientId <- CentralApi.id("e2e-native")
+        _ <- auth.registerClient(
+          clientId,
+          "Native client",
+          Set(s.redirectUri),
+          authFlow = Some(Flows.loginPasswordAuthFlow),
+          authMethod = "tls_client_auth",
+          applicationType = Some("native"),
+          dpopBoundAccessTokens = true,
+          requirePushedAuthorizationRequests = true,
+          enrollEdgeClientCertificate = true,
+        ).success
+        _ <- auth.syncConfiguration()
+        result <- auth.authorizeRaw(clientId = clientId, redirectUri = s.redirectUri, omitCodeChallenge = true)
+        _ <- result.assertErrorRedirect("invalid_request")
+        url <- ZIO.fromEither(URL.decode(result.location)).mapError(RuntimeException(_))
+        description <- url.queryZIO[String]("error_description")
+      yield assertTrue(description.contains("code_challenge"))
+        .label(s"the refusal must be about the missing code_challenge, got '$description'")
     },
 
     // OAuth 2.1 §7.5.2: the one client that may omit PKCE is a confidential one of a `standard`

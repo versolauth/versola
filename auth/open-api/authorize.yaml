@@ -141,8 +141,10 @@ components:
       description: |
         PKCE code challenge (RFC 7636 §4.2). Required unless `request_uri` is used, in which
         case it comes from the pushed payload. Optional only for a confidential client of a
-        `standard`-profile tenant; a public client, and any client of a `fapi2` tenant, is
-        refused with `invalid_request` when it is absent. When sent, `code_challenge_method`
+        `standard`-profile tenant. Refused with `invalid_request` when absent for a public
+        client, for an edge-fronted native client (`application_type=native` authenticating with
+        `tls_client_auth` -- confidential on paper, but the certificate is edge's and shared by
+        every install of the app), and for any client of a `fapi2` tenant. When sent, `code_challenge_method`
         must be sent with it, and a method without a challenge is refused.
       schema:
         type: string

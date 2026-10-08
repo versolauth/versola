@@ -82,7 +82,7 @@ components:
         Every `/authorize` parameter is accepted. `client_id` is required, `request_uri` is
         forbidden. Credential fields (`client_id`, `client_secret`) are stripped before the
         payload is stored. `code_challenge` may be omitted only by a confidential client of a
-        `standard`-profile tenant, as at `/authorize`.
+        `standard`-profile tenant that is not an edge-fronted native client, as at `/authorize`.
       required: [client_id, redirect_uri, response_type, scope]
       properties:
         client_id:
