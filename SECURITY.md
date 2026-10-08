@@ -38,6 +38,9 @@ vulnerabilities, and do not take action against good-faith research that follows
 
 ## Vulnerability management
 
+Scala dependencies are submitted to the dependency graph by
+`.github/workflows/sbt-dependency-submission.yml`, so Dependabot alerts cover them.
+
 Scanning runs in `.github/workflows/security.yml`: verified secrets (TruffleHog), dependency
 review on pull requests, Trivy on the repository and on the published images (weekly), `npm
 audit`, CodeQL for the TypeScript and Semgrep for the Scala code. Images are built with a
