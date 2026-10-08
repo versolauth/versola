@@ -4,4 +4,5 @@
 FROM postgres:18
 COPY --chown=postgres:postgres --chmod=600 server.key /var/lib/postgresql/tls/server.key
 COPY --chown=postgres:postgres --chmod=644 server.crt /var/lib/postgresql/tls/server.crt
+USER postgres
 CMD ["postgres", "-c", "ssl=on", "-c", "ssl_cert_file=/var/lib/postgresql/tls/server.crt", "-c", "ssl_key_file=/var/lib/postgresql/tls/server.key"]
