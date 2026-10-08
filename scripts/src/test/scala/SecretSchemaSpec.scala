@@ -155,13 +155,17 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           entries.forall(_.onMissing == OnMissing.External),
         )
       },
-      test("k8s: the admin bootstrap password is whatever the operator types; vps generates 16 bytes") {
+      test("the admin bootstrap password has no shape: --admin-password can set it on vps and k8s") {
         val k8s = onTarget(SecretTarget.K8s, "ADMIN_BOOTSTRAP_PASSWORD")
         val vps = onTarget(SecretTarget.Vps, "ADMIN_BOOTSTRAP_PASSWORD")
         assertTrue(
           k8s.map(e => (e.services, e.tpe, e.size, e.onMissing)) == List((List("auth"), SecretType.Opaque, None, OnMissing.External)),
-          vps.map(e => (e.tpe, e.size, e.onMissing)) == List((SecretType.Base64Url, Some(16), OnMissing.Generate)),
+          vps.map(e => (e.services, e.tpe, e.size, e.onMissing)) == List((List("auth"), SecretType.Opaque, None, OnMissing.Generate)),
         )
+      },
+      test("a secret an operator can set is opaque: the vps Postgres password too") {
+        val vps = onTarget(SecretTarget.Vps, "POSTGRES_PASSWORD")
+        assertTrue(vps.map(e => (e.tpe, e.size)) == List((SecretType.Opaque, None)))
       },
       test("only the Postgres password on vps may not be generated on an upgrade; k8s values are the operator's") {
         val notGenerated = SecretSchema.specs.filter(_.onMissing != OnMissing.Generate)

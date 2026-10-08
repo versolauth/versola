@@ -380,7 +380,9 @@ enum SecretType(val json: String):
   case PrivateJwk extends SecretType("private-jwk")
   /** An identifier derived together with a key, not random (`edge-<date>`). */
   case KeyId extends SecretType("key-id")
-  /** Text the operator chose: no shape, no size. What k8s asks for at its prompts. */
+  /** No shape, no size: a value the operator can set (a prompt, a flag, an imported existing
+    * password), so nothing may be validated about it. A secret is only `Base64Url` etc. when
+    * every value the store may hold has that shape, not merely the one gen-env generates. */
   case Opaque extends SecretType("opaque")
 
 /** What a deployment does when a secret is absent from its secret store. */
@@ -493,11 +495,15 @@ object SecretSchema:
     // The AES-256-GCM key edge seals the native-app blob with (`native.blob-key`).
     base64Url("EDGE_NATIVE_BLOB_KEY", List("edge"), 32),
     // vps: one Postgres host and role, so one generated value shared by all three services.
+    // Opaque although vps generates 24 random bytes (`rand(rng, 24)`): --*-postgres-password
+    // overrides it, and an existing deployment's real password (develop.md, "Onboarding") is
+    // whatever it is. The type is a promise about every value the store may hold, so a
+    // consumer validating "24-byte base64url" would reject those.
     SecretSpec(
       "POSTGRES_PASSWORD",
       List("auth", "central", "edge"),
-      SecretType.Base64Url,
-      Some(24),
+      SecretType.Opaque,
+      None,
       None,
       OnMissing.GenerateOnFirstInstallOnly,
       Set(SecretTarget.Vps),
@@ -508,11 +514,12 @@ object SecretSchema:
     k8sOperatorSecret("POSTGRES_PASSWORD", "auth"),
     k8sOperatorSecret("POSTGRES_PASSWORD", "central"),
     k8sOperatorSecret("POSTGRES_PASSWORD", "edge"),
+    // vps generates 16 random bytes, but --admin-password overrides them: opaque for the same reason.
     SecretSpec(
       "ADMIN_BOOTSTRAP_PASSWORD",
       List("auth"),
-      SecretType.Base64Url,
-      Some(16),
+      SecretType.Opaque,
+      None,
       None,
       OnMissing.Generate,
       Set(SecretTarget.Vps),

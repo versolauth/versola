@@ -182,8 +182,10 @@ shared by several is listed once, and the same name in several entries is separa
 a `POSTGRES_PASSWORD` entry per service, so a consumer keys a secret by `(name, service)`, never by
 name alone; `utils` is the holder of the `utils` client's private key, stored
 under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`: `base64url` is URL-safe
-base64 without padding of `size` random bytes; `opaque` is text the operator typed, with no shape and
-no size — what k8s asks for at its prompts), whether it belongs to a `group` (secrets that only
+base64 without padding of `size` random bytes; `opaque` has no shape and no size: it marks a value
+an operator can set — by a prompt, a `--*-password` flag or an imported existing password, like
+`POSTGRES_PASSWORD` and `ADMIN_BOOTSTRAP_PASSWORD` — even where gen-env generates a random one, since a
+type is a promise about every value the store may hold), whether it belongs to a `group` (secrets that only
 work as a set, e.g. a private key and the public JWKS that carries its `kid`: take all of them or
 none), what to do when it is missing from the store (`onMissing`: `generate`,
 `generate-on-first-install-only` — for a value something outside the store already holds, like
