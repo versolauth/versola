@@ -47,13 +47,15 @@ object AccountSettingsController extends Controller:
   val changePasswordRoute: Route[Env, Throwable] =
     Method.PATCH / "settings" / "password" -> handler { (request: Request) =>
       for
-        _ <- authorizeResource(request)
-        body <- request.bodyAs[ChangePasswordRequest]
+        _        <- authorizeResource(request)
+        userId   <- request.queryZIO[UserId]("userId")
+        clientId <- request.queryZIO[ClientId]("clientId")
+        body     <- request.bodyAs[ChangePasswordRequest]
         passwordRegex <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
         _ <- ZIO.fail(BadRequest("new password does not meet policy requirements"))
               .unless(scala.util.Try(body.newPassword.matches(passwordRegex)).getOrElse(true))
         _ <- ZIO.serviceWithZIO[AccountSettingsService](_.changePassword(
-              body.userId, body.clientId, body.currentPassword, body.newPassword,
+              userId, clientId, body.currentPassword, body.newPassword,
             )).mapError:
               case e: versola.oauth.challenge.password.model.PasswordReuseError =>
                 BadRequest(s"Password reuse: must differ from last ${e.numDifferent} passwords")
@@ -274,8 +276,6 @@ object AccountSettingsController extends Controller:
   ) derives JsonCodec
 
   private case class ChangePasswordRequest(
-    userId: UserId,
-    clientId: ClientId,
     currentPassword: String,
     newPassword: String,
   ) derives JsonCodec

@@ -98,24 +98,25 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       callerSecret: Secret,
   ): Task[Request] =
     val authenticated = request.removeHeader(Header.Authorization).addHeader(basic(secret = callerSecret))
+    val withQuery = authenticated.copy(url = authenticated.url
+      .removeQueryParam("userId")
+      .removeQueryParam("clientId")
+      .removeQueryParam("sessionId")
+      .addQueryParam("userId", callerUserId.toString)
+      .addQueryParam("clientId", clientId.toString)
+      .addQueryParam("sessionId", callerSessionId.toString))
     if authenticated.method == Method.GET then
-      ZIO.succeed(authenticated.copy(url = authenticated.url
-        .removeQueryParam("userId")
-        .removeQueryParam("clientId")
-        .removeQueryParam("sessionId")
-        .addQueryParam("userId", callerUserId.toString)
-        .addQueryParam("clientId", clientId.toString)
-        .addQueryParam("sessionId", callerSessionId.toString)))
+      ZIO.succeed(withQuery)
     else
       for
-        bodyString <- authenticated.body.asString
+        bodyString <- withQuery.body.asString
         base = bodyString.fromJson[Json.Obj].getOrElse(Json.Obj(Chunk.empty))
         callerFields = Chunk(
-          "userId" -> Json.Str(callerUserId.toString),
-          "clientId" -> Json.Str(clientId.toString),
+          "userId"    -> Json.Str(callerUserId.toString),
+          "clientId"  -> Json.Str(clientId.toString),
           "sessionId" -> Json.Str(callerSessionId.toString),
         )
-      yield authenticated.copy(body = Body.fromString(Json.Obj(base.fields ++ callerFields).toJson))
+      yield withQuery.copy(body = Body.fromString(Json.Obj(base.fields ++ callerFields).toJson))
 
   /** Expiry is relative to the test clock, which starts at the epoch. */
   private def ticketFor(user: UserId, expiresAt: Instant = Instant.EPOCH.plusSeconds(300)): String =
