@@ -37,6 +37,7 @@ object PostgresConfigSpec extends ZIOSpecDefault:
   private val validConfig = PostgresConfig(
     url = "jdbc:postgresql://localhost:5432/auth",
     notificationsUrl = None,
+    sslRootCert = None,
     user = "dev",
     password = Secret.fromString("1234"),
     maximumPoolSize = 10,

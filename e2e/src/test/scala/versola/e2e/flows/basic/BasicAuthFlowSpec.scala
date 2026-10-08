@@ -2,15 +2,46 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.json.*
+import zio.json.ast.Json
 import zio.test.*
 
-import java.util.UUID
+import java.nio.charset.StandardCharsets
+import java.util.{Base64, UUID}
 
 /** Happy-path authorization code + PKCE flows. */
 object BasicAuthFlowSpec extends E2ESpec:
 
   // In non-prod the OTP is always the first N digits of "1234567890"; default length is 6.
   private val fixedOtp = "123456"
+
+  private def idTokenClaims(idToken: String): Task[Json.Obj] =
+    ZIO.attempt(String(Base64.getUrlDecoder.decode(idToken.split('.')(1)), StandardCharsets.UTF_8))
+      .flatMap(json => ZIO.fromEither(json.fromJson[Json.Obj]).mapError(RuntimeException(_)))
+
+  /** An email-OTP login for `scope`, with `claims` as the request's `claims` parameter if given,
+    * redeemed for tokens and read back as (ID Token claims, UserInfo email). */
+  private def loginForClaims(scope: String, claims: Option[String]): ZIO[Flows.Setups, Throwable, (Json.Obj, Option[String])] =
+    for
+      (s, auth) <- setup(Flows.Id.EmailOtp)
+      authorize <- auth.authorize(scope = scope, clientId = Some(s.clientId), redirectUri = Some(s.redirectUri), claims = claims)
+        .assertChallengeRedirect
+      cookie = authorize.conversationCookie.get
+      challenge1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+      _ <- auth.submitEmail(cookie, s.email.get, challenge1.csrf)
+      challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+      code <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf).assertRedirect(auth, cookie)
+      token <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
+      idToken <- ZIO.fromOption(token.idToken).orElseFail(RuntimeException("no id_token for an openid scope"))
+      claimsInIdToken <- idTokenClaims(idToken)
+      userinfo <- auth.userinfo(token.accessToken).success
+    yield (claimsInIdToken, userinfo.email)
 
   def spec = suite("Basic Authorization Flow")(
     test("login + password: complete login flow") {
@@ -35,7 +66,28 @@ object BasicAuthFlowSpec extends E2ESpec:
         assertTrue(token.accessToken.nonEmpty)
           .label("access_token must not be empty")
     },
-    // The conformance suite estimates a code's entropy from its encoded form and fails a 22-character
+    // OIDC Core §5.4: with an access token issued, the claims a scope stands for are UserInfo's;
+    // the ID Token does not repeat them (the conformance suite warns when it does).
+    test("scope claims are returned from UserInfo and not repeated in the ID Token") {
+      for
+        (idTokenClaims, userinfoEmail) <- loginForClaims("openid email", None)
+      yield assertTrue(userinfoEmail.nonEmpty)
+        .label("UserInfo must carry the email the scope stands for") &&
+        assertTrue(!idTokenClaims.fields.exists(_._1 == "email"))
+          .label(s"the ID Token must not carry the scope's email claim, got ${idTokenClaims.toJson}") &&
+        assertTrue(idTokenClaims.fields.exists(_._1 == "sub"))
+          .label("the ID Token still identifies the subject")
+    },
+    // §5.5: what the request names in `claims.id_token` is what the ID Token carries.
+    test("a claim named in claims.id_token is carried in the ID Token") {
+      for
+        (idTokenClaims, _) <- loginForClaims(
+          "openid email",
+          Some("""{"userinfo":{},"id_token":{"email":{"essential":true}}}"""),
+        )
+      yield assertTrue(idTokenClaims.fields.exists(_._1 == "email"))
+        .label(s"claims.id_token asked for email, so the ID Token must carry it, got ${idTokenClaims.toJson}")
+    },    // The conformance suite estimates a code's entropy from its encoded form and fails a 22-character
     // (16-byte) one at random, so the length that reaches the client over HTTP is what matters -- the
     // generator's unit test only proves what it asked the random source for.
     test("the authorization code issued over HTTP is 32 bytes, 43 base64url characters") {

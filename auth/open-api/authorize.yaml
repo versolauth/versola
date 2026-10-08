@@ -238,7 +238,10 @@ components:
       required: false
       description: |
         OIDC claims request as a JSON object (OpenID Connect Core §5.5), selecting individual
-        claims for the ID token and the UserInfo response.
+        claims for the ID token and the UserInfo response. The ID token carries a claim only if
+        it is named in the `id_token` member here (and the client's granted scopes cover it):
+        the claims a scope stands for (`profile`, `email`, ...) are returned from UserInfo,
+        since an access token is always issued alongside (OpenID Connect Core §5.4).
       schema:
         type: string
         contentMediaType: application/json
