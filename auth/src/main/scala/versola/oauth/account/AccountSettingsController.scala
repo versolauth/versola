@@ -48,26 +48,21 @@ object AccountSettingsController extends Controller:
     Method.PATCH / "settings" / "password" -> handler { (request: Request) =>
       for
         _ <- authorizeResource(request)
+        userId <- request.queryZIO[UserId]("userId")
+        clientId <- request.queryZIO[ClientId]("clientId")
         body <- request.bodyAs[ChangePasswordRequest]
-        ban <- ZIO.serviceWithZIO[SubmissionLimiter](_.isBanned(body.clientId, body.userId.toString, ChallengeType.PasswordSubmit))
-        _ <- ban match
-          case LimitStatus.Banned => ZIO.fail(BadRequest("too many failed attempts"))
-          case LimitStatus.RateLimited(after) => ZIO.fail(BadRequest(s"too many failed attempts, retry after $after seconds"))
-          case LimitStatus.Allowed => ZIO.unit
-        check <- ZIO.serviceWithZIO[PasswordService](_.verifyPassword(body.userId, Password(body.currentPassword)))
-        _ <- check match
-          case CheckPassword.Success => ZIO.unit
-          case CheckPassword.Temporary => ZIO.unit
-          case _ =>
-            ZIO.serviceWithZIO[SubmissionLimiter](_.recordLimit(body.clientId, body.userId.toString, ChallengeType.PasswordSubmit)) *>
-              ZIO.fail(BadRequest("current password is incorrect"))
         passwordRegex <- ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)
         _ <- ZIO.fail(BadRequest("new password does not meet policy requirements"))
           .unless(scala.util.Try(body.newPassword.matches(passwordRegex)).getOrElse(true))
-        _ <- ZIO.serviceWithZIO[PasswordService](_.setPassword(body.userId, Password(body.newPassword)))
-          .mapError:
-            case PasswordReuseError(n) => BadRequest(s"Password reuse: must differ from last $n passwords")
-            case t: Throwable => t
+        _ <- ZIO.serviceWithZIO[AccountSettingsService](_.changePassword(
+          userId,
+          clientId,
+          body.currentPassword,
+          body.newPassword,
+        )).mapError:
+          case e: versola.oauth.challenge.password.model.PasswordReuseError =>
+            BadRequest(s"Password reuse: must differ from last ${e.numDifferent} passwords")
+          case t: Throwable => t
       yield Response.status(Status.NoContent)
     }
 
@@ -283,8 +278,6 @@ object AccountSettingsController extends Controller:
   ) derives JsonCodec
 
   private case class ChangePasswordRequest(
-      userId: UserId,
-      clientId: ClientId,
       currentPassword: String,
       newPassword: String,
   ) derives JsonCodec
