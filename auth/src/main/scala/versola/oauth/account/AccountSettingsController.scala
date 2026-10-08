@@ -3,7 +3,6 @@ package versola.oauth.account
 import versola.auth.model.{CredentialId, PasskeyName}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.challenge.password.model.{CheckPassword, PasswordReuseError}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
 import versola.oauth.conversation.ConversationRenderService
@@ -30,7 +29,7 @@ import java.security.MessageDigest
 object AccountSettingsController extends Controller:
   type Env = Tracing & CoreConfig & OAuthConfigurationService & SessionService &
     PasskeyRepository & WebAuthnService & UserRepository & ConversationRenderService &
-    PasswordService & SubmissionLimiter
+    PasswordService & AccountSettingsService
 
   /** How long an unfinished enrollment ceremony stays usable. */
   private val enrollmentTtl = 5.minutes
@@ -55,8 +54,8 @@ object AccountSettingsController extends Controller:
         _ <- ZIO.fail(BadRequest("new password does not meet policy requirements"))
           .unless(scala.util.Try(body.newPassword.matches(passwordRegex)).getOrElse(true))
         _ <- ZIO.serviceWithZIO[AccountSettingsService](_.changePassword(
-          userId,
-          clientId,
+          body.userId,
+          body.clientId,
           body.currentPassword,
           body.newPassword,
         )).mapError:
