@@ -188,15 +188,20 @@ object JwksServiceSpec extends ZIOSpecDefault:
           exit <- service.generateKey(JWT.Algorithm.HS256).exit
         yield assertTrue(exit.isFailure)).provide(serviceFrom(Vector.empty))
       },
-      // A generated RS256 key could never be selected for a tenant, so generating one only
-      // leaves an operator with a key that does nothing.
-      test("refuses RS256, which nothing may sign a tenant's tokens under") {
+      // A `standard` tenant may sign under RS256 (OIDC Core makes it the algorithm every OP
+      // must support), so the key has to be obtainable; only a `fapi2` tenant is refused the
+      // selection, in ChallengeSettingsService.
+      test("generates RS256, published under that alg and able to sign") {
         val (repository, layer) = env(Vector.empty)
         (for
           service <- ZIO.service[JwksService]
-          exit <- service.generateKey(JWT.Algorithm.RS256).exit
+          kid <- service.generateKey(JWT.Algorithm.RS256)
           stored <- repository.getAll
-        yield assertTrue(exit.isFailure, stored.isEmpty)).provide(layer)
+        yield assertTrue(
+          stored.map(_.kid) == Vector(kid),
+          stored.forall(_.canSign),
+          stored.flatMap(_.algorithm) == Vector(JWT.Algorithm.RS256),
+        )).provide(layer)
       },
       // Kids are timestamps to the second, so seeding a set in one go would otherwise
       // collide on the primary key.

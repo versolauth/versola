@@ -191,6 +191,8 @@ export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
 export interface ChallengeSettingsRecord {
   tenantId: string;
+  /** The profile the tenant's clients are held to; fixed when the tenant is created. */
+  securityProfile?: 'standard' | 'fapi2';
   allowedPrefixes: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;

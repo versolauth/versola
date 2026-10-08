@@ -60,8 +60,8 @@ object ChallengeSettingsService:
       )
     case Rs256SigningKey(kid: String)
       extends ValidationError(
-        s"Key '$kid' signs RS256, whose PKCS#1 v1.5 padding FAPI 1.0 Advanced §8.6 and FAPI 2.0 both " +
-          "disallow. Select a PS256 or ES256 key instead.",
+        s"Key '$kid' signs RS256, whose PKCS#1 v1.5 padding FAPI 2.0 disallows, and the tenant is " +
+          "on the fapi2 security profile. Select a PS256 or ES256 key instead.",
       )
     case SecurityProfileFixed(tenantId: String)
       extends ValidationError(
@@ -116,7 +116,7 @@ object ChallengeSettingsService:
       repository.findByTenant(tenantId).map(_.flatMap(_.mtlsCertificateHeader))
 
     override def upsertSettings(record: ChallengeSettingsRecord): Task[Unit] =
-      validateSigningKey(record.signingKeyId) *> repository.upsert(record).flatMap: written =>
+      validateSigningKey(record.signingKeyId, record.securityProfile) *> repository.upsert(record).flatMap: written =>
         ZIO.fail(ValidationError.SecurityProfileFixed(record.tenantId.toString)).unless(written).unit
 
     override def sync(event: SyncEvent.ChallengeSettingsUpdated): Task[Unit] =
@@ -131,15 +131,17 @@ object ChallengeSettingsService:
     /** Read through the repository, not the key service's cache: a key generated moments ago
       * must be selectable immediately, rather than after the next cache refresh.
       */
-    private def validateSigningKey(signingKeyId: Option[String]): Task[Unit] =
+    private def validateSigningKey(signingKeyId: Option[String], profile: SecurityProfile): Task[Unit] =
       ZIO.foreachDiscard(signingKeyId): kid =>
         jwksRepository.find(kid).flatMap:
           case None => ZIO.fail(ValidationError.UnknownSigningKey(kid))
           case Some(key) if key.privateKey.isEmpty => ZIO.fail(ValidationError.VerifyOnlySigningKey(kid))
           case Some(key) if key.algorithm.isEmpty => ZIO.fail(ValidationError.UnusableSigningKey(kid))
-          // Not gated on the tenant asserting anything: a deployment that would rather not
-          // sign under RS256 anywhere is the only position worth holding, and the legacy key
-          // remains reachable by leaving the selection cleared.
-          case Some(key) if key.algorithm.contains(JWT.Algorithm.RS256) =>
+          // FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding, so a `fapi2` tenant may not sign
+          // under it. A `standard` tenant may: OpenID Connect Core makes RS256 the one
+          // algorithm every OP must support, and the OpenID Foundation's conformance suite (the
+          // basis of OP certification) fails an OP that cannot sign with it. The profile is
+          // fixed when the tenant is created, so this cannot be sidestepped by editing it later.
+          case Some(key) if key.algorithm.contains(JWT.Algorithm.RS256) && profile == SecurityProfile.fapi2 =>
             ZIO.fail(ValidationError.Rs256SigningKey(kid))
           case Some(_) => ZIO.unit

@@ -17,8 +17,10 @@ object JwksKeyGeneration:
   case class Generated(kid: String, jwk: Json.Obj, privateKey: Secret)
 
   /** `HS256` is rejected rather than represented: it is a shared secret, so there would be
-    * nothing to publish in a JWKS that is not itself the signing key. `RS256` is rejected
-    * because nothing may sign a tenant's tokens under it -- see `ChallengeSettingsService`.
+    * nothing to publish in a JWKS that is not itself the signing key. `RS256` is generated
+    * like any other: only a `standard` tenant may select it to sign with (see
+    * `ChallengeSettingsService`), and a `fapi2` tenant is refused the selection there rather
+    * than the key being refused here, since the key is not tied to a tenant until it is picked.
     */
   def generate(
       securityService: SecurityService,
@@ -27,7 +29,10 @@ object JwksKeyGeneration:
   ): Task[Generated] =
     for
       (baseKeyId, publicJwk, pkcs8) <- algorithm match
-        case JWT.Algorithm.PS256 =>
+        case JWT.Algorithm.RS256 | JWT.Algorithm.PS256 =>
+          // Both are RSA-2048. A separate keypair per kid rather than one published twice:
+          // using one key with two padding schemes trades key separation for nothing, since
+          // generating a keypair is a one-off cost paid at rotation.
           securityService.generateRsaKeyPair.map(pair =>
             (pair.keyId, pair.toPublicJwk, pair.privateKey.getEncoded),
           )
@@ -37,11 +42,6 @@ object JwksKeyGeneration:
           )
         case JWT.Algorithm.HS256 =>
           ZIO.fail(JwksService.Error("HS256 is not a JWKS signing algorithm"))
-        case JWT.Algorithm.RS256 =>
-          ZIO.fail(JwksService.Error(
-            "RS256 is not generated: FAPI 1.0 Advanced §8.6 and FAPI 2.0 both disallow its " +
-              "PKCS#1 v1.5 padding. Generate a PS256 or ES256 key instead.",
-          ))
       // Kids are timestamps to the second, so seeding every algorithm in one second would
       // otherwise collide on the primary key.
       kid = s"$baseKeyId-${algorithm.toString.toLowerCase}"
