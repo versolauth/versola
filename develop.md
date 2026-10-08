@@ -310,7 +310,9 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
 
 `POSTGRES_PASSWORD` is shared by all three services (one Postgres role) and
 must be identical under `auth`, `central` and `edge`; `configure` refuses to
-continue if the stored values disagree.
+continue if the stored values disagree, and gen-env stops on vps when the three
+`--*-postgres-password` flags are given different values (k8s is the target with a
+password per service).
 
 ### Onboarding a deployment that already has secrets of its own
 
