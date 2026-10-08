@@ -258,6 +258,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             accessToken.getAudience == java.util.List.of(
               "https://api.example.com",
             ),
+            // RFC 6749 §5.1: tokens must not be cached.
+            response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+            response.headers.get(Header.Pragma).contains(Header.Pragma.NoCache),
           ),
       ),
       tokenEndpointTestCase(
@@ -328,6 +331,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           yield assertTrue(
             tokenResponse.tokenType == "Bearer",
             tokenResponse.refreshToken.isDefined,
+            // RFC 6749 §5.1 -- the check oidcc-refresh-token makes of this response.
+            response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore),
+            response.headers.get(Header.Pragma).contains(Header.Pragma.NoCache),
           ),
       ),
       tokenEndpointTestCase(
