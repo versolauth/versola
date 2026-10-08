@@ -113,7 +113,7 @@ class PostgresAuthorizationCodeRepository(
             ${record.redirectUri},
             ${record.scope},
             ${record.codeChallenge},
-            ${record.codeChallengeMethod.toString},
+            ${record.codeChallengeMethod},
             ${record.requestedClaims},
             ${record.uiLocales}::text[],
             ${record.nonce},

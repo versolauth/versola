@@ -18,6 +18,11 @@ import zio.config.magnolia.DeriveConfig
   *   while notifications keep a direct route to Postgres: a pooler in transaction mode
   *   multiplexes sessions across backends, which breaks `LISTEN` — silently, since the
   *   statement still succeeds and notifications simply never arrive.
+  * @param sslRootCert
+  *   Path to the CA bundle used to verify the database's certificate (pgjdbc `sslrootcert`).
+  *   Absent means the JVM's default trust store. Applies to both `url` and `notificationsUrl`;
+  *   a `sslrootcert` already present in a URL wins. TLS itself is governed by `sslmode` in the
+  *   URL, which defaults to `verify-full` -- see [[PostgresTls]].
   * @param user
   *   Database user
   * @param password
@@ -55,6 +60,7 @@ import zio.config.magnolia.DeriveConfig
 case class PostgresConfig(
     url: String,
     notificationsUrl: Option[String],
+    sslRootCert: Option[String],
     user: String,
     password: Secret,
     maximumPoolSize: Int,

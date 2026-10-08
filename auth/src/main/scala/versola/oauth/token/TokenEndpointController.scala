@@ -273,7 +273,7 @@ object TokenEndpointController extends Controller:
     for
       code <- FormDecoder.single(form, "code", AuthorizationCode.fromBase64Url)
       redirectUri <- FormDecoder.single(form, "redirect_uri", URL.decode(_).left.map(_.getMessage))
-      codeVerifier <- FormDecoder.single(form, "code_verifier", CodeVerifier.from)
+      codeVerifier <- FormDecoder.optional(form, "code_verifier", CodeVerifier.from)
     yield CodeExchangeRequest(code, redirectUri, codeVerifier)
 
   val refreshTokenRequestDecoder: FormDecoder[RefreshTokenRequest] = (form: Form) =>

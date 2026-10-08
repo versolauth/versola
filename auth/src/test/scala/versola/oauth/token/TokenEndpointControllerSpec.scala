@@ -1098,7 +1098,7 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           assertTrue(
             request.code == authCode1,
             request.redirectUri.encode == redirectUri,
-            request.codeVerifier == codeVerifier1,
+            request.codeVerifier.contains(codeVerifier1),
           )
       },
       test("decodes resource for refresh_token") {

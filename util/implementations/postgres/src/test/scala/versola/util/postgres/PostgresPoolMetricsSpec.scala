@@ -19,8 +19,9 @@ object PostgresPoolMetricsSpec extends ZIOSpecDefault:
     ZLayer.fromZIO:
       System.env("POSTGRES_HOST").someOrElse("localhost:5432").map: host =>
         PostgresConfig(
-          url = s"jdbc:postgresql://$host/auth",
+          url = s"jdbc:postgresql://$host/auth?sslmode=disable",
           notificationsUrl = None,
+          sslRootCert = None,
           user = "dev",
           password = Secret.fromString("1234"),
           maximumPoolSize = 2,
