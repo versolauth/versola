@@ -2,7 +2,7 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken, SecurityProfile}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
@@ -193,21 +193,40 @@ object AuthorizeRequestParser:
           )
           .filterOrFail(_.forall(_.length <= MaxStateLength))(Error.StateInvalid(clientId, redirectUri, responseMode = responseMode))
 
-        codeChallenge <- getParam(params, "code_challenge")
+        codeChallengeParam <- getParam(params, "code_challenge")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "code_challenge", responseMode = responseMode))
-          .someOrFail(Error.CodeChallengeMissing(clientId, redirectUri, state, responseMode = responseMode))
-          .flatMap { string =>
-            ZIO.fromEither(CodeChallenge.from(string))
-              .orElseFail(Error.CodeChallengeInvalid(clientId, redirectUri, state, string, responseMode = responseMode))
-          }
 
-        codeChallengeMethod <- getParam(params, "code_challenge_method")
+        codeChallengeMethodParam <- getParam(params, "code_challenge_method")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "code_challenge_method", responseMode = responseMode))
-          .someOrFail(Error.CodeChallengeMethodMissing(clientId, redirectUri, state, responseMode = responseMode))
-          .flatMap {
-            case "S256" => ZIO.succeed(CodeChallengeMethod.S256)
-            case other => ZIO.fail(Error.CodeChallengeMethodInvalid(clientId, redirectUri, state, other, responseMode = responseMode))
-          }
+
+        // RFC 9700 §2.1.1 / OAuth 2.1 §7.5.2: PKCE is required of every client, with one
+        // exception -- a confidential client of a `standard` tenant may omit it, since the
+        // client secret already proves who redeems the code. A public client has no such
+        // proof and a FAPI 2.0 tenant admits no exception, so both still need it -- as does an
+        // edge-fronted native app, whose certificate is edge's rather than the install's. Looked up
+        // only when the challenge is absent: a request that sends one is held to it either way.
+        //
+        // A method with no challenge is a malformed request, not an opt-out, so it is refused
+        // even where PKCE is optional.
+        pkce <- (codeChallengeParam, codeChallengeMethodParam) match
+          case (None, None) =>
+            oauthClientService.getSecurityProfile(clientId).flatMap: profile =>
+              if profile == SecurityProfile.standard && client.isConfidential && !client.isEdgeFrontedNative then ZIO.none
+              else ZIO.fail(Error.CodeChallengeMissing(clientId, redirectUri, state, responseMode = responseMode))
+          case (None, _) =>
+            ZIO.fail(Error.CodeChallengeMissing(clientId, redirectUri, state, responseMode = responseMode))
+          case (Some(challenge), method) =>
+            for
+              codeChallenge <- ZIO.fromEither(CodeChallenge.from(challenge))
+                .orElseFail(Error.CodeChallengeInvalid(clientId, redirectUri, state, challenge, responseMode = responseMode))
+              codeChallengeMethod <- method match
+                case None =>
+                  ZIO.fail(Error.CodeChallengeMethodMissing(clientId, redirectUri, state, responseMode = responseMode))
+                case Some("S256") =>
+                  ZIO.succeed(CodeChallengeMethod.S256)
+                case Some(other) =>
+                  ZIO.fail(Error.CodeChallengeMethodInvalid(clientId, redirectUri, state, other, responseMode = responseMode))
+            yield Some((codeChallenge, codeChallengeMethod))
 
         scope <- getParam(params, "scope")
           .orElseFail[Error](Error.MultipleValuesProvided(clientId, redirectUri, state, "scope", responseMode = responseMode))
@@ -315,8 +334,8 @@ object AuthorizeRequestParser:
           redirectUri = redirectUri,
           scope = scope,
           state = state,
-          codeChallenge = codeChallenge,
-          codeChallengeMethod = codeChallengeMethod,
+          codeChallenge = pkce.map(_._1),
+          codeChallengeMethod = pkce.map(_._2),
           responseType = responseTypeEntries,
           responseMode = responseMode,
           requestedClaims = requestedClaims,

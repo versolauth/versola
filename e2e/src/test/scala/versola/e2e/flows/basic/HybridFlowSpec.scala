@@ -104,8 +104,9 @@ object HybridFlowSpec extends E2ESpec:
     test("a protocol error during a hybrid request is returned in the fragment, never the query") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
+        publicClientId <- auth.registerPublicClient(s.redirectUri)
         _ <- auth.authorizeRaw(
-          clientId = s.clientId,
+          clientId = publicClientId,
           redirectUri = s.redirectUri,
           responseType = Some("code id_token"),
           omitCodeChallenge = true,

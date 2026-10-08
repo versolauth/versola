@@ -583,7 +583,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request)
-        yield assertTrue(result.codeChallengeMethod == CodeChallengeMethod.S256)
+        yield assertTrue(result.codeChallengeMethod.contains(CodeChallengeMethod.S256))
       },
       test("rejects plain, which FAPI 2.0 and OAuth 2.1 forbid") {
         val env = Env()
@@ -713,6 +713,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(hybridParams))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Fragment)))
       },
@@ -1232,6 +1233,55 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge"))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
+      },
+      test("a confidential client of a standard tenant may omit PKCE") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge" - "code_challenge_method"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
+          result <- env.parser.parse(request)
+        yield assertTrue(result.codeChallenge.isEmpty, result.codeChallengeMethod.isEmpty)
+      },
+      test("a standard tenant's client that sends a challenge is still held to it") {
+        val env = Env()
+        val invalid = "a" * 42
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("code_challenge" -> invalid)))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeInvalid(clientId, redirectUri, Some(State("test-state")), invalid, responseMode = ResponseMode.Query)))
+      },
+      test("a standard tenant's client that sends a method without a challenge is refused") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
+      },
+      test("a public client of a standard tenant must still send PKCE") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge" - "code_challenge_method"))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord.copy(authMethod = AuthMethod.none)))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
+      },
+      test("an edge-fronted native client of a standard tenant must still send PKCE") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams - "code_challenge" - "code_challenge_method"))
+        val native = clientRecord.copy(
+          authMethod = AuthMethod.tls_client_auth,
+          applicationType = versola.oauth.client.model.ApplicationType.native,
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(native))
+          _ <- env.configuration.getSecurityProfile.succeedsWith(SecurityProfile.standard)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.CodeChallengeMissing(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
       },

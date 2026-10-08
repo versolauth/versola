@@ -20,8 +20,11 @@ case class AuthorizationCodeRecord(
     userId: UserId,
     redirectUri: URL,
     scope: Set[ScopeToken],
-    codeChallenge: CodeChallenge,
-    codeChallengeMethod: CodeChallengeMethod,
+    /** RFC 7636 PKCE challenge the authorization request committed this code to. `None` only
+      * where the request was allowed to omit PKCE (a confidential client of a `standard`
+      * tenant), in which case redemption must not present a `code_verifier` either. */
+    codeChallenge: Option[CodeChallenge],
+    codeChallengeMethod: Option[CodeChallengeMethod],
     requestedClaims: Option[RequestedClaims],
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
@@ -46,9 +49,12 @@ case class AuthorizationCodeRecord(
     dpopJkt: Option[String],
 ) derives CanEqual, Equal:
 
-  def verify(verifier: CodeVerifier): Boolean =
-    codeChallengeMethod match {
-      case CodeChallengeMethod.S256 =>
+  /** RFC 7636 §4.6, held both ways: a code committed to a challenge is redeemable only with the
+    * matching verifier, and a code that committed to none is redeemable only without one -- a
+    * verifier presented against nothing is a client that thinks it is protected and is not. */
+  def verify(verifier: Option[CodeVerifier]): Boolean =
+    (codeChallenge, codeChallengeMethod, verifier) match
+      case (Some(challenge), Some(CodeChallengeMethod.S256), Some(verifier)) =>
         val digest = MessageDigest.getInstance("SHA-256")
           .digest(verifier.getBytes(StandardCharsets.UTF_8))
 
@@ -56,8 +62,13 @@ case class AuthorizationCodeRecord(
           .withoutPadding()
           .encodeToString(digest)
 
-        encoded == codeChallenge
-    }
+        encoded == challenge
+
+      case (None, None, None) =>
+        true
+
+      case _ =>
+        false
 
 object AuthorizationCodeRecord:
   given Equal[URL] = (a, b) => a == b

@@ -2,7 +2,7 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
-import zio.http.Status
+import zio.http.{Status, URL}
 import zio.test.*
 
 /** Negative test cases for the /authorize endpoint.
@@ -40,11 +40,12 @@ object AuthorizeNegativeSpec extends E2ESpec:
       yield assertCompletes
     },
 
-    test("missing code_challenge redirects with error=invalid_request") {
+    test("missing code_challenge from a public client redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
+        publicClientId <- auth.registerPublicClient(s.redirectUri)
         _ <- auth.authorizeRaw(
-          clientId = s.clientId,
+          clientId = publicClientId,
           redirectUri = s.redirectUri,
           omitCodeChallenge = true,
         ).assertErrorRedirect("invalid_request")
@@ -76,6 +77,87 @@ object AuthorizeNegativeSpec extends E2ESpec:
         _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, acrValues = Some("1 2"))
           .assertChallengeRedirect
       yield assertCompletes
+    },
+
+    // A native client behind edge is confidential on paper (`tls_client_auth`), but the
+    // certificate is edge's and the same for every install, so it proves nothing about the app.
+    // The rule reads `applicationType`, which only reaches auth through central's sync -- so this
+    // is the case that fails if that column is lost on the way. The description is asserted, not
+    // just the code: a native client also has to push (`/par`), and an `invalid_request` for
+    // that would pass without PKCE ever being the reason.
+    test("an edge-fronted native client of a standard tenant must still send code_challenge") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        clientId <- CentralApi.id("e2e-native")
+        _ <- auth.registerClient(
+          clientId,
+          "Native client",
+          // Central accepts only an https App Link for an edge-fronted native client.
+          Set(EdgeFixture.nativeRedirectUri),
+          authFlow = Some(Flows.loginPasswordAuthFlow),
+          authMethod = "tls_client_auth",
+          applicationType = Some("native"),
+          dpopBoundAccessTokens = true,
+          requirePushedAuthorizationRequests = true,
+          enrollEdgeClientCertificate = true,
+        ).success
+        _ <- auth.syncConfiguration()
+        result <- auth.authorizeRaw(clientId = clientId, redirectUri = EdgeFixture.nativeRedirectUri, omitCodeChallenge = true)
+        _ <- result.assertErrorRedirect("invalid_request")
+        url <- ZIO.fromEither(URL.decode(result.location)).mapError(RuntimeException(_))
+        description <- url.queryZIO[String]("error_description")
+      yield assertTrue(description.contains("code_challenge"))
+        .label(s"the refusal must be about the missing code_challenge, got '$description'")
+    },
+
+    // OAuth 2.1 §7.5.2: the one client that may omit PKCE is a confidential one of a `standard`
+    // tenant, whose secret already proves who redeems the code. The suite's own clients are such.
+    test("a confidential client of a standard tenant may omit code_challenge and redeem without a verifier") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        authorize <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          omitCodeChallenge = true,
+        ).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        code <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf).assertRedirect(auth, cookie)
+        issued <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+          omitVerifier = true,
+        ).success
+      yield assertTrue(issued.accessToken.nonEmpty)
+    },
+
+    // RFC 7636 §4.6: a verifier presented for a code that committed to no challenge is a client
+    // that thinks it is protected and is not, so it is refused rather than ignored.
+    test("a verifier presented for a code that committed to no challenge is refused with invalid_grant") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        authorize <- auth.authorizeRaw(
+          clientId = s.clientId,
+          redirectUri = s.redirectUri,
+          omitCodeChallenge = true,
+        ).assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        code <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf).assertRedirect(auth, cookie)
+        result <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        )
+      yield assertTrue(result match
+        case TokenResult.Failure(response, body) => response.status == Status.BadRequest && body.contains("invalid_grant")
+        case _ => false,
+      )
     },
 
     test("code_challenge_method=plain redirects with error=invalid_request") {
