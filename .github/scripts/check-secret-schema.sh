@@ -12,8 +12,9 @@
 #      optional `${?NAME}` form is a tuning knob with a default, not a secret, and is ignored.)
 #      This is the check that catches a secret written into a .conf as a literal, or one
 #      placeholdered but never generated;
-#   3. a value shared between services (CENTRAL_SECRET_KEY, CLIENT_SECRETS_SECRET,
-#      POSTGRES_PASSWORD) is the identical value in each service's file;
+#   3. a value one entry shares between services (CENTRAL_SECRET_KEY, CLIENT_SECRETS_SECRET,
+#      and vps's POSTGRES_PASSWORD) is the identical value in each service's file. (k8s's
+#      POSTGRES_PASSWORD is an entry per service: separate values, nothing to compare.);
 #   4. a base64url value decodes to the byte count the schema declares;
 #   5. a secret the schema puts in a file of its own (the `utils` client's private key) is in
 #      that file and in no *.generated-secrets.env;
@@ -145,11 +146,6 @@ for target in "${TARGETS[@]}"; do
       fi
     done
 
-    # On k8s the operator types the Postgres and admin passwords; their defaults are not
-    # generated, so what the schema says about size describes only the other targets.
-    if [ "$target" = "k8s" ] && { [ "$name" = "POSTGRES_PASSWORD" ] || [ "$name" = "ADMIN_BOOTSTRAP_PASSWORD" ]; }; then
-      continue
-    fi
     if [ "$type" = "base64url" ] && [ -n "$first" ]; then
       if ! [[ "$first" =~ ^[A-Za-z0-9_-]+$ ]]; then
         fail "$target: $name is not URL-safe base64 without padding"

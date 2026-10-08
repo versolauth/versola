@@ -61,6 +61,10 @@ object SecretSchemaSpec extends ZIOSpecDefault:
 
   private def specNamed(name: String): SecretSpec = SecretSchema.specs.find(_.name == name).get
 
+  /** The entries called `name` that exist on `target`, in schema order. */
+  private def onTarget(target: SecretTarget, name: String): List[SecretSpec] =
+    SecretSchema.forTarget(target).filter(_.name == name)
+
   private def membersOf(group: String): Set[String] =
     SecretSchema.specs.filter(_.group.contains(group)).map(_.name).toSet
 
@@ -138,15 +142,35 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         assertTrue(
           specNamed("CENTRAL_SECRET_KEY").services == List("auth", "central"),
           specNamed("CLIENT_SECRETS_SECRET").services == List("auth", "central"),
-          specNamed("POSTGRES_PASSWORD").services == List("auth", "central", "edge"),
+          // vps: one Postgres host, one generated password for all three.
+          onTarget(SecretTarget.Vps, "POSTGRES_PASSWORD").map(_.services) == List(List("auth", "central", "edge")),
         )
       },
-      test("only POSTGRES_PASSWORD may not be generated on an upgrade, and only on vps and k8s") {
-        val restricted = SecretSchema.specs.filter(_.onMissing != OnMissing.Generate)
+      test("k8s: each service has a Postgres password of its own, typed by the operator") {
+        val entries = onTarget(SecretTarget.K8s, "POSTGRES_PASSWORD")
         assertTrue(
-          restricted.map(_.name) == List("POSTGRES_PASSWORD"),
-          specNamed("POSTGRES_PASSWORD").onMissing == OnMissing.GenerateOnFirstInstallOnly,
-          specNamed("POSTGRES_PASSWORD").targets == Set(SecretTarget.Vps, SecretTarget.K8s),
+          entries.map(_.services) == List(List("auth"), List("central"), List("edge")),
+          entries.forall(_.tpe == SecretType.Opaque),
+          entries.forall(_.size.isEmpty),
+          entries.forall(_.onMissing == OnMissing.External),
+        )
+      },
+      test("k8s: the admin bootstrap password is whatever the operator types; vps generates 16 bytes") {
+        val k8s = onTarget(SecretTarget.K8s, "ADMIN_BOOTSTRAP_PASSWORD")
+        val vps = onTarget(SecretTarget.Vps, "ADMIN_BOOTSTRAP_PASSWORD")
+        assertTrue(
+          k8s.map(e => (e.services, e.tpe, e.size, e.onMissing)) == List((List("auth"), SecretType.Opaque, None, OnMissing.External)),
+          vps.map(e => (e.tpe, e.size, e.onMissing)) == List((SecretType.Base64Url, Some(16), OnMissing.Generate)),
+        )
+      },
+      test("only the Postgres password on vps may not be generated on an upgrade; k8s values are the operator's") {
+        val notGenerated = SecretSchema.specs.filter(_.onMissing != OnMissing.Generate)
+        assertTrue(
+          notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(e => (e.name, e.targets)) ==
+            List(("POSTGRES_PASSWORD", Set(SecretTarget.Vps))),
+          notGenerated.filter(_.onMissing == OnMissing.External).forall(_.targets == Set(SecretTarget.K8s)),
+          notGenerated.filter(_.onMissing == OnMissing.External).map(_.name).toSet ==
+            Set("POSTGRES_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"),
         )
       },
       test("the utils private key is held by `utils` and written to its own file") {
@@ -168,6 +192,17 @@ object SecretSchemaSpec extends ZIOSpecDefault:
     suite("problems")(
       test("a duplicate name") {
         assertTrue(SecretSchema.problems(List(sound, sound)).exists(_.contains("duplicate name A_SECRET")))
+      },
+      test("the same name for different services is fine; for the same service on the same target it is not") {
+        val forAuth    = sound.copy(targets = Set(SecretTarget.K8s))
+        val forCentral = forAuth.copy(services = List("central"))
+        val overlap    = forAuth.copy(services = List("auth", "central"))
+        assertTrue(
+          SecretSchema.problems(List(forAuth, forCentral)) == Nil,
+          SecretSchema.problems(List(forAuth, overlap)).exists(_.contains("duplicate name A_SECRET")),
+          // the same name and service on different targets is two different entries, not a clash
+          SecretSchema.problems(List(sound, forAuth)) == Nil,
+        )
       },
       test("an unknown service") {
         assertTrue(SecretSchema.problems(List(sound.copy(services = List("billing")))).exists(_.contains("unknown service billing")))
@@ -207,6 +242,15 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           !names(SecretTarget.DockerLocal).contains("ADMIN_BOOTSTRAP_PASSWORD"),
           names(SecretTarget.Vps).contains("POSTGRES_PASSWORD"),
           names(SecretTarget.K8s).contains("ADMIN_BOOTSTRAP_PASSWORD"),
+        )
+      },
+      test("k8s: the Postgres password is three entries, one per service, so a consumer keys by (name, service)") {
+        val entries = parsed(SecretTarget.K8s).secrets.filter(_.name == "POSTGRES_PASSWORD")
+        assertTrue(
+          entries.map(_.services) == List(List("auth"), List("central"), List("edge")),
+          entries.map(_.`type`).distinct == List("opaque"),
+          entries.map(_.onMissing).distinct == List("external"),
+          entries.forall(_.size.isEmpty),
         )
       },
       test("what the CLI needs to decide is in the entries") {

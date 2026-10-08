@@ -178,9 +178,12 @@ reconfigure. `configure` leaves the resolved key in the bundle directory as `uti
 `scripts/gen-env.scala` declares every secret in one list, `SecretSchema.specs`, and writes it next to
 the configs as `secrets.schema.json` (one per target; no values, so it needs no special permissions).
 Each entry says what the secret is called (`name`), which services receive it (`services`; a value
-shared by several is listed once; `utils` is the holder of the `utils` client's private key, stored
+shared by several is listed once, and the same name in several entries is separate values — k8s has
+a `POSTGRES_PASSWORD` entry per service, so a consumer keys a secret by `(name, service)`, never by
+name alone; `utils` is the holder of the `utils` client's private key, stored
 under `secret/versola/<target>/utils`), how it is shaped (`type`, `size`: `base64url` is URL-safe
-base64 without padding of `size` random bytes), whether it belongs to a `group` (secrets that only
+base64 without padding of `size` random bytes; `opaque` is text the operator typed, with no shape and
+no size — what k8s asks for at its prompts), whether it belongs to a `group` (secrets that only
 work as a set, e.g. a private key and the public JWKS that carries its `kid`: take all of them or
 none), what to do when it is missing from the store (`onMissing`: `generate`,
 `generate-on-first-install-only` — for a value something outside the store already holds, like

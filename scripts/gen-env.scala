@@ -380,6 +380,8 @@ enum SecretType(val json: String):
   case PrivateJwk extends SecretType("private-jwk")
   /** An identifier derived together with a key, not random (`edge-<date>`). */
   case KeyId extends SecretType("key-id")
+  /** Text the operator chose: no shape, no size. What k8s asks for at its prompts. */
+  case Opaque extends SecretType("opaque")
 
 /** What a deployment does when a secret is absent from its secret store. */
 enum OnMissing(val json: String):
@@ -400,7 +402,9 @@ enum SecretTarget(val json: String):
 
 /**
   * @param services who receives it: the *.generated-secrets.env of each service listed. A
-  *                 value shared by several services is listed once, with all of them.
+  *                 value shared by several services is listed once, with all of them. The
+  *                 same name in several entries (one service each) is separate values -- a
+  *                 consumer keys a secret by (name, service), never by name alone.
   *                 `utils` is not a service but the holder of the `utils` client's private
   *                 key; it never reaches a *.generated-secrets.env (see `file`).
   * @param size     Base64Url: bytes before encoding; RsaPrivateKey: bits; otherwise None.
@@ -430,9 +434,14 @@ object SecretSchema:
   private val Holders: Set[String] = Services.toSet + "utils"
 
   private val everywhere: Set[SecretTarget] = SecretTarget.values.toSet
-  // vps's Postgres role and the admin bootstrap password are placeholdered out only on these
-  // two -- see the comment on `authExtras` in genEnv, and pgPassDefault / bootstrapPasswordDefault.
-  private val vpsAndK8s: Set[SecretTarget] = Set(SecretTarget.Vps, SecretTarget.K8s)
+  // The Postgres password and the admin bootstrap password are placeholdered out only on vps
+  // and k8s -- see the comment on `authExtras` in genEnv, and pgPassDefault / bootstrapPasswordDefault.
+  // They differ between the two, so each has an entry per target below.
+
+  /** A value k8s takes from the operator's prompt or flag: nothing here generates it, and
+    * nothing about its shape is promised. */
+  private def k8sOperatorSecret(name: String, service: String): SecretSpec =
+    SecretSpec(name, List(service), SecretType.Opaque, None, None, OnMissing.External, Set(SecretTarget.K8s))
 
   private def base64Url(name: String, services: List[String], bytes: Int): SecretSpec =
     SecretSpec(name, services, SecretType.Base64Url, Some(bytes), None, OnMissing.Generate, everywhere)
@@ -483,8 +492,7 @@ object SecretSchema:
     base64Url("EDGE_DPOP_NONCE_SALT", List("edge"), 32),
     // The AES-256-GCM key edge seals the native-app blob with (`native.blob-key`).
     base64Url("EDGE_NATIVE_BLOB_KEY", List("edge"), 32),
-    // vps and k8s only. On k8s the operator types the password at the prompt; the size
-    // describes what vps generates.
+    // vps: one Postgres host and role, so one generated value shared by all three services.
     SecretSpec(
       "POSTGRES_PASSWORD",
       List("auth", "central", "edge"),
@@ -492,8 +500,14 @@ object SecretSchema:
       Some(24),
       None,
       OnMissing.GenerateOnFirstInstallOnly,
-      vpsAndK8s,
+      Set(SecretTarget.Vps),
     ),
+    // k8s: three Postgres instances, three passwords the operator types (--*-postgres-password);
+    // the chart keeps them under separate keys. The same name in several entries, one service
+    // each, means separate values -- see SecretSpec.services.
+    k8sOperatorSecret("POSTGRES_PASSWORD", "auth"),
+    k8sOperatorSecret("POSTGRES_PASSWORD", "central"),
+    k8sOperatorSecret("POSTGRES_PASSWORD", "edge"),
     SecretSpec(
       "ADMIN_BOOTSTRAP_PASSWORD",
       List("auth"),
@@ -501,8 +515,10 @@ object SecretSchema:
       Some(16),
       None,
       OnMissing.Generate,
-      vpsAndK8s,
+      Set(SecretTarget.Vps),
     ),
+    // k8s: whatever the operator types (--admin-password); the default is not generated.
+    k8sOperatorSecret("ADMIN_BOOTSTRAP_PASSWORD", "auth"),
     // Written to a file of its own, in every target that writes a *.generated-secrets.env.
     grouped(
       "UTILS_PRIVATE_KEY_JWK",
@@ -540,7 +556,10 @@ object SecretSchema:
 
   /** Everything wrong with `candidates` as a schema, as messages; empty when it is sound. */
   def problems(candidates: List[SecretSpec]): List[String] =
-    val duplicateNames = candidates.map(_.name).diff(candidates.map(_.name).distinct).distinct
+    // A name may repeat (k8s has a POSTGRES_PASSWORD per service), but not for the same service
+    // on the same target: that would be two answers to one question.
+    val slots = candidates.flatMap(spec => for target <- spec.targets.toList; service <- spec.services yield (spec.name, service, target.json))
+    val duplicateNames = slots.diff(slots.distinct).map((name, _, _) => name).distinct.sorted
     val perSpec = candidates.flatMap: spec =>
       val noServices = if spec.services.isEmpty then List(s"${spec.name}: no services") else Nil
       val unknownServices =
