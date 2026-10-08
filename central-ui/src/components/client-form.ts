@@ -2,21 +2,20 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
 import './client-kind-step';
 import {
-  AssuranceTier,
   CLIENT_KINDS,
   ClientCredentialMode,
   ClientKind,
   TemplateDifference,
   TemplateSettingSection,
   authMethodFor,
-  certificateBoundFor,
   clientPreset,
+  credentialBinding,
   defaultCredentialMode,
   templateDecides,
   templateDifferences,
@@ -55,6 +54,8 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
+  /** The profile the tenant's clients are held to; decides what a kind sets. */
+  @property({ attribute: false }) securityProfile: SecurityProfile = 'fapi2';
   @property({ attribute: false }) availableRoles: Role[] = [];
   @property({ attribute: false }) locales: Locale[] = [];
   @property({ type: Boolean }) canManageSecrets = false;
@@ -107,7 +108,6 @@ export class VersolaClientForm extends LitElement {
   /** Creation only: what is being built, the basics, sign-in or permissions, then review. */
   @state() private wizardStep: WizardStep = 1;
   @state() private kind: ClientKind | null = null;
-  @state() private tier: AssuranceTier = 'high';
   /** Which edit-page sections are expanded. All collapsed to start: the differences panel
    *  above them already says what moved, and a section is opened to change something. */
   @state() private openSections: string[] = [];
@@ -1072,10 +1072,6 @@ export class VersolaClientForm extends LitElement {
         color: var(--success);
         background: rgba(var(--success-tint, 22, 163, 74), 0.12);
       }
-      .review-tier-badge.compat {
-        color: var(--warning);
-        background: rgba(var(--warning-tint, 180, 83, 9), 0.12);
-      }
       .review-change {
         background: none;
         border: none;
@@ -1387,7 +1383,9 @@ export class VersolaClientForm extends LitElement {
       // set - the two are meant to agree, but the method is the one Central actually checks.
       switch (this.client.authMethod) {
         case 'tls_client_auth':
-          this.clientCredentialMode = 'mtls';
+          // Edge authenticates as a native client, and as a web one it enrolled for: neither
+          // has a subject the operator registered.
+          this.clientCredentialMode = this.client.clientType === 'native' || !this.client.mtlsAuth ? 'edge' : 'mtls';
           if (this.client.mtlsAuth?.type === 'tls_client_auth') {
             this.mtlsSubjectType = this.client.mtlsAuth.subjectType;
             this.mtlsSubjectValue = this.client.mtlsAuth.subjectValue;
@@ -1544,7 +1542,8 @@ export class VersolaClientForm extends LitElement {
       requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
       // Only a registration records one: an edit states what the client is now, and the
       // template it was created from is what that is later shown against.
-      template: this.client?.template ?? (this.kind ? { kind: this.kind, tier: this.tier } : null),
+      template: this.client?.template ?? (this.kind ? { kind: this.kind } : null),
+      enrollEdgeClientCertificate: !this.client && this.clientCredentialMode === 'edge',
       createdAt: this.client?.createdAt ?? null,
     };
 
@@ -1715,6 +1714,8 @@ export class VersolaClientForm extends LitElement {
     // editing, and this keeps any other caller from moving it either.
     if (this.client) return;
     this.clientCredentialMode = mode;
+    // A key carries DPoP, a certificate binds the token to itself, a secret binds nothing.
+    this.formData = { ...this.formData, ...credentialBinding(mode) };
   }
 
   private handleMtlsSubjectTypeChange(e: Event) {
@@ -2077,7 +2078,7 @@ export class VersolaClientForm extends LitElement {
   }
 
   /** The template the client was registered from, which only an existing client has. */
-  private get editTemplate(): { kind: ClientKind; tier: AssuranceTier } | null {
+  private get editTemplate(): { kind: ClientKind } | null {
     return this.client?.template ?? null;
   }
 
@@ -2096,7 +2097,7 @@ export class VersolaClientForm extends LitElement {
 
   private get templateDifferenceList(): TemplateDifference[] {
     const template = this.editTemplate;
-    return template ? templateDifferences(template, this.currentTemplateSettings) : [];
+    return template ? templateDifferences(template, this.securityProfile, this.currentTemplateSettings) : [];
   }
 
   /** Whether writing the template's value back would actually take. A signed request object
@@ -2134,7 +2135,7 @@ export class VersolaClientForm extends LitElement {
    *  says nothing about gets neither - there is nothing for it to agree or disagree with. */
   private sectionTag(section: TemplateSettingSection | null): 'changed' | 'from template' | null {
     const template = this.editTemplate;
-    if (!template || !section || !templateDecides(template, section)) {
+    if (!template || !section || !templateDecides(template, this.securityProfile, section)) {
       return null;
     }
 
@@ -2154,13 +2155,9 @@ export class VersolaClientForm extends LitElement {
     this.applyPreset();
   }
 
-  private selectTier(tier: AssuranceTier) {
-    this.tier = tier;
-    this.applyPreset();
-  }
-
   /**
-   * A kind x tier pair settles the client's credential and its request-integrity settings.
+   * A kind, under the tenant's profile, settles the client's credential and its
+   * request-integrity settings.
    * Everything it leaves open stays editable in the step after it.
    */
   private applyPreset() {
@@ -2168,8 +2165,8 @@ export class VersolaClientForm extends LitElement {
       return;
     }
 
-    const preset = clientPreset(this.kind, this.tier);
-    const mode = defaultCredentialMode(this.kind, this.tier);
+    const preset = clientPreset(this.kind, this.securityProfile);
+    const mode = defaultCredentialMode(this.kind, this.securityProfile);
     const signsUsersIn = this.kind !== 'service';
 
     const scope = (this.formData.scope || []).filter(s => s !== 'openid');
@@ -2178,7 +2175,7 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       ...preset.patch,
-      certificateBoundAccessTokens: certificateBoundFor(mode),
+      ...credentialBinding(mode),
       authFlow: signsUsersIn ? this.formData.authFlow ?? createDefaultAuthFlow() : null,
       // openid is what makes the request OIDC, so a client that signs users in always carries it.
       // A preset that names its own scopes keeps them: the service kind clears the list, and
@@ -2631,9 +2628,8 @@ export class VersolaClientForm extends LitElement {
 
       <versola-client-kind-step
         .kind=${this.kind}
-        .tier=${this.tier}
+        .profile=${this.securityProfile}
         @kind-change=${(e: CustomEvent<{ kind: ClientKind }>) => this.selectKind(e.detail.kind)}
-        @tier-change=${(e: CustomEvent<{ tier: AssuranceTier }>) => this.selectTier(e.detail.tier)}
       ></versola-client-kind-step>
 
       <div class="form-actions">
@@ -2686,49 +2682,66 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
-  /** Step 1 narrows the credential to at most two methods, so step 2 offers only those. */
+  /** The kind and the tenant's profile narrow the credential, so step 2 offers only what is left:
+   *  nothing for an edge-fronted kind, and a short list for a service. */
   private renderWizardCredentialBlock() {
-    if (this.clientType === 'native') {
+    if (this.clientCredentialMode === 'edge') {
       return html`
         <div class="plan">
-          ${this.renderPlanLine('fixed', 'Public client, no secret', 'A shipped binary cannot keep one.')}
-          ${this.tier === 'high' ? this.renderPlanLine(
+          ${this.renderPlanLine(
+            'fixed',
+            'mTLS by edge',
+            'Central provisions the certificate edge authenticates with. Nothing to register here, and no secret to store.',
+          )}
+          ${this.clientType === 'native' ? this.renderPlanLine(
             'fixed',
             'DPoP proof key',
-            'The device generates it in its own keystore on first run and proves possession on every request. Nothing to register here.',
+            'The device generates it in its own keystore on first run and proves possession on every request.',
           ) : ''}
         </div>
       `;
     }
 
-    if (this.tier === 'compat') {
-      return html`
+    const modes = clientPreset(this.kind ?? 'service', this.securityProfile).credentialModes;
+    const mtls = this.clientCredentialMode === 'mtls' || this.clientCredentialMode === 'mtls-self-signed';
+    const secret = this.clientCredentialMode === 'secret';
+    return html`
+      ${modes.includes('secret') ? html`
+        <div class="seg" style="margin-bottom:var(--spacing-md)">
+          <button type="button" aria-pressed=${secret} @click=${() => this.setClientCredentialMode('secret')}>client secret</button>
+          <button
+            type="button"
+            aria-pressed=${this.clientCredentialMode === 'private-key-jwt'}
+            @click=${() => this.setClientCredentialMode('private-key-jwt')}
+          >key</button>
+          <button type="button" aria-pressed=${mtls} @click=${() => this.setClientCredentialMode('mtls')}>certificate</button>
+        </div>
+      ` : html`
+        <div class="seg" style="margin-bottom:var(--spacing-md)">
+          <button
+            type="button"
+            aria-pressed=${!mtls}
+            @click=${() => this.setClientCredentialMode('private-key-jwt')}
+          >key</button>
+          <button
+            type="button"
+            aria-pressed=${mtls}
+            @click=${() => this.setClientCredentialMode('mtls')}
+          >certificate</button>
+        </div>
+      `}
+      ${secret ? html`
         <div class="wizard-note" style="margin-top:0">
           <strong>Client secret.</strong> Generated when you create the client and shown once, on the
           next screen. Store it before you leave - auth keeps only a hash and cannot show it again.
+          Access tokens are bearer tokens.
         </div>
-      `;
-    }
-
-    const mtls = this.clientCredentialMode === 'mtls' || this.clientCredentialMode === 'mtls-self-signed';
-    return html`
-      <div class="seg" style="margin-bottom:var(--spacing-md)">
-        <button
-          type="button"
-          aria-pressed=${!mtls}
-          @click=${() => this.setClientCredentialMode('private-key-jwt')}
-        >private_key_jwt</button>
-        <button
-          type="button"
-          aria-pressed=${mtls}
-          @click=${() => this.setClientCredentialMode('mtls')}
-        >mTLS</button>
-      </div>
-      ${mtls
+      ` : ''}
+      ${secret ? '' : mtls
         ? this.renderWizardMtlsFields()
         : this.renderWizardJwksField(
             'Key set',
-            'The same keys verify signed request objects, so registering them here is what makes JAR possible.',
+            'The public keys the client signs its assertions with. DPoP proves possession of one of them on every request.',
           )}
       ${this.mtlsTerminationValidation.valid ? '' : html`
         <div class="error-message" style="margin-top:var(--spacing-md)">${this.mtlsTerminationValidation.error}</div>
@@ -2982,7 +2995,7 @@ export class VersolaClientForm extends LitElement {
 
       <div class="wizard-group">
         <div class="wizard-group-head">How the client authenticates</div>
-        <div class="wizard-group-sub">Decided by step 1. Change the tier there to change this.</div>
+        <div class="wizard-group-sub">Decided by the kind in step 1 and the tenant's security profile.</div>
         ${this.renderWizardCredentialBlock()}
       </div>
 
@@ -3300,11 +3313,13 @@ export class VersolaClientForm extends LitElement {
 
   /** How this client proves it is itself, in the words the token endpoint uses. */
   private get credentialSummary(): string {
-    if (this.clientType === 'native') {
+    if (this.clientType === 'native' && this.clientCredentialMode !== 'edge') {
       return 'public client · no secret';
     }
 
     switch (this.clientCredentialMode) {
+      case 'edge':
+        return 'tls_client_auth · certificate enrolled by edge';
       case 'mtls':
         return `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
       case 'mtls-self-signed':
@@ -3360,7 +3375,6 @@ export class VersolaClientForm extends LitElement {
 
   private renderReviewStep() {
     const service = this.kind === 'service';
-    const high = this.tier === 'high';
     const kindName = CLIENT_KINDS.find(k => k.id === this.kind)?.name ?? '';
     const scopes = this.formData.scope || [];
     const permissions = this.formData.permissions || [];
@@ -3373,16 +3387,15 @@ export class VersolaClientForm extends LitElement {
       )}
 
       <div class="review-tier">
-        <span class="review-tier-badge ${high ? 'high' : 'compat'}">
-          ◈ ${kindName} · ${high ? 'High assurance' : 'Compatibility'}
-        </span>
+        <span class="review-tier-badge high">◈ ${kindName}</span>
         <button type="button" class="review-change" @click=${() => (this.wizardStep = 1)}>Change</button>
       </div>
 
-      ${high ? '' : html`
+      ${this.securityProfile === 'fapi2' ? '' : html`
         <div class="wizard-warn">
-          <strong>Compatibility tier.</strong> The access token carries no certificate or key binding.
-          The client page will keep showing this until you move it up.
+          <strong>This tenant is not FAPI 2.0.</strong> ${this.clientCredentialMode === 'secret'
+            ? 'A client secret issues bearer tokens: anyone who copies one can spend it until it expires.'
+            : 'Clients here are not held to the FAPI 2.0 profile.'}
         </div>
       `}
 
@@ -3408,10 +3421,8 @@ export class VersolaClientForm extends LitElement {
           'Signed request objects',
           service
             ? 'not applicable - no authorization request'
-            : !this.canRequireSignedRequestObject
-              ? 'unavailable - no key set to verify one against'
-              : this.formData.requireSignedRequestObject ? 'required' : 'off',
-          service || !this.canRequireSignedRequestObject,
+            : this.canRequireSignedRequestObject && this.formData.requireSignedRequestObject ? 'required' : 'off',
+          service || !this.formData.requireSignedRequestObject,
         ],
         ['Token binding', this.tokenBindingSummary, !this.formData.dpopBoundAccessTokens && !this.effectiveMtlsAuth],
       ])}
@@ -3441,7 +3452,7 @@ export class VersolaClientForm extends LitElement {
           ])}
 
       <div class="wizard-note">
-        ${this.clientType === 'native'
+        ${this.clientType === 'native' && this.clientCredentialMode !== 'edge'
           ? html`<strong>No secret is issued.</strong> A public client authenticates with PKCE alone.`
           : this.clientCredentialMode === 'secret'
             ? html`<strong>The client secret appears once</strong> on the next screen. Auth keeps only a
@@ -3914,11 +3925,22 @@ export class VersolaClientForm extends LitElement {
   }
 
   /** How the client authenticates, plus the request-integrity settings tied to it - decided
-   *  by the kind x tier pair in step 1, still editable here. */
+   *  by the kind in step 1, still editable here. */
   private renderCredentialGroup() {
     // A native client authenticates with nothing beyond its client_id - authMethodFor pins it
     // to 'none' regardless of which mode is picked here, so the cards below would let an
     // operator fill in a certificate or a key set that the update then silently drops.
+    if (this.clientCredentialMode === 'edge') {
+      return html`
+            <div class="form-group">
+              <label style="margin-bottom: 0;">Client credential</label>
+              <div class="plan">
+                ${this.renderPlanLine('fixed', 'mTLS by edge', 'Central provisions the certificate edge authenticates with.')}
+              </div>
+            </div>
+      `;
+    }
+
     if (this.clientType === 'native') {
       return html`
             <div class="form-group">

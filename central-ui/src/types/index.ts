@@ -92,8 +92,10 @@ export type MutualTlsAuth =
  *  neither has a template its current settings can be shown against. */
 export interface ClientTemplate {
   kind: 'web' | 'device' | 'service';
-  tier: 'high' | 'compat';
 }
+
+/** Which profile a tenant's clients are held to. Chosen when the tenant is created. */
+export type SecurityProfile = 'standard' | 'fapi2';
 
 export interface OAuthClient {
   id: string;
@@ -145,6 +147,9 @@ export interface OAuthClient {
   /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
   requirePushedAuthorizationRequests: boolean;
   template?: ClientTemplate | null;
+  /** Creation only: have the edge fronting this client enrol for its certificate, so there is
+   *  no credential for the operator to register. */
+  enrollEdgeClientCertificate?: boolean;
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
@@ -191,6 +196,8 @@ export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
 export interface ChallengeSettingsRecord {
   tenantId: string;
+  /** The profile the tenant's clients are held to; fixed when the tenant is created. */
+  securityProfile?: SecurityProfile;
   allowedPrefixes: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;

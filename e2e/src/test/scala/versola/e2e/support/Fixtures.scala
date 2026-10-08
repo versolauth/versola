@@ -129,11 +129,9 @@ object Fixtures:
       ),
     )
 
-  /** The wizard combination a console registration records: what the client is, and how much
-    * assurance its deployment can carry.
-    */
-  def clientTemplate(kind: String, tier: String): Json.Obj =
-    Json.Obj("kind" -> Json.Str(kind), "tier" -> Json.Str(tier))
+  /** The wizard choice a console registration records: what the client is. */
+  def clientTemplate(kind: String): Json.Obj =
+    Json.Obj("kind" -> Json.Str(kind))
 
   /** The `MutualTlsAuth` shape RFC 8705 §2.1 `tls_client_auth` registration expects: the
     * method, a discriminator naming which certificate attribute is checked, and the literal

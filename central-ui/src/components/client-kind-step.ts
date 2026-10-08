@@ -2,8 +2,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { theme, resetStyles } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
+import { SecurityProfile } from '../types';
 import {
-  AssuranceTier,
   CLIENT_KINDS,
   ClientKind,
   PlanLine,
@@ -22,17 +22,18 @@ const PLAN_MARKS: Record<PlanLine['state'], string> = {
   fixed: '⊙',
   na: '—',
   pick: '◆',
+  note: 'ⓘ',
 };
 
 /**
- * First step of client creation: what is being built, and how much the deployment can carry.
- * The pair decides the client's credential and its request-integrity settings, so the step
+ * First step of client creation: what is being built. The kind and the tenant's security
+ * profile decide the client's credential and its request-integrity settings, so the step
  * spells out every consequence before the rest of the wizard asks for anything.
  */
 @customElement('versola-client-kind-step')
 export class VersolaClientKindStep extends LitElement {
   @property({ attribute: false }) kind: ClientKind | null = null;
-  @property({ attribute: false }) tier: AssuranceTier = 'high';
+  @property({ attribute: false }) profile: SecurityProfile = 'fapi2';
 
   static styles = [
     theme,
@@ -83,44 +84,6 @@ export class VersolaClientKindStep extends LitElement {
         margin-top: 0.15rem;
       }
 
-      .tier-row {
-        display: flex;
-        align-items: baseline;
-        gap: var(--spacing-md);
-        margin-bottom: 0.75rem;
-      }
-
-      .seg {
-        display: inline-flex;
-        border: 1px solid var(--border-dark);
-        border-radius: var(--radius-md);
-        overflow: hidden;
-      }
-
-      .seg button {
-        padding: 0.5rem 0.9rem;
-        background: var(--bg-dark);
-        border: none;
-        border-right: 1px solid var(--border-dark);
-        color: var(--text-secondary);
-        font-family: var(--font-mono);
-        font-size: 0.8125rem;
-        cursor: pointer;
-      }
-
-      .seg button:last-child { border-right: none; }
-
-      .seg button[aria-pressed='true'] {
-        background: rgba(var(--accent-tint), 0.12);
-        color: var(--accent);
-        font-weight: 600;
-      }
-
-      .seg.danger button[aria-pressed='true'] {
-        background: rgba(var(--warning-tint, 180, 83, 9), 0.12);
-        color: var(--warning);
-      }
-
       .plan { display: grid; gap: 0.6rem; margin-top: 0.25rem; }
       .plan-line { display: grid; grid-template-columns: 1.3rem 1fr; gap: 0.5rem; }
 
@@ -130,23 +93,11 @@ export class VersolaClientKindStep extends LitElement {
       .plan-mark.fixed { color: var(--text-secondary); }
       .plan-mark.na { color: var(--text-secondary); opacity: 0.55; }
       .plan-mark.pick { color: var(--accent); }
+      .plan-mark.note { color: var(--warning); }
 
       .plan-text { font-size: 0.875rem; color: var(--text-primary); }
       .plan-line.na .plan-text, .plan-line.off .plan-text { color: var(--text-secondary); }
       .plan-why { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; margin-top: 0.1rem; }
-
-      .warn {
-        padding: 0.75rem 0.9rem;
-        border-radius: var(--radius-md);
-        background: rgba(var(--warning-tint, 180, 83, 9), 0.08);
-        border-left: 3px solid var(--warning);
-        font-size: 0.8125rem;
-        color: var(--text-secondary);
-        line-height: 1.5;
-        margin-bottom: var(--spacing-lg);
-      }
-
-      .warn strong { color: var(--text-primary); }
 
       .lead { font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: 0.6rem; }
     `,
@@ -154,10 +105,6 @@ export class VersolaClientKindStep extends LitElement {
 
   private selectKind(kind: ClientKind) {
     this.dispatchEvent(new CustomEvent('kind-change', { detail: { kind }, bubbles: true, composed: true }));
-  }
-
-  private selectTier(tier: AssuranceTier) {
-    this.dispatchEvent(new CustomEvent('tier-change', { detail: { tier }, bubbles: true, composed: true }));
   }
 
   private renderPlanLine(line: PlanLine) {
@@ -170,15 +117,6 @@ export class VersolaClientKindStep extends LitElement {
         </span>
       </div>
     `;
-  }
-
-  private tierHint(kind: ClientKind | null) {
-    if (this.tier === 'high') {
-      return 'Default. Strong client credentials and request integrity, on from the start.';
-    }
-    return kind === 'web'
-      ? 'Client secret, and edge can front it. The usual way to start.'
-      : 'Weaker guarantees: no certificate or key binding on the access token.';
   }
 
   render() {
@@ -201,35 +139,15 @@ export class VersolaClientKindStep extends LitElement {
         `)}
       </div>
 
-      <div class="tier-row">
-        <div class="seg ${this.tier === 'compat' ? 'danger' : ''}">
-          <button type="button" aria-pressed=${this.tier === 'high'} @click=${() => this.selectTier('high')}>
-            High assurance
-          </button>
-          <button type="button" aria-pressed=${this.tier === 'compat'} @click=${() => this.selectTier('compat')}>
-            Compatibility
-          </button>
-        </div>
-        <span class="plan-why" style="margin:0">${this.tierHint(this.kind)}</span>
-      </div>
-
-      ${kind && this.tier === 'compat' ? html`
-        <div class="warn">
-          <strong>${kind.name} · Compatibility</strong> issues access tokens with no certificate or key
-          binding. Anyone who copies one from a log, a proxy or a crash dump can spend it until it
-          expires. Fine to start on - the client page keeps showing that it is the weaker tier.
-        </div>
-      ` : ''}
-
       ${kind ? html`
         <div class="lead">
-          ${kind.name} · ${this.tier === 'high' ? 'High assurance' : 'Compatibility'} sets:
+          ${kind.name} sets:
         </div>
         <div class="plan">
-          ${clientPreset(kind.id, this.tier).plan.map(line => this.renderPlanLine(line))}
+          ${clientPreset(kind.id, this.profile).plan.map(line => this.renderPlanLine(line))}
         </div>
       ` : html`
-        <div class="lead">Pick what you are building to see what the combination sets.</div>
+        <div class="lead">Pick what you are building to see what it sets.</div>
       `}
     `;
   }

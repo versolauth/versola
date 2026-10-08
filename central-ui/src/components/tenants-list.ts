@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { Edge, Tenant } from '../types';
+import type { Edge, SecurityProfile, Tenant } from '../types';
 import { createTenant, deleteTenant, fetchTenants, updateTenant, fetchEdges } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateTenantId } from '../utils/validators';
@@ -25,6 +25,7 @@ export class VersolaTenantsList extends LitElement {
   @state() private tenantIdInput = '';
   @state() private tenantDescriptionInput = '';
   @state() private selectedEdgeId: string = '';
+  @state() private securityProfileInput: SecurityProfile = 'fapi2';
 
   connectedCallback() {
     super.connectedCallback();
@@ -206,6 +207,7 @@ export class VersolaTenantsList extends LitElement {
     this.tenantIdInput = '';
     this.tenantDescriptionInput = '';
     this.selectedEdgeId = '';
+    this.securityProfileInput = 'fapi2';
     this.formError = '';
   }
 
@@ -260,7 +262,7 @@ export class VersolaTenantsList extends LitElement {
           tenant.id === tenantId ? this.makeTenant(tenantId, description, edgeId) : tenant
         ));
       } else {
-        await createTenant(tenantId, description, edgeId);
+        await createTenant(tenantId, description, edgeId, this.securityProfileInput);
         this.selectedTenantId = tenantId;
         localStorage.setItem('selectedTenantId', tenantId);
         this.dispatchTenantChange(tenantId);
@@ -325,6 +327,26 @@ export class VersolaTenantsList extends LitElement {
                 <label for="tenant-description">Description</label>
                 <input id="tenant-description" class="compact-input" type="text" .value=${this.tenantDescriptionInput} ?disabled=${this.isSubmitting} @input=${(e: Event) => this.tenantDescriptionInput = (e.target as HTMLInputElement).value} />
               </div>
+              ${!this.editingTenantId ? html`
+                <div class="form-group">
+                  <label for="tenant-security-profile">Security profile</label>
+                  <select
+                    id="tenant-security-profile"
+                    class="compact-input"
+                    .value=${this.securityProfileInput}
+                    ?disabled=${this.isSubmitting}
+                    @change=${(e: Event) => this.securityProfileInput = (e.target as HTMLSelectElement).value as SecurityProfile}
+                  >
+                    <option value="fapi2" ?selected=${this.securityProfileInput === 'fapi2'}>FAPI 2.0 (recommended)</option>
+                    <option value="standard" ?selected=${this.securityProfileInput === 'standard'}>Standard</option>
+                  </select>
+                  <div class="hint">
+                    ${this.securityProfileInput === 'fapi2'
+                      ? 'Confidential clients only, sender-constrained tokens, PAR. Fixed once the tenant is created.'
+                      : 'Also admits client secrets, RS256 keys and public native clients. Fixed once the tenant is created.'}
+                  </div>
+                </div>
+              ` : ''}
               <div class="form-group">
                 <label for="tenant-edge">Edge (Optional)</label>
                 <select

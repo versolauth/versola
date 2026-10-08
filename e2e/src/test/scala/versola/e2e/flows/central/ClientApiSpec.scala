@@ -115,13 +115,24 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("device", "high")))
+        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("device")))
         record <- withClient(central, body)(_ => read(central, id))
         template = record.flatMap(_.obj("template"))
-      yield assertTrue(template.flatMap(_.str("kind")).contains("device")) &&
-        assertTrue(template.flatMap(_.str("tier")).contains("high"))
+      yield assertTrue(template.flatMap(_.str("kind")).contains("device"))
           .label("the console shows the client's settings against this, so it has to survive the round trip") &&
         assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
+    },
+    test("a template that still names the retired tier is accepted and read back without it") {
+      for
+        central <- api
+        id <- CentralApi.id("e2e-client")
+        legacy = Json.Obj("kind" -> Json.Str("web"), "tier" -> Json.Str("high"))
+        body = Fixtures.client(id, template = Some(legacy))
+        record <- withClient(central, body)(_ => read(central, id))
+        template = record.flatMap(_.obj("template"))
+      yield assertTrue(template.flatMap(_.str("kind")).contains("web")) &&
+        assertTrue(template.flatMap(_.str("tier")).isEmpty)
+          .label("an older console may still send the tier; it is ignored rather than stored")
     },
     test("registration answers with the time it recorded, and reads back the same one") {
       for
