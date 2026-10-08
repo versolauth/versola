@@ -1,6 +1,6 @@
-# Dependency and base-image updates (#465). sbt has no Dependabot ecosystem, so the Scala
-# dependencies in project/Dependencies.scala are covered by the scanning pipeline (#470)
-# until Renovate or an sbt-dependency-submission step is adopted.
+# Dependency and base-image updates (#465). sbt has no Dependabot ecosystem: the Scala
+# dependencies in project/Dependencies.scala are submitted to the dependency graph by
+# sbt-dependency-submission.yml, so they get alerts and dependency review but not update PRs.
 #
 # Minor and patch updates are grouped into one PR per ecosystem per week. Majors are not
 # grouped: each one is its own PR, so a major that breaks the build (TypeScript 5 -> 7,
