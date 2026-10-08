@@ -171,14 +171,43 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
           env.repository.upsert.calls.isEmpty,
         )
       },
-      test("rejects an RS256 key, without writing") {
+      test("rejects an RS256 key for a fapi2 tenant, without writing") {
         val env = Env()
         for
           _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("rs-kid", "RS256")))
           _ <- env.repository.upsert.succeedsWith(true)
-          result <- env.service.upsertSettings(settings.copy(signingKeyId = Some("rs-kid"))).exit
+          result <- env.service.upsertSettings(
+            settings.copy(signingKeyId = Some("rs-kid"), securityProfile = SecurityProfile.fapi2),
+          ).either
         yield assertTrue(
-          result.isFailure,
+          result == Left(ChallengeSettingsService.ValidationError.Rs256SigningKey("rs-kid")),
+          env.repository.upsert.calls.isEmpty,
+        )
+      },
+      // OIDC Core makes RS256 the one algorithm every OP must support, so a `standard` tenant
+      // has to be able to sign under it.
+      test("accepts an RS256 key for a standard tenant") {
+        val env = Env()
+        val standard = settings.copy(signingKeyId = Some("rs-kid"), securityProfile = SecurityProfile.standard)
+        for
+          _ <- env.jwksRepository.find.succeedsWith(Some(signableKey("rs-kid", "RS256")))
+          _ <- env.repository.upsert.succeedsWith(true)
+          result <- env.service.upsertSettings(standard).exit
+        yield assertTrue(
+          result.isSuccess,
+          env.repository.upsert.calls == List(standard),
+        )
+      },
+      test("still rejects a verify-only RS256 key for a standard tenant") {
+        val env = Env()
+        val verifyOnly = signableKey("rs-kid", "RS256").copy(privateKey = None)
+        for
+          _ <- env.jwksRepository.find.succeedsWith(Some(verifyOnly))
+          result <- env.service.upsertSettings(
+            settings.copy(signingKeyId = Some("rs-kid"), securityProfile = SecurityProfile.standard),
+          ).either
+        yield assertTrue(
+          result == Left(ChallengeSettingsService.ValidationError.VerifyOnlySigningKey("rs-kid")),
           env.repository.upsert.calls.isEmpty,
         )
       },

@@ -1111,7 +1111,9 @@ paths:
         '400':
           description: |
             Refused, with nothing stored -- among other reasons, because `securityProfile` names
-            a profile other than the one the tenant was created with, which cannot be changed.
+            a profile other than the one the tenant was created with, which cannot be changed,
+            or because `signingKeyId` names an RS256 key for a tenant on the `fapi2` profile
+            (FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding; a `standard` tenant may select one).
 
   /configuration/forms:
     get:
@@ -2404,6 +2406,25 @@ components:
             The wizard combination this registration came from, recorded as-is and never
             inferred from the settings sent alongside it. `null` names none, which is what a
             caller other than the console sends.
+        issueEdgeClientCertificate:
+          type: boolean
+          description: |
+            Central generates the key pair of the certificate the edge fronting this client
+            presents, has a CA sign it and renews it before it expires (#440). The client is
+            registered `tls_client_auth` by `mtlsAuth` where one is given; without it the subject
+            is `CN=<client>,OU=<tenant>,O=Versola`. Required, never defaulted: `false` for a
+            client no edge fronts or one that supplies its own certificate. Mutually exclusive with
+            `enrollEdgeClientCertificate` and with supplying a certificate.
+        enrollEdgeClientCertificate:
+          type: boolean
+          description: |
+            The edge fronting this client generates its own key and enrols for a certificate
+            (#463): central stores no certificate and no key, only that the client is enrolled,
+            and signs the request an authenticated edge sends for the subject `mtlsAuth`
+            registers (or `CN=<client>,OU=<tenant>,O=Versola` where it names none). Only for a
+            native client fronted by edge. Required, never defaulted: `false` otherwise.
+            Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
+            certificate.
       required:
         - tenantId
         - id
@@ -2421,6 +2442,8 @@ components:
         - certificateBoundAccessTokens
         - requireSignedRequestObject
         - requirePushedAuthorizationRequests
+        - issueEdgeClientCertificate
+        - enrollEdgeClientCertificate
     UpdateClientRequest:
       type: object
       description: |
@@ -3721,7 +3744,10 @@ components:
           type: [string, 'null']
           description: >-
             Keeps the stored selection when omitted; null clears it, falling back to auth's
-            configured private key. Refused unless central holds a private key for that kid.
+            configured private key. Refused unless central holds a private key for that kid,
+            and refused for an RS256 key when the tenant is on the `fapi2` profile -- a
+            `standard` tenant may sign under RS256, which OpenID Connect Core requires every OP
+            to support.
         clientAssertionMaxLifetimeSeconds:
           type: [integer, 'null']
           description: >-

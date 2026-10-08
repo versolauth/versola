@@ -107,6 +107,38 @@ object SigningKeySelectionSpec extends E2ESpec:
           .label("the published EC JWK must verify the token signed with its private half")
     },
 
+    // OIDC Core makes RS256 the one algorithm every OP must support, and the conformance suite
+    // fails an OP that cannot sign with it. The suite's tenant is on `standard`, so it may.
+    test("a standard tenant's tokens are signed with the RS256 key it selected") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        (clientId, clientSecret) <- registerClient(auth)
+        result <- withSelectedKey(auth, "RS256") { kid =>
+          issue(auth, clientId, clientSecret).map(kid -> _)
+        }
+        (kid, (head, verified)) = result
+      yield assertTrue(head.kid == kid)
+        .label(s"the token must name the selected key, got kid=${head.kid} for selection '$kid'") &&
+        assertTrue(head.alg == "RS256")
+          .label(s"the algorithm must be the selected key's, got ${head.alg}") &&
+        assertTrue(verified)
+          .label("a token signed with the selected key must verify against the published JWKS")
+    },
+
+    // FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding, so the profile that adopts it refuses the
+    // selection -- the key itself can exist, which is what lets a standard tenant use it.
+    test("a fapi2 tenant is refused an RS256 signing key") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        result <- SecurityProfiles.withFapi2Tenant(auth.central): tenantId =>
+          ZIO.acquireReleaseWith(auth.generateJwksKey("RS256"))(auth.deleteJwksKey(_).orDie): kid =>
+            auth.upsertChallengeSettings(tenantId = tenantId, signingKeyId = Some(kid)).either
+      yield assertTrue(result.isLeft)
+        .label("central must refuse an RS256 signing key for a tenant on the fapi2 profile") &&
+        assertTrue(result.left.exists(_.getMessage.contains("RS256")))
+          .label(s"the refusal must name RS256, got $result")
+    },
+
     // Clearing the selection is what a deployment seeded from `bootstrap.jwks` lives on
     // permanently: central holds no private half for those keys, so auth signs with the one
     // in its own configuration.
