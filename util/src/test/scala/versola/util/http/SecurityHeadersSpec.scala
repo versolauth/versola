@@ -20,10 +20,6 @@ object SecurityHeadersSpec extends ZIOSpecDefault:
   private def get(path: String, headers: Headers = Headers.empty): UIO[Response] =
     ZIO.scoped(routes.runZIO(Request.get(URL.decode(path).toOption.get).addHeaders(headers)))
 
-  /** What the server does with a request no route took: `Routes#notFound`, not `runZIO`. */
-  private def unmatched(r: Routes[Any, Nothing], path: String): UIO[Response] =
-    ZIO.scoped(r.notFound(Request.get(URL.decode(path).toOption.get)))
-
   def spec = suite("SecurityHeaders")(
     test("every response is told not to be sniffed, to send no referrer and to drop powerful features") {
       for response <- get("/data")
@@ -69,11 +65,26 @@ object SecurityHeadersSpec extends ZIOSpecDefault:
       )
     },
     test("the fallback for an unknown path is decorated too") {
-      for response <- unmatched(routes, "/nope")
+      for response <- get("/nope")
       yield assertTrue(response.status == Status.NotFound, response.rawHeader("X-Content-Type-Options").contains("nosniff"))
     },
     test("a listener that terminates TLS itself sends HSTS with no forwarding header") {
       for response <- ZIO.scoped(tlsRoutes.runZIO(Request.get(URL.decode("/data").toOption.get)))
       yield assertTrue(response.rawHeader("Strict-Transport-Security").contains(SecurityHeaders.StrictTransportSecurity))
     },
-  )
+    // The in-memory `runZIO` skips what the real server does when it installs routes
+    // (`oldRoutes ++ newRoutes`), which is how an unmatched path once escaped these headers.
+    test("a running server decorates an unknown path") {
+      ZIO.scoped:
+        for
+          env <- (ZLayer.succeed(Server.Config.default.onAnyOpenPort) >>> Server.live).build
+          port <- Server.install(routes).provideEnvironment(env)
+          client <- Client.default.build.map(_.get[Client])
+          url <- ZIO.fromEither(URL.decode(s"http://localhost:$port/no-such-path")).mapError(RuntimeException(_))
+          response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
+        yield assertTrue(
+          response.status == Status.NotFound,
+          response.rawHeader("X-Content-Type-Options").contains("nosniff"),
+        )
+    },
+  ) @@ TestAspect.withLiveClock

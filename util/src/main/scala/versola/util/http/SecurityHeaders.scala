@@ -2,6 +2,7 @@ package versola.util.http
 
 import zio.*
 import zio.http.*
+import zio.http.codec.PathCodec
 
 /** Response headers every application surface sets (#473): what a browser needs to be told so
   * that a login page cannot be framed, a JSON body sniffed into script, or a URL leaked to the
@@ -66,15 +67,19 @@ object SecurityHeaders:
 
   /** Covers the three ways a response leaves a route: returned, failed with a `Response` in the
     * error channel (`Handler.fail(Response...)`, which `Routes` merges into a response only after
-    * this runs), and the fallback for a path or method no route matches. */
+    * this runs), and the answer for a path or method no route matches.
+    *
+    * The last is a catch-all route rather than `Routes#notFound`: the server installs routes with
+    * `oldRoutes ++ newRoutes` (see `NettyDriver#addApp`), which builds a new `Routes` with the
+    * default `notFound`, so a customised one never reaches a running server. A wildcard loses to
+    * every literal route, so it only answers what nothing else would have. */
   private final class Decorate(directTls: Boolean) extends Middleware[Any]:
+    private val fallback: Routes[Any, Response] =
+      Routes(Method.ANY / PathCodec.trailing -> handler((_: Path, _: Request) => Response.notFound))
+
     def apply[Env1 <: Any, Err](routes: Routes[Env1, Err]): Routes[Env1, Err] =
-      val decorated = Routes.fromIterable(routes.routes.map(route => route.transform(decorate)))
-      val unmatched = routes.notFound
-      decorated.notFound = Handler.scoped[Any]:
-        Handler.fromFunctionZIO[Request]: request =>
-          unmatched(request).map(SecurityHeaders(request, _, directTls))
-      decorated
+      Routes.fromIterable(routes.routes ++ fallback.routes.asInstanceOf[Chunk[Route[Env1, Err]]])
+        .transform(decorate)
 
     private def decorate[Env1](
         handler: Handler[Env1, Response, Request, Response],
