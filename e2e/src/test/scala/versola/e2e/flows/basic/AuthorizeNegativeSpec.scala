@@ -65,7 +65,8 @@ object AuthorizeNegativeSpec extends E2ESpec:
         _ <- auth.registerClient(
           clientId,
           "Native client",
-          Set(s.redirectUri),
+          // Central accepts only an https App Link for an edge-fronted native client.
+          Set(EdgeFixture.nativeRedirectUri),
           authFlow = Some(Flows.loginPasswordAuthFlow),
           authMethod = "tls_client_auth",
           applicationType = Some("native"),
@@ -74,7 +75,7 @@ object AuthorizeNegativeSpec extends E2ESpec:
           enrollEdgeClientCertificate = true,
         ).success
         _ <- auth.syncConfiguration()
-        result <- auth.authorizeRaw(clientId = clientId, redirectUri = s.redirectUri, omitCodeChallenge = true)
+        result <- auth.authorizeRaw(clientId = clientId, redirectUri = EdgeFixture.nativeRedirectUri, omitCodeChallenge = true)
         _ <- result.assertErrorRedirect("invalid_request")
         url <- ZIO.fromEither(URL.decode(result.location)).mapError(RuntimeException(_))
         description <- url.queryZIO[String]("error_description")
