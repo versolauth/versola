@@ -197,6 +197,12 @@ jobs:
       - name: Compile
         run: sbt compile "tools/compile" "loadgen/compile" "mockapi/compile"
 
+      # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
+      # does not (and a service container cannot take the server flags or certificates it
+      # needs), so it is started here. Writes its CA to target/postgres-tls/ca.crt.
+      - name: Start Postgres with TLS
+        run: util/implementations/postgres/tls-fixture/start.sh
+
       - name: Run tests
         if: github.event_name != 'push'
         env:

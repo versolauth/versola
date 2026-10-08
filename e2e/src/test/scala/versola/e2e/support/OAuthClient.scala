@@ -516,6 +516,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       redirectUri: Option[String] = None,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
       authorizationDetails: Option[String] = None,
+      /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
+      claims: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -531,7 +533,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "state" -> state,
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
-      ) ++ authorizationDetails.map("authorization_details" -> _))
+      ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
@@ -719,6 +721,25 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * endpoint, carries no `ath` — there is no token yet to compute one over — and the `cnf.jkt`
     * it leaves in the token is what every resource server afterwards demands a proof against.
     */
+  /** Registers a public (`authMethod: none`) client in the suite tenant and syncs it to auth.
+    *
+    * A public client is the one a `standard` tenant still holds to PKCE, so it is what a test
+    * about a refused missing `code_challenge` has to use -- the suite's default clients are
+    * confidential and may omit it.
+    */
+  def registerPublicClient(redirectUri: String): Task[String] =
+    for
+      clientId <- CentralApi.id("e2e-public")
+      _ <- registerClient(
+        clientId,
+        "Public client",
+        Set(redirectUri),
+        authFlow = Some(Flows.loginPasswordAuthFlow),
+        authMethod = "none",
+      ).success
+      _ <- syncConfiguration()
+    yield clientId
+
   def token(
       code: String,
       verifier: String,
@@ -731,6 +752,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a client that registered a key set authenticates with instead of
         * a secret, which it then does not send. */
       assertion: Option[String] = None,
+      /** RFC 7636: send no `code_verifier`, as a client that sent no `code_challenge` must. */
+      omitVerifier: Boolean = false,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret
@@ -741,8 +764,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       "grant_type" -> "authorization_code",
       "code" -> code,
       "redirect_uri" -> effectiveRedirectUri,
-      "code_verifier" -> verifier,
-    ) ++ assertion.fold(Map.empty)(value =>
+    ) ++ (if omitVerifier then Map.empty else Map("code_verifier" -> verifier)) ++ assertion.fold(Map.empty)(value =>
       Map(
         "client_assertion_type" -> AssertionSigner.Type,
         "client_assertion" -> value,

@@ -80,7 +80,7 @@ matter most:
 | Prompt | Don't accept the default as-is | Answer instead |
 |---|---|---|
 | Auth internal URL | defaults to the public URL you just typed | central's cluster-DNS address, e.g. `http://versola-auth:8080` |
-| Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL — append `?ssl=true&sslmode=require` if the database needs it |
+| Postgres URL (×3, one per service) | defaults to `localhost` | each service's real JDBC URL. Verified TLS (`sslmode=verify-full`) is the default and prod refuses to start without it; mount the database's CA bundle with the service's `extraVolumes`/`extraVolumeMounts` and set `postgres.ssl-root-cert` to its path (see [deploy.md](../deploy.md#postgres-tls)) |
 | Postgres password (×3) | a placeholder default (`1234`) | the password that database actually has — this tool never talks to a database, so a made-up value here just disagrees with it silently later |
 
 Every prompt above also accepts a `--flag=value` on the command line instead — give it and the
