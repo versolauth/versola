@@ -51,7 +51,7 @@ const templatedClient = {
   certificateBoundAccessTokens: false,
   requirePushedAuthorizationRequests: true,
   requireSignedRequestObject: false,
-  template: { kind: 'device', tier: 'high' },
+  template: { kind: 'device' },
   createdAt: '2026-02-01T09:00:00Z',
 };
 
@@ -62,9 +62,8 @@ const driftedClient = {
   requirePushedAuthorizationRequests: false,
 };
 
-/** A web/high client moved onto a shared secret afterwards. The combination asked for signed
-  * request objects, which are verified against the client's JWK set - having none leaves that
-  * requirement off with nothing the form can do about it. */
+/** A web client moved onto a shared secret afterwards: the template asked for certificate-bound
+  * tokens, which nothing about a secret can carry. */
 const secretBackedHighClient = {
   ...alphaClient,
   id: 'web-downgraded',
@@ -75,9 +74,20 @@ const secretBackedHighClient = {
   certificateBoundAccessTokens: false,
   requirePushedAuthorizationRequests: true,
   requireSignedRequestObject: false,
-  template: { kind: 'web', tier: 'high' },
+  template: { kind: 'web' },
   createdAt: '2026-02-01T09:00:00Z',
 };
+
+/** A tenant that is not held to FAPI 2.0: what admits a client secret, so a service app can pick one. */
+const standardTenants = [
+  { id: 'tenant-alpha', description: 'Alpha Workspace', edgeId: null, securityProfile: 'standard' as const },
+  { id: 'tenant-bravo', description: 'Bravo Workspace', edgeId: null },
+];
+
+type Profile = 'fapi2' | 'standard';
+
+/** The tenant under test, on the given profile; a tenant is on FAPI 2.0 unless seeded otherwise. */
+const tenantsOn = (profile: Profile) => (profile === 'standard' ? standardTenants : undefined);
 
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
@@ -96,13 +106,12 @@ function clientCard(page: Page, text: string) {
 
 /**
  * Creation opens on step 1, which decides the client's credential and request-integrity
- * settings. Web x Compatibility is the combination these tests configure by hand afterwards:
- * a secret, no PAR, no signed request objects.
+ * settings together with the tenant's profile. A web or mobile client gets its credential from
+ * edge; a Service app is where a credential is chosen (a secret only on a standard tenant).
  */
-async function startCreate(page: Page, kind = 'Web app', tier = 'Compatibility') {
+async function startCreate(page: Page, kind = 'Web app') {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await page.getByRole('button', { name: new RegExp(kind) }).click();
-  await page.getByRole('button', { name: tier, exact: true }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
 }
 
@@ -269,15 +278,15 @@ test('shows refresh token TTL only after selecting offline_access when creating 
 });
 
 test('creates a client and shows the generated secret banner', async ({ page }) => {
+  // A secret is only on offer to a service app on a tenant that is not held to FAPI 2.0.
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient, serviceClient] } },
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [alphaClient, serviceClient] } },
   });
 
-  await startCreate(page);
+  await startCreate(page, 'Service app');
 
   await fillBasics(page, 'dashboard-client', 'Dashboard Client');
-  await addRedirectUri(page, 'https://dashboard.example/callback');
   await continueToThirdStep(page);
   await continueToReview(page);
   await submitCreate(page);
@@ -290,27 +299,17 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await expect(secretValue).toBeVisible();
   expect((await secretValue.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
   await expect(created).toContainText('dashboard-client');
-  await expect(created).toContainText('https://dashboard.example/callback');
   await expect(created).toContainText('1h');
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'dashboard-client',
     clientName: { en: 'Dashboard Client' },
-    redirectUris: ['https://dashboard.example/callback'],
-    allowedScopes: ['openid'],
+    redirectUris: [],
+    allowedScopes: [],
     permissions: [],
     accessTokenTtl: 3600,
-    authFlow: {
-      primary: {
-        credentials: ['phone'],
-        inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
-      },
-      passkey: null,
-      equivalents: {},
-      otpType: 'sms',
-    },
+    authFlow: null,
     registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
@@ -330,8 +329,9 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     jwks: null,
     requireSignedRequestObject: false,
     requirePushedAuthorizationRequests: false,
-    // Step 1's combination, stored so the edit page can show the client against it.
-    template: { kind: 'web', tier: 'compat' },
+    // Step 1's kind, stored so the edit page can show the client against it.
+    applicationType: 'web',
+    template: { kind: 'service' },
     issueEdgeClientCertificate: false,
     enrollEdgeClientCertificate: false,
   });
@@ -356,7 +356,7 @@ test('dates a just-created client by the time the registration answered with', a
   await expect(page.locator('.form-actions-note')).toHaveText('Confidential client · created today');
 });
 
-test('creates a native client without a secret and without rotation controls', async ({ page }) => {
+test('creates a native client authenticated by edge, without a secret or rotation controls', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [] } },
@@ -364,19 +364,21 @@ test('creates a native client without a secret and without rotation controls', a
 
   await startCreate(page, 'Mobile or desktop app');
   await fillBasics(page, 'mobile-app', 'Mobile App');
-  await addRedirectUri(page, 'com.example.app://callback');
+  await addRedirectUri(page, 'https://app.example.com/callback');
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
     id: 'mobile-app',
-    authMethod: 'none',
+    authMethod: 'tls_client_auth',
+    applicationType: 'native',
+    enrollEdgeClientCertificate: true,
+    template: { kind: 'device' },
   });
 
-  // There is no secret to copy, so the banner says so instead of rendering an empty value.
+  // Edge enrols for the certificate, so there is no secret to copy and nothing to register.
   await expect(page.getByRole('heading', { name: 'Client created: Mobile App', exact: true })).toBeVisible();
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Copy secret', exact: true })).toHaveCount(0);
-  await expect(page.locator('.secret-banner')).toContainText('no secret was issued');
 
   // The list itself shows the client type, so it's discoverable without opening the edit form.
   await expect(clientCard(page, 'Mobile App').locator('.badge-native')).toHaveText('Native');
@@ -424,8 +426,9 @@ test('gates each step behind its own answer and marks the stepper as the wizard 
   const signInStep = stepper.filter({ hasText: 'Sign-in' });
   const reviewStep = stepper.filter({ hasText: 'Review' });
 
-  // Tier is its own choice, not tied to a kind - it already defaults to the safer one.
-  await expect(page.getByRole('button', { name: 'High assurance', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  // Step 1 is the kind alone: the tenant's profile decides the rest, so there is no tier to pick.
+  await expect(page.getByRole('button', { name: 'High assurance', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Compatibility', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'false');
   await expect(kindStep).toHaveAttribute('aria-current', 'step');
   await expect(basicsStep).not.toHaveClass(/active|done/);
@@ -437,7 +440,6 @@ test('gates each step behind its own answer and marks the stepper as the wizard 
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.getByRole('button', { name: 'Continue to basics', exact: true })).toBeEnabled();
 
-  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
 
   await expect(kindStep).toHaveClass(/done/);
@@ -497,12 +499,11 @@ test('keeps earlier answers when navigating back through the wizard', async ({ p
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Scopes' }))
     .toContainText('profile');
 
-  // All the way back to step 1: the kind and tier chosen at the very start survive three Backs.
+  // All the way back to step 1: the kind chosen at the very start survives three Backs.
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: 'Compatibility', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   // And all the way forward again to submit - nothing was lost along the way.
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
@@ -541,10 +542,9 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Client name' }))
     .toContainText('Renamed Client');
 
-  // The tier badge's Change link is step 1's - kind and tier both survive the round trip.
+  // The kind badge's Change link is step 1's - the kind survives the round trip.
   await page.locator('versola-client-form .review-tier').getByRole('button', { name: 'Change', exact: true }).click();
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.getByRole('button', { name: 'Compatibility', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
   await expect(page.locator('versola-client-form input#client-name')).toHaveValue('Renamed Client');
@@ -583,11 +583,10 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     },
   });
 
-  // A credential is only a choice in the high-assurance tier; compatibility means a secret.
-  await startCreate(page, 'Web app', 'High assurance');
+  // A credential is only a choice for a service app; web and mobile apps get edge's certificate.
+  await startCreate(page, 'Service app');
   await fillBasics(page, 'mtls-client', 'mTLS Client');
-  await addRedirectUri(page, 'https://mtls.example/callback');
-  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
+  await page.getByRole('button', { name: 'certificate', exact: true }).click();
 
   // The tenant terminates TLS, so no warning.
   await expect(page.getByText('no mTLS certificate header configured')).toHaveCount(0);
@@ -606,7 +605,10 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     id: 'mtls-client',
     authMethod: 'tls_client_auth',
     mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_dns', subjectValue: 'client.example.com' },
+    // tls_client_auth binds the token to the certificate by itself, so no separate flag is sent.
     certificateBoundAccessTokens: false,
+    dpopBoundAccessTokens: false,
+    enrollEdgeClientCertificate: false,
     jwks: null,
   });
 });
@@ -617,15 +619,14 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await startCreate(page, 'Web app', 'High assurance');
+  await startCreate(page, 'Service app');
   await fillBasics(page, 'mtls-client', 'mTLS Client');
-  await addRedirectUri(page, 'https://mtls.example/callback');
-  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
+  await page.getByRole('button', { name: 'certificate', exact: true }).click();
 
   await expect(page.getByText('no mTLS certificate header configured')).toBeVisible();
 
   // The basics step will not hand a broken credential on to the steps after it.
-  const continueButton = page.getByRole('button', { name: 'Continue to sign-in', exact: true });
+  const continueButton = page.getByRole('button', { name: 'Continue to permissions', exact: true });
   await expect(page.getByText('Subject value is required')).toBeVisible();
   await expect(continueButton).toBeDisabled();
 
@@ -637,7 +638,7 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
   expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
 });
 
-test('registers a self-signed mTLS client and keeps JAR off keys that cannot verify one', async ({ page }) => {
+test('registers a self-signed mTLS client against the key set of its certificate', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
@@ -646,23 +647,12 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
     },
   });
 
-  await startCreate(page, 'Web app', 'High assurance');
+  await startCreate(page, 'Service app');
   await fillBasics(page, 'self-signed-client', 'Self Signed Client');
-  await addRedirectUri(page, 'https://self-signed.example/callback');
-  await page.getByRole('button', { name: 'mTLS', exact: true }).click();
+  await page.getByRole('button', { name: 'certificate', exact: true }).click();
   await page.getByRole('button', { name: 'Self-signed', exact: true }).click();
 
-  // A certificate is matched over public key material, so a P-384 key registers fine - but
-  // nothing here can verify a request object with it, so the tier's JAR requirement drops.
-  await page.getByLabel('Key set of the certificate').fill(JSON.stringify({ keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y' }] }));
-  await continueToThirdStep(page);
-  await continueToReview(page);
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Signed request objects' }))
-    .toContainText('unavailable');
-
   const keySet = { keys: [{ kty: 'EC', crv: 'P-256', x: 'x', y: 'y' }] };
-  await page.getByRole('button', { name: 'Back', exact: true }).click();
-  await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByLabel('Key set of the certificate').fill(JSON.stringify(keySet));
   await finishCreate(page);
 
@@ -671,7 +661,8 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
     authMethod: 'self_signed_tls_client_auth',
     mtlsAuth: { type: 'self_signed_tls_client_auth' },
     jwks: keySet,
-    requireSignedRequestObject: true,
+    certificateBoundAccessTokens: false,
+    requireSignedRequestObject: false,
   });
 
   // No secret is generated for a client whose method is not client_secret, so the banner has
@@ -681,61 +672,144 @@ test('registers a self-signed mTLS client and keeps JAR off keys that cannot ver
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
 });
 
-test('applies the credential and request integrity a high-assurance web client implies', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [] } },
+for (const profile of ['fapi2', 'standard'] as const) {
+  test(`applies edge's certificate and the request integrity a web client implies on a ${profile} tenant`, async ({ page }) => {
+    const api = await loadAdminApp(page, {
+      path: clientsPath,
+      state: { tenants: tenantsOn(profile), clients: { 'tenant-alpha': [] } },
+    });
+
+    await startCreate(page, 'Web app');
+
+    // The credential is not a choice: edge is the client and authenticates with its certificate.
+    await expect(page.getByText('mTLS by edge', { exact: true })).toBeVisible();
+    await expect(page.locator('versola-client-form .seg')).toHaveCount(0);
+    await expect(page.getByLabel('Key set')).toHaveCount(0);
+    await expect(page.getByLabel('Expected value')).toHaveCount(0);
+
+    await fillBasics(page, 'edge-web', 'Edge Web');
+    await addRedirectUri(page, 'https://edge.example/callback');
+    await continueToThirdStep(page);
+    await continueToReview(page);
+
+    // The kind settles these, so review is where they are stated rather than asked for.
+    await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
+      .toContainText('required');
+    await expect(page.locator('versola-client-form .review-tier')).toContainText('Web app');
+    await expect(page.getByText('tls_client_auth · certificate issued by central for edge')).toBeVisible();
+    await expect(page.getByText('This tenant is not FAPI 2.0.')).toHaveCount(profile === 'standard' ? 1 : 0);
+    await submitCreate(page);
+
+    expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+      id: 'edge-web',
+      authMethod: 'tls_client_auth',
+      applicationType: 'web',
+      // Tokens bound to edge's certificate need every replica to present the same one, so
+      // central issues it; only a native app's edge enrols for its own.
+      issueEdgeClientCertificate: true,
+      enrollEdgeClientCertificate: false,
+      mtlsAuth: null,
+      jwks: null,
+      requirePushedAuthorizationRequests: true,
+      requireSignedRequestObject: false,
+      certificateBoundAccessTokens: true,
+      dpopBoundAccessTokens: false,
+      template: { kind: 'web' },
+    });
+    await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   });
 
-  await startCreate(page, 'Web app', 'High assurance');
+  test(`binds a mobile client to a device key and has edge authenticate it on a ${profile} tenant`, async ({ page }) => {
+    const api = await loadAdminApp(page, {
+      path: clientsPath,
+      state: { tenants: tenantsOn(profile), clients: { 'tenant-alpha': [] } },
+    });
 
-  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await startCreate(page, 'Mobile or desktop app');
 
-  await fillBasics(page, 'high-web', 'High Web');
-  await addRedirectUri(page, 'https://high.example/callback');
-  await page.getByLabel('Key set').fill(SAMPLE_JWKS);
-  await continueToThirdStep(page);
-  await continueToReview(page);
+    // A shipped binary has no credential to register: edge holds one, and the device holds a key.
+    await expect(page.getByText('mTLS by edge', { exact: true })).toBeVisible();
+    await expect(page.getByText('DPoP proof key', { exact: true })).toBeVisible();
+    await expect(page.getByText('Public client, no secret', { exact: true })).toHaveCount(0);
+    await expect(page.locator('versola-client-form .seg')).toHaveCount(0);
 
-  // The tier settles both, so review is where they are stated rather than asked for.
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
-    .toContainText('required');
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Signed request objects' }))
-    .toContainText('required');
-  await submitCreate(page);
+    await fillBasics(page, 'mobile-client', 'Mobile Client');
+    await addRedirectUri(page, 'https://app.example.com/callback');
+    await continueToThirdStep(page);
+    await continueToReview(page);
+    await expect(page.getByText('tls_client_auth · certificate enrolled by edge')).toBeVisible();
+    await submitCreate(page);
 
-  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
-    id: 'high-web',
-    authMethod: 'private_key_jwt',
-    requirePushedAuthorizationRequests: true,
-    requireSignedRequestObject: true,
-    dpopBoundAccessTokens: false,
+    expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+      id: 'mobile-client',
+      authMethod: 'tls_client_auth',
+      applicationType: 'native',
+      issueEdgeClientCertificate: false,
+      enrollEdgeClientCertificate: true,
+      mtlsAuth: null,
+      dpopBoundAccessTokens: true,
+      certificateBoundAccessTokens: false,
+      requirePushedAuthorizationRequests: true,
+      requireSignedRequestObject: false,
+      template: { kind: 'device' },
+    });
   });
+}
+
+test('refuses a custom-scheme redirect for an app fronted by edge', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+  await startCreate(page, 'Mobile or desktop app');
+  await fillBasics(page, 'mobile-app', 'Mobile App');
+  await addRedirectUri(page, 'com.example.app://callback');
+
+  // Central refuses every non-https redirect for this client, so the form says so up front.
+  await expect(page.getByText('accepts only https redirect URIs')).toBeVisible();
+  await expect(page.locator('versola-client-form .tag').filter({ hasText: 'com.example.app://callback' })).toHaveCount(0);
 });
 
-test('binds a high-assurance mobile client to a device key and leaves it public', async ({ page }) => {
+/** A native app fronted by edge as central stores it: enrolled, so the subject is registered. */
+const edgeNativeClient = {
+  ...alphaClient,
+  id: 'edge-mobile',
+  clientName: { en: 'Edge Mobile' },
+  authMethod: 'tls_client_auth',
+  applicationType: 'native',
+  mtlsAuth: { type: 'tls_client_auth', subjectType: 'subject_dn', subjectValue: 'CN=edge-mobile,OU=tenant-alpha,O=Versola' },
+  dpopBoundAccessTokens: true,
+  certificateBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  requireSignedRequestObject: false,
+  template: { kind: 'device' },
+  createdAt: '2026-02-01T09:00:00Z',
+};
+
+test('keeps the registered subject when an edge-fronted client is edited', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [] } },
+    state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
   });
 
-  await startCreate(page, 'Mobile or desktop app', 'High assurance');
+  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openEditSection(page, 'Token lifetimes');
+  await page.locator('versola-client-form #ttl').fill('2');
+  await saveEdit(page);
 
-  // A shipped binary has no credential to register, so step 2 states the pair instead of asking.
-  await expect(page.getByText('Public client, no secret', { exact: true })).toBeVisible();
-  await expect(page.getByText('DPoP proof key', { exact: true })).toBeVisible();
+  // Absent leaves the stored subject alone; null would clear it, which central refuses.
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body.mtlsAuth).toBeUndefined();
+});
 
-  await fillBasics(page, 'mobile-client', 'Mobile Client');
-  await addRedirectUri(page, 'com.example.app://callback');
-  await finishCreate(page);
-
-  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
-    id: 'mobile-client',
-    authMethod: 'none',
-    dpopBoundAccessTokens: true,
-    requirePushedAuthorizationRequests: true,
-    requireSignedRequestObject: false,
+test('does not report an edge-fronted client as drifted from its template', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...edgeNativeClient, template: { kind: 'web' }, applicationType: 'web',
+      dpopBoundAccessTokens: false, certificateBoundAccessTokens: true }] } },
   });
+
+  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+
+  // The certificate credential binds the token, which is what the web template asks for.
+  await expect(page.locator('versola-client-form .template-badge.drift')).toHaveCount(0);
 });
 
 test('leaves a service client with no sign-in flow to configure', async ({ page }) => {
@@ -744,11 +818,11 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await startCreate(page, 'Service app', 'High assurance');
+  await startCreate(page, 'Service app');
 
   await expect(page.getByPlaceholder('https://app.example.com/callback')).toHaveCount(0);
   await expect(page.getByText('No redirect URIs', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'key', exact: true })).toHaveAttribute('aria-pressed', 'true');
 
   await fillBasics(page, 'batch-service', 'Batch Service');
   await page.getByLabel('Key set').fill(SAMPLE_JWKS);
@@ -762,36 +836,88 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
   await submitCreate(page);
 
   const body = findRequest(api.requests, 'POST', '/configuration/clients').body as Record<string, unknown>;
-  expect(body).toMatchObject({ id: 'batch-service', authMethod: 'private_key_jwt', authFlow: null });
+  expect(body).toMatchObject({
+    id: 'batch-service',
+    authMethod: 'private_key_jwt',
+    dpopBoundAccessTokens: true,
+    certificateBoundAccessTokens: false,
+    authFlow: null,
+  });
   expect(body.redirectUris).toEqual([]);
 });
 
-test('re-applies the preset when the tier changes before continuing', async ({ page }) => {
+test('offers a service app a key or a certificate on a FAPI 2.0 tenant, and no secret', async ({ page }) => {
   await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
 
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
-  await page.getByRole('button', { name: /Web app/ }).click();
-  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
+  await page.getByRole('button', { name: /Service app/ }).click();
+  await expect(page.getByText('This tenant is not FAPI 2.0', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
 
-  // Compatibility leaves no credential to choose between - a secret is the only option.
-  await expect(page.getByText('Client secret.', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'key', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'certificate', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('button', { name: 'client secret', exact: true })).toHaveCount(0);
+  await expect(page.getByText('Client secret.', { exact: true })).toHaveCount(0);
 });
 
-test('registers a private_key_jwt client with signed request objects and PAR', async ({ page }) => {
+test('offers a service app a secret, a key or a certificate on a standard tenant, secret first', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [] } },
+  });
+
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Service app/ }).click();
+  await expect(page.locator('versola-client-form').getByText('This tenant is not FAPI 2.0', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+
+  await expect(page.getByRole('button', { name: 'client secret', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'key', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByRole('button', { name: 'certificate', exact: true })).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.getByText('Client secret.', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Key set')).toHaveCount(0);
+
+  await fillBasics(page, 'secret-service', 'Secret Service');
+  await continueToThirdStep(page);
+  await continueToReview(page);
+  await expect(page.getByText('This tenant is not FAPI 2.0.')).toBeVisible();
+  await submitCreate(page);
+
+  // A secret is a bearer credential: nothing binds the token.
+  expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
+    id: 'secret-service',
+    authMethod: 'client_secret',
+    dpopBoundAccessTokens: false,
+    certificateBoundAccessTokens: false,
+    jwks: null,
+  });
+});
+
+test('says a tenant is not FAPI 2.0 under the kind, and only on a standard tenant', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+  await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await page.getByRole('button', { name: /Web app/ }).click();
+  await expect(page.getByText('This tenant is not FAPI 2.0', { exact: true })).toHaveCount(0);
+
+  const standard = await page.context().newPage();
+  await loadAdminApp(standard, { path: clientsPath, state: { tenants: standardTenants, clients: { 'tenant-alpha': [] } } });
+  await standard.getByRole('button', { name: '+ Create Client', exact: true }).click();
+  await standard.getByRole('button', { name: /Web app/ }).click();
+  await expect(standard.getByText('This tenant is not FAPI 2.0', { exact: true })).toBeVisible();
+});
+
+test('registers a private_key_jwt service client with a key set that must be valid JSON', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [] } },
   });
 
-  await startCreate(page, 'Web app', 'High assurance');
+  await startCreate(page, 'Service app');
   await fillBasics(page, 'assertion-client', 'Assertion Client');
-  await addRedirectUri(page, 'https://assertion.example/callback');
 
   await page.getByLabel('Key set').fill('not json');
   await expect(page.getByText('Must be valid JSON')).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Continue to sign-in', exact: true })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Continue to permissions', exact: true })).toBeDisabled();
   expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
 
   await page.getByLabel('Key set').fill(SAMPLE_JWKS);
@@ -802,8 +928,9 @@ test('registers a private_key_jwt client with signed request objects and PAR', a
     authMethod: 'private_key_jwt',
     mtlsAuth: null,
     jwks: JSON.parse(SAMPLE_JWKS),
-    requireSignedRequestObject: true,
-    requirePushedAuthorizationRequests: true,
+    dpopBoundAccessTokens: true,
+    requireSignedRequestObject: false,
+    requirePushedAuthorizationRequests: false,
   });
 
   // private_key_jwt is a confidential method, but not client_secret - Central issues no
@@ -1066,7 +1193,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
 test('hides consent settings when the auth flow is disabled', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [alphaClient] } },
   });
 
   await startCreate(page);
@@ -1147,12 +1274,14 @@ test('leaves out everything a sign-in flow owns when the client has none', async
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
+      tenants: standardTenants,
       clients: { 'tenant-alpha': [alphaClient] },
       scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
     },
   });
 
   // A service app is the kind with no user, so nothing about signing one in is asked for.
+  // (A standard tenant, where its secret default needs no key set to continue.)
   await startCreate(page, 'Service app');
   await fillBasics(page, 'no-auth-flow-client', 'No Auth Flow Client');
   await expect(page.getByText('Redirect URIs', { exact: true })).toHaveCount(0);
@@ -1381,7 +1510,7 @@ test('leaves a native client public when its sign-in flow is switched off', asyn
 });
 
 test('does not carry a stale logout error into a kind that has no logout block', async ({ page }) => {
-  await loadAdminApp(page, { path: clientsPath });
+  await loadAdminApp(page, { path: clientsPath, state: { tenants: standardTenants } });
 
   await startCreate(page);
   await fillBasics(page, 'stale-logout-client', 'Stale Logout Client');
@@ -1395,7 +1524,6 @@ test('does not carry a stale logout error into a kind that has no logout block',
 
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: /Service app/ }).click();
-  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
 
   // A service client has no sign-in flow, so its logout block never renders - the stale error
@@ -1554,17 +1682,18 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     policyUri: null,
     tosUri: null,
     consentFlow: null,
-    authMethod: 'client_secret',
+    authMethod: 'tls_client_auth',
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
     dpopMinRsaKeySize: null,
     mtlsAuth: null,
-    certificateBoundAccessTokens: false,
+    certificateBoundAccessTokens: true,
     jwks: null,
     requireSignedRequestObject: false,
-    requirePushedAuthorizationRequests: false,
-    template: { kind: 'web', tier: 'compat' },
-    issueEdgeClientCertificate: false,
+    requirePushedAuthorizationRequests: true,
+    applicationType: 'web',
+    template: { kind: 'web' },
+    issueEdgeClientCertificate: true,
     enrollEdgeClientCertificate: false,
   });
 
@@ -1580,7 +1709,7 @@ test('shows a templated client against the template it was registered from', asy
 
   await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
 
-  await expect(page.getByText('Mobile or desktop app · High assurance')).toBeVisible();
+  await expect(page.getByText('Mobile or desktop app')).toBeVisible();
   await expect(page.getByText(/settings? differ from the template/)).toHaveCount(0);
   await expect(page.getByText('Differences from the template')).toHaveCount(0);
 
@@ -1628,7 +1757,7 @@ test('lists the settings that differ from the template and resets them back', as
   });
 });
 
-test('states a template setting the credential cannot hold, and offers no reset for it', async ({ page }) => {
+test('lists a web client moved onto a secret as differing from its template', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [secretBackedHighClient] } },
@@ -1638,12 +1767,8 @@ test('states a template setting the credential cannot hold, and offers no reset 
 
   const panel = page.locator('.drift-panel');
   await expect(panel.locator('.drift-row')).toHaveCount(1);
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('Signed request objects');
-  await expect(panel.locator('.drift-blocked')).toContainText('publishes no signing key');
-
-  // Nothing to press: writing the template's value back would be undone by the same rule
-  // that refuses the requirement at registration.
-  await expect(panel.getByRole('button', { name: /Reset/ })).toHaveCount(0);
+  await expect(panel.locator('.drift-row').nth(0)).toContainText('Certificate-bound access tokens');
+  await expect(panel.getByRole('button', { name: 'Reset it to template' })).toBeVisible();
 });
 
 test('says nothing about a template for a client registered without one', async ({ page }) => {

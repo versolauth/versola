@@ -235,7 +235,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     generateJwks = Some(ClientAssertion.Algorithm.ES256),
     dpopBoundAccessTokens = true,
     accessTokenTtl = 3600,
-    template = Some(ClientTemplate(ClientKind.service, AssuranceTier.high)),
+    template = Some(ClientTemplate(ClientKind.service)),
   )
 
   /** What FAPI 2.0 asks of an edge-fronted web client: `tls_client_auth`, which also binds its
@@ -501,7 +501,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("registerClient stores the template the registration named, and the time it arrived") {
       val env = new Env()
-      val template = ClientTemplate(ClientKind.device, AssuranceTier.high)
+      val template = ClientTemplate(ClientKind.device)
 
       for
         _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))

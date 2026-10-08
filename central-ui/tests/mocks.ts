@@ -19,12 +19,13 @@ function backendPath(pathname: string): string {
   return pathname.replace(/^\/central(?=\/|$)/, '');
 }
 
-type TenantDto = { id: string; description: string; edgeId?: string | null };
+type SecurityProfileDto = 'standard' | 'fapi2';
+type TenantDto = { id: string; description: string; edgeId?: string | null; securityProfile?: SecurityProfileDto };
 type BackendAuthFactor = { type: string; required: boolean };
 type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boolean; factors: BackendAuthFactor[] }; passkey?: { factors: BackendAuthFactor[] } | null; otpType: 'sms' | 'email' };
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
-type ClientTemplateDto = { kind: string; tier: string };
+type ClientTemplateDto = { kind: string };
 type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
@@ -199,6 +200,7 @@ type PasskeySettingsDto = { rpId: string; rpName: string; origins: string[]; use
 type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<string, string>; purpose: string; channel: 'sms' | 'email' };
 type ChallengeSettingsDto = {
   tenantId: string;
+  securityProfile?: SecurityProfileDto;
   allowedPrefixes: string[];
   passwordRegex?: string | null;
   submissionLimits: SubmissionLimitsDto;
@@ -238,6 +240,12 @@ const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   signingKeyId: null,
   mtlsCertificateHeader: null,
 });
+
+/** A tenant's profile is seeded on the tenant (or on its challenge settings) and defaults to FAPI 2.0. */
+const profileOf = (state: MockConfigState, tenantId: string): SecurityProfileDto =>
+  state.challengeSettings[tenantId]?.securityProfile
+    ?? state.tenants.find(tenant => tenant.id === tenantId)?.securityProfile
+    ?? 'fapi2';
 
 // One key central generated (both halves, so it can sign) and one seeded from
 // `bootstrap.jwks` (public half only, so it can only verify) -- the two states the key list
@@ -477,7 +485,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.tenants.push({ id: payload.id, description: payload.description });
+        state.tenants.push({ id: payload.id, description: payload.description, securityProfile: payload.securityProfile ?? 'fapi2' });
         state.clients[payload.id] = [];
         state.scopes[payload.id] = [];
         state.permissions[payload.id] = [];
@@ -1250,7 +1258,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
     if (pathname === '/configuration/challenges/challenge-settings') {
       if (method === 'GET') {
-        const settings = state.challengeSettings[tenantId] ?? defaultChallengeSettings(tenantId);
+        const settings = { ...(state.challengeSettings[tenantId] ?? defaultChallengeSettings(tenantId)), securityProfile: profileOf(state, tenantId) };
         await route.fulfill(json({ settings }));
         return;
       }
@@ -1259,6 +1267,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const payload = body as ChallengeSettingsDto;
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
+          securityProfile: profileOf(state, payload.tenantId),
           allowedPrefixes: [...payload.allowedPrefixes],
           passwordRegex: payload.passwordRegex ?? null,
           submissionLimits: payload.submissionLimits,
