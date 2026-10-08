@@ -1,5 +1,6 @@
 package versola.loadgen.store
 
+import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.loadgen.config.StoreConfig
@@ -28,7 +29,7 @@ object LoadgenStore:
     */
   def transactor(
       migrate: Boolean
-  ): ZLayer[Scope & ConfigProvider, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
+  ): ZLayer[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
     PostgresHikariDataSource.transactor(
       serviceName = Some("loadgen-store"),
       migrate = migrate,
@@ -48,7 +49,7 @@ object LoadgenStore:
 
   /** Everything a driver needs from this package, given the config and a scope. */
   def live(migrate: Boolean): ZLayer[
-    Scope & ConfigProvider & StoreConfig,
+    Scope & ConfigProvider & EnvName & StoreConfig,
     Throwable,
     VirtualUserRepository & DeviceSessionRepository & EventRepository & MetricSnapshotRepository &
       WriteBehindBuffer,

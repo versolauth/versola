@@ -1,5 +1,6 @@
 package versola.loadgen.seed
 
+import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, PopulationConfig, SeedConfig, SutDatabaseConfig}
 import versola.loadgen.model.VirtualUser
@@ -40,7 +41,7 @@ import java.time.Instant
 object Seeder:
 
   /** Role dispatch's entry point. */
-  def seed(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, Unit] =
+  def seed(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName, Throwable, Unit] =
     for
       seedConfig <- ZIO.fromOption(config.seed).orElseFail(MissingSeedConfig)
       _ <- ZIO
@@ -324,7 +325,7 @@ object Seeder:
     * that applies this schema; `migrate = false` would make `PostgresHikariDataSource` *validate*
     * a database that does not exist yet.
     */
-  private def storeTransactor: ZIO[Scope & ConfigProvider, Throwable, TransactorZIO] =
+  private def storeTransactor: ZIO[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO] =
     PostgresHikariDataSource
       .transactor(
         serviceName = Some("loadgen-seed"),

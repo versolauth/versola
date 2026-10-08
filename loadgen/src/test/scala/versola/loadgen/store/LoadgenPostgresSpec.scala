@@ -53,7 +53,7 @@ object LoadgenPostgresSpec:
     PostgresSpec.config >>> ZLayer.fromZIO:
       ZIO.serviceWithZIO[PostgresConfig]: auth =>
         createDatabase(auth).as:
-          auth.copy(url = auth.url.substring(0, auth.url.lastIndexOf('/') + 1) + databaseName)
+          auth.copy(url = auth.url.substring(0, auth.url.lastIndexOf('/') + 1) + databaseName + auth.url.dropWhile(_ != '?'))
 
   /** Flyway applies a schema to a database; it does not create one, and neither CI's service
     * container nor the dev compose knows about this database. Connects through `auth` -- the one
