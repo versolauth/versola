@@ -860,6 +860,28 @@ object UserInfoControllerSpec extends UnitSpecBase:
         )),
         expectedStatus = Status.Unauthorized,
       ),
+      // RFC 6750 §3.1: a repeated parameter is invalid_request. zio-http would merge the two values into
+      // `<jwt>,`, which the JWT library still verifies, so it has to be refused before the lookup.
+      userInfoTestCase(
+        description = "refuse a form body that repeats access_token",
+        request = Request.post(
+          url = URL.empty / "userinfo",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "access_token" -> createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
+            "access_token" -> "",
+          )),
+        ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+        expectedStatus = Status.Unauthorized,
+        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.standard),
+      ),
+      userInfoTestCase(
+        description = "refuse a form body token that is not a bare compact JWT",
+        request = formBodyRequest(
+          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig) + ",",
+        ),
+        expectedStatus = Status.Unauthorized,
+        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.standard),
+      ),
       userInfoTestCase(
         description = "refuse a form body that carries no access_token",
         request = Request.post(

@@ -41,6 +41,10 @@ object UserInfoController extends Controller:
 
   private val DpopHeader = "DPoP"
 
+  /** What a compact JWT is made of: three base64url segments. Held to this for a token read from a
+    * body, so that nothing but the token itself (a stray comma, a space) reaches verification. */
+  private val BodyTokenFormat = "[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+".r
+
   /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI, which -- this
     * endpoint being served at an RFC 8705 §5 alias too -- depends on the listener the request
     * arrived at. Matching `TokenEndpointController`'s `tokenEndpointUri`, whose doc comment
@@ -213,8 +217,19 @@ object UserInfoController extends Controller:
         if !isForm then ZIO.none
         else
           request.body.asURLEncodedForm
-            .map(_.get("access_token").flatMap(_.stringValue))
             .orElseFail(UserInfoError.Unauthorized)
+            .flatMap: form =>
+              // RFC 6750 §3.1: a parameter that appears more than once is `invalid_request`. It also
+              // has to be checked here rather than left to the lookup, which would merge repeats into
+              // one comma-joined value whose signature the JWT library still verifies (it ignores the
+              // comma), returning claims for a request that was malformed.
+              form.formData.filter(_.name == "access_token").toList match
+                case Nil => ZIO.none
+                case single :: Nil =>
+                  single.stringValue.filter(BodyTokenFormat.matches) match
+                    case Some(token) => ZIO.some(token)
+                    case None => ZIO.fail(UserInfoError.Unauthorized)
+                case _ => ZIO.fail(UserInfoError.Unauthorized)
       extracted <- (fromHeader, fromBody) match
         case (Some(_), Some(_)) => ZIO.fail(UserInfoError.Unauthorized)
         case (Some((token, scheme)), None) => ZIO.succeed((token, scheme, false))
