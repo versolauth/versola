@@ -81,7 +81,7 @@ sbt e2e/test             # end-to-end tests (run explicitly, not part of the def
 
 ```text
 ├── auth/                # OAuth 2.1 / OIDC provider (+ auth/implementations/postgres, auth/open-api specs)
-├── central/             # Configuration/admin service (+ central/implementations/postgres)
+├── central/             # Configuration/admin service (+ central/implementations/postgres, central/open-api spec)
 ├── central-ui/          # Admin dashboard SPA (Vite/TypeScript) + login forms served by auth
 ├── edge/                # Authn/authz-offloading reverse proxy for resource servers/APIs; also the admin console entry point
 ├── util/                # Shared library code (+ util/implementations/postgres)
@@ -95,7 +95,15 @@ sbt e2e/test             # end-to-end tests (run explicitly, not part of the def
 
 ## API
 
-`auth` exposes its endpoints as OpenAPI specs under [`auth/open-api/`](auth/open-api) (`authorize`, `token`, `introspect`, `revoke`, `jwks`, `userinfo`, `logout`, `par`, `metadata`).
+Each service ships a hand-maintained OpenAPI 3.1 reference:
+
+| Service | Spec | Covers |
+|---|---|---|
+| `auth` | [`auth/open-api/`](auth/open-api) | OAuth 2.1 / OIDC protocol endpoints, one file each: `authorize`, `par`, `token`, `introspect`, `revoke`, `userinfo`, `logout`, `jwks`, `metadata` |
+| `central` | [`central/open-api/central.yaml`](central/open-api/central.yaml) | Admin API used by `central-ui`: tenants, clients, resources, scopes, permissions, roles, users, branding, keys |
+| `edge` | [`edge/open-api/edge.yaml`](edge/open-api/edge.yaml) | Browser login/logout, resource proxy, `/permissions/me`, native-app (`/native/*`) back channel, probes |
+
+Internal service-to-service endpoints (configuration sync/registry, the sign-in UI flow under `auth`'s `/challenge/*`) are intentionally not part of these specs. Update the relevant spec whenever you change a controller's routes, parameters, or responses.
 
 ## CI/CD
 
