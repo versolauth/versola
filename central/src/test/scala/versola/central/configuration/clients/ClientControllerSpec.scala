@@ -97,6 +97,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = None,
     issueEdgeClientCertificate = false,
+    enrollEdgeClientCertificate = false,
   )
 
   private val updateRequest = UpdateClientRequest(

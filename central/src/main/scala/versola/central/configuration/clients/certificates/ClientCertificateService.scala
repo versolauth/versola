@@ -6,6 +6,7 @@ import versola.util.CertificateSubject
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.configuration.clients.*
 import versola.util.{Patch, PrivateClientCertificate}
+import versola.util.http.Observability
 import zio.*
 
 import java.time.Instant
@@ -147,7 +148,7 @@ object ClientCertificateService:
         _ <- enrollments.enroll(request.id, now)
           .retry(Schedule.recurs(2) && Schedule.spaced(200.millis))
           .tapError(error =>
-            ZIO.logError(s"could not record the enrolment of '${request.id}', removing the client: $error") *>
+            Observability.setError("edge_enrolment_not_recorded", Some(s"client '${request.id}' removed: $error")) *>
               clients.deleteClient(request.id).ignore,
           )
       yield registered
@@ -195,7 +196,7 @@ object ClientCertificateService:
         )(ZIO.fail(_))
         now <- Clock.instant
         _ <- enrollments.recordIssued(clientId, leaf.getSerialNumber.toString(16), now, edgeId)
-          .catchAll(error => ZIO.logError(s"could not record the certificate signed for '$clientId': $error"))
+          .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
         _ <- ZIO.logInfo(s"signed certificate ${leaf.getSerialNumber.toString(16)} for client '$clientId' at edge '$edgeId', valid until ${leaf.getNotAfter.toInstant}")
       yield chain
 

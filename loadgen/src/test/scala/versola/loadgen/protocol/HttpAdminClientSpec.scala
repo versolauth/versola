@@ -111,6 +111,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           bool(create, "requirePushedAuthorizationRequests").contains(false),
           // Create-only: the update DTO has no such member, so it is read from the POST itself.
           bool(posted, "issueEdgeClientCertificate").contains(false),
+          bool(posted, "enrollEdgeClientCertificate").contains(false),
           str(create, "applicationType") == "web",
           // Written on the update too, so a client left bound by a previous configuration is
           // converged rather than left holding a setting the campaign cannot satisfy.

@@ -211,6 +211,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = None,
     issueEdgeClientCertificate = false,
+    enrollEdgeClientCertificate = false,
   )
 
   /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is

@@ -328,7 +328,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
     },
     suite("a certificate this edge enrols for (#463)")(
       test("serves a client central sent no certificate for, with the one enrolment produced") {
-        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("a.test"))
+        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("a.test"), uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
         val generated = TestCertificates.generate(subject = "CN=mobile-app", dnsName = Some("a.test"))
         val enrollment: ClientCertificateEnrollment = (id, wanted) =>
           ZIO.fromEither(versola.util.PrivateClientCertificate(generated.bundle).material).mapError(RuntimeException(_))
@@ -346,7 +346,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           case _ => false)
       },
       test("drops a client whose certificate cannot be had, and keeps the rest") {
-        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app")
+        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = Nil, uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
         val secretCiphertext = Base64.urlEncode(Array.fill(32)(40.toByte))
         val body = SyncResponseMirror(Vector(
           SyncClientRecordMirror(ClientId("enrolled"), None, 15.minutes, edgeCertificateSubject = Some(subject)),

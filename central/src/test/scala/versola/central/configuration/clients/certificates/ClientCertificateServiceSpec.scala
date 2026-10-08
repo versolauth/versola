@@ -113,6 +113,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
+    enrollEdgeClientCertificate = false,
   )
 
   private def record =

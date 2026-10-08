@@ -2,6 +2,7 @@ package versola.edge
 
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
 import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
+import versola.util.http.Observability
 import zio.json.ast.Json
 import zio.http.{Client, Header, Request}
 import zio.json.{JsonCodec, DecoderOps}
@@ -73,7 +74,7 @@ object OAuthClientsSyncClient:
           case None =>
             ZIO.foreach(client.edgeCertificateSubject)(subject =>
               enrollment.certificateFor(client.id, subject).map(Some(_)).catchAll: error =>
-                ZIO.logError(s"no certificate for client '${client.id}': $error").as(None),
+                Observability.setError("edge_certificate_unavailable", Some(s"client '${client.id}': $error")).as(None),
             ).map(_.flatten)
           case Some(_) => ZIO.none
         certificate = supplied.orElse(enrolled)
@@ -151,7 +152,7 @@ object OAuthClientsSyncClient:
         edgeClientCertificate: Option[String] = None,
         applicationType: ApplicationType = ApplicationType.web,
         redirectUris: Set[String] = Set.empty,
-        edgeCertificateSubject: Option[CertificateSubject] = None,
+        edgeCertificateSubject: Option[CertificateSubject],
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

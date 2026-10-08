@@ -35,10 +35,10 @@ import scala.jdk.CollectionConverters.*
 case class CertificateSubject(
     distinguishedName: String,
     commonName: String,
-    dnsNames: List[String] = Nil,
-    uris: List[String] = Nil,
-    emailAddresses: List[String] = Nil,
-    ipAddresses: List[String] = Nil,
+    dnsNames: List[String],
+    uris: List[String],
+    emailAddresses: List[String],
+    ipAddresses: List[String],
 ) derives JsonCodec, Schema:
 
   def principal: X500Principal = X500Principal(distinguishedName)

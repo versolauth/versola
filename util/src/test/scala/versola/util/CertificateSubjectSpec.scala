@@ -12,6 +12,8 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
     commonName = "mobile-app",
     dnsNames = List("mobile-app.clients.versola.test"),
     uris = List("spiffe://versola/clients/mobile-app"),
+    emailAddresses = Nil,
+    ipAddresses = Nil,
   )
 
   /** A request for `subject` whose SAN also carries `extra`, signed by its own key. */
