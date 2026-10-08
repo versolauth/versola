@@ -118,6 +118,8 @@ export class VersolaChallengesList extends LitElement {
   @state() private signingKeyId: string | null = null;
   @state() private editSigningKeyId: string | null = null;
   @state() private signingKeys: JwksKeySummary[] = [];
+  /** Whether the tenant may sign under RS256 -- false for a `fapi2` tenant, which central refuses it. */
+  @state() private signingKeysIncludeRs256 = false;
 
   @state() private requireDpopNonce = false;
   @state() private editRequireDpopNonce = false;
@@ -545,15 +547,19 @@ export class VersolaChallengesList extends LitElement {
         fetchLocales(),
         fetchChallengeSettings(this.tenantId),
         // Only the keys central holds a private half for can be selected; the rest are
-        // published for verification and can sign nothing. RS256 keys are listed: a `standard`
-        // tenant may sign under one, and central answers a `fapi2` tenant's selection of one
-        // with a message naming the profile.
+        // published for verification and can sign nothing. RS256 keys are listed only for a
+        // tenant that may sign under one (see below).
         fetchJwksKeys().catch(() => [] as JwksKeySummary[]),
       ]);
       this.templates = templates;
       this.viewSelection = {};
       this.availableLocales = locales;
-      this.signingKeys = jwksKeys.filter(key => key.canSign);
+      // FAPI 2.0 disallows RS256's PKCS#1 v1.5 padding, so central refuses an RS256 signing key
+      // for a `fapi2` tenant; offering one would be a dead end. A tenant with no settings yet
+      // is created on `fapi2`, so it is treated as one.
+      const allowsRs256 = (challengeSettings?.securityProfile ?? 'fapi2') !== 'fapi2';
+      this.signingKeys = jwksKeys.filter(key => key.canSign && (allowsRs256 || key.algorithm !== 'RS256'));
+      this.signingKeysIncludeRs256 = allowsRs256;
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
         this.phonePrefixes = challengeSettings.allowedPrefixes;
@@ -1889,7 +1895,7 @@ export class VersolaChallengesList extends LitElement {
     const isKnown = this.signingKeys.some(key => key.kid === this.editSigningKeyId);
     return html`
       <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Token Signing Key</h3>
-      <div class="hint">Which JWKS key this tenant's access tokens, id tokens and logout tokens are signed with. Only keys central holds a private half for are listed — generate one under Well Known. An RS256 key can be selected by a standard-profile tenant only: FAPI 2.0 disallows its PKCS#1 v1.5 padding, so a tenant on the fapi2 profile is refused it, while OpenID Connect certification needs it. Leaving this unset signs with the private key configured on the auth service itself, under whatever algorithm that key is.</div>
+      <div class="hint">Which JWKS key this tenant's access tokens, id tokens and logout tokens are signed with. Only keys central holds a private half for are listed — generate one under Well Known. ${this.signingKeysIncludeRs256 ? html`RS256 keys are listed because this tenant is on the standard profile.` : html`RS256 keys are not listed: FAPI 2.0 disallows its PKCS#1 v1.5 padding, so a tenant on the fapi2 profile cannot sign under it.`} Leaving this unset signs with the private key configured on the auth service itself, under whatever algorithm that key is.</div>
       <select class="form-control compact-input" .value=${this.editSigningKeyId ?? ''}
         @change=${(e: Event) => {
           const value = (e.target as HTMLSelectElement).value;
