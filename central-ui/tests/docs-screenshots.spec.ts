@@ -173,7 +173,6 @@ test('client create form', async ({ page }) => {
   await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Create New Client', exact: true })).toBeVisible();
   await page.getByRole('button', { name: /Web app/ }).click();
-  await page.getByRole('button', { name: 'Compatibility', exact: true }).click();
   await shot(page, 'client-form-kind-step', true);
 
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
@@ -195,9 +194,10 @@ test('client create form', async ({ page }) => {
 
   await page.getByRole('button', { name: 'Create Client', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Client created: Checkout Web', exact: true })).toBeVisible();
-  await expect(page.locator('.secret-banner .secret-value')).toBeVisible();
+  // A web client authenticates through edge's certificate, so there is no secret to show.
+  await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   await page.locator('.secret-banner').scrollIntoViewIfNeeded();
-  await shot(page, 'client-created-secret');
+  await shot(page, 'client-created-edge');
 });
 
 test('client registration flow form', async ({ page }) => {

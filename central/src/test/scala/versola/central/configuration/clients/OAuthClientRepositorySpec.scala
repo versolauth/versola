@@ -101,7 +101,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       },
       test("create and find a client registered from a template") {
         val templated = client.copy(
-          template = Some(ClientTemplate(ClientKind.device, AssuranceTier.high)),
+          template = Some(ClientTemplate(ClientKind.device)),
           createdAt = Instant.parse("2026-02-01T09:00:00Z"),
         )
 
@@ -114,7 +114,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       },
       test("update client should leave the template and the registration time alone") {
         val templated = client.copy(
-          template = Some(ClientTemplate(ClientKind.web, AssuranceTier.compat)),
+          template = Some(ClientTemplate(ClientKind.web)),
           createdAt = Instant.parse("2026-02-01T09:00:00Z"),
         )
 

@@ -2,7 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -72,6 +72,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
+  @state() private securityProfile: SecurityProfile = 'fapi2';
   @state() private isPreparingForm = false;
   // `secret` is null whenever the created client does not authenticate with one - a native
   // client is issued none, and a client that registered an mTLS credential or a key set
@@ -98,6 +99,7 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
       this.mtlsCertificateHeader = null;
+      this.securityProfile = 'fapi2';
       this.createdSecret = null;
       this.copyFeedback = '';
       this.formOptionsTenantId = null;
@@ -748,6 +750,7 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.mtlsCertificateHeader = challengeSettings?.mtlsCertificateHeader ?? null;
+      this.securityProfile = challengeSettings?.securityProfile ?? 'fapi2';
       this.formOptionsTenantId = tenantId;
     }
   }
@@ -1057,6 +1060,7 @@ export class VersolaClientsList extends LitElement {
           .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           .mtlsCertificateHeader=${this.mtlsCertificateHeader}
+          .securityProfile=${this.securityProfile}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
           @rotate-secret=${this.handleRotateSecret}

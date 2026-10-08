@@ -28,6 +28,7 @@ import type {
   ResourceEndpointId,
   Role,
   ServiceKey,
+  SecurityProfile,
   Tenant,
   ThemeRecord,
 } from '../types';
@@ -129,6 +130,7 @@ type ClientsResponse = {
     permissions: string[];
     secretRotation: boolean;
     authMethod?: AuthMethod;
+    applicationType?: 'web' | 'native';
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -660,10 +662,11 @@ export async function createTenant(
   id: string,
   description: string,
   edgeId: string | null = null,
+  securityProfile: SecurityProfile = 'fapi2',
 ): Promise<void> {
   await requestVoid('/configuration/tenants', {
     method: 'POST',
-    body: { id, description, edgeId },
+    body: { id, description, edgeId, securityProfile },
   });
 }
 
@@ -720,7 +723,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        clientType: (client.authMethod ?? 'client_secret') === 'none' ? 'native' : 'web',
+        clientType: client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
@@ -1127,8 +1130,9 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
       template: client.template ?? null,
-      issueEdgeClientCertificate: false,
-      enrollEdgeClientCertificate: false,
+      applicationType: client.clientType === 'native' ? 'native' : 'web',
+      issueEdgeClientCertificate: !!client.edgeFronted && client.clientType !== 'native',
+      enrollEdgeClientCertificate: !!client.edgeFronted && client.clientType === 'native',
     },
   });
 

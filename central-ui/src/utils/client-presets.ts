@@ -1,21 +1,20 @@
-import { AuthMethod, ClientType, OAuthClient } from '../types';
+import { AuthMethod, ClientType, OAuthClient, SecurityProfile } from '../types';
 
 /** What the client is, in the terms the person creating it already thinks in. */
 export type ClientKind = 'web' | 'device' | 'service';
 
-/** How much the deployment can carry: a key and a bound token, or a shared secret. */
-export type AssuranceTier = 'high' | 'compat';
-
-export type ClientCredentialMode = 'secret' | 'mtls' | 'mtls-self-signed' | 'private-key-jwt';
+/** `edge` is the credential nobody picks: edge authenticates with a certificate central has it
+ * enrol, so there is nothing for the operator to register or keep. */
+export type ClientCredentialMode = 'secret' | 'mtls' | 'mtls-self-signed' | 'private-key-jwt' | 'edge';
 
 /**
- * One consequence of a kind x tier choice.
+ * One consequence of a kind, under a tenant profile.
  *
  * `fixed` is a server rule and `na` is a rule that rules the setting out, so neither is a
- * choice; `on` and `off` are the defaults the combination applies, and `pick` is a choice the
- * next step asks for.
+ * choice; `on` and `off` are the defaults the kind applies, `pick` is a choice the next step
+ * asks for, and `note` is a remark about the tenant rather than a setting.
  */
-export type PlanLineState = 'on' | 'off' | 'fixed' | 'na' | 'pick';
+export type PlanLineState = 'on' | 'off' | 'fixed' | 'na' | 'pick' | 'note';
 
 export interface PlanLine {
   state: PlanLineState;
@@ -32,9 +31,9 @@ export interface ClientKindDescriptor {
 }
 
 export interface ClientPreset {
-  /** Credential methods this combination allows, best first - the first is applied. */
+  /** Credential methods this kind allows under the profile, best first - the first is applied. */
   credentialModes: ClientCredentialMode[];
-  /** Client fields the combination settles, applied over the form's defaults. */
+  /** Client fields the kind settles, applied over the form's defaults. */
   patch: Partial<OAuthClient>;
   plan: PlanLine[];
 }
@@ -49,8 +48,8 @@ export const CLIENT_KINDS: ClientKindDescriptor[] = [
   {
     id: 'device',
     name: 'Mobile or desktop app',
-    blurb: 'iOS, Android, Electron. Talks to auth itself - edge cannot sit in front of it.',
-    clientTypeLabel: 'native (public)',
+    blurb: 'iOS, Android, Electron. Edge fronts the app and holds the credential; the device holds a key of its own.',
+    clientTypeLabel: 'native · fronted by edge',
   },
   {
     id: 'service',
@@ -66,16 +65,22 @@ const PKCE: PlanLine = {
   why: 'Every client on this server. Not a setting.',
 };
 
+const EDGE_CERTIFICATE: PlanLine = {
+  state: 'fixed',
+  text: 'mTLS by edge',
+  why: 'Central provisions the certificate edge authenticates with. Nothing to register or store.',
+};
+
+const PAR: PlanLine = {
+  state: 'on',
+  text: 'Pushed authorization requests',
+  why: 'RFC 9126. Request parameters never travel through the browser.',
+};
+
 const NO_KEY_SET_ON_A_BINARY: PlanLine = {
   state: 'na',
   text: 'Signed request objects',
   why: 'Needs a registered key set; a shipped binary has no private key of its own.',
-};
-
-const PUBLIC_CLIENT: PlanLine = {
-  state: 'fixed',
-  text: 'Public client, no secret',
-  why: 'A shipped binary cannot keep one.',
 };
 
 const NO_USER: PlanLine = {
@@ -98,218 +103,135 @@ const NO_AUTHORIZATION_REQUEST: PlanLine = {
 
 const ONE_HOUR: PlanLine = { state: 'on', text: '1 hour access token', why: '' };
 
+const NOT_FAPI2: PlanLine = {
+  state: 'note',
+  text: 'This tenant is not FAPI 2.0',
+  why: 'A client secret, RS256 keys and public native clients are admitted here. Edge-fronted apps stay FAPI-shaped regardless.',
+};
+
 const HOUR = 3600;
 
-const PRESETS: Record<ClientKind, Record<AssuranceTier, ClientPreset>> = {
+const SERVICE_PATCH: Partial<OAuthClient> = {
+  clientType: 'web',
+  accessTokenTtl: HOUR,
+  redirectUris: [],
+  scope: [],
+  authFlow: null,
+  registrationFlow: null,
+  consentFlow: null,
+  requirePushedAuthorizationRequests: false,
+  requireSignedRequestObject: false,
+};
+
+/** What a kind sets that does not depend on the profile. The profile only decides which
+ * credentials a service may pick from and whether the plan carries a remark. */
+const EDGE_FRONTED: Record<'web' | 'device', Omit<ClientPreset, 'credentialModes'>> = {
   web: {
-    high: {
-      credentialModes: ['private-key-jwt', 'mtls', 'mtls-self-signed'],
-      patch: {
-        clientType: 'web',
-        accessTokenTtl: HOUR,
-        requirePushedAuthorizationRequests: true,
-        requireSignedRequestObject: true,
-        certificateBoundAccessTokens: false,
-        dpopBoundAccessTokens: false,
-      },
-      plan: [
-        PKCE,
-        {
-          state: 'pick',
-          text: 'private_key_jwt or mTLS',
-          why: 'No shared secret in a config file. Registering a key set is also what makes JAR possible.',
-        },
-        {
-          state: 'on',
-          text: 'Pushed authorization requests',
-          why: 'RFC 9126. Request parameters never travel through the browser.',
-        },
-        {
-          state: 'on',
-          text: 'Signed request objects',
-          why: 'RFC 9101. Verified against the key set above.',
-        },
-        {
-          state: 'on',
-          text: 'Certificate-bound access tokens',
-          why: 'RFC 8705 §3.4, when the credential is mTLS.',
-        },
-        ONE_HOUR,
-      ],
+    patch: {
+      clientType: 'web',
+      accessTokenTtl: HOUR,
+      requirePushedAuthorizationRequests: true,
+      requireSignedRequestObject: false,
+      certificateBoundAccessTokens: true,
+      dpopBoundAccessTokens: false,
     },
-    compat: {
-      credentialModes: ['secret'],
-      patch: {
-        clientType: 'web',
-        accessTokenTtl: HOUR,
-        requirePushedAuthorizationRequests: false,
-        requireSignedRequestObject: false,
-        certificateBoundAccessTokens: false,
-        dpopBoundAccessTokens: false,
+    plan: [
+      PKCE,
+      EDGE_CERTIFICATE,
+      {
+        state: 'on',
+        text: 'Edge fronts the client',
+        why: 'Tokens stay inside edge behind a session cookie and never reach the browser.',
       },
-      plan: [
-        PKCE,
-        { state: 'on', text: 'Client secret', why: 'The only method edge can present today.' },
-        {
-          state: 'on',
-          text: 'Edge fronts the client',
-          why: 'Tokens stay inside edge behind a session cookie and never reach the browser.',
-        },
-        {
-          state: 'off',
-          text: 'Pushed authorization requests',
-          why: 'Edge builds a plain /authorize URL.',
-        },
-        { state: 'off', text: 'Signed request objects', why: 'No key set, and edge signs nothing.' },
-        ONE_HOUR,
-      ],
-    },
+      PAR,
+      {
+        state: 'on',
+        text: 'Certificate-bound access tokens',
+        why: 'RFC 8705 §3.4. Bound to the certificate edge authenticates with.',
+      },
+      ONE_HOUR,
+    ],
   },
   device: {
-    high: {
-      credentialModes: ['secret'],
-      patch: {
-        clientType: 'native',
-        accessTokenTtl: HOUR,
-        dpopBoundAccessTokens: true,
-        requirePushedAuthorizationRequests: true,
-        requireSignedRequestObject: false,
-        certificateBoundAccessTokens: false,
-      },
-      plan: [
-        PKCE,
-        PUBLIC_CLIENT,
-        {
-          state: 'on',
-          text: 'DPoP-bound access tokens',
-          why: 'RFC 9449. Binds the token to a key in the device keystore.',
-        },
-        {
-          state: 'on',
-          text: 'Pushed authorization requests',
-          why: 'RFC 9126. A public client pushes with a bare client_id - the value is request integrity, not client auth.',
-        },
-        {
-          state: 'on',
-          text: '1 hour access token, refresh rotation on',
-          why: 'DPoP requires at least 1 h; the binding limits exposure, not the clock.',
-        },
-        NO_KEY_SET_ON_A_BINARY,
-      ],
+    patch: {
+      clientType: 'native',
+      accessTokenTtl: HOUR,
+      dpopBoundAccessTokens: true,
+      requirePushedAuthorizationRequests: true,
+      requireSignedRequestObject: false,
+      certificateBoundAccessTokens: false,
     },
-    compat: {
-      credentialModes: ['secret'],
-      patch: {
-        clientType: 'native',
-        accessTokenTtl: HOUR,
-        dpopBoundAccessTokens: false,
-        requirePushedAuthorizationRequests: false,
-        requireSignedRequestObject: false,
-        certificateBoundAccessTokens: false,
+    plan: [
+      PKCE,
+      EDGE_CERTIFICATE,
+      {
+        state: 'on',
+        text: 'DPoP-bound access tokens',
+        why: 'RFC 9449. Binds the token to a key in the device keystore; edge\'s certificate is shared by every installation, so it cannot bind them.',
       },
-      plan: [
-        PKCE,
-        PUBLIC_CLIENT,
-        {
-          state: 'off',
-          text: 'DPoP-bound access tokens',
-          why: 'The access token carries no certificate or key binding; a rooted device leaks one that is usable until it expires.',
-        },
-        {
-          state: 'off',
-          text: 'Pushed authorization requests',
-          why: 'Request parameters pass through the system browser.',
-        },
-        {
-          state: 'on',
-          text: '1 hour access token, refresh rotation on',
-          why: 'Same 1 hour floor as every client on this server; unlike high assurance, nothing else here limits what a copied token can do before then.',
-        },
-        NO_KEY_SET_ON_A_BINARY,
-      ],
-    },
-  },
-  service: {
-    high: {
-      credentialModes: ['private-key-jwt', 'mtls', 'mtls-self-signed'],
-      patch: {
-        clientType: 'web',
-        accessTokenTtl: HOUR,
-        redirectUris: [],
-        scope: [],
-        authFlow: null,
-        registrationFlow: null,
-        consentFlow: null,
-        requirePushedAuthorizationRequests: false,
-        requireSignedRequestObject: false,
-        certificateBoundAccessTokens: false,
-        dpopBoundAccessTokens: false,
+      PAR,
+      {
+        state: 'fixed',
+        text: 'App Link redirect only',
+        why: 'A verified domain. A custom scheme can be claimed by any app on the device.',
       },
-      plan: [
-        {
-          state: 'pick',
-          text: 'private_key_jwt or mTLS',
-          why: 'No shared secret in a config file. A service has a deployment to keep a key in.',
-        },
-        {
-          state: 'on',
-          text: 'Certificate-bound access tokens',
-          why: 'RFC 8705 §3.4, when the credential is mTLS.',
-        },
-        NO_USER,
-        PERMISSIONS_ONLY,
-        ONE_HOUR,
-        NO_AUTHORIZATION_REQUEST,
-      ],
-    },
-    compat: {
-      credentialModes: ['secret'],
-      patch: {
-        clientType: 'web',
-        accessTokenTtl: HOUR,
-        redirectUris: [],
-        scope: [],
-        authFlow: null,
-        registrationFlow: null,
-        consentFlow: null,
-        requirePushedAuthorizationRequests: false,
-        requireSignedRequestObject: false,
-        certificateBoundAccessTokens: false,
-        dpopBoundAccessTokens: false,
+      {
+        state: 'on',
+        text: '1 hour access token, refresh rotation on',
+        why: 'DPoP requires at least 1 h; the binding limits exposure, not the clock.',
       },
-      plan: [
-        {
-          state: 'on',
-          text: 'Client secret',
-          why: 'Shared with the server. Lives in your deployment config.',
-        },
-        {
-          state: 'off',
-          text: 'Certificate-bound access tokens',
-          why: 'The access token carries no certificate or key binding.',
-        },
-        NO_USER,
-        PERMISSIONS_ONLY,
-        ONE_HOUR,
-        NO_AUTHORIZATION_REQUEST,
-      ],
-    },
+      NO_KEY_SET_ON_A_BINARY,
+    ],
   },
 };
 
-export function clientPreset(kind: ClientKind, tier: AssuranceTier): ClientPreset {
-  return PRESETS[kind][tier];
+function servicePlan(profile: SecurityProfile): PlanLine[] {
+  const fapi2 = profile === 'fapi2';
+  return [
+    {
+      state: 'pick',
+      text: fapi2 ? 'Key or certificate' : 'Client secret, key or certificate',
+      why: fapi2
+        ? 'private_key_jwt with DPoP, or tls_client_auth with certificate-bound tokens. No shared secret.'
+        : 'A secret is the default. private_key_jwt and mTLS keep a secret out of your deployment config.',
+    },
+    {
+      state: 'on',
+      text: 'Sender-constrained access tokens',
+      why: fapi2
+        ? 'DPoP with a key, certificate-bound with a certificate.'
+        : 'DPoP with a key, certificate-bound with a certificate. A secret gives bearer tokens.',
+    },
+    NO_USER,
+    PERMISSIONS_ONLY,
+    ONE_HOUR,
+    NO_AUTHORIZATION_REQUEST,
+    ...(fapi2 ? [] : [NOT_FAPI2]),
+  ];
 }
 
-/** The label the tier carries wherever a stored template is named back to an operator. */
-export function assuranceTierName(tier: AssuranceTier): string {
-  return tier === 'high' ? 'High assurance' : 'Compatibility';
+/** What a kind sets under the tenant's profile. */
+export function clientPreset(kind: ClientKind, profile: SecurityProfile): ClientPreset {
+  if (kind === 'service') {
+    return {
+      credentialModes: profile === 'fapi2'
+        ? ['private-key-jwt', 'mtls', 'mtls-self-signed']
+        : ['secret', 'private-key-jwt', 'mtls', 'mtls-self-signed'],
+      patch: SERVICE_PATCH,
+      plan: servicePlan(profile),
+    };
+  }
+  const fronted = EDGE_FRONTED[kind];
+  return {
+    credentialModes: ['edge'],
+    patch: fronted.patch,
+    plan: profile === 'fapi2' ? fronted.plan : [...fronted.plan, NOT_FAPI2],
+  };
 }
 
-/** `"Mobile or desktop app · High assurance"` - the two choices as they were made. */
-export function templateLabel(template: { kind: ClientKind; tier: AssuranceTier }): string {
-  const kind = CLIENT_KINDS.find(descriptor => descriptor.id === template.kind);
-  return `${kind?.name ?? template.kind} · ${assuranceTierName(template.tier)}`;
+/** The label a stored template carries wherever it is named back to an operator. */
+export function templateLabel(template: { kind: ClientKind }): string {
+  return CLIENT_KINDS.find(descriptor => descriptor.id === template.kind)?.name ?? template.kind;
 }
 
 /** Which part of the edit form a template-decided setting is edited in, so a section can
@@ -364,10 +286,11 @@ export interface TemplateDifference {
  * asked for. Settings the template does not decide are not compared: a template that says
  * nothing about a field has nothing to differ from. */
 export function templateDifferences(
-  template: { kind: ClientKind; tier: AssuranceTier },
+  template: { kind: ClientKind },
+  profile: SecurityProfile,
   current: Partial<OAuthClient>,
 ): TemplateDifference[] {
-  const patch = clientPreset(template.kind, template.tier).patch as Record<string, unknown>;
+  const patch = clientPreset(template.kind, profile).patch as Record<string, unknown>;
   return TEMPLATE_SETTINGS.flatMap(setting => {
     if (!(setting.field in patch)) {
       return [];
@@ -391,16 +314,17 @@ export function templateDifferences(
 /** Whether the template decides anything the given section shows, so a section with no
  * template-decided setting is left untagged rather than labelled "from template". */
 export function templateDecides(
-  template: { kind: ClientKind; tier: AssuranceTier },
+  template: { kind: ClientKind },
+  profile: SecurityProfile,
   section: TemplateSettingSection,
 ): boolean {
-  const patch = clientPreset(template.kind, template.tier).patch as Record<string, unknown>;
+  const patch = clientPreset(template.kind, profile).patch as Record<string, unknown>;
   return TEMPLATE_SETTINGS.some(setting => setting.section === section && setting.field in patch);
 }
 
 /** The credential the combination applies until the next step is told otherwise. */
-export function defaultCredentialMode(kind: ClientKind, tier: AssuranceTier): ClientCredentialMode {
-  return clientPreset(kind, tier).credentialModes[0];
+export function defaultCredentialMode(kind: ClientKind, profile: SecurityProfile): ClientCredentialMode {
+  return clientPreset(kind, profile).credentialModes[0];
 }
 
 /** A service client has no user, so nothing about signing one in applies to it. */
@@ -417,13 +341,16 @@ export function clientTypeFor(kind: ClientKind): ClientType {
   return kind === 'device' ? 'native' : 'web';
 }
 
-/** The method a (clientType, credential mode) pair registers. A native client has nothing to
- * authenticate with regardless of which mode a leftover selection names. */
+/** The method a (clientType, credential mode) pair registers. Edge authenticates as the
+ * client by mTLS, whether the app behind it is a web page's backend or a native binary; any
+ * other native client is a public one, whichever mode a leftover selection names. */
 export function authMethodFor(clientType: ClientType, mode: ClientCredentialMode): AuthMethod {
-  if (clientType === 'native') {
+  if (clientType === 'native' && mode !== 'edge') {
     return 'none';
   }
   switch (mode) {
+    case 'edge':
+      return 'tls_client_auth';
     case 'mtls':
       return 'tls_client_auth';
     case 'mtls-self-signed':
@@ -432,5 +359,22 @@ export function authMethodFor(clientType: ClientType, mode: ClientCredentialMode
       return 'private_key_jwt';
     default:
       return 'client_secret';
+  }
+}
+
+/** What the credential decides about how the access token is bound: a key carries DPoP, a
+ * certificate binds the token to itself, a secret binds nothing. Edge-fronted kinds decide
+ * their own binding in the preset, so they are left out. */
+export function credentialBinding(mode: ClientCredentialMode): Pick<OAuthClient, 'dpopBoundAccessTokens' | 'certificateBoundAccessTokens'> | null {
+  switch (mode) {
+    case 'private-key-jwt':
+      return { dpopBoundAccessTokens: true, certificateBoundAccessTokens: false };
+    case 'mtls':
+    case 'mtls-self-signed':
+      return { dpopBoundAccessTokens: false, certificateBoundAccessTokens: true };
+    case 'secret':
+      return { dpopBoundAccessTokens: false, certificateBoundAccessTokens: false };
+    default:
+      return null;
   }
 }

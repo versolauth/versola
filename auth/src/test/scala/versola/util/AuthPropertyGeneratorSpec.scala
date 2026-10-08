@@ -23,13 +23,15 @@ object AuthPropertyGeneratorSpec extends ZIOSpecDefault:
       override def execute[A](fn: JSecureRandom => A): UIO[A] = ZIO.dieMessage("Unused in test")
 
   def spec = suite("AuthPropertyGenerator")(
-    test("nextAuthorizationCode draws 16 bytes") {
+    // Not 16: the conformance suite's entropy estimate is taken from the encoded string and a
+    // correct 128-bit code can fall under its floor (see AuthPropertyGenerator).
+    test("nextAuthorizationCode draws 32 bytes") {
       for
         lengths <- Ref.make(List.empty[Int])
         generator = AuthPropertyGenerator.Impl(fakeRandom(lengths))
         code <- generator.nextAuthorizationCode
         seen <- lengths.get
-      yield assertTrue(seen == List(16), code.sameElements(Array.fill(16)(16.toByte)))
+      yield assertTrue(seen == List(32), code.sameElements(Array.fill(32)(32.toByte)))
     },
     test("nextSessionId draws 32 bytes") {
       for

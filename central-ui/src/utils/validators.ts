@@ -80,6 +80,19 @@ export function validateEdgeId(edgeId: string): boolean {
  * - Must use https:// (or http://localhost for dev)
  * - Custom schemes allowed for native apps (com.example.app://)
  */
+/** An app fronted by edge is reached only through an App Link / Universal Link, bound to a
+ * verified domain: a custom scheme can be claimed by any app on the device, and central
+ * refuses every redirect that is not https. */
+export function validateEdgeFrontedRedirectUri(uri: string): { valid: boolean; error?: string } {
+  const validation = validateRedirectUri(uri);
+  if (!validation.valid) {
+    return validation;
+  }
+  return uri.trim().toLowerCase().startsWith('https://')
+    ? validation
+    : { valid: false, error: 'An app fronted by edge accepts only https redirect URIs (App Links / Universal Links)' };
+}
+
 export function validateRedirectUri(uri: string): { valid: boolean; error?: string } {
   if (!uri || uri.trim() === '') {
     return { valid: false, error: 'URI cannot be empty' };

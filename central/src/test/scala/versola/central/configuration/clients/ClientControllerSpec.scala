@@ -180,7 +180,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       requirePushedAuthorizationRequests = false,
       edgeSigningKey = None,
       edgeClientCertificate = None,
-      template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+      template = Some(ClientTemplate(ClientKind.web)),
       createdAt = registeredAt,
     ),
     OAuthClientRecord(
@@ -383,7 +383,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 jwks = None,
                 requireSignedRequestObject = false,
                 requirePushedAuthorizationRequests = false,
-                template = Some(ClientTemplate(ClientKind.web, AssuranceTier.high)),
+                template = Some(ClientTemplate(ClientKind.web)),
                 createdAt = registeredAt,
                 applicationType = ApplicationType.web,
               ),

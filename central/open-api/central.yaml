@@ -2073,7 +2073,7 @@ components:
     ClientTemplate:
       type: object
       description: |
-        The combination the registration wizard picked, stored as the client registered it
+        What the registration wizard was told is being built, stored as the client registered it
         rather than derived back out of the settings it applied: once a setting has been
         edited, several combinations fit the client equally well.
       properties:
@@ -2083,13 +2083,7 @@ components:
           description: |
             `web` keeps a credential of its own, `device` cannot, `service` calls on its own
             behalf with no user to sign in.
-        tier:
-          type: string
-          enum: [high, compat]
-          description: |
-            How much the deployment can carry: `high` a registered key and a token bound to
-            it, `compat` a shared secret.
-      required: [kind, tier]
+      required: [kind]
     OAuthClientResponse:
       type: object
       properties:

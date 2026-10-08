@@ -87,6 +87,32 @@ object BasicAuthFlowSpec extends E2ESpec:
         )
       yield assertTrue(idTokenClaims.fields.exists(_._1 == "email"))
         .label(s"claims.id_token asked for email, so the ID Token must carry it, got ${idTokenClaims.toJson}")
+    },    // The conformance suite estimates a code's entropy from its encoded form and fails a 22-character
+    // (16-byte) one at random, so the length that reaches the client over HTTP is what matters -- the
+    // generator's unit test only proves what it asked the random source for.
+    test("the authorization code issued over HTTP is 32 bytes, 43 base64url characters") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        authorize <- auth.authorize(
+          clientId = Some(s.clientId),
+          redirectUri = Some(s.redirectUri),
+        ).assertChallengeRedirect
+        challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, challenge.csrf)
+          .assertRedirect(auth, authorize.conversationCookie.get)
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+      yield assertTrue(code.length == 43)
+        .label(s"a 32-byte code is 43 base64url characters, got ${code.length}: '$code'") &&
+        assertTrue(code.matches("[A-Za-z0-9_-]{43}"))
+          .label("the code must be unpadded base64url") &&
+        assertTrue(token.accessToken.nonEmpty)
+          .label("a code of the new length must still redeem")
     },
     test("otp + permanent password: complete otp flow") {
       for
