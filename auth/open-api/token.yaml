@@ -265,8 +265,10 @@ components:
           type: string
           description: |
             Signed JWT, returned only when the grant is bound to a user and the granted scope
-            contains `openid`. Includes `at_hash`, `sid`, and the claims selected by scope and
-            by the `claims` request parameter.
+            contains `openid`. Includes `at_hash`, `sid`, and only the claims the `claims` request
+            parameter's `id_token` member selected (and the granted scopes cover). The claims a
+            scope stands for are not added: they are returned from `/userinfo` (OpenID Connect
+            Core §5.4).
         authorization_details:
           type: array
           items:

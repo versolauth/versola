@@ -516,6 +516,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       redirectUri: Option[String] = None,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
       authorizationDetails: Option[String] = None,
+      /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
+      claims: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -531,7 +533,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "state" -> state,
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
-      ) ++ authorizationDetails.map("authorization_details" -> _))
+      ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
