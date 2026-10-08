@@ -211,6 +211,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = None,
     issueEdgeClientCertificate = false,
+    enrollEdgeClientCertificate = false,
   )
 
   /** Stands in for the pair `SecurityService` would mint, so that what the tests exercise is
@@ -1869,6 +1870,35 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.service.registerClient(edgeFrontedNativeRequest(certificate).copy(applicationType = None))
         created = env.repository.createClient.calls.head
       yield assertTrue(created.applicationType == ApplicationType.web, created.bindsAccessTokens)
+    },
+    // #463: a client whose edge generates the certificate stores none, which an update must not read
+    // as a native client missing the one it is required to have.
+    test("updateClient keeps an enrolled native client, which stores no certificate, from reading as missing one") {
+      val stored = cachedClient.copy(
+        applicationType = ApplicationType.native,
+        authMethod = AuthMethod.tls_client_auth,
+        secret = None,
+        previousSecret = None,
+        mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=native-app")),
+        edgeClientCertificate = None,
+        requirePushedAuthorizationRequests = true,
+        dpopBoundAccessTokens = true,
+        accessTokenTtl = 3600.seconds,
+        redirectUris = Set(redirectUri1),
+      )
+      val env = new Env(Vector(stored))
+      val renaming = updateRequest.copy(accessTokenTtl = None, redirectUris = PatchClientRedirectUris(Set.empty, Set.empty))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        withoutEnrolment <- env.service.updateClient(renaming).either
+        enrolled <- env.service.updateClient(renaming, edgeCertificateEnrolled = true).either
+      yield assertTrue(
+        withoutEnrolment.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.contains("edgeClientCertificate")
+          case _ => false,
+        enrolled.isRight,
+      )
     },
     test("updateClient refuses turning DPoP binding off for an edge-fronted native client") {
       val certificate = TestCertificates.generate(subject = "CN=native-app")

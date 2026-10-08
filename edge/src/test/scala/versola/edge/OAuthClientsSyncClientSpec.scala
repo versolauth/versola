@@ -14,6 +14,9 @@ import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
 
 object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
+
+  /** Enrols nothing: no client in these specs is asked to have its certificate generated here. */
+  private val noEnrollment: ClientCertificateEnrollment = (_, _) => ZIO.fail(RuntimeException("no enrolment in this spec"))
   private val decryptedSecretA = Array.fill(32)(3.toByte)
   private val syncToken = "sync-token"
 
@@ -64,6 +67,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       edgeClientCertificate: Option[String] = None,
       applicationType: Option[String] = None,
       redirectUris: Set[String] = Set.empty,
+      edgeCertificateSubject: Option[versola.util.CertificateSubject] = None,
   ) derives JsonCodec
 
   private case class SyncResponseMirror(clients: Vector[SyncClientRecordMirror]) derives JsonCodec
@@ -109,6 +113,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             keyCiphertext -> signingKeyDocument.getBytes("UTF-8").nn,
           )),
           centralSyncTokenService,
+          noEnrollment,
         )
         clients <- service.getAll
         synced = clients(ClientId("both"))
@@ -133,6 +138,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           config,
           fakeSecurityService(Map(keyCiphertext -> signingKeyDocument.getBytes("UTF-8").nn)),
           centralSyncTokenService,
+          noEnrollment,
         )
         clients <- service.getAll
       yield assertTrue(clients.keySet == Set(ClientId("key-only")))
@@ -147,7 +153,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
       for
         _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
         client <- ZIO.service[Client]
-        service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService)
+        service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService, noEnrollment)
         clients <- service.getAll
         permissions <- service.getPermissions
       yield assertTrue(
@@ -168,6 +174,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           config,
           fakeSecurityService(Map(keyCiphertext -> "{\"kty\":\"oct\"}".getBytes("UTF-8").nn)),
           centralSyncTokenService,
+          noEnrollment,
         )
         error <- service.getAll.flip
       yield assertTrue(error.getMessage.nn.contains("edge signing key"))
@@ -205,6 +212,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn,
           )),
           centralSyncTokenService,
+          noEnrollment,
         )
         clients <- service.getAll
         synced = clients(ClientId("mtls")).credential
@@ -243,6 +251,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           config,
           fakeSecurityService(Map(certificateCiphertext -> clientCertificate.bundle.getBytes("UTF-8").nn)),
           centralSyncTokenService,
+          noEnrollment,
         )
         clients <- service.getAll
       yield assertTrue(
@@ -273,6 +282,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
             certificateCiphertext -> clientCertificate.certificatePem.getBytes("UTF-8").nn,
           )),
           centralSyncTokenService,
+          noEnrollment,
         )
         error <- service.getAll.flip
       yield assertTrue(error.getMessage.nn.contains("edge client certificate"))
@@ -302,7 +312,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
           client,
           config,
           fakeSecurityService(Map(secretACiphertext -> decryptedSecretA)),
-          centralSyncTokenService,
+          centralSyncTokenService, noEnrollment,
         )
         clients <- service.getAll
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
@@ -316,4 +326,38 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         clients(ClientId("with-secret")).accessTokenTtl == 15.minutes,
       )
     },
+    suite("a certificate this edge enrols for (#463)")(
+      test("serves a client central sent no certificate for, with the one enrolment produced") {
+        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("a.test"), uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
+        val generated = TestCertificates.generate(subject = "CN=mobile-app", dnsName = Some("a.test"))
+        val enrollment: ClientCertificateEnrollment = (id, wanted) =>
+          ZIO.fromEither(versola.util.PrivateClientCertificate(generated.bundle).material).mapError(RuntimeException(_))
+            .when(wanted == subject && id == ClientId("enrolled")).someOrFail(RuntimeException("unexpected request"))
+        val body = SyncResponseMirror(Vector(SyncClientRecordMirror(
+          ClientId("enrolled"), None, 15.minutes, edgeCertificateSubject = Some(subject),
+        ))).toJson
+        for
+          _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+          client <- ZIO.service[Client]
+          service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map.empty), centralSyncTokenService, enrollment)
+          clients <- service.getAll
+        yield assertTrue(clients.get(ClientId("enrolled")).map(_.credential).exists:
+          case ClientCredential.MutualTls(material) => material.leaf.getSubjectX500Principal.getName.contains("mobile-app")
+          case _ => false)
+      },
+      test("drops a client whose certificate cannot be had, and keeps the rest") {
+        val subject = versola.util.CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = Nil, uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
+        val secretCiphertext = Base64.urlEncode(Array.fill(32)(40.toByte))
+        val body = SyncResponseMirror(Vector(
+          SyncClientRecordMirror(ClientId("enrolled"), None, 15.minutes, edgeCertificateSubject = Some(subject)),
+          SyncClientRecordMirror(ClientId("with-secret"), Some(secretCiphertext), 15.minutes),
+        )).toJson
+        for
+          _ <- TestClient.addRoutes(Handler.succeed(Response.json(body)).toRoutes)
+          client <- ZIO.service[Client]
+          service = OAuthClientsSyncClient.Impl(client, config, fakeSecurityService(Map(secretCiphertext -> decryptedSecretA)), centralSyncTokenService, noEnrollment)
+          clients <- service.getAll
+        yield assertTrue(clients.keySet == Set(ClientId("with-secret")))
+      },
+    ),
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

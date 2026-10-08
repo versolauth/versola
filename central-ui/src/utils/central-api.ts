@@ -1128,6 +1128,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
       template: client.template ?? null,
       issueEdgeClientCertificate: false,
+      enrollEdgeClientCertificate: false,
     },
   });
 

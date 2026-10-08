@@ -1,7 +1,8 @@
 package versola.edge
 
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
-import versola.util.{Base64, CacheSource, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
+import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
+import versola.util.http.Observability
 import zio.json.ast.Json
 import zio.http.{Client, Header, Request}
 import zio.json.{JsonCodec, DecoderOps}
@@ -27,14 +28,15 @@ object ClientPermissionsSyncClient:
     )
 
 object OAuthClientsSyncClient:
-  val live: URLayer[Client & EdgeConfig & SecurityService & CentralSyncTokenService, OAuthClientsSyncClient] =
-    ZLayer.fromFunction(Impl(_, _, _, _))
+  val live: URLayer[Client & EdgeConfig & SecurityService & CentralSyncTokenService & ClientCertificateEnrollment, OAuthClientsSyncClient] =
+    ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       httpClient: Client,
       config: EdgeConfig,
       securityService: SecurityService,
       centralSyncTokenService: CentralSyncTokenService,
+      enrollment: ClientCertificateEnrollment,
   ) extends OAuthClientsSyncClient:
     private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
 
@@ -64,7 +66,18 @@ object OAuthClientsSyncClient:
       */
     private def credentialed(client: SyncOAuthClientRecord): Task[Option[OAuthClient]] =
       for
-        certificate <- ZIO.foreach(client.edgeClientCertificate)(decryptCertificate)
+        supplied <- ZIO.foreach(client.edgeClientCertificate)(decryptCertificate)
+        // A client enrolled to have this edge generate the key (#463) has no certificate sent: the
+        // edge makes its own. One it cannot get is a client it cannot act for, dropped with the
+        // reason like any other without a credential -- the rest of the snapshot is unaffected.
+        enrolled <- supplied match
+          case None =>
+            ZIO.foreach(client.edgeCertificateSubject)(subject =>
+              enrollment.certificateFor(client.id, subject).map(Some(_)).catchAll: error =>
+                Observability.setError("edge_certificate_unavailable", Some(s"client '${client.id}': $error")).as(None),
+            ).map(_.flatten)
+          case Some(_) => ZIO.none
+        certificate = supplied.orElse(enrolled)
         signing <- ZIO.foreach(client.edgeSigningKey)(decryptSigningKey)
         secret <- ZIO.foreach(client.secret)(decryptSecret)
         // The strongest credential central sent wins, and for an mTLS client that is the only
@@ -139,6 +152,7 @@ object OAuthClientsSyncClient:
         edgeClientCertificate: Option[String] = None,
         applicationType: ApplicationType = ApplicationType.web,
         redirectUris: Set[String] = Set.empty,
+        edgeCertificateSubject: Option[CertificateSubject],
     ) derives JsonCodec
 
     private case class GetOAuthClientsSyncResponse(

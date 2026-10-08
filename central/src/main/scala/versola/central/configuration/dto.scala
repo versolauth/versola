@@ -1,6 +1,7 @@
 package versola.central.configuration
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.util.CertificateSubject
 import versola.central.configuration.clients.{ApplicationType, AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
@@ -469,7 +470,13 @@ case class CreateClientRequest(
       * registered `tls_client_auth` by [[mtlsAuth]] where one is given; where it is left out the
       * subject is `CN=<client>,OU=<tenant>,O=Versola` and the client is registered by that
       * `subject_dn`. Mutually exclusive with supplying [[edgeClientCertificate]]. */
-    issueEdgeClientCertificate: Boolean = false,
+    issueEdgeClientCertificate: Boolean,
+    /** Have the edge fronting this client generate its own key and enrol for a certificate (#463):
+      * central stores no certificate and no key, only that the client is enrolled, and signs the
+      * request an authenticated edge sends for the subject [[mtlsAuth]] registers (or
+      * `CN=<client>,OU=<tenant>,O=Versola` where it names none). Mutually exclusive with
+      * [[issueEdgeClientCertificate]] and with supplying [[edgeClientCertificate]]. */
+    enrollEdgeClientCertificate: Boolean,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -733,6 +740,21 @@ case class SyncOAuthClientRecord(
       * client's tokens unbound from edge's certificate; edge reads it to decide which clients
       * its native endpoints serve. */
     applicationType: ApplicationType,
+    /** #463: present for an edge, and only for a client enrolled to have its edge generate the
+      * key. What the certificate the edge asks for must say; the edge builds its request for
+      * exactly this, and central refuses a request that says anything else. */
+    edgeCertificateSubject: Option[CertificateSubject],
+) derives JsonCodec, Schema
+
+/** An edge's request for a certificate for a client it holds the key of (#463). */
+case class SignEdgeCertificateRequest(
+    clientId: ClientId,
+    csr: String,
+) derives JsonCodec, Schema
+
+case class SignEdgeCertificateResponse(
+    /** The certificate chain, leaf first. No key: the edge generated it and keeps it. */
+    certificate: String,
 ) derives JsonCodec, Schema
 
 case class GetOAuthClientsSyncResponse(
