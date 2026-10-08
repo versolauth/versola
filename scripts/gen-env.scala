@@ -390,8 +390,10 @@ enum OnMissing(val json: String):
   /** Take this run's generated candidate. */
   case Generate extends OnMissing("generate")
   /** Take the candidate on a first install only; on an upgrade a missing value is an
-    * error, because something outside the store already holds the real one
-    * (POSTGRES_PASSWORD: the role in Postgres has a password of its own). */
+    * error, because something already depends on the real one: either something outside the
+    * store holds it (POSTGRES_PASSWORD: the role in Postgres has a password of its own), or
+    * data it protects is stored (PASSWORDS_SECRET, CLIENT_SECRETS_SECRET, the signing and edge
+    * key pairs). */
   case GenerateOnFirstInstallOnly extends OnMissing("generate-on-first-install-only")
   /** Never generated here; the operator supplies it. */
   case External extends OnMissing("external")
@@ -445,8 +447,19 @@ object SecretSchema:
   private def k8sOperatorSecret(name: String, service: String): SecretSpec =
     SecretSpec(name, List(service), SecretType.Opaque, None, None, OnMissing.External, Set(SecretTarget.K8s))
 
-  private def base64Url(name: String, services: List[String], bytes: Int): SecretSpec =
-    SecretSpec(name, services, SecretType.Base64Url, Some(bytes), None, OnMissing.Generate, everywhere)
+  private def base64Url(
+      name: String,
+      services: List[String],
+      bytes: Int,
+      onMissing: OnMissing = OnMissing.Generate,
+  ): SecretSpec =
+    SecretSpec(name, services, SecretType.Base64Url, Some(bytes), None, onMissing, everywhere)
+
+  /** A value that persisted data depends on: a hash key, an at-rest encryption key, a signing
+    * key. Losing it after the first install doesn't rotate it, it destroys what it protects --
+    * so a store that lacks it on an upgrade is an error, not an invitation to generate. */
+  private def bound(name: String, services: List[String], bytes: Int): SecretSpec =
+    base64Url(name, services, bytes, OnMissing.GenerateOnFirstInstallOnly)
 
   private def grouped(
       name: String,
@@ -455,39 +468,45 @@ object SecretSchema:
       size: Option[Int],
       group: String,
       file: Option[String] = None,
+      onMissing: OnMissing = OnMissing.Generate,
   ): SecretSpec =
-    SecretSpec(name, services, tpe, size, Some(group), OnMissing.Generate, everywhere, file)
+    SecretSpec(name, services, tpe, size, Some(group), onMissing, everywhere, file)
 
   /** Every secret, in the order they are written. The sizes mirror the `rand(rng, N)` calls in
     * genEnv; check-secret-schema.sh decodes the generated values and compares their length. */
   val specs: List[SecretSpec] = List(
     // auth
     base64Url("ACCESS_TOKENS_SECRET", List("auth"), 32),
-    base64Url("CLIENT_SECRETS_SECRET", List("auth", "central"), 16),
+    // AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with.
+    bound("CLIENT_SECRETS_SECRET", List("auth", "central"), 16),
+    // Losing the next four only signs users out or invalidates in-flight tokens; they stay `generate`.
     base64Url("REFRESH_TOKENS_SECRET", List("auth"), 32),
     base64Url("AUTH_CODES_SECRET", List("auth"), 32),
     base64Url("SESSIONS_SECRET", List("auth"), 32),
-    base64Url("PASSWORDS_SECRET", List("auth"), 16),
+    // The key every stored password hash is computed with: a new one fails every login.
+    bound("PASSWORDS_SECRET", List("auth"), 16),
     base64Url("CONVERSATION_COOKIE_SECRET", List("auth"), 32),
     base64Url("SESSION_COOKIE_SECRET", List("auth"), 32),
     base64Url("USER_AGENT_COOKIE_SECRET", List("auth"), 32),
     base64Url("PAR_REQUESTS_SECRET", List("auth"), 32),
     base64Url("DPOP_NONCES_SECRET", List("auth"), 32),
     // The signing key auth holds and the public JWKS central serves for it: tied by the kid.
-    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, Some(2048), "jwt"),
+    // (a fresh pair next to the real one leaves two kids in play -- develop.md, "Onboarding")
+    grouped("JWT_PRIVATE_KEY", List("auth"), SecretType.RsaPrivateKey, Some(2048), "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
     // central
     base64Url("ACCOUNT_RESOURCE_SECRET", List("central"), 32),
     base64Url("CENTRAL_RESOURCE_SECRET", List("central"), 32),
-    grouped("JWKS_JSON", List("central"), SecretType.JwkSet, None, "jwt"),
+    grouped("JWKS_JSON", List("central"), SecretType.JwkSet, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // The edge's key pair: the private half and its kid at the edge, the public half at central.
-    grouped("EDGE_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "edge-key"),
+    // (central already trusts the real public key: a fresh edge pair makes every sync call 401)
+    grouped("EDGE_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // The `utils` client's key pair: the public half at central, the private half in the file
     // below (and, once versola-cli stores it, under the pseudo-service `utils`).
     grouped("UTILITY_CLIENT_PUBLIC_JWK", List("central"), SecretType.PublicJwk, None, "utils"),
     // edge
-    grouped("EDGE_PRIVATE_KEY", List("edge"), SecretType.RsaPrivateKey, Some(2048), "edge-key"),
-    grouped("EDGE_KEY_ID", List("edge"), SecretType.KeyId, None, "edge-key"),
+    grouped("EDGE_PRIVATE_KEY", List("edge"), SecretType.RsaPrivateKey, Some(2048), "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
+    grouped("EDGE_KEY_ID", List("edge"), SecretType.KeyId, None, "edge-key", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     base64Url("EDGE_TOKEN_ENC_KEY", List("edge"), 32),
     base64Url("EDGE_SESSIONS_SECRET", List("edge"), 32),
     base64Url("EDGE_INTERNAL_SECRET", List("edge"), 32),
@@ -596,7 +615,10 @@ object SecretSchema:
         val tooSmall = if specsOfGroup.size < 2 then List(s"group $group: fewer than two members") else Nil
         val targetSets = specsOfGroup.map(_.targets).distinct
         val split = if targetSets.size > 1 then List(s"group $group: members are not on the same targets") else Nil
-        tooSmall ++ split
+        // A set is taken whole or not at all, so it can't be generated on upgrade for one member only.
+        val policies = specsOfGroup.map(_.onMissing).distinct
+        val mixed = if policies.size > 1 then List(s"group $group: members have different onMissing") else Nil
+        tooSmall ++ split ++ mixed
     duplicateNames.map(name => s"duplicate name $name") ++ perSpec ++ groupProblems
 
   /** `s` as a JSON string literal. This script has no JSON dependency (see the comment on

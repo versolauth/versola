@@ -188,8 +188,11 @@ an operator can set — by a prompt, a `--*-password` flag or an imported existi
 type is a promise about every value the store may hold), whether it belongs to a `group` (secrets that only
 work as a set, e.g. a private key and the public JWKS that carries its `kid`: take all of them or
 none), what to do when it is missing from the store (`onMissing`: `generate`,
-`generate-on-first-install-only` — for a value something outside the store already holds, like
-`POSTGRES_PASSWORD`, which Postgres has its own copy of — or `external`) and the `file` it is written
+`generate-on-first-install-only` — for a value something already depends on, so that missing it on an
+upgrade is an error: one something outside the store holds, like `POSTGRES_PASSWORD`, which Postgres
+has its own copy of, or one that protects stored data, like `PASSWORDS_SECRET` (the key of every
+password hash), `CLIENT_SECRETS_SECRET` (the AES key of client secrets and signing keys in central)
+and the JWT and edge key pairs; a group has one policy for all its members — or `external`) and the `file` it is written
 to when it isn't in a `*.generated-secrets.env`. `versola-cli` uses it to find the secrets a new
 version needs that the store doesn't have yet.
 

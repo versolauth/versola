@@ -167,11 +167,19 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val vps = onTarget(SecretTarget.Vps, "POSTGRES_PASSWORD")
         assertTrue(vps.map(e => (e.tpe, e.size)) == List((SecretType.Opaque, None)))
       },
-      test("only the Postgres password on vps may not be generated on an upgrade; k8s values are the operator's") {
+      test("secrets that stored data or an external system depends on are not generated on an upgrade; k8s values are the operator's") {
         val notGenerated = SecretSchema.specs.filter(_.onMissing != OnMissing.Generate)
+        val firstInstallOnly = notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(_.name).toSet
         assertTrue(
-          notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(e => (e.name, e.targets)) ==
-            List(("POSTGRES_PASSWORD", Set(SecretTarget.Vps))),
+          firstInstallOnly == Set(
+            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "CLIENT_SECRETS_SECRET",
+            "JWT_PRIVATE_KEY", "JWKS_JSON", "EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_PUBLIC_JWK",
+          ),
+          // the ones whose loss only signs users out or invalidates in-flight tokens stay generated
+          Set("REFRESH_TOKENS_SECRET", "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET")
+            .forall(specNamed(_).onMissing == OnMissing.Generate),
+          notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).filter(_.name == "POSTGRES_PASSWORD")
+            .map(_.targets) == List(Set(SecretTarget.Vps)),
           notGenerated.filter(_.onMissing == OnMissing.External).forall(_.targets == Set(SecretTarget.K8s)),
           notGenerated.filter(_.onMissing == OnMissing.External).map(_.name).toSet ==
             Set("POSTGRES_PASSWORD", "ADMIN_BOOTSTRAP_PASSWORD"),
@@ -230,6 +238,11 @@ object SecretSchemaSpec extends ZIOSpecDefault:
       },
       test("a group of one") {
         assertTrue(SecretSchema.problems(List(sound.copy(group = Some("lonely")))).exists(_.contains("group lonely: fewer than two")))
+      },
+      test("a group whose members differ in onMissing") {
+        val first  = sound.copy(name = "A_ONE", group = Some("pair"))
+        val second = sound.copy(name = "A_TWO", group = Some("pair"), onMissing = OnMissing.GenerateOnFirstInstallOnly)
+        assertTrue(SecretSchema.problems(List(first, second)).exists(_.contains("group pair: members have different onMissing")))
       },
       test("a group whose members are on different targets") {
         val first  = sound.copy(name = "A_ONE", group = Some("pair"), targets = Set(SecretTarget.Vps))
