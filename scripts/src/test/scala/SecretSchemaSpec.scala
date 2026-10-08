@@ -122,6 +122,19 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         assertTrue(message.exists(_.contains("not in the schema: [POSTGRES_PASSWORD]")))
       },
     ),
+    suite("verifySharedPostgresPassword")(
+      test("accepts the same password for the three services") {
+        assertTrue(failureOf(SecretSchema.verifySharedPostgresPassword("same", "same", "same")).isEmpty)
+      },
+      test("rejects a service with a different password, naming the flags and not the values") {
+        val message = failureOf(SecretSchema.verifySharedPostgresPassword("one-password", "one-password", "another-password"))
+        assertTrue(
+          message.exists(_.contains("--edge-postgres-password")),
+          message.exists(!_.contains("one-password")),
+          message.exists(!_.contains("another-password")),
+        )
+      },
+    ),
     suite("the schema itself")(
       test("has no problems") {
         assertTrue(SecretSchema.problems(SecretSchema.specs) == Nil)
@@ -172,11 +185,11 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val firstInstallOnly = notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(_.name).toSet
         assertTrue(
           firstInstallOnly == Set(
-            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "CLIENT_SECRETS_SECRET",
+            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "CLIENT_SECRETS_SECRET", "CENTRAL_RESOURCE_SECRET",
             "JWT_PRIVATE_KEY", "JWKS_JSON", "EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_PUBLIC_JWK",
           ),
           // the ones whose loss only signs users out or invalidates in-flight tokens stay generated
-          Set("REFRESH_TOKENS_SECRET", "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET")
+          Set("REFRESH_TOKENS_SECRET", "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET", "ACCOUNT_RESOURCE_SECRET")
             .forall(specNamed(_).onMissing == OnMissing.Generate),
           notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).filter(_.name == "POSTGRES_PASSWORD")
             .map(_.targets) == List(Set(SecretTarget.Vps)),

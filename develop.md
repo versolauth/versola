@@ -158,7 +158,8 @@ session/cookie secrets, Postgres password, admin bootstrap password, etc.) is a
 `versola-cli` resolves each one against an [OpenBao](https://openbao.org/)
 server before starting anything: an existing value there wins over the freshly
 generated candidate, so the same secrets survive every reconfigure; a missing one
-is generated and stored. The result goes into `<service>.secrets.env` next to
+is generated and stored (except those the schema marks `generate-on-first-install-only`,
+which on an upgrade are an error — see "Secret schema"). The result goes into `<service>.secrets.env` next to
 the configs, which Compose passes to the containers — the services themselves
 never talk to OpenBao. See `versola-cli`'s `internal/openbao` and
 `internal/deploy/secrets.go`.
@@ -192,7 +193,8 @@ none), what to do when it is missing from the store (`onMissing`: `generate`,
 upgrade is an error: one something outside the store holds, like `POSTGRES_PASSWORD`, which Postgres
 has its own copy of, or one that protects stored data, like `PASSWORDS_SECRET` (the key of every
 password hash), `CLIENT_SECRETS_SECRET` (the AES key of client secrets and signing keys in central)
-and the JWT and edge key pairs; a group has one policy for all its members — or `external`) and the `file` it is written
+`CENTRAL_RESOURCE_SECRET` (central stores its verifier once; edge and cert-sync present the value
+from the store) and the JWT and edge key pairs; a group has one policy for all its members — or `external`) and the `file` it is written
 to when it isn't in a `*.generated-secrets.env`. `versola-cli` uses it to find the secrets a new
 version needs that the store doesn't have yet.
 
@@ -327,6 +329,8 @@ counterparts that a fresh one won't match, and each mismatch fails differently:
   restart. Seed the real key so only one `kid` is in play.
 - **`CLIENT_SECRETS_SECRET`** — existing OAuth client secrets in central are
   encrypted with it; a fresh one can't decrypt them.
+- **`PASSWORDS_SECRET`** — the key every stored password hash was computed with
+  (`PasswordService`); a fresh one fails every existing user's login.
 - **`EDGE_PRIVATE_KEY` / `EDGE_KEY_ID` / `EDGE_PUBLIC_JWK` / `JWKS_JSON`** —
   central already trusts the real edge's public key; a fresh edge key pair makes
   every edge→central sync call 401. `JWKS_JSON` is auth's public key wrapped as
@@ -347,7 +351,7 @@ generated values. So the order is:
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/auth \
     POSTGRES_PASSWORD='<real password>' JWT_PRIVATE_KEY='<real private key, base64>' \
-    CLIENT_SECRETS_SECRET='<real value>'
+    CLIENT_SECRETS_SECRET='<real value>' PASSWORDS_SECRET='<real value>'
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/central \
     POSTGRES_PASSWORD='<real password>' CLIENT_SECRETS_SECRET='<real value>' \

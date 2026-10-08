@@ -477,7 +477,7 @@ object SecretSchema:
   val specs: List[SecretSpec] = List(
     // auth
     base64Url("ACCESS_TOKENS_SECRET", List("auth"), 32),
-    // AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with.
+    // The AES key central encrypts client secrets, JWKS signing keys, edge keys and resource secrets with.
     bound("CLIENT_SECRETS_SECRET", List("auth", "central"), 16),
     // Losing the next four only signs users out or invalidates in-flight tokens; they stay `generate`.
     base64Url("REFRESH_TOKENS_SECRET", List("auth"), 32),
@@ -496,7 +496,11 @@ object SecretSchema:
     base64Url("CENTRAL_SECRET_KEY", List("auth", "central"), 32),
     // central
     base64Url("ACCOUNT_RESOURCE_SECRET", List("central"), 32),
-    base64Url("CENTRAL_RESOURCE_SECRET", List("central"), 32),
+    // Seeded into central's database once (seedCentralResource creates the resource only if it is
+    // absent) and checked there by authorizeBasic; edge and cert-sync present the value from here,
+    // so a fresh one after the first install is a 401 everywhere. ACCOUNT_RESOURCE_SECRET above is
+    // different: auth reads that one back from central's registry sync, so it stays `generate`.
+    bound("CENTRAL_RESOURCE_SECRET", List("central"), 32),
     grouped("JWKS_JSON", List("central"), SecretType.JwkSet, None, "jwt", onMissing = OnMissing.GenerateOnFirstInstallOnly),
     // The edge's key pair: the private half and its kid at the edge, the public half at central.
     // (central already trusts the real public key: a fresh edge pair makes every sync call 401)
@@ -566,6 +570,17 @@ object SecretSchema:
 
   /** Stops the run when `written` (the keys about to be written, names only) isn't exactly the
     * schema's set for `service` on `target`. The message names keys and nothing else. */
+  /** vps's schema entry for POSTGRES_PASSWORD is one value for auth, central and edge. The three
+    * `--*-postgres-password` flags are accepted there too, so this stops a run that gives them
+    * different values. Names the flags, never the values. */
+  def verifySharedPostgresPassword(auth: String, central: String, edge: String): Unit =
+    if auth != central || auth != edge then
+      throw RuntimeException(
+        "on vps auth, central and edge share one Postgres role, so --auth-postgres-password, " +
+          "--central-postgres-password and --edge-postgres-password must be the same value " +
+          "(or all left out); k8s is the target with a password per service",
+      )
+
   def verifyKeys(target: SecretTarget, service: String, written: Seq[String]): Unit =
     val expected   = keysFor(target, service)
     val actual     = written.toSet
@@ -1220,6 +1235,9 @@ object SecretSchema:
   val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
   val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
   val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
+  // The schema says vps has one POSTGRES_PASSWORD for all three services (one Postgres role), and
+  // versola-cli stores it as one value; the three flags would let a run say otherwise.
+  if isVps then SecretSchema.verifySharedPostgresPassword(authPgPass, centralPgPass, edgePgPass)
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
   val edgeCompleteUrl        = s"$edgeUrl/complete"
