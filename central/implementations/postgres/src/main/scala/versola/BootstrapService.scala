@@ -1039,6 +1039,7 @@ object BootstrapService:
         template = None,
         applicationType = None,
         issueEdgeClientCertificate = false,
+        enrollEdgeClientCertificate = false,
       )
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
@@ -1139,6 +1140,7 @@ object BootstrapService:
           template = None,
           applicationType = None,
           issueEdgeClientCertificate = false,
+          enrollEdgeClientCertificate = false,
         )
         // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
         // does not admit, is still seeded for a deployment that configured no key for it.

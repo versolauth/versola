@@ -378,6 +378,7 @@ object FakeCentral:
       "requireSignedRequestObject",
       "requirePushedAuthorizationRequests",
       "issueEdgeClientCertificate",
+      "enrollEdgeClientCertificate",
     ),
     (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
     (Method.POST, "/configuration/resources") -> Set(

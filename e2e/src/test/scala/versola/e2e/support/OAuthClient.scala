@@ -1145,6 +1145,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * own CA, and registers the client `tls_client_auth` by its subject. Leaves out
         * `mtlsAuth` and `edgeClientCertificate`, which the issued certificate supplies. */
       issueEdgeClientCertificate: Boolean = false,
+      /** #463: the edge fronting this client generates its own key and enrols for a certificate;
+        * central stores neither. Leaves out `mtlsAuth` and `edgeClientCertificate`. */
+      enrollEdgeClientCertificate: Boolean = false,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1178,6 +1181,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       dpopMinRsaKeySize = dpopMinRsaKeySize,
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
+      enrollEdgeClientCertificate = enrollEdgeClientCertificate,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
@@ -1794,4 +1798,5 @@ object OAuthClient:
       edgeClientCertificate: Option[String],
       applicationType: Option[String] = None,
       issueEdgeClientCertificate: Boolean,
+      enrollEdgeClientCertificate: Boolean,
   ) derives JsonEncoder

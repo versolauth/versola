@@ -23,6 +23,7 @@ object ClientController extends Controller:
     createClientEndpoint,
     updateClientEndpoint,
     renewEdgeCertificateEndpoint,
+    signEdgeCertificateEndpoint,
     rotateSecretEndpoint,
     deletePreviousSecretEndpoint,
     deleteClientEndpoint,
@@ -97,7 +98,10 @@ object ClientController extends Controller:
           case None =>
             ZIO.succeed: (secret: Secret) =>
               securityService.encryptAes256(secret, centralConfig.secretKey).map(Base64Url.encode)
+        certificateService <- ZIO.service[ClientCertificateService]
         clients <- clientService.getClientsForSync(edgeId)
+        // Only an edge enrols (#463), so only an edge is told what its certificates must say.
+        enrollmentSubjects <- certificateService.enrollmentSubjects(clients).when(edgeId.isDefined).map(_.getOrElse(Map.empty))
         encryptedClients <- ZIO.foreach(clients) { client =>
           for
             secret <- ZIO.foreach(client.secret)(transportEncrypt)
@@ -143,6 +147,7 @@ object ClientController extends Controller:
             edgeSigningKey = edgeSigningKey,
             edgeClientCertificate = edgeClientCertificate,
             applicationType = client.applicationType,
+            edgeCertificateSubject = enrollmentSubjects.get(client.id),
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
@@ -191,7 +196,8 @@ object ClientController extends Controller:
         body <- request.bodyAs[UpdateClientRequest]
         _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
           ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
-        _ <- service.updateClient(body)
+        enrolled <- certificates.isEnrolled(body.clientId)
+        _ <- service.updateClient(body, edgeCertificateEnrolled = enrolled)
         // After the update has been accepted: an operator-supplied certificate is theirs from
         // here on, and central stops renewing the one it issued.
         _ <- certificates.forgetIfReplaced(body)
@@ -245,6 +251,25 @@ object ClientController extends Controller:
         .catchAll {
           case error: InvalidRegistrationConfiguration =>
             ZIO.succeed(Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest))
+          case error: Throwable => ZIO.fail(error)
+        }
+    }
+
+  /** #463: an edge's request for a certificate for a client it generated the key of. Authenticated
+    * as the edge itself (the signed token it syncs with), never as an admin: it is not on the admin
+    * API's permission catalog, and central answers it only for a registered edge. */
+  val signEdgeCertificateEndpoint =
+    Method.POST / "configuration" / "clients" / "edge-certificate" / "sign" -> handler { (request: Request) =>
+      (for
+        edgeId <- authorizeInternal(request).someOrFail(Unauthorized)
+        service <- ZIO.service[ClientCertificateService]
+        body <- request.bodyAs[SignEdgeCertificateRequest]
+        chain <- service.sign(edgeId, body.clientId, body.csr)
+      yield Response.json(SignEdgeCertificateResponse(chain).toJson))
+        .catchAll {
+          case error: ClientCertificateService.SigningRefused =>
+            ZIO.succeed(Response.text(error.getMessage).status(Status.UnprocessableEntity))
+          case Unauthorized => ZIO.succeed(Response.status(Status.Unauthorized))
           case error: Throwable => ZIO.fail(error)
         }
     }

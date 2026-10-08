@@ -9,7 +9,7 @@ import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
+import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateEnrollment, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
@@ -83,6 +83,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       SecurityService.live >+>
       CentralSyncTokenService.live >+>
       AuthorizationPresetsSyncClient.live >+>
+      ClientCertificateEnrollment.live >+>
       OAuthClientsSyncClient.live >+>
       versola.edge.ClientPermissionsSyncClient.live >+>
       CelEvaluator.live >+>

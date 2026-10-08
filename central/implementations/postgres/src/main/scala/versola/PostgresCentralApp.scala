@@ -6,7 +6,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
 import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientCertificateAuthority, ClientController, OAuthClientRepository, OAuthClientService}
-import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuer, ClientCertificateService}
+import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuer, ClientCertificateService, EdgeCertificateEnrollmentRepository}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
@@ -22,7 +22,7 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeSer
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
 import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
-import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresClientCertificateIssuanceRepository, PostgresOAuthClientRepository}
+import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresClientCertificateIssuanceRepository, PostgresEdgeCertificateEnrollmentRepository, PostgresOAuthClientRepository}
 import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
 import versola.configuration.system.PostgresSystemSettingsRepository
@@ -97,6 +97,7 @@ object PostgresCentralApp extends VersolaApp("central"):
       AuthClient &
       UserOutboxProcessor &
       ClientCertificateIssuanceRepository &
+      EdgeCertificateEnrollmentRepository &
       ClientCertificateIssuer &
       ClientCertificateService &
       ServerMetadataRepository &
@@ -133,6 +134,7 @@ object PostgresCentralApp extends VersolaApp("central"):
           PostgresResourceRepository.live >+>
           PostgresOAuthClientRepository.live >+>
           PostgresClientCertificateIssuanceRepository.live >+>
+          PostgresEdgeCertificateEnrollmentRepository.live >+>
           PostgresAuthorizationPresetRepository.live >+>
           PostgresOAuthScopeRepository.live >+>
           PostgresAuthorizationDetailTypeRepository.live >+>

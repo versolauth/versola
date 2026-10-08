@@ -10,7 +10,9 @@ import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.{CentralConfig, TestCentralConfig}
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.configuration.clients.*
+import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
+import versola.util.CertificateSubject
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
 import zio.test.*
@@ -64,6 +66,16 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     def expiringBefore(deadline: Instant) =
       ZIO.succeed(rows.values.filter(_.notAfter.isBefore(deadline)).toVector.sortBy(_.notAfter))
 
+  private class Enrollments extends EdgeCertificateEnrollmentRepository:
+    var enrolled: Set[ClientId] = Set.empty
+    var issued: List[(ClientId, String, EdgeId)] = Nil
+    def enroll(clientId: ClientId, at: Instant) = ZIO.succeed { enrolled += clientId }
+    def isEnrolled(clientId: ClientId) = ZIO.succeed(enrolled.contains(clientId))
+    def enrolledClients = ZIO.succeed(enrolled)
+    def recordIssued(clientId: ClientId, serial: String, at: Instant, edgeId: EdgeId) =
+      ZIO.succeed { issued = issued :+ ((clientId, serial, edgeId)) }
+    def delete(clientId: ClientId) = ZIO.succeed { enrolled -= clientId }
+
   private val redirectUri = versola.util.RedirectUri("https://app.example.com/callback")
 
   private val createRequest = CreateClientRequest(
@@ -101,6 +113,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     template = None,
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
+    enrollEdgeClientCertificate = false,
   )
 
   private def record =
@@ -188,7 +201,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val clients = stub[OAuthClientService]
       val issuances = Issuances()
       val fakeCa = FakeCa()
-      val service = ClientCertificateService.Impl(fakeCa, clients, issuances, config)
+      val service = ClientCertificateService.Impl(fakeCa, clients, issuances, Enrollments(), config)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
         _ <- service.register(createRequest)
@@ -203,7 +216,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("passes a registration that asks for no certificate straight through, issuing nothing") {
       val clients = stub[OAuthClientService]
       val fakeCa = FakeCa()
-      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), config)
+      val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config)
       val plain = createRequest.copy(issueEdgeClientCertificate = false, authMethod = AuthMethod.none, mtlsAuth = None)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
@@ -213,13 +226,13 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("refuses to issue when the request also supplies a certificate") {
       val clients = stub[OAuthClientService]
       val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
-      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
       for exit <- service.register(createRequest.copy(edgeClientCertificate = Some(supplied))).exit
       yield assertTrue(exit.isFailure, clients.registerClient.calls.isEmpty)
     },
     test("registers by CN=<client>,OU=<tenant>,O=Versola when the request names no mtlsAuth") {
       val clients = stub[OAuthClientService]
-      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
       val dn = "CN=mobile-app,OU=tenant-a,O=Versola"
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
@@ -231,12 +244,12 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
     test("refuses to issue for a method that reads no certificate") {
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config)
       for exit <- service.register(createRequest.copy(authMethod = AuthMethod.client_secret)).exit
       yield assertTrue(exit.isFailure)
     },
     test("says so when central has no CA to issue from") {
-      val service = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, stub[OAuthClientService], Issuances(), config)
+      val service = ClientCertificateService.Impl(ClientCertificateIssuer.notConfigured, stub[OAuthClientService], Issuances(), Enrollments(), config)
       for exit <- service.register(createRequest).exit
       yield assertTrue(exit.isFailure, exit.toString.contains("none configured"))
     },
@@ -244,7 +257,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val clients = stub[OAuthClientService]
       val issuances = Issuances()
       val other = ClientId("other-app")
-      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, issuances, Enrollments(), config)
       for
         // The test clock, not the wall clock: the service reads `Clock.instant`.
         now <- Clock.instant
@@ -272,7 +285,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val issuances = Issuances()
       val failing = new ClientCertificateIssuer:
         def sign(request: CertificateSigningRequest) = ZIO.fail(RuntimeException("CA down"))
-      val service = ClientCertificateService.Impl(failing, clients, issuances, config)
+      val service = ClientCertificateService.Impl(failing, clients, issuances, Enrollments(), config)
       for
         now <- Clock.instant
         _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
@@ -288,7 +301,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         private val inner = FakeCa()
         def sign(request: CertificateSigningRequest) =
           issuances.delete(clientId) *> inner.sign(request)
-      val service = ClientCertificateService.Impl(slowCa, clients, issuances, config)
+      val service = ClientCertificateService.Impl(slowCa, clients, issuances, Enrollments(), config)
       for
         now <- Clock.instant
         _ = issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", now.plusSeconds(60), now))
@@ -300,22 +313,145 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val clients = stub[OAuthClientService]
       val failing = new Issuances:
         override def upsert(issuance: ClientCertificateIssuance) = ZIO.fail(RuntimeException("db down"))
-      val service = ClientCertificateService.Impl(FakeCa(), clients, failing, config)
+      val service = ClientCertificateService.Impl(FakeCa(), clients, failing, Enrollments(), config)
       for
         _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
         _ <- clients.deleteClient.succeedsWith(())
         exit <- service.register(createRequest).exit.fork.flatMap(fiber => TestClock.adjust(5.seconds) *> fiber.join)
       yield assertTrue(exit.isFailure, clients.deleteClient.calls == List(clientId))
     },
+    suite("an edge that generates its own key (#463)")(
+      test("registration records the enrolment and stores no certificate and no key") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        val fakeCa = FakeCa()
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        for
+          _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+          _ <- service.register(createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true))
+          sent = clients.registerClient.calls.head._1
+        yield assertTrue(
+          enrollments.enrolled == Set(clientId),
+          sent.edgeClientCertificate.isEmpty,
+          sent.enrollEdgeClientCertificate,
+          sent.mtlsAuth == Some(auth),
+          fakeCa.requests.isEmpty,
+        )
+      },
+      test("with no mtlsAuth the client is registered by CN=<client>,OU=<tenant>,O=Versola") {
+        val clients = stub[OAuthClientService]
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        for
+          _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+          _ <- service.register(createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true, mtlsAuth = None))
+        yield assertTrue(
+          clients.registerClient.calls.head._1.mtlsAuth ==
+            Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, "CN=mobile-app,OU=tenant-a,O=Versola")),
+        )
+      },
+      test("is refused beside issueEdgeClientCertificate, a supplied certificate, or a method that reads none") {
+        val clients = stub[OAuthClientService]
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        val enrolling = createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true)
+        val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
+        for
+          both <- service.register(enrolling.copy(issueEdgeClientCertificate = true)).exit
+          withCertificate <- service.register(enrolling.copy(edgeClientCertificate = Some(supplied))).exit
+          withSecret <- service.register(enrolling.copy(authMethod = AuthMethod.client_secret)).exit
+        yield assertTrue(both.isFailure, withCertificate.isFailure, withSecret.isFailure, clients.registerClient.calls.isEmpty)
+      },
+      test("takes the registration back when the enrolment cannot be recorded") {
+        val clients = stub[OAuthClientService]
+        val failing = new Enrollments:
+          override def enroll(clientId: ClientId, at: Instant) = ZIO.fail(RuntimeException("db down"))
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), failing, config)
+        for
+          _ <- clients.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None))
+          _ <- clients.deleteClient.succeedsWith(())
+          exit <- service.register(createRequest.copy(issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true))
+            .exit.fork.flatMap(fiber => TestClock.adjust(5.seconds) *> fiber.join)
+        yield assertTrue(exit.isFailure, clients.deleteClient.calls == List(clientId))
+      },
+      test("signs the request an enrolled client's edge made for exactly its subject, and records it") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), enrollments, config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
+          generated <- CertificateSubject.generate(subject)
+          chain <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem)
+          material <- ZIO.fromEither(PrivateClientCertificate(chain + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
+        yield assertTrue(
+          material.subjectValues("san_dns") == Set(dnsName),
+          enrollments.issued.map(entry => (entry._1, entry._3)) == List((clientId, EdgeId("edge-1"))),
+        )
+      },
+      test("refuses a client the edge is not served, whatever the CSR says") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val fakeCa = FakeCa()
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          // The sync filter, by tenant, does not list the client for this edge.
+          _ <- clients.getClientsForSync.succeedsWith(Vector.empty)
+          generated <- CertificateSubject.generate(subject)
+          exit <- service.sign(EdgeId("edge-of-another-tenant"), clientId, generated.csrPem).exit
+        yield assertTrue(exit.isFailure, fakeCa.requests.isEmpty, clients.getClientsForSync.calls == List(Some(EdgeId("edge-of-another-tenant"))))
+      },
+      test("is refused for a web client, whose tokens are bound to a certificate replicas would not share") {
+        val clients = stub[OAuthClientService]
+        val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
+        for exit <- service.register(createRequest.copy(
+            issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true, applicationType = Some(ApplicationType.web),
+          )).exit
+        yield assertTrue(exit.isFailure, exit.toString.contains("issueEdgeClientCertificate"), clients.registerClient.calls.isEmpty)
+      },
+      test("refuses a client that is not enrolled") {
+        val clients = stub[OAuthClientService]
+        val fakeCa = FakeCa()
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), Enrollments(), config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          generated <- CertificateSubject.generate(subject)
+          exit <- service.sign(EdgeId("edge-1"), clientId, generated.csrPem).exit
+        yield assertTrue(exit.isFailure, fakeCa.requests.isEmpty)
+      },
+      test("refuses a request for another subject, or one that adds a name") {
+        val clients = stub[OAuthClientService]
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val fakeCa = FakeCa()
+        val service = ClientCertificateService.Impl(fakeCa, clients, Issuances(), enrollments, config)
+        val subject = ClientCertificateRequests.subjectFor(clientId, auth).toOption.get
+        for
+          _ <- clients.getClientsForSync.succeedsWith(Vector(record))
+          other <- CertificateSubject.generate(subject.copy(distinguishedName = "CN=someone-else"))
+          wider <- CertificateSubject.generate(subject.copy(dnsNames = List(dnsName, "extra.test")))
+          otherExit <- service.sign(EdgeId("edge-1"), clientId, other.csrPem).exit
+          widerExit <- service.sign(EdgeId("edge-1"), clientId, wider.csrPem).exit
+        yield assertTrue(otherExit.isFailure, widerExit.isFailure, fakeCa.requests.isEmpty, enrollments.issued.isEmpty)
+      },
+      test("tells an edge what the certificates of the enrolled clients among those it syncs must say") {
+        val enrollments = Enrollments()
+        enrollments.enrolled = Set(clientId)
+        val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), enrollments, config)
+        for subjects <- service.enrollmentSubjects(Vector(record, record.copy(id = ClientId("other"))))
+        yield assertTrue(subjects.keySet == Set(clientId), subjects(clientId).dnsNames == List(dnsName))
+      },
+    ),
     test("renew reports a client central does not manage") {
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], Issuances(), Enrollments(), config)
       for renewed <- service.renew(clientId)
       yield assertTrue(!renewed)
     },
     test("an operator-supplied certificate takes the client out of renewal") {
       val issuances = Issuances()
       issuances.rows = Map(clientId -> ClientCertificateIssuance(clientId, "01", Instant.now(), Instant.now()))
-      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], issuances, config)
+      val service = ClientCertificateService.Impl(FakeCa(), stub[OAuthClientService], issuances, Enrollments(), config)
       val supplied = PrivateClientCertificate(TestCertificates.generate(dnsName = Some(dnsName)).bundle)
       for
         _ <- service.forgetIfReplaced(untouchedUpdate)

@@ -1,12 +1,16 @@
 package versola.central.configuration.clients.certificates
 
 import versola.central.CentralConfig
+import versola.central.configuration.edges.EdgeId
+import versola.util.CertificateSubject
 import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.configuration.clients.*
 import versola.util.{Patch, PrivateClientCertificate}
+import versola.util.http.Observability
 import zio.*
 
 import java.time.Instant
+import scala.jdk.CollectionConverters.*
 
 /** Issues and renews the certificates edge-fronted clients present (#440).
   *
@@ -37,17 +41,37 @@ trait ClientCertificateService:
   /** An operator-supplied certificate replaces a managed one, and from then on is theirs. */
   def forgetIfReplaced(request: UpdateClientRequest): Task[Unit]
 
+  /** Whether the client has its edge generate the certificate (#463): an update must not read the
+    * certificate it does not store as missing. */
+  def isEnrolled(clientId: ClientId): Task[Boolean]
+
+  /** What the edge must put in the certificate it asks for, for each enrolled client among
+    * `clients` (#463). */
+  def enrollmentSubjects(clients: Vector[OAuthClientRecord]): Task[Map[ClientId, CertificateSubject]]
+
+  /** Signs the request an edge made for a client it holds the key of, and returns the certificate
+    * chain. Refused unless the client is enrolled and the request says exactly what the client is
+    * registered by. Central never sees the key. */
+  def sign(edgeId: EdgeId, clientId: ClientId, csrPem: String): IO[ClientCertificateService.SigningRefused | Throwable, String]
+
 object ClientCertificateService:
 
+  /** Why central will not sign an edge's request: the client is not enrolled, or the request is not
+    * for what it is registered by. A refusal, not a fault -- the edge cannot fix it by retrying. */
+  case class SigningRefused(clientId: ClientId, reason: String)
+    extends RuntimeException(s"client '$clientId': $reason")
+
   val live: URLayer[
-    ClientCertificateIssuer & OAuthClientService & ClientCertificateIssuanceRepository & CentralConfig,
+    ClientCertificateIssuer & OAuthClientService & ClientCertificateIssuanceRepository &
+      EdgeCertificateEnrollmentRepository & CentralConfig,
     ClientCertificateService,
-  ] = ZLayer.fromFunction(Impl(_, _, _, _))
+  ] = ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   class Impl(
       issuer: ClientCertificateIssuer,
       clients: OAuthClientService,
       issuances: ClientCertificateIssuanceRepository,
+      enrollments: EdgeCertificateEnrollmentRepository,
       config: CentralConfig,
   ) extends ClientCertificateService:
 
@@ -66,7 +90,8 @@ object ClientCertificateService:
     override def register(
         request: CreateClientRequest,
     ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
-      if !request.issueEdgeClientCertificate then clients.registerClient(request)
+      if request.enrollEdgeClientCertificate then enrolling(request)
+      else if !request.issueEdgeClientCertificate then clients.registerClient(request)
       else
         for
           // The checks a registration asking for a certificate has always been held to, except the one
@@ -92,6 +117,102 @@ object ClientCertificateService:
                 clients.deleteClient(request.id).ignore,
             )
         yield registered
+
+    /** The edge generates the key and asks for the certificate later; registration only records that
+      * it will, after checking the client could be recognised by what it would ask for. */
+    private def enrolling(
+        request: CreateClientRequest,
+    ): IO[ClientAlreadyExists | InvalidRegistrationConfiguration | Throwable, RegisteredClient] =
+      def invalid(reason: String) = InvalidRegistrationConfiguration(request.id, s"enrollEdgeClientCertificate $reason")
+      val auth = request.mtlsAuth.getOrElse(ClientCertificateRequests.defaultAuth(request.tenantId, request.id))
+      for
+        _ <- ZIO.fail(invalid(s"enrols a tls_client_auth certificate, which ${request.authMethod} does not read"))
+          .when(request.authMethod != AuthMethod.tls_client_auth)
+        // Tokens bound to the certificate (a web client's, RFC 8705 §3) must be presented with the very
+        // certificate they were issued to, and replicas that each enrol for their own would present
+        // different ones -- a session served by another replica, or after a renewal, would be refused.
+        // A native app fronted by edge binds its tokens to the device's DPoP key instead, so any
+        // replica's certificate does; a web client takes `issueEdgeClientCertificate`, one
+        // certificate for every replica.
+        _ <- ZIO.fail(invalid("is for a native app fronted by edge (applicationType native): a web client's tokens are bound to its certificate, which replicas enrolling separately would not share - use issueEdgeClientCertificate"))
+          .unless(request.applicationType.contains(ApplicationType.native))
+        _ <- ZIO.fail(invalid("cannot be combined with issueEdgeClientCertificate - the key is generated by the edge or by central, not both"))
+          .when(request.issueEdgeClientCertificate)
+        _ <- ZIO.fail(invalid("cannot be combined with edgeClientCertificate - edge presents the certificate it enrols for or the one it is given, not both"))
+          .when(request.edgeClientCertificate.isDefined)
+        _ <- ZIO.fromEither(ClientCertificateRequests.subjectFor(request.id, auth)).mapError(invalid(_))
+        registered <- clients.registerClient(request.copy(mtlsAuth = Some(auth)))
+        now <- Clock.instant
+        // Same reasoning as an issued certificate: a client nothing will ever enrol for is worse
+        // than a failed registration, so take it back rather than leave it.
+        _ <- enrollments.enroll(request.id, now)
+          .retry(Schedule.recurs(2) && Schedule.spaced(200.millis))
+          .tapError(error =>
+            Observability.setError("edge_enrolment_not_recorded", Some(s"client '${request.id}' removed: $error")) *>
+              clients.deleteClient(request.id).ignore,
+          )
+      yield registered
+
+    override def isEnrolled(clientId: ClientId): Task[Boolean] = enrollments.isEnrolled(clientId)
+
+    override def enrollmentSubjects(
+        records: Vector[OAuthClientRecord],
+    ): Task[Map[ClientId, CertificateSubject]] =
+      enrollments.enrolledClients.map: enrolled =>
+        records.filter(record => enrolled.contains(record.id)).flatMap: record =>
+          record.mtlsAuth.flatMap(auth => ClientCertificateRequests.subjectFor(record.id, auth).toOption)
+            .map(record.id -> _)
+        .toMap
+
+    override def sign(
+        edgeId: EdgeId,
+        clientId: ClientId,
+        csrPem: String,
+    ): IO[ClientCertificateService.SigningRefused | Throwable, String] =
+      def refused(reason: String) = ClientCertificateService.SigningRefused(clientId, reason)
+      for
+        enrolled <- enrollments.isEnrolled(clientId)
+        _ <- ZIO.fail(refused("is not enrolled to have an edge generate its certificate")).unless(enrolled)
+        // The clients this edge is served, as the sync filters them: not every client central has. An
+        // edge may ask only for one it is entitled to act for -- a tenant's clients are not another
+        // tenant's edge's to obtain a certificate for.
+        record <- clients.getClientsForSync(Some(edgeId)).map(_.find(_.id == clientId))
+          .someOrFail(refused("is not one this edge serves"))
+        auth <- ZIO.fromOption(record.mtlsAuth).orElseFail(refused("has no mtlsAuth to issue a certificate for"))
+        subject <- ZIO.fromEither(ClientCertificateRequests.subjectFor(clientId, auth)).mapError(refused(_))
+        _ <- ZIO.fromEither(CertificateSubject.matches(csrPem, subject)).mapError(refused(_))
+        chain <- issuer.sign(ClientCertificateRequests.signingRequest(csrPem, subject, settings.validity))
+        leaf <- ZIO.attempt:
+          java.security.cert.CertificateFactory.getInstance("X.509")
+            .generateCertificates(java.io.ByteArrayInputStream(chain.getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+            .iterator.next.asInstanceOf[java.security.cert.X509Certificate]
+        // What the CA returned must say what the client is registered by, or auth would never
+        // accept it: refuse here, with the reason, rather than hand the edge a certificate it
+        // would present to a 401.
+        _ <- ZIO.foreachDiscard(auth match
+          case MutualTlsAuth.TlsClientAuth(subjectType, value) if !certificateValues(leaf, subjectType).contains(value) =>
+            Some(RuntimeException(s"the issued certificate carries no $subjectType of '$value'"))
+          case _ => None
+        )(ZIO.fail(_))
+        now <- Clock.instant
+        _ <- enrollments.recordIssued(clientId, leaf.getSerialNumber.toString(16), now, edgeId)
+          .catchAll(error => Observability.setError("edge_certificate_not_recorded", Some(s"client '$clientId': $error")))
+        _ <- ZIO.logInfo(s"signed certificate ${leaf.getSerialNumber.toString(16)} for client '$clientId' at edge '$edgeId', valid until ${leaf.getNotAfter.toInstant}")
+      yield chain
+
+    private def certificateValues(
+        leaf: java.security.cert.X509Certificate,
+        subjectType: MutualTlsSubjectType,
+    ): Set[String] =
+      def sans(tag: Int) = Option(leaf.getSubjectAlternativeNames).map(_.asScala.toList).getOrElse(Nil)
+        .filter(_.get(0) == Integer.valueOf(tag)).map(_.get(1).toString).toSet
+      import scala.jdk.CollectionConverters.*
+      subjectType match
+        case MutualTlsSubjectType.subject_dn => Set(leaf.getSubjectX500Principal.getName(javax.security.auth.x500.X500Principal.RFC2253))
+        case MutualTlsSubjectType.san_email => sans(1)
+        case MutualTlsSubjectType.san_dns => sans(2)
+        case MutualTlsSubjectType.san_uri => sans(6)
+        case MutualTlsSubjectType.san_ip => sans(7)
 
     override def renew(clientId: ClientId): IO[InvalidRegistrationConfiguration | Throwable, Boolean] =
       issuances.find(clientId).flatMap:
