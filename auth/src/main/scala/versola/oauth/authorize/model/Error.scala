@@ -161,11 +161,6 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#HybridAuthRequest"),
     )
 
-  case class UnsupportedUiLocales(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
-      error = ErrorCode.InvalidRequest,
-      errorDescription = "None of the requested ui_locales are supported",
-      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
-    )
 
   case class AuthFlowMissing(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidRequest,
@@ -220,11 +215,6 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
 
-  case class LoginHintInvalid(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
-      error = ErrorCode.InvalidRequest,
-      errorDescription = "The login_hint parameter is invalid or not supported by the client auth flow",
-      errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
-    )
 
   case class InvalidTarget(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidTarget,

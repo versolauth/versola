@@ -51,6 +51,33 @@ object AuthorizeNegativeSpec extends E2ESpec:
       yield assertCompletes
     },
 
+    // OIDC Core §3.1.2.1: these are hints the server may act on or not. The conformance suite sends a
+    // locale no tenant has, an identifier the client's flow does not take, and acr values the tenant does
+    // not define, and expects the login to go ahead rather than an error.
+    test("an unsupported ui_locales does not refuse the request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, uiLocales = Some("se"))
+          .assertChallengeRedirect
+      yield assertCompletes
+    },
+
+    test("a login_hint the client's flow does not take does not refuse the request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, loginHint = Some("buffy@example.test"))
+          .assertChallengeRedirect
+      yield assertCompletes
+    },
+
+    test("acr_values the tenant does not define do not refuse the request") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        _ <- auth.authorizeRaw(clientId = s.clientId, redirectUri = s.redirectUri, acrValues = Some("1 2"))
+          .assertChallengeRedirect
+      yield assertCompletes
+    },
+
     test("code_challenge_method=plain redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)

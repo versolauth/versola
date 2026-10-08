@@ -69,6 +69,10 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     requirePushedAuthorizationRequests = false,
   )
 
+  /** A tenant ACR vocabulary defining each of `acrs` as satisfied by a password. */
+  private def acrVocabulary(acrs: String*): Map[Acr, NonEmptyList[PassedAuthFactor]] =
+    acrs.map(acr => Acr(acr) -> NonEmptyList(PassedAuthFactor.password)).toMap
+
   private val schemaValidator: JsonSchemaValidator = JsonSchemaValidator.Impl()
 
   /** A client that registered a key set, so it can sign a JAR request object with it. */
@@ -827,7 +831,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
-      test("rejects an email login_hint when the client does not accept email credentials") {
+      test("ignores an email login_hint when the client does not accept email credentials") {
         val env = Env()
         val phoneOnly = clientRecord.copy(authFlow =
           clientRecord.authFlow.map(flow => flow.copy(primary = flow.primary.copy(credentials = List(PrimaryCredential.phone)))),
@@ -836,9 +840,9 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(phoneOnly))
           result <- env.parser.parse(request).either
-        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
+        yield assertTrue(result.map(_.loginHint) == Right(None))
       },
-      test("rejects a phone login_hint when the client does not accept phone credentials") {
+      test("ignores a phone login_hint when the client does not accept phone credentials") {
         val env = Env()
         val emailOnly = clientRecord.copy(authFlow =
           clientRecord.authFlow.map(flow => flow.copy(primary = flow.primary.copy(credentials = List(PrimaryCredential.email)))),
@@ -847,16 +851,16 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(emailOnly))
           result <- env.parser.parse(request).either
-        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
+        yield assertTrue(result.map(_.loginHint) == Right(None))
       },
-      test("rejects a phone login_hint outside the prefixes the client allows") {
+      test("ignores a phone login_hint outside the prefixes the client allows") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+7"))
           result <- env.parser.parse(request).either
-        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
+        yield assertTrue(result.map(_.loginHint) == Right(None))
       },
       test("accepts any prefix when the client restricts none") {
         val env = Env()
@@ -867,22 +871,22 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
-      test("rejects a malformed email login_hint") {
+      test("ignores a malformed email login_hint") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "not-an-email")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           result <- env.parser.parse(request).either
-        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
+        yield assertTrue(result.map(_.loginHint) == Right(None))
       },
-      test("rejects a phone login_hint that is not a valid number") {
+      test("ignores a phone login_hint that is not a valid number") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+1202")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
           result <- env.parser.parse(request).either
-        yield assertTrue(result.left.map(_.getClass) == Left(classOf[Error.LoginHintInvalid]))
+        yield assertTrue(result.map(_.loginHint) == Right(None))
       },
     ),
     suite("request object (JAR)")(
@@ -1431,8 +1435,30 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "urn:mfa urn:pwd")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa", "urn:pwd"))
           result <- env.parser.parse(request)
         yield assertTrue(result.acrValues == Some(NonEmptyList(Acr("urn:mfa"), Acr("urn:pwd"))))
+      },
+      // OIDC Core §3.1.2.1: acr_values is voluntary. A value the tenant does not define can
+      // never be satisfied, so it is dropped; the oidcc-ensure-request-with-acr-values-succeeds
+      // conformance test sends `1 2` and expects the login to go ahead.
+      test("drops an acr value the tenant does not define, keeping the ones it does") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "1 urn:mfa")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.acrValues == Some(NonEmptyList(Acr("urn:mfa"))))
+      },
+      test("treats acr_values as absent when the tenant defines none of them") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "1 2")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
+          result <- env.parser.parse(request)
+        yield assertTrue(result.acrValues.isEmpty)
       },
     ),
     suite("id_token_hint")(

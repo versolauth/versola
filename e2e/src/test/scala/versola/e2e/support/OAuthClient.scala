@@ -558,6 +558,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      /** OIDC Core §3.1.2.1 hints a client may send and a server is free to ignore. */
+      uiLocales: Option[String] = None,
+      loginHint: Option[String] = None,
       requestUri: Option[String] = None,
       omitClientId: Boolean = false,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
@@ -589,6 +592,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "max_age"              -> maxAge.map(_.toString),
           "acr_values"           -> acrValues,
           "id_token_hint"        -> idTokenHint,
+          "ui_locales"           -> uiLocales,
+          "login_hint"           -> loginHint,
           "authorization_details" -> authorizationDetails,
           "nonce"                -> nonce,
           "request"              -> request,
