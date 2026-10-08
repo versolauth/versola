@@ -118,7 +118,7 @@ object EdgeIssuedCertificateSpec
         edgeApi <- edge
         session <- signIn
         response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", session.auth)
-        seen <- stub.lastRequest
+        seen <- stub.requests.map(_.findLast(_.path == "/items"))
       yield assertTrue(response.status == Status.Ok, seen.isDefined)
     },
     suite("refuses a registration asking for a certificate it could not register by, and stores nothing")(
@@ -159,10 +159,10 @@ object EdgeIssuedCertificateSpec
         edgeApi <- edge
         session <- signIn
         response <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth)
-        seen <- stub.lastRequest
+        seen <- stub.requests.map(_.findLast(_.path == "/profile"))
       yield assertTrue(
         response.status == Status.Ok,
         seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
       )
     },
-  )
+  ) @@ TestAspect.sequential

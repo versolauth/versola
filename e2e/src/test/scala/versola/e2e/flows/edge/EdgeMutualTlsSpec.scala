@@ -145,7 +145,7 @@ object EdgeMutualTlsSpec
         edgeApi <- edge
         session <- signIn
         response <- edgeApi.proxy(Method.GET, f.resourceId, "/items", session.auth)
-        seen <- stub.lastRequest
+        seen <- stub.requests.map(_.findLast(_.path == "/items"))
       yield assertTrue(response.status == Status.Ok, seen.isDefined)
     },
     // RFC 8705 §3 again, one hop further out: auth refuses this token on `/userinfo` unless
@@ -159,7 +159,7 @@ object EdgeMutualTlsSpec
         edgeApi <- edge
         session <- signIn
         response <- edgeApi.proxy(Method.GET, f.resourceId, "/profile", session.auth)
-        seen <- stub.lastRequest
+        seen <- stub.requests.map(_.findLast(_.path == "/profile"))
       yield assertTrue(
         response.status == Status.Ok,
         seen.flatMap(_.header("X-User-Sub")).exists(_.nonEmpty),
@@ -198,4 +198,4 @@ object EdgeMutualTlsSpec
         assertTrue(answered.status == Status.Unauthorized, !seen.exists(_.path == "/dual-bound"))
           .label("a valid proof, nonce included, must not carry a certificate-bound token past edge")
     },
-  )
+  ) @@ TestAspect.sequential
