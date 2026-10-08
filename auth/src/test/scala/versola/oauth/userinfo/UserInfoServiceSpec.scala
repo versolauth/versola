@@ -94,10 +94,13 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
         onlyUserinfoClaims.claims.keySet == Set("sub"),
       )
     },
-    test("getUserInfoForIdToken does not release a claim the granted scopes do not cover") {
+    // `email` is a registered scope here, merely not among the granted ones: the intersection has
+    // to be with what was granted, not with everything registered, or a client could pull a claim
+    // its scopes never covered into the ID Token just by naming it.
+    test("getUserInfoForIdToken does not release a registered claim the granted scopes do not cover") {
       val env = Env()
       for
-        _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope))
+        _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope, emailScope))
         result <- env.service.getUserInfoForIdToken(
           testUser,
           Set(ScopeToken.OpenId, ScopeToken("profile")),
