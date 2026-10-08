@@ -1492,6 +1492,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
       // OIDC Core §3.1.2.1: acr_values is voluntary. A value the tenant does not define can
       // never be satisfied, so it is dropped; the oidcc-ensure-request-with-acr-values-succeeds
       // conformance test sends `1 2` and expects the login to go ahead.
+      test("refuses an empty acr_values, which names no value at all") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.NoValuesProvided(clientId, redirectUri, Some(State("test-state")), "acr_values", responseMode = ResponseMode.Query)))
+      },
       test("drops an acr value the tenant does not define, keeping the ones it does") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> "1 urn:mfa")))

@@ -290,7 +290,9 @@ object AuthorizeRequestParser:
           .flatMap:
             case None => ZIO.none
             case Some(values) =>
-              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').map(Acr(_)).toList))
+              // Blank tokens are not values: `acr_values=` or a run of spaces names none, which is
+              // refused as before rather than read as one empty value the tenant does not define.
+              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').filter(_.nonEmpty).map(Acr(_)).toList))
                 .orElseFail(Error.NoValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
                 .flatMap(requested => voluntaryAcrValues(clientId, requested))
 

@@ -215,8 +215,12 @@ components:
         Space-delimited Authentication Context Class Reference values, in order of preference.
         Present but empty is rejected. A voluntary request (OpenID Connect Core §3.1.2.1): values
         the client's tenant does not define are ignored, and when none is left the request carries
-        no ACR requirement. A value the tenant defines but that cannot be met for this user is
-        refused with `unmet_authentication_requirements`.
+        no ACR requirement. For a user the server already knows (an existing session, or an
+        `id_token_hint`), a value the tenant defines but that cannot be met is refused with
+        `unmet_authentication_requirements`. For a fresh login with neither there is no user to
+        check achievability against, so the request proceeds with normal authentication and the
+        `acr` claim reports what was actually achieved: the request is not a guarantee, and the
+        client has to read that claim.
       schema:
         type: string
 
