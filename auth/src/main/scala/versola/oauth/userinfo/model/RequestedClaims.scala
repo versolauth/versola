@@ -2,6 +2,7 @@ package versola.oauth.userinfo.model
 
 import versola.oauth.client.model.Claim
 import zio.json.*
+import zio.json.ast.Json
 import zio.prelude.Equal
 import zio.schema.*
 
@@ -20,7 +21,19 @@ object RequestedClaims:
   given JsonCodec[Claim] = JsonCodec.string.transform(Claim(_), identity[String])
   given JsonFieldEncoder[Claim] = JsonFieldEncoder.string.contramap(identity)
   given JsonFieldDecoder[Claim] = JsonFieldDecoder.string.map(Claim(_))
-  given JsonCodec[RequestedClaims] = DeriveJsonCodec.gen[RequestedClaims]
+
+  private val derivedDecoder = DeriveJsonDecoder.gen[RequestedClaims]
+
+  /** §5.5 makes `userinfo` and `id_token` objects when present; only an individual claim's value may
+    * be `null`. A decoder with defaults reads a null member as an absent one, which would let a
+    * malformed request through as an empty one, so a null member is refused before decoding.
+    */
+  given JsonCodec[RequestedClaims] = JsonCodec(
+    DeriveJsonEncoder.gen[RequestedClaims],
+    JsonDecoder[Json].mapOrFail:
+      case Json.Obj(members) if members.exists(_._2 == Json.Null) => Left("a claims member must be an object, not null")
+      case json => derivedDecoder.fromJsonAST(json),
+  )
 
   val empty: RequestedClaims = RequestedClaims()
 

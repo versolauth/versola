@@ -1377,6 +1377,16 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           )),
         )
       },
+      // §5.5: `userinfo` and `id_token` are objects when present. Only an individual claim's value may be
+      // null, so a null *member* is a malformed request, not an empty one.
+      test("rejects a claims object whose member is null") {
+        val env = Env()
+        val request = Request.get(URL.root.addQueryParams(validParams ++ Map("claims" -> """{"userinfo":null}""")))
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request).either
+        yield assertTrue(result == Left(Error.InvalidClaims(clientId, redirectUri, Some(State("test-state")), responseMode = ResponseMode.Query)))
+      },
       test("still rejects a claims object whose member is not an object") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("claims" -> """{"userinfo":"name"}""")))
