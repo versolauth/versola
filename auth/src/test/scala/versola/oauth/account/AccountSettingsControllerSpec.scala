@@ -277,6 +277,20 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
               List(List((ownSessionId, true), (otherDeviceSession.publicId, false))),
           )),
       ),
+      controllerTestCase(
+        description = "passes hasPassword=true to the renderer when the user has a password set",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Ok,
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
+          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+            passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(true) *>
+            renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(
+            stubs._6.renderAccount.calls.map(_._2.hasPassword) == List(true),
+          )),
+      ),
     ),
     suite("DELETE /settings/sessions")(
       controllerTestCase(
