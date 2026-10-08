@@ -470,7 +470,7 @@ case class CreateClientRequest(
       * registered `tls_client_auth` by [[mtlsAuth]] where one is given; where it is left out the
       * subject is `CN=<client>,OU=<tenant>,O=Versola` and the client is registered by that
       * `subject_dn`. Mutually exclusive with supplying [[edgeClientCertificate]]. */
-    issueEdgeClientCertificate: Boolean = false,
+    issueEdgeClientCertificate: Boolean,
     /** Have the edge fronting this client generate its own key and enrol for a certificate (#463):
       * central stores no certificate and no key, only that the client is enrolled, and signs the
       * request an authenticated edge sends for the subject [[mtlsAuth]] registers (or
