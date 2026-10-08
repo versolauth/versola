@@ -817,7 +817,17 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // value, not three -- all three services share the same host, just a
   // different ?currentSchema=.
   val pgHostDefault = if isVps then requiredEnv("POSTGRES_HOST") else ""
-  val authPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=auth" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=auth" else "jdbc:postgresql://localhost:5432/auth"
+  // The services connect with `sslmode=verify-full` unless the URL says otherwise (see
+  // PostgresTls), and refuse to start in prod when it is weaker. The bundled/local Postgres
+  // speaks no TLS, so those targets say `sslmode=disable` explicitly; a remote vps database
+  // gets the verified default, with its CA bundle set through `postgres.ssl-root-cert` if the
+  // JVM does not already trust it (see deploy.md).
+  val pgPlaintext = !isVps || Set("127.0.0.1", "localhost", "[::1]").contains(pgHostDefault.replaceAll(":\\d+$", ""))
+  val pgTlsParam  = if pgPlaintext then "sslmode=disable" else ""
+  def pgUrl(host: String, schema: Option[String]): String =
+    val query = (schema.map("currentSchema=" + _).toList ++ Option.when(pgTlsParam.nonEmpty)(pgTlsParam).toList).mkString("&")
+    s"jdbc:postgresql://$host/auth" + (if query.isEmpty then "" else "?" + query)
+  val authPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("auth")) else if isVps then pgUrl(pgHostDefault, Some("auth")) else pgUrl("localhost:5432", None)
   val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
   val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "auth-postgres-user")
   val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "auth-postgres-password")
@@ -847,7 +857,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
   // docker-local.
   val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
   val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault, flag = "central-redirect-uris")
-  val centralPgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=central" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=central" else "jdbc:postgresql://localhost:5432/auth"
+  val centralPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("central")) else if isVps then pgUrl(pgHostDefault, Some("central")) else pgUrl("localhost:5432", None)
   val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault, flag = "central-postgres-url")
   val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "central-postgres-user")
   val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "central-postgres-password")
@@ -898,7 +908,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgePgUrlDefault = if isDockerLocal then "jdbc:postgresql://postgres:5432/auth?currentSchema=edge" else if isVps then s"jdbc:postgresql://$pgHostDefault/auth?currentSchema=edge" else "jdbc:postgresql://localhost:5432/auth"
+  val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge")) else if isVps then pgUrl(pgHostDefault, Some("edge")) else pgUrl("localhost:5432", None)
   val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
   val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
   val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")

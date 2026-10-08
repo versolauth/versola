@@ -26,6 +26,9 @@ test('creates a tenant, selects it, and refreshes the selector choices', async (
   await page.getByRole('button', { name: '+ Create Tenant' }).click();
   await page.getByLabel('Tenant ID').fill('tenant-gamma');
   await page.getByLabel('Description').fill('Gamma Workspace');
+  // Clients are held to FAPI 2.0 unless the tenant is created as a standard one.
+  await expect(page.locator('#tenant-security-profile')).toHaveValue('fapi2');
+  await expect(page.locator('#tenant-security-profile option')).toHaveText(['FAPI 2.0 (recommended)', 'Standard']);
   await page.getByRole('button', { name: 'Create Tenant', exact: true }).click();
 
   const createdCard = page.locator('.tenant-card').filter({ hasText: 'Gamma Workspace' }).first();
@@ -38,10 +41,33 @@ test('creates a tenant, selects it, and refreshes the selector choices', async (
     id: 'tenant-gamma',
     description: 'Gamma Workspace',
     edgeId: null,
+    securityProfile: 'fapi2',
   });
 
   await openTenantDropdown(page);
   await expect(page.locator('tenant-selector .dropdown').getByRole('button', { name: 'tenant-gamma' })).toBeVisible();
+});
+
+test('creates a standard tenant and offers the profile only at creation', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: '/?view=tenants&tenant=tenant-alpha' });
+
+  await page.getByRole('button', { name: '+ Create Tenant' }).click();
+  await page.getByLabel('Tenant ID').fill('tenant-delta');
+  await page.getByLabel('Description').fill('Delta Workspace');
+  await page.locator('#tenant-security-profile').selectOption('standard');
+  await page.getByRole('button', { name: 'Create Tenant', exact: true }).click();
+
+  await expect(page.locator('.tenant-card').filter({ hasText: 'Delta Workspace' }).first()).toBeVisible();
+  expect(findRequest(api.requests, 'POST', '/configuration/tenants').body).toEqual({
+    id: 'tenant-delta',
+    description: 'Delta Workspace',
+    edgeId: null,
+    securityProfile: 'standard',
+  });
+
+  // Fixed once created, so editing a tenant has no profile to change.
+  await page.locator('button[aria-label="Edit tenant"]').first().click();
+  await expect(page.locator('#tenant-security-profile')).toHaveCount(0);
 });
 
 test('shows tenant id validation before submitting', async ({ page }) => {

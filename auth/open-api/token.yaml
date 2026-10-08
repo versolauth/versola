@@ -131,7 +131,7 @@ components:
       type: object
       title: authorization_code
       description: Exchanges the code returned by `/authorize` for tokens.
-      required: [grant_type, code, redirect_uri, code_verifier]
+      required: [grant_type, code, redirect_uri]
       properties:
         grant_type:
           type: string
@@ -145,7 +145,11 @@ components:
           description: Must be identical to the `redirect_uri` of the authorization request.
         code_verifier:
           type: string
-          description: PKCE verifier matching the `code_challenge` of the authorization request.
+          description: |
+            PKCE verifier matching the `code_challenge` of the authorization request. Conditional
+            rather than schema-required: it must be sent when the authorization request carried a
+            challenge (which every public client, edge-fronted native client and `fapi2` tenant's
+            client must), and is refused with `invalid_grant` when it did not (RFC 7636 §4.6).
         client_id:
           type: string
           description: Required for `client_secret_post` and for public clients.
@@ -261,8 +265,10 @@ components:
           type: string
           description: |
             Signed JWT, returned only when the grant is bound to a user and the granted scope
-            contains `openid`. Includes `at_hash`, `sid`, and the claims selected by scope and
-            by the `claims` request parameter.
+            contains `openid`. Includes `at_hash`, `sid`, and only the claims the `claims` request
+            parameter's `id_token` member selected (and the granted scopes cover). The claims a
+            scope stands for are not added: they are returned from `/userinfo` (OpenID Connect
+            Core §5.4).
         authorization_details:
           type: array
           items:

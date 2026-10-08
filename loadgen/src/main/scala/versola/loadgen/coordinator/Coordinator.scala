@@ -1,5 +1,6 @@
 package versola.loadgen.coordinator
 
+import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
 import versola.loadgen.store.{
@@ -23,7 +24,7 @@ import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
   */
 object Coordinator:
 
-  def make(config: LoadgenConfig): ZIO[Scope & ConfigProvider, Throwable, CoordinatorService] =
+  def make(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName, Throwable, CoordinatorService] =
     for
       xa <- storeTransactor
       poolerQueue <- PoolerQueueRecorder.make
@@ -77,7 +78,7 @@ object Coordinator:
     * process to touch the store and `migrate = false` would make it *validate* a database that
     * does not exist yet. Flyway is idempotent, so a campaign that was seeded first is unaffected.
     */
-  private def storeTransactor: ZIO[Scope & ConfigProvider, Throwable, TransactorZIO] =
+  private def storeTransactor: ZIO[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO] =
     PostgresHikariDataSource
       .transactor(
         serviceName = Some("loadgen-coordinator"),

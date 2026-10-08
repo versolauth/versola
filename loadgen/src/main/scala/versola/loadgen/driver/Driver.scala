@@ -1,5 +1,6 @@
 package versola.loadgen.driver
 
+import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{ClientsConfig, LoadgenConfig, ShardConfig}
 import versola.loadgen.coordinator.{LoadPlan, PlanScenario}
@@ -49,10 +50,10 @@ object Driver:
     */
   val healthInterval: Duration = 5.seconds
 
-  def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Tracing, Throwable, Unit] =
-    boot(config).provideSome[Scope & ConfigProvider & Tracing](LoadgenHttpClient.live)
+  def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Tracing, Throwable, Unit] =
+    boot(config).provideSome[Scope & ConfigProvider & EnvName & Tracing](LoadgenHttpClient.live)
 
-  private def boot(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Client, Throwable, Unit] =
+  private def boot(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Client, Throwable, Unit] =
     for
       shard <- ZIO.fromOption(config.shard).orElseFail(MissingDriverConfig("shard"))
       clients <- ZIO.fromOption(config.clients).orElseFail(MissingDriverConfig("clients"))
@@ -328,7 +329,7 @@ object Driver:
       )
       .flatMap(DriverHealthReporter.make)
 
-  private def storeTransactor: ZIO[Scope & ConfigProvider, Throwable, TransactorZIO] =
+  private def storeTransactor: ZIO[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO] =
     PostgresHikariDataSource
       .transactor(
         serviceName = Some("loadgen-driver"),

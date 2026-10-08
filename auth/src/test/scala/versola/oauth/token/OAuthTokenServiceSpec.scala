@@ -153,8 +153,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
     userId = userId1,
     redirectUri = redirectUri1,
     scope = scope2,
-    codeChallenge = codeChallenge1,
-    codeChallengeMethod = CodeChallengeMethod.S256,
+    codeChallenge = Some(codeChallenge1),
+    codeChallengeMethod = Some(CodeChallengeMethod.S256),
     requestedClaims = None,
     uiLocales = None,
     nonce = None,
@@ -294,8 +294,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope1,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = Some(requestedClaims1),
             uiLocales = Some(uiLocales1),
             nonce = None,
@@ -323,7 +323,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           request = CodeExchangeRequest(
             authCode1,
             redirectUri1,
-            codeVerifier1,
+            Some(codeVerifier1),
           )
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
@@ -356,8 +356,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope2,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -379,7 +379,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
@@ -394,7 +394,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.clientService.verifySecret.succeedsWith(None)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
@@ -409,12 +409,63 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(None)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
         yield assertTrue(
           result == Left(TokenEndpointError.InvalidGrant.CodeNotFound),
+        )
+      },
+      test("exchange a code that committed to no PKCE challenge without a verifier") {
+        val env = new Env
+        val codeRecord = authorizationCodeRecord.copy(codeChallenge = None, codeChallengeMethod = None)
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.authCodeRepo.delete.succeedsWith(())
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
+        yield assertTrue(result.accessToken == accessToken1)
+      },
+      test("fail with PkceMismatch when a verifier is presented for a code that committed to no challenge") {
+        val env = new Env
+        val codeRecord = authorizationCodeRecord.copy(codeChallenge = None, codeChallengeMethod = None)
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.PkceMismatch),
+          env.authCodeRepo.markAsUsed.calls.isEmpty,
+        )
+      },
+      test("fail with PkceMismatch when the verifier is missing for a code that committed to a challenge") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord))
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.PkceMismatch),
+          env.authCodeRepo.markAsUsed.calls.isEmpty,
         )
       },
       test("fail with InvalidGrant when redirect_uri doesn't match") {
@@ -428,8 +479,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope1,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -447,7 +498,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(codeRecord))
 
-          request = CodeExchangeRequest(authCode1, wrongRedirectUri, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, wrongRedirectUri, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
@@ -465,8 +516,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope1,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -487,7 +538,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.accessTokenRevocationService.revokeFamily.succeedsWith(())
           _ <- env.tokenRepo.deleteByFamily.succeedsWith(())
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           now <- Clock.instant
@@ -513,8 +564,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope2,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -535,7 +586,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(freshAccessToken)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
@@ -554,8 +605,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope2,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -577,7 +628,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
@@ -597,8 +648,8 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             userId = userId1,
             redirectUri = redirectUri1,
             scope = scope2,
-            codeChallenge = codeChallenge1,
-            codeChallengeMethod = CodeChallengeMethod.S256,
+            codeChallenge = Some(codeChallenge1),
+            codeChallengeMethod = Some(CodeChallengeMethod.S256),
             requestedClaims = None,
             uiLocales = None,
             nonce = None,
@@ -620,7 +671,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin")))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(OAuthTokenService.centralAdminClientId, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
@@ -1515,7 +1566,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
           result <- env.service.exchangeAuthorizationCode(
-            CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1),
+            CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1)),
             ClientIdWithSecret(clientId1, Some(clientSecret1)),
             None,
             None,
@@ -1589,7 +1640,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1), None)
@@ -1611,7 +1662,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
@@ -1753,7 +1804,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1), None)
@@ -1766,7 +1817,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1, dpopJkt = Some(jkt1))))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt2), None).either
@@ -1784,7 +1835,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.securityService.mac.succeedsWith(codeMac1)
           _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1, dpopJkt = Some(jkt1))))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
@@ -1797,7 +1848,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient.copy(dpopBoundAccessTokens = true)))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
@@ -1860,7 +1911,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           // No secret: the certificate is the credential.
           credentials = ClientIdWithSecret(clientId1, None)
 
@@ -1887,7 +1938,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, None)
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1), Some(clientCertificate1))
@@ -1911,7 +1962,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, None)
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, Some(clientCertificate1))
@@ -1922,7 +1973,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.clientService.find.succeedsWith(Some(mtlsClient))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, None)
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, Some(clientCertificate2)).either
@@ -1933,7 +1984,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         for
           _ <- env.clientService.find.succeedsWith(Some(mtlsClient))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, None)
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either
@@ -1957,7 +2008,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, Some(clientCertificate1))
@@ -1976,7 +2027,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           // A tenant whose proxy forwards a certificate on every connection must not end up
@@ -1994,7 +2045,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
           _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, None)
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, Some(jkt1), Some(clientCertificate1))
@@ -2054,7 +2105,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           _ <- env.clientService.find.succeedsWith(Some(certificateBoundClient))
           _ <- env.clientService.verifySecret.succeedsWith(Some(certificateBoundClient))
 
-          request = CodeExchangeRequest(authCode1, redirectUri1, codeVerifier1)
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
           credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
 
           result <- env.service.exchangeAuthorizationCode(request, credentials, None, None).either

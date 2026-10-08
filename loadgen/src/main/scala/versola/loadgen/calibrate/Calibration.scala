@@ -1,5 +1,6 @@
 package versola.loadgen.calibrate
 
+import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{CalibrationConfig, CampaignConfig, LoadgenConfig}
 import versola.loadgen.coordinator.SnapshotMerge
@@ -56,10 +57,10 @@ object Calibration:
     */
   private val bearer: EdgeCredential = EdgeCredential.Bearer(AccessToken("calibration"))
 
-  def calibrate(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Tracing, Throwable, Unit] =
-    run(config).provideSome[Scope & ConfigProvider & Tracing](LoadgenHttpClient.live)
+  def calibrate(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Tracing, Throwable, Unit] =
+    run(config).provideSome[Scope & ConfigProvider & EnvName & Tracing](LoadgenHttpClient.live)
 
-  private def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & Client, Throwable, Unit] =
+  private def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Client, Throwable, Unit] =
     for
       calibration <- ZIO.fromOption(config.calibration).orElseFail(MissingCalibrationConfig)
       _ <- ZIO.fromEither(fixedRate(config.campaign)).mapError(InvalidCalibration(_))
@@ -232,7 +233,7 @@ object Calibration:
       )
     yield ()
 
-  private def store: ZIO[Scope & ConfigProvider, Throwable, MetricSnapshotRepository] =
+  private def store: ZIO[Scope & ConfigProvider & EnvName, Throwable, MetricSnapshotRepository] =
     PostgresHikariDataSource
       .transactor(
         serviceName = Some("loadgen-calibrate"),

@@ -9,7 +9,7 @@ sealed trait TokenRequest
 case class CodeExchangeRequest(
     code: AuthorizationCode,
     redirectUri: URL,
-    codeVerifier: CodeVerifier,
+    codeVerifier: Option[CodeVerifier],
 ) extends TokenRequest
 
 case class RefreshTokenRequest(

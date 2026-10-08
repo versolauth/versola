@@ -99,15 +99,21 @@ object UserInfoService:
           .filter(s => tokenScopes.contains(s.scope))
           .flatMap(_.claims.map(_.claim)).toSet
 
-        finalClaims = requestedClaims match
-          case Some(rc) =>
-            val requestedClaimsMap = if forIdToken then rc.idToken else rc.userinfo
-            if requestedClaimsMap.nonEmpty then
-              tokenScopeClaims.intersect(requestedClaimsMap.keys.toSet)
-            else
-              tokenScopeClaims
-          case _ =>
-            tokenScopeClaims
+        // OIDC Core §5.4: the claims a scope stands for are returned from the UserInfo endpoint
+        // whenever an access token is issued, and only in the ID Token when none is. This server
+        // supports `code` and `code id_token`, both of which issue one, so the ID Token carries
+        // only what the request asked of it through the `claims` parameter's `id_token` member
+        // (§5.5) -- and, as before, only what the client's granted scopes cover. Putting every
+        // scope claim in it as well bloats a token that is passed around and verified on every
+        // hop, and is what the conformance suite warns about for scope=email.
+        finalClaims =
+          if forIdToken then
+            val requestedForIdToken = requestedClaims.map(_.idToken.keys.toSet).getOrElse(Set.empty)
+            tokenScopeClaims.intersect(requestedForIdToken)
+          else
+            requestedClaims.map(_.userinfo).filter(_.nonEmpty) match
+              case Some(requestedClaimsMap) => tokenScopeClaims.intersect(requestedClaimsMap.keys.toSet)
+              case None => tokenScopeClaims
       yield finalClaims
 
     /**

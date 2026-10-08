@@ -17,15 +17,10 @@ enum ClientKind derives JsonCodec, Schema, Equal:
   /** A service calling on its own behalf, with no user to sign in. */
   case service
 
-/** How much the deployment the client runs in can carry. */
-enum AssuranceTier derives JsonCodec, Schema, Equal:
-  /** A registered key and a token bound to it. */
-  case high
-
-  /** A shared secret, for a deployment that cannot hold a key. */
-  case compat
-
-/** The combination picked in the registration wizard, stored as the client registered it.
+/** What the registration wizard was told is being built, stored as the client registered it.
+  *
+  * The security tier that used to sit beside it is gone: how strict a client is held follows
+  * from the tenant's [[SecurityProfile]], not from a choice made per client.
   *
   * Kept rather than derived back out of the settings it applied, because the settings are
   * what an operator edits: once a TTL or a PAR requirement has been changed, several
@@ -37,5 +32,4 @@ enum AssuranceTier derives JsonCodec, Schema, Equal:
   * through the API without naming one -- neither has a template to differ from. */
 case class ClientTemplate(
     kind: ClientKind,
-    tier: AssuranceTier,
 ) derives Schema, JsonCodec, Equal

@@ -235,6 +235,27 @@ If you would rather set OpenBao up yourself, pass `--setup-openbao` and follow
 [`develop.md`](develop.md#secrets-openbao) — the CLI then never touches OpenBao's admin API and
 needs `versola secrets login vps …` first.
 
+### Postgres TLS
+
+<a id="postgres-tls"></a>
+
+Every connection to Postgres (the pool and the `LISTEN` connection behind `notifications-url`)
+is made with `sslmode=verify-full` unless the JDBC URL sets its own `sslmode`: the database's
+certificate must chain to a trusted CA **and** match the host name in the URL. Point the services
+at a database whose certificate your JVM does not already trust with the CA bundle:
+
+```hocon
+postgres {
+  url           = "jdbc:postgresql://db.internal:5432/auth?currentSchema=edge"
+  ssl-root-cert = "/etc/versola/postgres-ca/ca.crt"   # mount it: compose volume, or the chart's extraVolumes/extraVolumeMounts
+}
+```
+
+A URL that does not verify (`sslmode=disable|allow|prefer|require`, or `ssl=false`) logs a warning
+at startup and, when `env = "prod"`, stops the service from starting. Loopback hosts are exempt
+from the warning and the refusal. `gen-env` writes `sslmode=disable` for the bundled/local Postgres
+and for a vps whose `POSTGRES_HOST` is loopback, and leaves a remote vps host on the verified default.
+
 ### 3.3 Database, role and schemas
 
 All three services share **one** Postgres database, `auth`, isolated by schema — not three
