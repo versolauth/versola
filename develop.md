@@ -64,7 +64,7 @@ The script first asks for the environment **Name** (default `local`):
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres`
+3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres` - and, for `PostgresTlsConnectionSpec`, a Postgres that serves TLS - `util/implementations/postgres/tls-fixture/start.sh` (port 5433, CA written to `target/postgres-tls/ca.crt`; needs `docker` and `openssl`)
 4. ```bash
     cd central-ui
     npm install

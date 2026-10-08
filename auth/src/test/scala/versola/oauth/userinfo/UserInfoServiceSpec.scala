@@ -69,6 +69,47 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
         result <- env.service.getUserInfo(userId1, Set(ScopeToken.OpenId), None).either
       yield assertTrue(result == Left(UserInfoError.InvalidToken))
     },
+    // OIDC Core §5.4: with an access token issued, scope claims belong to UserInfo; the ID Token
+    // carries only what `claims.id_token` asks of it.
+    test("getUserInfoForIdToken carries no scope claims when the request asked for none") {
+      val env = Env()
+      for
+        _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope, emailScope))
+        withoutClaims <- env.service.getUserInfoForIdToken(
+          testUser,
+          Set(ScopeToken.OpenId, ScopeToken("profile"), ScopeToken("email")),
+          None,
+          None,
+          None,
+        )
+        onlyUserinfoClaims <- env.service.getUserInfoForIdToken(
+          testUser,
+          Set(ScopeToken.OpenId, ScopeToken("profile"), ScopeToken("email")),
+          Some(RequestedClaims(userinfo = Map(Claim("email") -> ClaimRequest(Some(true), None, None)), idToken = Map.empty)),
+          None,
+          None,
+        )
+      yield assertTrue(
+        withoutClaims.claims.keySet == Set("sub"),
+        onlyUserinfoClaims.claims.keySet == Set("sub"),
+      )
+    },
+    // `email` is a registered scope here, merely not among the granted ones: the intersection has
+    // to be with what was granted, not with everything registered, or a client could pull a claim
+    // its scopes never covered into the ID Token just by naming it.
+    test("getUserInfoForIdToken does not release a registered claim the granted scopes do not cover") {
+      val env = Env()
+      for
+        _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, profileScope, emailScope))
+        result <- env.service.getUserInfoForIdToken(
+          testUser,
+          Set(ScopeToken.OpenId, ScopeToken("profile")),
+          Some(RequestedClaims(userinfo = Map.empty, idToken = Map(Claim("email") -> ClaimRequest(Some(true), None, None)))),
+          None,
+          None,
+        )
+      yield assertTrue(!result.claims.contains("email"))
+    },
     test("getUserInfoForIdToken includes nonce and uses requested_claims.id_token") {
       val env = Env()
       val nonce = Nonce("test-nonce-123")

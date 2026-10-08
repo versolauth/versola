@@ -57,7 +57,9 @@ object SutDatabases:
       base <- template
       password = new String(base.password, StandardCharsets.UTF_8)
       config = SutDatabaseConfig(
-        url = base.url.substring(0, base.url.lastIndexOf('/') + 1) + database,
+        // The base URL's query (`sslmode=disable` for the test database) is dropped with its
+        // database name, so it is carried over by hand.
+        url = base.url.substring(0, base.url.lastIndexOf('/') + 1) + database + base.url.dropWhile(_ != '?'),
         user = base.user,
         password = Config.Secret(password),
       )
