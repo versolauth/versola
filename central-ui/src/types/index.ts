@@ -147,9 +147,11 @@ export interface OAuthClient {
   /** RFC 9126 section 6.2: the client pushes its authorization request to /par first. */
   requirePushedAuthorizationRequests: boolean;
   template?: ClientTemplate | null;
-  /** Creation only: have the edge fronting this client enrol for its certificate, so there is
-   *  no credential for the operator to register. */
-  enrollEdgeClientCertificate?: boolean;
+  /** Creation only: edge authenticates as this client with a certificate central provisions, so
+   *  there is no credential for the operator to register. A native app's edge enrols for it; a
+   *  web client's is issued once, because its tokens are bound to the certificate and every
+   *  replica has to present the same one. */
+  edgeFronted?: boolean;
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;

@@ -364,7 +364,7 @@ test('creates a native client authenticated by edge, without a secret or rotatio
 
   await startCreate(page, 'Mobile or desktop app');
   await fillBasics(page, 'mobile-app', 'Mobile App');
-  await addRedirectUri(page, 'com.example.app://callback');
+  await addRedirectUri(page, 'https://app.example.com/callback');
   await finishCreate(page);
 
   expect(findRequest(api.requests, 'POST', '/configuration/clients').body).toMatchObject({
@@ -696,7 +696,7 @@ for (const profile of ['fapi2', 'standard'] as const) {
     await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
       .toContainText('required');
     await expect(page.locator('versola-client-form .review-tier')).toContainText('Web app');
-    await expect(page.getByText('tls_client_auth · certificate enrolled by edge')).toBeVisible();
+    await expect(page.getByText('tls_client_auth · certificate issued by central for edge')).toBeVisible();
     await expect(page.getByText('This tenant is not FAPI 2.0.')).toHaveCount(profile === 'standard' ? 1 : 0);
     await submitCreate(page);
 
@@ -704,7 +704,10 @@ for (const profile of ['fapi2', 'standard'] as const) {
       id: 'edge-web',
       authMethod: 'tls_client_auth',
       applicationType: 'web',
-      enrollEdgeClientCertificate: true,
+      // Tokens bound to edge's certificate need every replica to present the same one, so
+      // central issues it; only a native app's edge enrols for its own.
+      issueEdgeClientCertificate: true,
+      enrollEdgeClientCertificate: false,
       mtlsAuth: null,
       jwks: null,
       requirePushedAuthorizationRequests: true,
@@ -731,7 +734,7 @@ for (const profile of ['fapi2', 'standard'] as const) {
     await expect(page.locator('versola-client-form .seg')).toHaveCount(0);
 
     await fillBasics(page, 'mobile-client', 'Mobile Client');
-    await addRedirectUri(page, 'com.example.app://callback');
+    await addRedirectUri(page, 'https://app.example.com/callback');
     await continueToThirdStep(page);
     await continueToReview(page);
     await expect(page.getByText('tls_client_auth · certificate enrolled by edge')).toBeVisible();
@@ -741,6 +744,7 @@ for (const profile of ['fapi2', 'standard'] as const) {
       id: 'mobile-client',
       authMethod: 'tls_client_auth',
       applicationType: 'native',
+      issueEdgeClientCertificate: false,
       enrollEdgeClientCertificate: true,
       mtlsAuth: null,
       dpopBoundAccessTokens: true,
@@ -751,6 +755,62 @@ for (const profile of ['fapi2', 'standard'] as const) {
     });
   });
 }
+
+test('refuses a custom-scheme redirect for an app fronted by edge', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+  await startCreate(page, 'Mobile or desktop app');
+  await fillBasics(page, 'mobile-app', 'Mobile App');
+  await addRedirectUri(page, 'com.example.app://callback');
+
+  // Central refuses every non-https redirect for this client, so the form says so up front.
+  await expect(page.getByText('accepts only https redirect URIs')).toBeVisible();
+  await expect(page.locator('versola-client-form .tag').filter({ hasText: 'com.example.app://callback' })).toHaveCount(0);
+});
+
+/** A native app fronted by edge as central stores it: enrolled, so the subject is registered. */
+const edgeNativeClient = {
+  ...alphaClient,
+  id: 'edge-mobile',
+  clientName: { en: 'Edge Mobile' },
+  authMethod: 'tls_client_auth',
+  applicationType: 'native',
+  mtlsAuth: { type: 'tls_client_auth', subjectType: 'subject_dn', subjectValue: 'CN=edge-mobile,OU=tenant-alpha,O=Versola' },
+  dpopBoundAccessTokens: true,
+  certificateBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  requireSignedRequestObject: false,
+  template: { kind: 'device' },
+  createdAt: '2026-02-01T09:00:00Z',
+};
+
+test('keeps the registered subject when an edge-fronted client is edited', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
+  });
+
+  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openEditSection(page, 'Token lifetimes');
+  await page.locator('versola-client-form #ttl').fill('2');
+  await saveEdit(page);
+
+  // Absent leaves the stored subject alone; null would clear it, which central refuses.
+  expect(findRequest(api.requests, 'PUT', '/configuration/clients').body.mtlsAuth).toBeUndefined();
+});
+
+test('does not report an edge-fronted client as drifted from its template', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...edgeNativeClient, template: { kind: 'web' }, applicationType: 'web',
+      dpopBoundAccessTokens: false, certificateBoundAccessTokens: true }] } },
+  });
+
+  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+
+  // The certificate credential binds the token, which is what the web template asks for.
+  await expect(page.locator('versola-client-form .template-badge.drift')).toHaveCount(0);
+});
 
 test('leaves a service client with no sign-in flow to configure', async ({ page }) => {
   const api = await loadAdminApp(page, {
@@ -1633,8 +1693,8 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     requirePushedAuthorizationRequests: true,
     applicationType: 'web',
     template: { kind: 'web' },
-    issueEdgeClientCertificate: false,
-    enrollEdgeClientCertificate: true,
+    issueEdgeClientCertificate: true,
+    enrollEdgeClientCertificate: false,
   });
 
   // The client should NOT be added to the list

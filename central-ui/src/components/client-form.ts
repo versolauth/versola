@@ -26,6 +26,7 @@ import {
 type WizardStep = 1 | 2 | 3 | 4;
 import {
   validateClientId,
+  validateEdgeFrontedRedirectUri,
   validateRedirectUri,
   validateLogoutUri,
   validateConsentUri,
@@ -1543,7 +1544,7 @@ export class VersolaClientForm extends LitElement {
       // Only a registration records one: an edit states what the client is now, and the
       // template it was created from is what that is later shown against.
       template: this.client?.template ?? (this.kind ? { kind: this.kind } : null),
-      enrollEdgeClientCertificate: !this.client && this.clientCredentialMode === 'edge',
+      edgeFronted: !this.client && this.clientCredentialMode === 'edge',
       createdAt: this.client?.createdAt ?? null,
     };
 
@@ -1572,9 +1573,16 @@ export class VersolaClientForm extends LitElement {
     this.refreshTokenTtlDays = parseInt((e.target as HTMLInputElement).value, 10) || 1;
   }
 
+  /** Edge-fronted native apps take App Links only; every other client keeps the general rule. */
+  private validateRedirect(uri: string) {
+    return this.clientType === 'native' && this.clientCredentialMode === 'edge'
+      ? validateEdgeFrontedRedirectUri(uri)
+      : validateRedirectUri(uri);
+  }
+
   private get isRedirectUriInvalid() {
     const redirectUri = this.redirectUriInput.trim();
-    return redirectUri.length > 0 && !validateRedirectUri(redirectUri).valid;
+    return redirectUri.length > 0 && !this.validateRedirect(redirectUri).valid;
   }
 
   private handleTtlUnitChange(e: Event) {
@@ -1629,7 +1637,7 @@ export class VersolaClientForm extends LitElement {
     const uri = this.redirectUriInput.trim();
     if (!uri) return;
 
-    const validation = validateRedirectUri(uri);
+    const validation = this.validateRedirect(uri);
     if (!validation.valid) {
       this.redirectUriError = validation.error || 'Invalid redirect URI';
       return;
@@ -1769,6 +1777,11 @@ export class VersolaClientForm extends LitElement {
    *  ones. Computed rather than kept in formData directly so switching modes back and forth
    *  can't leave a stale mtlsAuth behind for a mode that no longer registers one. */
   private get effectiveMtlsAuth(): MutualTlsAuth | null {
+    // Edge's credential is provisioned by central, and an edit has to hand back the subject it
+    // registered rather than clear it - a tls_client_auth client cannot lose its subject.
+    if (this.clientCredentialMode === 'edge') {
+      return this.client?.mtlsAuth ?? null;
+    }
     if (this.clientCredentialMode === 'mtls') {
       return { type: 'tls_client_auth', subjectType: this.mtlsSubjectType, subjectValue: this.mtlsSubjectValue.trim() };
     }
@@ -1792,7 +1805,11 @@ export class VersolaClientForm extends LitElement {
   }
 
   private get mtlsTerminationValidation() {
-    return validateMtlsTermination(this.effectiveMtlsAuth, this.mtlsCertificateHeader);
+    // Edge presents its certificate on auth's own mutual-TLS listener, so no tenant header
+    // has to carry it.
+    return this.clientCredentialMode === 'edge'
+      ? { valid: true } as ReturnType<typeof validateMtlsTermination>
+      : validateMtlsTermination(this.effectiveMtlsAuth, this.mtlsCertificateHeader);
   }
 
   /** Whether the registered keys could verify a request object. A self-signed mTLS set is
@@ -2082,6 +2099,14 @@ export class VersolaClientForm extends LitElement {
     return this.client?.template ?? null;
   }
 
+  /** Whether this client's tokens end up bound to a certificate: by the flag, or by a
+   *  registered certificate credential - except for an app fronted by edge, whose certificate
+   *  is shared by every installation and so never binds a token. */
+  private get bindsToCertificate(): boolean {
+    return !!this.formData.certificateBoundAccessTokens
+      || (this.effectiveMtlsAuth !== null && this.clientType !== 'native');
+  }
+
   /** The template-decided settings as the form currently holds them, so a difference
    *  disappears the moment it is edited back rather than on the next save. The access token
    *  TTL lives in the value/unit pair the field edits, not in `formData`. */
@@ -2089,7 +2114,7 @@ export class VersolaClientForm extends LitElement {
     return {
       accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
       dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
-      certificateBoundAccessTokens: !this.effectiveMtlsAuth && !!this.formData.certificateBoundAccessTokens,
+      certificateBoundAccessTokens: this.bindsToCertificate,
       requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
       requireSignedRequestObject: this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
     };
@@ -2972,7 +2997,9 @@ export class VersolaClientForm extends LitElement {
               ? html`<div class="error-message">${this.redirectUriError}</div>`
               : html`<div class="hint">
                   ${this.clientType === 'native'
-                    ? 'A custom scheme or an https app link the operating system hands back to the app.'
+                    ? (this.clientCredentialMode === 'edge'
+                      ? 'An https App Link or Universal Link the operating system hands back to the app.'
+                      : 'A custom scheme or an https app link the operating system hands back to the app.')
                     : "Edge's callback, not the page the user ends up on."}
                   Press Enter to add another.
                 </div>`}
@@ -3319,7 +3346,9 @@ export class VersolaClientForm extends LitElement {
 
     switch (this.clientCredentialMode) {
       case 'edge':
-        return 'tls_client_auth · certificate enrolled by edge';
+        return this.clientType === 'native'
+          ? 'tls_client_auth · certificate enrolled by edge'
+          : 'tls_client_auth · certificate issued by central for edge';
       case 'mtls':
         return `tls_client_auth · ${this.mtlsSubjectType} ${this.mtlsSubjectValue.trim() || '—'}`;
       case 'mtls-self-signed':

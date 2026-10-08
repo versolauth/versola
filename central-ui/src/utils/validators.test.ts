@@ -4,6 +4,7 @@ import {
   clientCredentialKind,
   jwksVerifiesRequestObjects,
   validateClientCredential,
+  validateEdgeFrontedRedirectUri,
   validateJwksJson,
   validateMtlsTermination,
 } from './validators';
@@ -98,5 +99,20 @@ describe('clientCredentialKind', () => {
   it('leaves the secret in force for a plain confidential client, and none for a native one', () => {
     expect(clientCredentialKind({ authMethod: 'client_secret' })).toBe('secret');
     expect(clientCredentialKind({ authMethod: 'none' })).toBe('public');
+  });
+});
+
+describe('validateEdgeFrontedRedirectUri', () => {
+  it('admits an https App Link', () => {
+    expect(validateEdgeFrontedRedirectUri('https://app.example.com/callback').valid).toBe(true);
+  });
+
+  it('refuses a custom scheme and plain http, which central refuses for an app fronted by edge', () => {
+    expect(validateEdgeFrontedRedirectUri('com.example.app://callback').valid).toBe(false);
+    expect(validateEdgeFrontedRedirectUri('http://localhost:3000/cb').valid).toBe(false);
+  });
+
+  it('keeps the general rules, such as no fragment', () => {
+    expect(validateEdgeFrontedRedirectUri('https://app.example.com/cb#frag').valid).toBe(false);
   });
 });
