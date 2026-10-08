@@ -14,8 +14,8 @@ private[authorize] case class AuthorizeRequest(
     redirectUri: URL,
     scope: Set[ScopeToken],
     state: Option[State],
-    codeChallenge: CodeChallenge,
-    codeChallengeMethod: CodeChallengeMethod,
+    codeChallenge: Option[CodeChallenge],
+    codeChallengeMethod: Option[CodeChallengeMethod],
     responseType: NonEmptySet[ResponseTypeEntry],
     /** Where the authorization response is placed, and whether it is signed (JARM); resolved
       * from `response_mode`, or from the response type when the parameter was absent. */

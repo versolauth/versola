@@ -52,8 +52,8 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     clientId = clientId,
     redirectUri = redirectUri,
     scope = scope,
-    codeChallenge = codeChallenge,
-    codeChallengeMethod = codeChallengeMethod,
+    codeChallenge = Some(codeChallenge),
+    codeChallengeMethod = Some(codeChallengeMethod),
     state = Some(State("test-state")),
     userId = Some(userId1),
     credential = Some(Left(email)),
@@ -96,8 +96,8 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     clientId = clientId,
     redirectUri = redirectUri,
     scope = scope,
-    codeChallenge = codeChallenge,
-    codeChallengeMethod = codeChallengeMethod,
+    codeChallenge = Some(codeChallenge),
+    codeChallengeMethod = Some(codeChallengeMethod),
     state = None,
     userId = None,
     credential = None,
@@ -143,6 +143,13 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.contains(record2),
           notFound.isEmpty,
         )
+      },
+      test("persist and retrieve a conversation that carries no PKCE challenge") {
+        val withoutPkce = record1.copy(codeChallenge = None, codeChallengeMethod = None)
+        for
+          _ <- env.repository.create(authId1, withoutPkce, ttl)
+          found <- env.repository.find(authId1)
+        yield assertTrue(found.contains(withoutPkce))
       },
       test("persist and retrieve authorization details verbatim") {
         val detail = AuthorizationDetail.parse(

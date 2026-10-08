@@ -120,7 +120,9 @@ components:
           type: array
           items:
             type: string
-          description: PKCE is mandatory, so this always includes `S256`.
+          description: |
+            Always includes `S256`. PKCE is mandatory except for a confidential client of a
+            `standard`-profile tenant, which may omit it.
         token_endpoint_auth_methods_supported:
           type: array
           items:

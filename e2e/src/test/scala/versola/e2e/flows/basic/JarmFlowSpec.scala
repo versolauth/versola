@@ -62,8 +62,9 @@ object JarmFlowSpec extends E2ESpec:
     test("a protocol error is still delivered as a signed JWT, not as bare query parameters") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
+        publicClientId <- auth.registerPublicClient(s.redirectUri)
         result <- auth.authorizeRaw(
-          clientId = s.clientId,
+          clientId = publicClientId,
           redirectUri = s.redirectUri,
           responseMode = Some("jwt"),
           omitCodeChallenge = true,
