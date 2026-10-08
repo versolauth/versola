@@ -47,7 +47,19 @@ object DpopKeyPolicySpec extends E2ESpec:
         dpopMinRsaKeySize = dpopMinRsaKeySize,
       ).success
       _ <- auth.syncConfiguration()
+      _ <- awaitKnown(auth, id, result.secret)
     yield (id, result.secret)
+
+  /** The proof is checked before the client is authenticated, and a client auth's cache does
+    * not hold yet gets only the deployment-wide policy -- so a proof the client's own policy
+    * would refuse passes that check and the request fails as `invalid_client` instead. Waiting
+    * until a proof-less request authenticates keeps that race out of the assertions below. */
+  private def awaitKnown(auth: OAuthClient, id: String, secret: String): Task[Unit] =
+    auth.clientCredentials(id, secret).flatMap:
+      case _: TokenResult.Success => ZIO.unit
+      case failure => ZIO.fail(RuntimeException(s"Client $id not visible to auth yet: $failure"))
+    .retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
+    .unit
 
   private def rejection(result: TokenResult): Task[String] =
     result match
