@@ -469,6 +469,14 @@ instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add
 Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
 clients, then remove the outgoing source.
 
+A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs
+the same listener, and edge uses it by itself: with `versola-internal-url` plaintext (the chart's `http://versola-auth:8080`)
+and the `native { }` block present, edge sends that client's `/par`, `/token` and the `/userinfo` of its
+certificate-bound tokens to `native.auth-mutual-tls-url`, pinned to `native.trusted-certificates`. Every other call
+(a secret or key client, a key-bound token's `/userinfo`) stays on `versola-internal-url`. With a TLS terminator in front of
+auth instead (`versola-internal-url` is `https`), nothing moves. With neither, the login is refused with
+`CredentialNeedsTls` (versolauth/versola#551).
+
 Registering a native client that central should issue for needs no certificate in the request — see
 above. A client whose certificate you supply yourself (`edgeClientCertificate`) is left alone: central
 renews only the certificates it issued.
