@@ -2,6 +2,7 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Header
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -64,7 +65,13 @@ object BasicAuthFlowSpec extends E2ESpec:
       yield assertTrue(token.tokenType.toLowerCase == "bearer")
         .label("token_type must be 'bearer'") &&
         assertTrue(token.accessToken.nonEmpty)
-          .label("access_token must not be empty")
+          .label("access_token must not be empty") &&
+        // RFC 6749 §5.1: a response carrying tokens must not be cached -- what the conformance
+        // suite's oidcc-refresh-token checks, and over real HTTP rather than a handler.
+        assertTrue(token.response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore))
+          .label("the token response must carry Cache-Control: no-store") &&
+        assertTrue(token.response.headers.get(Header.Pragma).contains(Header.Pragma.NoCache))
+          .label("the token response must carry Pragma: no-cache")
     },
     // OIDC Core §5.4: with an access token issued, the claims a scope stands for are UserInfo's;
     // the ID Token does not repeat them (the conformance suite warns when it does).
