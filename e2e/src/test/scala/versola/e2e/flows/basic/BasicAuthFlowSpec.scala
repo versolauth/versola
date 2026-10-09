@@ -160,6 +160,15 @@ object BasicAuthFlowSpec extends E2ESpec:
         assertTrue(bothPlaces.response.status == zio.http.Status.Unauthorized)
           .label(s"a token in both the header and the body must be refused, got ${bothPlaces.response.status}")
     },
+    // The suite's clients show no consent screen, so they are first-party: a claim named in `claims` is
+    // released from any scope registered for the client, here `email` with only `openid` granted.
+    // (oidcc-claims-essential asks for `name` that way.)
+    test("a first-party client gets a claim it names in claims.userinfo without the scope granted") {
+      for
+        (_, userinfoEmail) <- loginForClaims("openid", Some("""{"userinfo":{"email":{"essential":true}}}"""))
+      yield assertTrue(userinfoEmail.nonEmpty)
+        .label("a first-party client's claims request must release email although only openid was granted")
+    },
     test("otp + permanent password: complete otp flow") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
