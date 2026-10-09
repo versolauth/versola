@@ -42,26 +42,8 @@ paths:
       operationId: userInfoPost
       summary: Retrieve claims about the authenticated user
       tags: [UserInfo]
-      description: |
-        The token may also be sent as the `access_token` field of an
-        `application/x-www-form-urlencoded` body (RFC 6750 §2.2), but only for a client whose
-        tenant is on the `standard` security profile: FAPI 2.0 forbids a token in a body, so for a
-        `fapi2` tenant's client it is refused with `invalid_request`. A request that carries the
-        token in both the `Authorization` header and the body is refused (RFC 6750 §2: one method per
-        request), and a DPoP-bound token cannot be presented this way.
       security:
         - bearerAuth: []
-        - {}
-      requestBody:
-        required: false
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                access_token:
-                  type: string
-                  description: The access token from `/token`; see the operation description.
       parameters:
         - $ref: '#/components/parameters/Accept'
       responses:
@@ -77,9 +59,8 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        The access token from `/token`, sent as `Authorization: Bearer <token>`. On `GET` this is
-        the only accepted way to present the token; `POST` also takes it as a form field for a
-        `standard`-profile tenant's client (see the operation).
+        The access token from `/token`, sent as `Authorization: Bearer <token>`. This is the
+        only accepted way to present the token.
 
   parameters:
     Accept:
@@ -158,8 +139,7 @@ components:
       description: |
         The error is reported in the `WWW-Authenticate` header; the body is empty.
 
-        - `invalid_request` — no token was sent, it was sent both in the header and the body, or it
-          was sent in a form body for a client of a `fapi2` tenant.
+        - `invalid_request` — no `Authorization: Bearer` header was sent.
         - `invalid_token` — the token failed verification, expired, or is not bound to a user.
         - `insufficient_scope` — the token was not granted the `openid` scope.
       headers:
