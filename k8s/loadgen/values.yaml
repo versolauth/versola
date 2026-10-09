@@ -35,6 +35,7 @@
 #   store.postgres { ... }            # its own database: vu_users has no campaign column
 #   clients { mobile-otp = fapi-mobile-otp, ..., native-via-edge = true }    # fapi2 only
 #   dpop { key-pool-size = ..., key-seed = ... }                             # fapi2 only
+#   session { access-token-ttl = 1h, ... }   # fapi2: central requires >= 3600s of a DPoP-bound client
 #   actions = [ { path = "/resources/fapi-core/accounts", ... } ]            # namespaced resource ids
 #
 # `loadgen provision` creates the tenant on the profile (bound to the `default`

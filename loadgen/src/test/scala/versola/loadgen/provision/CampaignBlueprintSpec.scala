@@ -41,6 +41,14 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
           blueprint.clients.map(_.clientId).toSet == CampaignBlueprint.clientIds.toSet,
         )
       },
+      // Central refuses a DPoP-bound client a TTL under an hour; the standard campaign keeps 900 s.
+      test("gives a fapi2 campaign's clients the one-hour access-token TTL DPoP-bound clients need") {
+        val fapi = CampaignBlueprint(ProvisionFixtures.targets, ProvisionFixtures.provision.copy(fapi2 = true), ProvisionFixtures.flows)
+        assertTrue(
+          fapi.clients.forall(_.accessTokenTtlSeconds == 3600),
+          blueprint.clients.forall(_.accessTokenTtlSeconds == 900),
+        )
+      },
       test("declares the four clients of design doc §2.2") {
         assertTrue(blueprint.clients.map(_.clientId) == CampaignBlueprint.clientIds)
       },

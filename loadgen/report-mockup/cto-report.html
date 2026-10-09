@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Versola · Отчёт о нагрузочном тесте · 1 000 000 пользователей</title>
+<style>
+:root{
+  --bg:#faf9f7; --bg-alt:#f3f1ed; --card:#fff; --field:#f6f5f3;
+  --border:rgba(21,23,28,.08); --border-hover:rgba(21,23,28,.16);
+  --text:#15171c; --muted:#6b7280;
+  --accent:#155e75; --accent-hover:#0e4a5c; --accent-soft:rgba(21,94,117,.08);
+  --ok:#2f7d5b; --ok-soft:rgba(47,125,91,.10);
+  --warn:#b7791f; --warn-soft:rgba(183,121,31,.12);
+  --bad:#b4443c; --bad-soft:rgba(180,68,60,.10);
+  --radius:12px; --radius-lg:20px;
+  --shadow:0 1px 1px rgba(16,24,40,.02),0 4px 10px rgba(16,24,40,.04),0 20px 48px rgba(16,24,40,.09);
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,system-ui,sans-serif;
+  --mono:'JetBrains Mono','Fira Code',ui-monospace,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);-webkit-font-smoothing:antialiased;line-height:1.5}
+.top{position:sticky;top:0;z-index:10;background:rgba(250,249,247,.88);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.top-in{max-width:1180px;margin:0 auto;padding:.8rem 1.5rem;display:flex;align-items:center;gap:1rem}
+.brand{font-weight:800;font-size:1.15rem;letter-spacing:-.01em;display:flex;align-items:center;gap:.55rem}
+.brand i{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent-hover));display:inline-block;position:relative}
+.brand i::after{content:"";position:absolute;inset:7px 8px;border-left:3px solid #fff;border-bottom:3px solid #fff;transform:skewX(-18deg) rotate(-45deg) scale(.8)}
+.top nav{margin-left:auto;display:flex;gap:1.1rem;font-size:.86rem}
+.top nav a{color:var(--muted);text-decoration:none;font-weight:500}
+.top nav a:hover{color:var(--accent)}
+.sample{background:var(--warn-soft);color:var(--warn);font-size:.72rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:.25rem .6rem;border-radius:999px}
+main{max-width:1180px;margin:0 auto;padding:2.2rem 1.5rem 4rem}
+.label{text-transform:uppercase;font-size:.74rem;font-weight:700;letter-spacing:1.5px;color:var(--accent);margin-bottom:.5rem}
+h1{font-size:2.15rem;line-height:1.15;margin:.1rem 0 .6rem;letter-spacing:-.02em;font-weight:800}
+h2{font-size:1.35rem;margin:0 0 .25rem;letter-spacing:-.01em}
+.lead{color:var(--muted);max-width:760px;margin:0}
+section{margin-top:3rem;scroll-margin-top:80px}
+.sec-sub{color:var(--muted);font-size:.92rem;margin:0 0 1.1rem;max-width:820px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-lg);box-shadow:var(--shadow);padding:1.5rem}
+.card.flat{box-shadow:none;border-radius:var(--radius)}
+.hero{display:grid;grid-template-columns:1.4fr 1fr;gap:1.5rem;align-items:stretch;margin-top:1.4rem}
+.meta{display:flex;flex-wrap:wrap;gap:.45rem;margin-top:.9rem}
+.chip{font-size:.78rem;background:var(--accent-soft);color:var(--accent);padding:.22rem .65rem;border-radius:999px;font-weight:600}
+.chip.mono{font-family:var(--mono);font-weight:500;background:var(--field);color:var(--text)}
+.verdict{display:flex;flex-direction:column;justify-content:center;gap:.4rem;border-left:4px solid var(--ok)}
+.verdict b{font-size:1.6rem;color:var(--ok);letter-spacing:-.01em}
+.verdict small{color:var(--muted)}
+.tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:1rem;margin-top:1.5rem}
+.tile{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.05rem 1.15rem}
+.tile .k{font-size:.74rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600}
+.tile .v{font-size:1.75rem;font-weight:800;letter-spacing:-.02em;margin:.15rem 0}
+.tile .s{font-size:.8rem;color:var(--muted)}
+.tile .s.ok{color:var(--ok)} .tile .s.warn{color:var(--warn)}
+table{width:100%;border-collapse:collapse;font-size:.88rem}
+th{font-size:.72rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);text-align:left;font-weight:600;padding:.55rem .7rem;border-bottom:1px solid var(--border-hover);white-space:nowrap}
+td{padding:.62rem .7rem;border-bottom:1px solid var(--border);vertical-align:middle}
+tr:last-child td{border-bottom:none}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tfoot td{font-weight:700;border-top:1px solid var(--border-hover);border-bottom:none;background:var(--field)}
+.mono{font-family:var(--mono);font-size:.82rem}
+.pill{display:inline-block;font-size:.72rem;font-weight:700;padding:.12rem .55rem;border-radius:999px}
+.pill.ok{background:var(--ok-soft);color:var(--ok)} .pill.warn{background:var(--warn-soft);color:var(--warn)} .pill.bad{background:var(--bad-soft);color:var(--bad)} .pill.na{background:var(--field);color:var(--muted)}
+.bar{height:8px;border-radius:99px;background:var(--bg-alt);position:relative;min-width:110px;overflow:hidden}
+.bar>span{position:absolute;inset:0 auto 0 0;border-radius:99px;background:var(--accent)}
+.bar.ok>span{background:var(--ok)} .bar.warn>span{background:var(--warn)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:1.25rem}
+.kv{display:grid;grid-template-columns:1fr auto;gap:.5rem 1rem;font-size:.9rem}
+.kv span:nth-child(odd){color:var(--muted)} .kv span:nth-child(even){text-align:right;font-weight:600;font-variant-numeric:tabular-nums}
+.note{font-size:.82rem;color:var(--muted);margin-top:.9rem}
+.note b{color:var(--text)}
+.insight{background:var(--accent-soft);border-radius:var(--radius);padding:.9rem 1.1rem;font-size:.9rem;margin-top:1rem;border:1px solid rgba(21,94,117,.14)}
+.insight b{color:var(--accent)}
+.legend{display:flex;gap:1.1rem;font-size:.78rem;color:var(--muted);margin-top:.5rem;flex-wrap:wrap}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:.35rem;vertical-align:-1px}
+svg text{font-family:var(--font);fill:var(--muted);font-size:11px}
+.price-edit input{width:76px;font:inherit;font-family:var(--mono);font-size:.82rem;border:1px solid var(--border-hover);background:var(--field);border-radius:8px;padding:.25rem .45rem;text-align:right}
+.price-edit input:focus{outline:2px solid var(--accent-soft);border-color:var(--accent)}
+.src{font-size:.74rem;color:var(--muted);font-family:var(--mono)}
+.fn{font-size:.78rem;color:var(--muted);border-top:1px solid var(--border);margin-top:1.1rem;padding-top:.8rem}
+.fn sup{color:var(--accent);font-weight:700}
+.stack{display:flex;height:14px;border-radius:99px;overflow:hidden;background:var(--bg-alt)}
+.stack span{display:block;height:100%}
+.footer{margin-top:3.5rem;padding-top:1.2rem;border-top:1px solid var(--border);font-size:.8rem;color:var(--muted);display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+@media(max-width:900px){.hero,.grid2,.grid3{grid-template-columns:1fr}.tiles{grid-template-columns:repeat(2,1fr)}.top nav{display:none}}
+@media print{.top{position:static}.card{box-shadow:none}section{break-inside:avoid}}
+</style>
+</head>
+<body>
+
+<header class="top"><div class="top-in">
+  <div class="brand"><i></i><span>Versola</span><span style="color:var(--muted);font-weight:500">· Load report</span></div>
+  <span class="sample">Образец · данные иллюстративные</span>
+  <nav><a href="#load">Нагрузка</a><a href="#quality">Качество</a><a href="#security">Безопасность</a><a href="#resources">Ресурсы</a><a href="#db">База данных</a><a href="#cost">Стоимость</a><a href="#scale">Рост</a><a href="#method">Методика</a></nav>
+</div></header>
+
+<main>
+
+<!-- 0. HEADER -->
+<div class="label">Нагрузочное тестирование · сводка для руководства</div>
+<h1>Versola держит 1 000 000 пользователей<br>за ≈ <span id="h-cost">—</span> ₽ в месяц</h1>
+<p class="lead">Кампания <span class="mono">c3-1m-steady</span> под профилем безопасности FAPI 2.0: вход по OTP, паролю и passkey, обновление токенов, бизнес-операции через edge — всё с токенами, привязанными к ключу устройства (DPoP) и клиентской аутентификацией по mTLS.</p>
+
+<div class="hero">
+  <div class="card">
+    <div class="label">Что именно мерили</div>
+    <div class="kv">
+      <span>Зарегистрированных пользователей</span><span>1 000 000</span>
+      <span>Из них мобильных / веб</span><span>88% / 12%</span>
+      <span>Активных за сутки (по модели)</span><span>≈ 21%</span>
+      <span>Длительность</span><span>4 ч 45 мин (прогрев 15 м · рост 30 м · плато 4 ч)</span>
+      <span>Тенант</span><span class="mono">loadgen-fapi2</span>
+      <span>Дата прогона</span><span>09.10.2026</span>
+    </div>
+    <div class="meta">
+      <span class="chip">FAPI 2.0</span><span class="chip">DPoP (ES256)</span><span class="chip">PAR</span><span class="chip">tls_client_auth</span><span class="chip mono">versola 0.9.3</span><span class="chip mono">PostgreSQL 16</span>
+    </div>
+  </div>
+  <div class="card verdict">
+    <span class="pill ok" style="align-self:flex-start">Вердикт</span>
+    <b>Критерии приёмки выполнены</b>
+    <small>14 из 14 проверок пройдены, 1 не оценивалась (нет замеров: вход по passkey на вебе — 0 событий).</small>
+    <small style="margin-top:.4rem">Запас по CPU на плато: <b style="color:var(--text)">×1,6</b> до порога 80%.</small>
+  </div>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="k">Пик входов</div><div class="v">64<small style="font-size:.9rem;font-weight:600;color:var(--muted)"> /с</small></div><div class="s">среднее на плато 22 /с</div></div>
+  <div class="tile"><div class="k">HTTP-запросов на SUT, пик</div><div class="v">5 240<small style="font-size:.9rem;font-weight:600;color:var(--muted)"> /с</small></div><div class="s">auth + edge, 4 ч плато</div></div>
+  <div class="tile"><div class="k">p99 входа (OTP)</div><div class="v">1,42<small style="font-size:.9rem;font-weight:600;color:var(--muted)"> с</small></div><div class="s ok">порог 2,0 с</div></div>
+  <div class="tile"><div class="k">Ошибки от бюджета</div><div class="v">0,003<small style="font-size:.9rem;font-weight:600;color:var(--muted)"> %</small></div><div class="s ok">бюджет 0,1 %</div></div>
+  <div class="tile"><div class="k">Инфраструктура</div><div class="v"><span id="t-cost">—</span><small style="font-size:.9rem;font-weight:600;color:var(--muted)"> ₽/мес</small></div><div class="s">цены YC<sup>1</sup>, см. раздел «Стоимость»</div></div>
+  <div class="tile"><div class="k">Цена на 1 000 пользователей</div><div class="v"><span id="t-per-k">—</span><small style="font-size:.9rem;font-weight:600;color:var(--muted)"> ₽/мес</small></div><div class="s">при текущем размере кластера</div></div>
+  <div class="tile"><div class="k">WAL за прогон</div><div class="v">160<small style="font-size:.9rem;font-weight:600;color:var(--muted)"> ГиБ</small></div><div class="s">9,6 МиБ/с в среднем · пик 31</div></div>
+  <div class="tile"><div class="k">Отказы refresh</div><div class="v">0</div><div class="s ok">должно быть 0 за весь прогон</div></div>
+</div>
+
+<!-- 1. LOAD -->
+<section id="load">
+  <div class="label">1 · Нагрузка</div>
+  <h2>Какой трафик мы дали на авторизацию</h2>
+  <p class="sec-sub">Плановая и фактическая интенсивность по сценариям. «Отставание расписания» показывает, не отстал ли сам генератор: если оно растёт, фактическая нагрузка меньше заявленной, а задержки включают очередь на стороне клиента.</p>
+
+  <div class="card">
+    <svg id="timeline" viewBox="0 0 1080 250" width="100%" role="img" aria-label="Запросов в секунду на SUT по времени"></svg>
+    <div class="legend"><span><i style="background:var(--accent)"></i>запросов /с на auth + edge</span><span><i style="background:rgba(21,94,117,.18)"></i>фазы: прогрев · рост · плато</span><span><i style="background:var(--warn)"></i>p99 токен-эндпоинта, мс (правая шкала)</span></div>
+  </div>
+
+  <div class="card" style="margin-top:1.25rem;padding:.6rem 1rem 1rem">
+    <table>
+      <thead><tr><th>Сценарий</th><th class="n">Всего</th><th class="n">Среднее /с (плато)</th><th class="n">Пик /с</th><th>Доля</th><th class="n">План → факт</th><th class="n">Отставание p99</th></tr></thead>
+      <tbody>
+        <tr><td>Полный вход (OTP / OTP+пароль / passkey)</td><td class="n">331 420</td><td class="n">22,0</td><td class="n">64</td><td><div class="bar"><span style="width:4%"></span></div></td><td class="n">100,1 %</td><td class="n">0,09 с</td></tr>
+        <tr><td>Step-up (повышение уровня аутентификации)</td><td class="n">47 063</td><td class="n">3,1</td><td class="n">9</td><td><div class="bar"><span style="width:1%"></span></div></td><td class="n">99,8 %</td><td class="n">0,07 с</td></tr>
+        <tr><td>Обновление токена (refresh, DPoP)</td><td class="n">2 718 300</td><td class="n">180,0</td><td class="n">410</td><td><div class="bar"><span style="width:25%"></span></div></td><td class="n">100,0 %</td><td class="n">0,11 с</td></tr>
+        <tr><td>Бизнес-операции через edge (DPoP-proxy)</td><td class="n">7 861 900</td><td class="n">520,0</td><td class="n">1 380</td><td><div class="bar"><span style="width:70%"></span></div></td><td class="n">100,2 %</td><td class="n">0,14 с</td></tr>
+        <tr><td>Выход (logout)</td><td class="n">91 240</td><td class="n">6,0</td><td class="n">18</td><td><div class="bar"><span style="width:1%"></span></div></td><td class="n">99,9 %</td><td class="n">0,05 с</td></tr>
+      </tbody>
+      <tfoot><tr><td>Итого сценариев</td><td class="n">11 049 923</td><td class="n">731</td><td class="n">1 881</td><td></td><td class="n">100,1 %</td><td class="n">0,14 с</td></tr></tfoot>
+    </table>
+  </div>
+
+  <div class="grid3" style="margin-top:1.25rem">
+    <div class="card flat"><div class="label">Авторизационный трафик</div>
+      <div class="kv"><span>/par (запросы)</span><span>378 483</span><span>/authorize</span><span>378 483</span><span>/token: код</span><span>331 420</span><span>/token: refresh</span><span>2 718 300</span><span>mTLS-рукопожатий (edge → auth)</span><span>3 428 203</span><span>DPoP-nonce повторов</span><span>16</span></div></div>
+    <div class="card flat"><div class="label">Сетевой трафик SUT</div>
+      <div class="kv"><span>Входящий, средний / пик</span><span>3,1 / 11,4 МБ/с</span><span>Исходящий, средний / пик</span><span>7,9 / 21,0 МБ/с</span><span>Исходящий за прогон</span><span>132 ГБ</span><span>Прогноз исходящего за месяц<sup>2</sup></span><span>≈ 22 ТБ</span></div></div>
+    <div class="card flat"><div class="label">Состав входов</div>
+      <div class="stack" style="margin:.4rem 0 .8rem"><span style="width:35%;background:var(--accent)"></span><span style="width:40%;background:#4a8da0"></span><span style="width:25%;background:#9cc3cf"></span></div>
+      <div class="kv"><span>OTP</span><span>35 %</span><span>OTP + пароль (Argon2)</span><span>40 %</span><span>passkey</span><span>25 %</span><span>Мобильные / веб</span><span>88 % / 12 %</span></div></div>
+  </div>
+</section>
+
+<!-- 2. QUALITY -->
+<section id="quality">
+  <div class="label">2 · Качество сервиса</div>
+  <h2>Задержки и ошибки против порогов приёмки</h2>
+  <p class="sec-sub">Квантили считаются слиянием гистограмм всех драйверов, а не усреднением по подам: среднее p99 — не p99 чего-либо.</p>
+  <div class="card" style="padding:.6rem 1rem 1rem">
+    <table>
+      <thead><tr><th>Операция</th><th class="n">p50</th><th class="n">p95</th><th class="n">p99</th><th class="n">Порог p99</th><th>Использовано</th><th>Статус</th></tr></thead>
+      <tbody>
+        <tr><td>Вход мобильный (OTP)</td><td class="n">310 мс</td><td class="n">760 мс</td><td class="n">1 420 мс</td><td class="n">2 000 мс</td><td><div class="bar ok"><span style="width:71%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Вход мобильный (OTP + пароль, Argon2)</td><td class="n">540 мс</td><td class="n">1 190 мс</td><td class="n">2 380 мс</td><td class="n">3 000 мс</td><td><div class="bar warn"><span style="width:79%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Вход мобильный (passkey)</td><td class="n">280 мс</td><td class="n">690 мс</td><td class="n">1 210 мс</td><td class="n">2 000 мс</td><td><div class="bar ok"><span style="width:61%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Вход веб (через edge, cookie-сессия)</td><td class="n">350 мс</td><td class="n">840 мс</td><td class="n">1 560 мс</td><td class="n">2 000 мс</td><td><div class="bar ok"><span style="width:78%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Refresh токена</td><td class="n">24 мс</td><td class="n">61 мс</td><td class="n">138 мс</td><td class="n">250 мс</td><td><div class="bar ok"><span style="width:55%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Бизнес-операция через edge</td><td class="n">31 мс</td><td class="n">88 мс</td><td class="n">196 мс</td><td class="n">300 мс</td><td><div class="bar ok"><span style="width:65%"></span></div></td><td><span class="pill ok">пройдено</span></td></tr>
+        <tr><td>Вход веб (passkey)</td><td class="n" colspan="4" style="text-align:center;color:var(--muted)">нет замеров</td><td></td><td><span class="pill na">не оценивалось</span></td></tr>
+      </tbody>
+    </table>
+    <div class="grid3" style="margin-top:1rem">
+      <div><div class="label" style="margin-bottom:.3rem">Бюджет ошибок</div><div class="kv"><span>Использовано</span><span>0,003 % из 0,1 %</span><span>transport / unexpected</span><span>41 / 12</span><span>Плановые (step-up, 403)</span><span>47 063 / 126 012</span></div></div>
+      <div><div class="label" style="margin-bottom:.3rem">Здоровье генератора</div><div class="kv"><span>CPU драйвера, пик</span><span>29 % (порог 40 %)</span><span>Сброшено строк write-behind</span><span>0</span><span>Зажато задержек</span><span>0</span></div></div>
+      <div><div class="label" style="margin-bottom:.3rem">Целостность токенов</div><div class="kv"><span>refresh отклонён (invalid_grant)</span><span>0</span><span>Тип токена в ответах</span><span>100 % DPoP</span><span>TTL access-токена</span><span>900 с</span></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 3. SECURITY -->
+<section id="security">
+  <div class="label">3 · Профиль безопасности</div>
+  <h2>Доказательства того, что мерили именно FAPI 2.0</h2>
+  <p class="sec-sub">Цифры скорости ничего не значат, если тест шёл по упрощённому пути. Отчёт сверяет заявленный профиль с тем, что реально ответил сервер.</p>
+  <div class="card" style="padding:.6rem 1rem 1rem">
+    <table>
+      <thead><tr><th>Проверка</th><th>Результат</th><th>Статус</th></tr></thead>
+      <tbody>
+        <tr><td>Профиль тенанта фиксируется при создании</td><td class="mono">loadgen-fapi2 · fapi2</td><td><span class="pill ok">ок</span></td></tr>
+        <tr><td>Режим токенов: заявлен DPoP, получены только DPoP</td><td>3 049 720 из 3 049 720 токенов</td><td><span class="pill ok">ок</span></td></tr>
+        <tr><td>Клиенты: tls_client_auth + обязательный PAR, без client_secret</td><td>4 клиента, 0 секретов</td><td><span class="pill ok">ок</span></td></tr>
+        <tr><td>Мобильный путь: код привязан к ключу устройства (dpop_jkt) на /par</td><td>331 420 обменов, 0 отказов привязки</td><td><span class="pill ok">ок</span></td></tr>
+        <tr><td>Проверка колбэка: state и iss (RFC 9207)</td><td>0 расхождений</td><td><span class="pill ok">ок</span></td></tr>
+        <tr><td>Повторное использование DPoP-пруфа отвергается</td><td>отвергнуто 100 % повторов (контрольная выборка 5 000)</td><td><span class="pill ok">ок</span></td></tr>
+      </tbody>
+    </table>
+    <div class="insight"><b>Цена безопасности.</b> Тот же сервис под профилем <span class="mono">standard</span> (секрет + bearer) на этой же нагрузке: p99 входа 1,05 с, WAL 71 ГиБ, 7 vCPU на auth+edge. Разница — хранение DPoP-replay, mTLS-рукопожатия и PAR. <i>(сравнение двух кампаний — отдельный отчёт)</i></div>
+  </div>
+</section>
+
+<!-- 4. RESOURCES -->
+<section id="resources">
+  <div class="label">4 · Ресурсы</div>
+  <h2>Сколько ресурсов понадобилось</h2>
+  <p class="sec-sub">Размер — то, что выделено (requests в Helm-чартах и параметры управляемых БД). Утилизация — пик за плато. Запас считается до порога 80% CPU.</p>
+  <div class="card" style="padding:.6rem 1rem 1rem">
+    <table id="res-table">
+      <thead><tr><th>Компонент</th><th class="n">Реплик</th><th class="n">vCPU × шт.</th><th class="n">ОЗУ ГиБ × шт.</th><th class="n">Диск ГиБ</th><th>Пик CPU</th><th>Пик ОЗУ</th><th class="n">Запас</th></tr></thead>
+      <tbody></tbody>
+      <tfoot></tfoot>
+    </table>
+    <p class="note"><b>Что читать первым:</b> auth — главный потребитель CPU (Argon2 на пути «OTP + пароль» даёт 71% его пикового CPU); edge почти не греется; central практически простаивает — он нужен для конфигурации, не для трафика.</p>
+  </div>
+</section>
+
+<!-- 5. DB -->
+<section id="db">
+  <div class="label">5 · База данных</div>
+  <h2>WAL, запись и пулер соединений</h2>
+  <p class="sec-sub">Разница счётчиков <span class="mono">pg_stat_*</span> до и после прогона. WAL определяет размер диска, пропускную способность репликации и стоимость бэкапов.</p>
+  <div class="grid2">
+    <div class="card">
+      <div class="label">Журнал WAL (база auth)</div>
+      <svg id="wal" viewBox="0 0 520 190" width="100%" role="img" aria-label="Скорость записи WAL"></svg>
+      <div class="kv" style="margin-top:.6rem">
+        <span>Объём за прогон</span><span>160 ГиБ</span><span>Средняя / пиковая скорость</span><span>9,6 / 31 МиБ/с</span><span>На один вход (с refresh и действиями)</span><span>≈ 0,49 МиБ</span><span>Full-page images</span><span>6,2 %</span><span>Чекпойнты: по таймеру / по объёму</span><span>31 / 2</span><span>Прирост размера БД</span><span>+18,4 ГиБ</span>
+      </div>
+    </div>
+    <div class="card">
+      <div class="label">Кто пишет WAL</div>
+      <div class="stack" style="margin:.5rem 0 1rem"><span style="width:41%;background:var(--accent)"></span><span style="width:27%;background:#4a8da0"></span><span style="width:16%;background:#9cc3cf"></span><span style="width:9%;background:#c8dde3"></span><span style="width:7%;background:var(--bg-alt)"></span></div>
+      <table>
+        <tbody>
+          <tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--accent)"></i> &nbsp;<span class="mono">dpop_proofs</span> (replay-кэш)</td><td class="n">41 %</td><td class="n">65,6 ГиБ</td></tr>
+          <tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#4a8da0"></i> &nbsp;<span class="mono">refresh_tokens</span></td><td class="n">27 %</td><td class="n">43,2 ГиБ</td></tr>
+          <tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#9cc3cf"></i> &nbsp;<span class="mono">auth_conversations</span></td><td class="n">16 %</td><td class="n">25,6 ГиБ</td></tr>
+          <tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#c8dde3"></i> &nbsp;<span class="mono">authorization_codes</span></td><td class="n">9 %</td><td class="n">14,4 ГиБ</td></tr>
+          <tr><td><i style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--bg-alt)"></i> &nbsp;прочее</td><td class="n">7 %</td><td class="n">11,2 ГиБ</td></tr>
+        </tbody>
+      </table>
+      <div class="insight"><b>Вывод для архитектуры.</b> Почти половина WAL — replay-защита DPoP: запись на каждый запрос с пруфом. Это первый кандидат на оптимизацию (партиционирование по слотам, unlogged-таблица на реплику) при росте выше 5 млн.</div>
+    </div>
+  </div>
+  <div class="grid3" style="margin-top:1.25rem">
+    <div class="card flat"><div class="label">Пулер соединений (PgBouncer)</div><div class="kv"><span>Клиентов в очереди, пик</span><span>14</span><span>Ожидание в очереди, пик</span><span>38 мс</span><span>Активных серверных, пик</span><span>46 из 80</span><span>Тайм-ауты ожидания</span><span>0</span></div></div>
+    <div class="card flat"><div class="label">Нагрузка на запись</div><div class="kv"><span>Транзакций / с, среднее</span><span>2 940</span><span>Вставок строк / с</span><span>3 610</span><span>Обновлений строк / с</span><span>1 770</span><span>Кэш-попаданий (buffers)</span><span>99,4 %</span></div></div>
+    <div class="card flat"><div class="label">Репликация и бэкапы</div><div class="kv"><span>Лаг реплики, пик</span><span>0,8 с</span><span>Объём WAL-архива в месяц<sup>3</sup></span><span>≈ 6,7 ТиБ</span><span>RPO при архивации</span><span>≤ 60 с</span></div></div>
+  </div>
+</section>
+
+<!-- 6. COST -->
+<section id="cost">
+  <div class="label">6 · Стоимость</div>
+  <h2>Примерная стоимость инфраструктуры в Yandex Cloud</h2>
+  <p class="sec-sub">Расчёт для размера кластера из раздела «Ресурсы», 730 часов в месяц, 24×7. Цены ниже — редактируемые: подставьте актуальные, и итоги пересчитаются.</p>
+
+  <div class="grid2">
+    <div class="card" style="padding:.6rem 1rem 1rem">
+      <div class="label" style="padding:.8rem .7rem 0">Расчёт по статьям</div>
+      <table id="cost-table"><thead><tr><th>Статья</th><th class="n">Количество</th><th class="n">Цена, ₽</th><th class="n">₽ / мес</th></tr></thead><tbody></tbody><tfoot></tfoot></table>
+    </div>
+    <div>
+      <div class="card price-edit">
+        <div class="label">Цены за единицу<sup>1</sup></div>
+        <table id="price-table"><tbody></tbody></table>
+        <p class="note">Значения — <b>плейсхолдеры</b>, подобранные по порядку величин публичного прайса; они не взяты автоматически. Перед показом руководству сверьте с актуальным прайс-листом и впишите дату.</p>
+      </div>
+      <div class="card flat" style="margin-top:1.25rem">
+        <div class="label">Удельная стоимость</div>
+        <div class="kv" id="unit-econ"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="fn">
+    <sup>1</sup> Цены Yandex Cloud (Compute Cloud, Managed Service for PostgreSQL, Network Load Balancer, Object Storage). Тарификация — <a href="https://yandex.cloud/ru/prices" style="color:var(--accent)">yandex.cloud/ru/prices</a>; цены в рублях указаны с НДС для клиентов ООО «Яндекс.Облако». Автоматически загрузить прайс не удалось (страница строится скриптом), поэтому значения в таблице — ориентировочные и подлежат сверке. Дата сверки: <b>—</b>.<br>
+    <sup>2</sup> Экстраполяция среднего исходящего трафика на 730 часов; это верхняя оценка — в проде суточная неравномерность выше.<br>
+    <sup>3</sup> Объём WAL-архива при непрерывной архивации с темпом прогона; берётся для оценки хранения бэкапов, 7 дней ретенции.
+  </div>
+</section>
+
+<!-- 7. SCALE -->
+<section id="scale">
+  <div class="label">7 · Рост</div>
+  <h2>Что будет при 2×, 5× и 10× пользователей</h2>
+  <p class="sec-sub">Линейная экстраполяция по пиковому RPS с учётом постоянных компонентов. Это прогноз, а не замер: каждая строка требует собственного прогона.</p>
+  <div class="card" style="padding:.6rem 1rem 1rem">
+    <table id="scale-table"><thead><tr><th>Пользователей</th><th class="n">vCPU</th><th class="n">ОЗУ ГиБ</th><th class="n">WAL МиБ/с (пик)</th><th class="n">₽ / мес</th><th class="n">₽ на 1 000 польз.</th><th>Первое узкое место</th></tr></thead><tbody></tbody></table>
+    <div class="insight"><b>Где ломается линейность.</b> До ~3 млн упираемся в CPU auth (Argon2) — лечится репликами. Около 5 млн пиковый WAL приближается к пропускной способности сетевого SSD под основную БД — нужен шардинг по <span class="mono">user_id</span> или вынос replay-кэша. 10 млн — это уже два кластера.</div>
+  </div>
+</section>
+
+<!-- 8. METHOD -->
+<section id="method">
+  <div class="label">8 · Методика и источники</div>
+  <h2>Откуда взята каждая цифра</h2>
+  <p class="sec-sub">Что измерено прямо, что посчитано, чего в отчёте пока нет.</p>
+  <div class="card" style="padding:.6rem 1rem 1rem">
+    <table>
+      <thead><tr><th>Раздел</th><th>Источник</th><th>Тип</th><th>Статус</th></tr></thead>
+      <tbody>
+        <tr><td>Нагрузка, задержки, ошибки, профиль</td><td class="src">GET /report/{campaign} (слияние гистограмм драйверов)</td><td>измерено</td><td><span class="pill ok">есть</span></td></tr>
+        <tr><td>WAL, записи, чекпойнты, топ-таблицы</td><td class="src">pg_stat_wal / pg_stat_bgwriter / pg_stat_user_tables до и после</td><td>измерено</td><td><span class="pill ok">есть</span></td></tr>
+        <tr><td>Пулер: очередь, ожидание</td><td class="src">PgBouncer SHOW POOLS / SHOW STATS</td><td>измерено</td><td><span class="pill ok">есть</span></td></tr>
+        <tr><td>Размер кластера (vCPU, ОЗУ, диск)</td><td class="src">Helm values + параметры управляемых БД</td><td>конфигурация</td><td><span class="pill warn">вручную</span></td></tr>
+        <tr><td>Пиковая утилизация CPU / ОЗУ подов</td><td class="src">Prometheus (cAdvisor, node-exporter)</td><td>измерено</td><td><span class="pill bad">нет в отчёте</span></td></tr>
+        <tr><td>Сетевой трафик по сервисам</td><td class="src">Prometheus (container_network_*)</td><td>измерено</td><td><span class="pill bad">нет в отчёте</span></td></tr>
+        <tr><td>Стоимость</td><td class="src">прайс YC × размер кластера</td><td>расчёт</td><td><span class="pill warn">цены вручную</span></td></tr>
+        <tr><td>Рост 2× / 5× / 10×</td><td class="src">модель по пиковому RPS</td><td>прогноз</td><td><span class="pill warn">нужны замеры</span></td></tr>
+      </tbody>
+    </table>
+    <p class="note"><b>Эта страница — макет.</b> Все цифры иллюстративны и подобраны так, чтобы показать форму отчёта. Реальный отчёт собирается из ответа координатора и снимков <span class="mono">pg_stat_*</span>; красные строки выше — то, что нужно добавить, чтобы страница строилась автоматически.</p>
+  </div>
+</section>
+
+<div class="footer"><span>Versola Load Report · кампания c3-1m-steady · тенант loadgen-fapi2</span><span>Сформировано автоматически из GET /report/{campaign} · макет</span></div>
+</main>
+
+<script>
+/* ---- Unit prices (RUB, incl. VAT). PLACEHOLDERS -- verify against the YC price list. ---- */
+const P = {
+  vcpu:   {label:'vCPU Compute, 100 % гарантии, ₽/час',        v:1.40},
+  ram:    {label:'ОЗУ Compute, ₽/ГиБ·час',                      v:0.38},
+  pgcpu:  {label:'vCPU Managed PostgreSQL, ₽/час',               v:2.10},
+  pgram:  {label:'ОЗУ Managed PostgreSQL, ₽/ГиБ·час',            v:0.52},
+  ssd:    {label:'Сетевой SSD, ₽/ГиБ·мес',                       v:9.20},
+  bkp:    {label:'Бэкапы / WAL-архив (Object Storage), ₽/ГиБ·мес', v:2.30},
+  egress: {label:'Исходящий трафик, ₽/ГиБ',                      v:1.60},
+  nlb:    {label:'Network Load Balancer, ₽/мес',                  v:1800},
+  k8s:    {label:'Managed Kubernetes (мастер), ₽/мес',            v:6500},
+};
+const HOURS = 730;
+
+/* name, replicas, vcpu each, ram each, disk, peakCPU%, peakRAM%, managedPg */
+const C = [
+  ['auth',                4, 2, 4,   0, 61, 58, false],
+  ['edge',                3, 2, 2,   0, 47, 52, false],
+  ['central',             2, 1, 2,   0,  6, 38, false],
+  ['mTLS-терминатор (nginx)', 2, 1, 1, 0, 22, 30, false],
+  ['PgBouncer',           2, 1, 1,   0, 35, 22, false],
+  ['PostgreSQL auth (primary + реплика)', 2, 8, 32, 500, 54, 71, true],
+  ['PostgreSQL central',  2, 2, 8,   50, 4, 33, true],
+];
+const fmt = n => Math.round(n).toLocaleString('ru-RU');
+const fmt1 = n => n.toLocaleString('ru-RU',{maximumFractionDigits:1});
+
+function pct(p){const cls=p>=75?'warn':'ok';return `<div class="bar ${cls}"><span style="width:${p}%"></span></div><span class="src">${p}%</span>`}
+
+function buildResources(){
+  const tb=document.querySelector('#res-table tbody'); let vc=0,ram=0,disk=0,pods=0;
+  C.forEach(([n,r,v,m,d,pc,pr,pg])=>{
+    vc+=r*v; ram+=r*m; disk+=d; pods+=r;
+    tb.insertAdjacentHTML('beforeend',`<tr><td>${n}${pg?' <span class="pill na">managed</span>':''}</td><td class="n">${r}</td><td class="n">${v}</td><td class="n">${m}</td><td class="n">${d?fmt(d):'—'}</td><td>${pct(pc)}</td><td>${pct(pr)}</td><td class="n">×${fmt1(80/pc)}</td></tr>`);
+  });
+  document.querySelector('#res-table tfoot').innerHTML=`<tr><td>Итого</td><td class="n">${pods}</td><td class="n">${vc} vCPU</td><td class="n">${ram} ГиБ</td><td class="n">${fmt(disk)}</td><td colspan="3" style="font-weight:500;color:var(--muted)">+ сеть, балансировщик, K8s-мастер</td></tr>`;
+  return {vc,ram,disk};
+}
+
+function costRows(){
+  let rows=[];
+  let cvc=0,cram=0,pvc=0,pram=0,disk=0;
+  C.forEach(([n,r,v,m,d,pc,pr,pg])=>{ if(pg){pvc+=r*v;pram+=r*m}else{cvc+=r*v;cram+=r*m} disk+=d });
+  const egressGiB=22*1024;
+  rows.push(['vCPU приложения',cvc+' vCPU',P.vcpu.v,cvc*P.vcpu.v*HOURS]);
+  rows.push(['ОЗУ приложения',cram+' ГиБ',P.ram.v,cram*P.ram.v*HOURS]);
+  rows.push(['vCPU PostgreSQL (managed)',pvc+' vCPU',P.pgcpu.v,pvc*P.pgcpu.v*HOURS]);
+  rows.push(['ОЗУ PostgreSQL (managed)',pram+' ГиБ',P.pgram.v,pram*P.pgram.v*HOURS]);
+  rows.push(['Сетевой SSD под БД',disk+' ГиБ',P.ssd.v,disk*P.ssd.v]);
+  rows.push(['Бэкапы + WAL-архив (7 дней)','6 700 ГиБ',P.bkp.v,6700*P.bkp.v]);
+  rows.push(['Исходящий трафик','22 ТиБ',P.egress.v,egressGiB*P.egress.v]);
+  rows.push(['Network Load Balancer','2 шт.',P.nlb.v/1,2*P.nlb.v]);
+  rows.push(['Managed Kubernetes','1',P.k8s.v,P.k8s.v]);
+  return rows;
+}
+
+function renderCost(){
+  const rows=costRows(); const total=rows.reduce((s,r)=>s+r[3],0);
+  const tb=document.querySelector('#cost-table tbody'); tb.innerHTML='';
+  rows.forEach(r=>tb.insertAdjacentHTML('beforeend',`<tr><td>${r[0]}</td><td class="n">${r[1]}</td><td class="n">${fmt1(r[2])}</td><td class="n">${fmt(r[3])}</td></tr>`));
+  document.querySelector('#cost-table tfoot').innerHTML=`<tr><td colspan="3">Итого в месяц</td><td class="n">${fmt(total)}</td></tr><tr><td colspan="3">≈ в год</td><td class="n">${fmt(total*12)}</td></tr>`;
+  const k=total/1000;
+  document.getElementById('h-cost').textContent=fmt(Math.round(total/1000)*1000);
+  document.getElementById('t-cost').textContent=fmt(Math.round(total/1000)*1000);
+  document.getElementById('t-per-k').textContent=fmt(Math.round(k));
+  const logins=331420/ (4.75*3600) * 3600*24*30; /* logins/month at the steady rate, rough */
+  const sessions=22*3600*24*30;
+  document.getElementById('unit-econ').innerHTML=
+   `<span>₽ на 1 000 зарегистрированных / мес</span><span>${fmt(k)}</span>`+
+   `<span>₽ на 1 000 активных за сутки (21 %)</span><span>${fmt(total/ (1000000*0.21/1000))}</span>`+
+   `<span>₽ за 1 000 000 входов (при среднем темпе)</span><span>${fmt(total/(sessions/1e6))}</span>`+
+   `<span>₽ в сутки</span><span>${fmt(total/30)}</span>`;
+  return total;
+}
+
+function renderPrices(){
+  const tb=document.querySelector('#price-table tbody');
+  Object.entries(P).forEach(([k,o])=>tb.insertAdjacentHTML('beforeend',`<tr><td>${o.label}</td><td class="n"><input data-k="${k}" value="${o.v}" inputmode="decimal"></td></tr>`));
+  tb.addEventListener('input',e=>{const k=e.target.dataset.k; const v=parseFloat(String(e.target.value).replace(',','.')); if(k&&!isNaN(v)){P[k].v=v; renderCost(); buildScale();}});
+}
+
+function buildScale(){
+  const base=renderCostTotal();
+  const fixed=P.k8s.v+2*P.nlb.v;
+  const tb=document.querySelector('#scale-table tbody'); tb.innerHTML='';
+  const rows=[[1,1,'—'],[2,2,'CPU auth (Argon2)'],[5,5.2,'WAL → пропускная способность SSD'],[10,10.8,'нужен шардинг БД']];
+  rows.forEach(([x,f,b])=>{
+    const var_=base-fixed; const cost=fixed+var_*f*0.92 + (x>=5? var_*0.18:0);
+    tb.insertAdjacentHTML('beforeend',`<tr><td>${fmt(x*1e6)}</td><td class="n">${fmt(Math.ceil(40*f*0.92))}</td><td class="n">${fmt(Math.ceil(110*f*0.92))}</td><td class="n">${fmt(31*f)}</td><td class="n">${fmt(cost)}</td><td class="n">${fmt(cost/(x*1000))}</td><td>${b==='—'?'<span class="pill ok">текущий прогон</span>':b}</td></tr>`);
+  });
+}
+function renderCostTotal(){return costRows().reduce((s,r)=>s+r[3],0)}
+
+/* ---- charts ---- */
+function rnd(seed){let s=seed;return()=>{s=(s*16807)%2147483647;return(s-1)/2147483646}}
+function timeline(){
+  const svg=document.getElementById('timeline'); const W=1080,H=250,L=52,R=52,T=14,B=30;
+  const r=rnd(7); const N=190; const pts=[]; const p99=[];
+  for(let i=0;i<=N;i++){
+    const t=i/N*285; let base;
+    if(t<15) base=0.05+0.15*(t/15);
+    else if(t<45) base=0.2+0.8*((t-15)/30);
+    else base=1;
+    const wig=base===1?(0.94+0.06*Math.sin(t/17)+ (r()-.5)*0.05):(base*(0.97+(r()-.5)*0.06));
+    pts.push([t,wig*5240*(base===1?0.84:1)]);
+    p99.push([t,95+base*70+(r()-.5)*14+(base===1?8*Math.sin(t/21):0)]);
+  }
+  const x=t=>L+(W-L-R)*t/285, y=v=>T+(H-T-B)*(1-v/6000), y2=v=>T+(H-T-B)*(1-v/300);
+  let s='';
+  [[0,15,'прогрев'],[15,45,'рост'],[45,285,'плато']].forEach(([a,b,n],i)=>{
+    s+=`<rect x="${x(a)}" y="${T}" width="${x(b)-x(a)}" height="${H-T-B}" fill="rgba(21,94,117,${i==1?.07:.03})"/>`;
+    s+=`<text x="${(x(a)+x(b))/2}" y="${T+14}" text-anchor="middle">${n}</text>`;
+  });
+  for(let v=0;v<=6000;v+=1500){s+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(21,23,28,.07)"/><text x="${L-8}" y="${y(v)+4}" text-anchor="end">${fmt(v)}</text>`}
+  for(let v=0;v<=300;v+=100){s+=`<text x="${W-R+8}" y="${y2(v)+4}">${v}</text>`}
+  for(let t=0;t<=285;t+=45){s+=`<text x="${x(t)}" y="${H-10}" text-anchor="middle">${Math.floor(t/60)}:${String(t%60).padStart(2,'0')}</text>`}
+  const line=pts.map(p=>`${x(p[0]).toFixed(1)},${y(p[1]).toFixed(1)}`).join(' ');
+  s+=`<polygon points="${x(0)},${y(0)} ${line} ${x(285)},${y(0)}" fill="rgba(21,94,117,.16)"/>`;
+  s+=`<polyline points="${line}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>`;
+  s+=`<polyline points="${p99.map(p=>`${x(p[0]).toFixed(1)},${y2(p[1]).toFixed(1)}`).join(' ')}" fill="none" stroke="var(--warn)" stroke-width="1.6" stroke-dasharray="4 3"/>`;
+  svg.innerHTML=s;
+}
+function wal(){
+  const svg=document.getElementById('wal'); const W=520,H=190,L=38,R=8,T=10,B=24; const r=rnd(11); let s='';
+  const N=57; const y=v=>T+(H-T-B)*(1-v/36), bw=(W-L-R)/N;
+  for(let v=0;v<=36;v+=12){s+=`<line x1="${L}" x2="${W-R}" y1="${y(v)}" y2="${y(v)}" stroke="rgba(21,23,28,.07)"/><text x="${L-6}" y="${y(v)+4}" text-anchor="end">${v}</text>`}
+  for(let i=0;i<N;i++){const t=i*5; let b=t<15?3:t<45?3+(t-15)/30*6.6:9.6; let v=b*(0.82+r()*0.5); if(i===40||i===41)v=31; if(i===22)v=17;
+    const hh=(H-T-B)*(v/36); s+=`<rect x="${L+i*bw+1}" y="${H-B-hh}" width="${bw-2}" height="${hh}" rx="2" fill="${v>20?'var(--warn)':'var(--accent)'}" opacity="${v>20?1:.85}"/>`}
+  s+=`<text x="${L}" y="${H-6}">0</text><text x="${W-R}" y="${H-6}" text-anchor="end">4:45</text><text x="${L-6}" y="${T+4}" text-anchor="end"></text>`;
+  s+=`<text x="${W-R}" y="${T+10}" text-anchor="end">МиБ/с, интервал 5 мин · пики = чекпойнты по объёму</text>`;
+  svg.innerHTML=s;
+}
+
+buildResources(); renderPrices(); renderCost(); buildScale(); timeline(); wal();
+</script>
+</body>
+</html>

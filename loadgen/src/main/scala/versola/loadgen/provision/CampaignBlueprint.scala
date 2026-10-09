@@ -79,6 +79,15 @@ object CampaignBlueprint:
     */
   private val accessTokenTtlSeconds = 900
 
+  /** Central refuses a DPoP-bound client an access-token TTL under an hour (`accessTokenTtl must
+    * be at least 3600s when dpopBoundAccessTokens is enabled`), and the `fapi2` campaign's mobile
+    * clients are DPoP-bound. Every client of such a campaign gets it, so the session model's
+    * `session.access-token-ttl` has to be one hour there too -- a refresh is due an hour after
+    * login, not fifteen minutes, which also cuts the refresh rate the standard campaign sees by
+    * four.
+    */
+  val fapi2AccessTokenTtlSeconds = 3600
+
   /** 30 days, per §2.2's "refresh token in the app, rotating, 30 d". */
   private val refreshTokenTtlSeconds = 2592000
 
@@ -257,6 +266,7 @@ object CampaignBlueprint:
 
   def apply(targets: TargetsConfig, provision: ProvisionConfig, flows: CampaignFlows): CampaignBlueprint =
     val names = Names(provision.namespace)
+    val accessTokenTtlSeconds = if provision.fapi2 then fapi2AccessTokenTtlSeconds else this.accessTokenTtlSeconds
     val allActions = actions(provision.paymentAmountThreshold, names)
 
     // Where a completed edge login sends the browser, and where central posts this client's
