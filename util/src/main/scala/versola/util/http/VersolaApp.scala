@@ -207,7 +207,11 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           _ <- ZIO.logInfo(s"Diagnostics server started on port $port")
         yield fibers
 
-      _ <- scope.addFinalizer(fibers.interrupt *> fibers.join.ignore)
+      // `interrupt` returns once the fiber has terminated, so nothing is left to join -- and joining a
+      // fiber that was interrupted interrupts the *joiner*, which surfaced as an `InterruptedException`
+      // from the scope's own finalizer and made a service that had shut down cleanly exit with code 1
+      // (a loadgen driver finishing its campaign, restarted into CrashLoopBackOff).
+      _ <- scope.addFinalizer(fibers.interrupt.unit)
 
       appDependencies <- dependencies.build
 
@@ -238,7 +242,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           _ <- ZIO.logInfo(s"Additional application server started on port $port")
         yield fiber
 
-      _ <- ZIO.foreachDiscard(additionalFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
+      _ <- ZIO.foreachDiscard(additionalFiber)(fiber => scope.addFinalizer(fiber.interrupt.unit))
 
       mutualTlsSurface <- mutualTlsServerConfig.provideEnvironment(appDependencies)
         .map(config => mutualTlsRoutes.zip(config))
@@ -270,7 +274,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           _ <- ZIO.logInfo(s"Mutual TLS application server started on port $port")
         yield fiber
 
-      _ <- ZIO.foreachDiscard(mutualTlsFiber)(fiber => scope.addFinalizer(fiber.interrupt *> fiber.join.ignore))
+      _ <- ZIO.foreachDiscard(mutualTlsFiber)(fiber => scope.addFinalizer(fiber.interrupt.unit))
 
       _ <- {
         for
@@ -288,7 +292,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
           // outlives `dependencies` and leaks work into a closed pool across a restart.
           _ <- ZIO.when(warmupEnabled) {
             Warmup.run(warmup, warmupBudget).flatMap { warmupFiber =>
-              scope.addFinalizer(warmupFiber.interrupt *> warmupFiber.join.ignore)
+              scope.addFinalizer(warmupFiber.interrupt.unit)
             }
           }
           _ <- readinessService.setReady
