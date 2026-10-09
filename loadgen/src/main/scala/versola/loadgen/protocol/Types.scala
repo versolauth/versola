@@ -169,8 +169,12 @@ enum SubmitOutcome:
   * `state` is kept because it is the one thing the driver can check: auth must echo edge's own
   * `state` back, and a mismatch means this flow is about to complete another virtual user's
   * login. Nothing else in §8.4 would notice.
+  *
+  * `None` when edge pushed the request (RFC 9126, which a FAPI 2.0 client must): the authorize URL
+  * then carries only `client_id` and `request_uri`, and `state` lives inside the pushed request,
+  * so there is nothing to compare until auth echoes it on the redirect back.
   */
-case class EdgeLoginStarted(authorizeUrl: String, state: String)
+case class EdgeLoginStarted(authorizeUrl: String, state: Option[String])
 
 /** An `EDGE_SESSION` cookie as edge just set it -- on `/complete` at login, or on a proxied
   * action when it refreshed behind the cookie (§8.4's "edge rotates the cookie on refresh").

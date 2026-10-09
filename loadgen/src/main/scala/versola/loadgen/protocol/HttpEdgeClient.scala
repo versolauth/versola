@@ -59,11 +59,12 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
       else
         for
           location <- HttpExchange.required(received.location, loginEndpoint, "redirect without a Location header")
-          state <- HttpExchange.required(
-            HttpExchange.redirectParam(location, stateParam),
-            loginEndpoint,
-            "no state on the authorize URL edge redirected to",
-          )
+          state = HttpExchange.redirectParam(location, stateParam)
+          // Neither a `state` nor a pushed request to carry one is an authorize URL no flow can
+          // be completed from.
+          _ <- ZIO
+            .fail(ProtocolError.MalformedResponse(loginEndpoint, "neither a state nor a request_uri on the authorize URL edge redirected to"))
+            .when(state.isEmpty && HttpExchange.redirectParam(location, requestUriParam).isEmpty)
         yield EdgeLoginStarted(location, state)
 
   override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, ConversationCookie] =
@@ -133,6 +134,7 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
 object HttpEdgeClient:
   private val acrValuesParam = "acr_values"
   private val stateParam = "state"
+  private val requestUriParam = "request_uri"
   private val codeParam = "code"
   private val errorParam = "error"
 

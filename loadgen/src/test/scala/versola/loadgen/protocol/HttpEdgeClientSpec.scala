@@ -40,7 +40,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         started <- edge.login(preset, None)
         paths <- recorder.paths
       yield assertTrue(
-        started == EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState),
+        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)),
         paths == Vector("GET /login/" + StubSut.preset),
       )
     },
@@ -50,6 +50,14 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         (_, edge) = both
         started <- edge.login(preset, Some(List(Acr.OtpLevel, Acr.PasswordLevel)))
       yield assertTrue(started.authorizeUrl.contains("acr_values=" + Acr.OtpLevel + "+" + Acr.PasswordLevel))
+    },
+    // A FAPI 2.0 web client pushes its request (RFC 9126): the authorize URL edge redirects to
+    // carries `client_id` and `request_uri` only, and `state` is inside the pushed request.
+    test("a pushed request has no state on the authorize URL, and login still starts") {
+      for
+        edge <- edgeAnswering(Response.seeOther(URL.decode(StubSut.authUrl + "/authorize?client_id=web-otp&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Ar1").toOption.get))
+        started <- edge.login(preset, None)
+      yield assertTrue(started.state.isEmpty, started.authorizeUrl.contains("request_uri="))
     },
     test("a preset edge does not know is the emulator's own misconfiguration, not an outcome") {
       for
@@ -78,7 +86,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None)
+        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None)
         paths <- recorder.paths
       yield assertTrue(
         conversation == ConversationCookie(StubSut.conversation),
@@ -88,7 +96,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     test("an authorize response that starts no conversation is malformed") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode("/challenge").toOption.get))
-        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None).either
+        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("SSO_CONVERSATION")
         case _ => false)

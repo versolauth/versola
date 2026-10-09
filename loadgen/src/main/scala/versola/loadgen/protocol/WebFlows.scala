@@ -173,7 +173,10 @@ final class WebFlows(
     HttpExchange
       .required(completed.state, completeEndpoint, "no state on the redirect back to edge")
       .flatMap: state =>
-        if state == started.state then ZIO.succeed(state)
+        // A pushed request carries its state inside, so edge's own is not known until here; the
+        // check then falls to edge, which looks the login up by this value and refuses one it
+        // never recorded.
+        if started.state.forall(_ == state) then ZIO.succeed(state)
         else ZIO.fail(ProtocolError.MalformedResponse(completeEndpoint, "state " + state + " is not the one edge recorded"))
 
 object WebFlows:
