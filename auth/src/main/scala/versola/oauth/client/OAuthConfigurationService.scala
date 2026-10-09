@@ -33,7 +33,7 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
-import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, JsonSchemaValidator, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
+import versola.util.{CacheSource, ClientAssertion, ConfigSnapshot, CoreConfig, Dpop, JsonSchemaValidator, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -175,14 +175,14 @@ object OAuthConfigurationService:
   val DefaultUserAgentTtl: Duration = Duration.fromSeconds(15552000L)
 
   def live: ZLayer[
-    Client & SecurityService & Scope & CoreConfig & JsonSchemaValidator,
+    Client & SecurityService & Scope & CoreConfig & ConfigSnapshot & JsonSchemaValidator,
     Throwable,
     OAuthConfigurationService,
   ] = {
     def cacheLayer[A: Tag]: ZLayer[Scope & CoreConfig & CacheSource[A], Throwable, ReloadingCache[A]] =
       ZLayer.fromZIO:
         ZIO.serviceWithZIO[CoreConfig](config =>
-          ReloadingCache.make[A](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[A](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
     // Derives `ServedMetadata` at the point the document is actually fetched -- initial load,
     // periodic refresh, and `syncConfiguration`'s manual resync all go through `getAll` here --

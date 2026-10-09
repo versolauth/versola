@@ -25,17 +25,17 @@ object PermissionService:
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++ // (tenantId, roleId) → permIds
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++ // permId → endpointIds
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, Set[PermissionId]]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[ClientId, Set[PermissionId]]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++          // clientId → OAuthClient
       ZLayer.service[RolesSyncClient] ++

@@ -26,7 +26,7 @@ object RolesSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(RolesURL).addHeader(Header.Authorization.Bearer(token))
-        body <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetRolesSyncResponse]))
+        body <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.bodyAs[GetRolesSyncResponse]))
       yield body.roles
         .filter(_.active)
         .map(r => (TenantId(r.tenantId), RoleId(r.id)) -> r.permissions.map(PermissionId(_)))

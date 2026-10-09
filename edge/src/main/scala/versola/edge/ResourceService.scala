@@ -17,7 +17,7 @@ object ResourceService:
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ResourceId, Resource]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[ResourceId, Resource]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++
       ZLayer.service[ResourcesSyncClient]
