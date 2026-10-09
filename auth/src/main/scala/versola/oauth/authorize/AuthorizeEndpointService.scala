@@ -186,6 +186,15 @@ object AuthorizeEndpointService:
                             priorSessionId = Some(id),
                           )
                     case _ =>
+                      // Skipping the credential card for a known user is only sound when something
+                      // is still left to verify them with: a required OTP or password step. A flow
+                      // whose password lives in the credential card (inline) and asks no further
+                      // factor has nothing after it, so the conversation would finish the moment it
+                      // was created -- a re-authentication in which nobody authenticated, and a
+                      // /challenge that then finds no conversation (ConversationExpired). In that case
+                      // the card is shown again, as for any login.
+                      val leavesSomethingToVerify = flow.primary.factors.exists: factor =>
+                        factor.required && PassedAuthFactor.fromFactorType(factor.`type`).isDefined
                       createConversation(
                         authId,
                         request,
@@ -193,7 +202,7 @@ object AuthorizeEndpointService:
                         registrationFlow,
                         uiLocales,
                         Map.empty,
-                        knownUserId = targetUserId,
+                        knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),
                       )
