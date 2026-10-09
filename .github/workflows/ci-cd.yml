@@ -827,108 +827,6 @@ jobs:
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
 
-  # versola-gateway is nginx with central-ui's static build baked in (see
-  # docker/Dockerfile.gateway) -- not a JVM service like auth/central/edge,
-  # but published by version tag the same way so "versola bootstrap local
-  # <version>" (see versola-cli) can pull it consistently with the other
-  # three, through the same GHCR auth it already needs for those instead
-  # of a separate download step or new hosting for central-ui's files
-  # (this repo is private, so a GitHub Release asset would need its own
-  # auth story on top).
-  docker-gateway:
-    needs: build
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Log in to Container Registry
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract version from tag
-        id: version
-        env:
-          # Same reasoning as the "Validate test_tag" step above: values
-          # go through env: instead of being spliced into the script text
-          # via ${{ }}, so a crafted test_tag (or, defensively, a release
-          # tag name) can't inject shell commands that run with this job's
-          # packages:write / GITHUB_TOKEN access.
-          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
-          TEST_TAG: ${{ inputs.test_tag }}
-        run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            echo "version=$RELEASE_TAG_NAME" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=$TEST_TAG" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Set up Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22.12'
-
-      - name: Build central-ui
-        working-directory: central-ui
-        run: |
-          npm ci
-          npm run build
-
-      - name: Compute image tags
-        id: tags
-        env:
-          # See the identical comment in docker-auth's "Compute image
-          # tags" step -- same reasoning, same fix.
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          {
-            echo "tags<<EOF"
-            echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:$VERSION"
-            if [ "${{ github.event_name }}" = "release" ]; then
-              echo "${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway:latest"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Build and push gateway image
-        id: build
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: docker/Dockerfile.gateway
-          # Same motivation as the other images: arm64 nodes should get a
-          # native pull. No "Set up QEMU" step in this job, unlike the
-          # others -- docker/Dockerfile.gateway is COPY-only on top of
-          # nginx:1.27-alpine (itself already multi-arch), so nothing is
-          # ever executed at build time and there is no foreign binary for
-          # binfmt to handle.
-          platforms: linux/amd64,linux/arm64
-          push: true
-          # SBOM (SPDX) attached to the image index; provenance is BuildKit's default attestation.
-          sbom: true
-          tags: ${{ steps.tags.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Signed build provenance (Sigstore, keyless) pushed alongside the image: `gh attestation verify`.
-      - name: Attest gateway image provenance
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-name: ${{ env.REGISTRY }}/${{ github.repository_owner }}/versola-gateway
-          subject-digest: ${{ steps.build.outputs.digest }}
-          push-to-registry: true
-
   # versola-tools generates auth.conf/central.conf/edge.conf (via
   # scripts/gen-env.scala) plus compose.fragment.yml and nginx.conf for
   # "versola bootstrap local <version>" (see versola-cli). Lives in this
@@ -970,8 +868,7 @@ jobs:
       # The admin console (central-ui) ships inside versola-tools: at
       # `configure` time entrypoint.sh copies it into the deployment bundle,
       # where the reverse proxy versola-cli sets up serves it as static
-      # files -- no separate gateway image for it. Same build as the
-      # docker-gateway job's, for as long as that job still exists.
+      # files -- no separate gateway image for it.
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
