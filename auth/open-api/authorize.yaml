@@ -247,7 +247,7 @@ components:
         one that was not granted on this request; for a client that does prompt, only claims of the
         granted scopes are released, so a claim outside them cannot reach it without the user having
         agreed to it. The ID token carries a claim only if
-        it is named in the `id_token` member here (and the client's granted scopes cover it):
+        it is named in the `id_token` member here (and the client may be given it, as above):
         the claims a scope stands for (`profile`, `email`, ...) are returned from UserInfo,
         since an access token is always issued alongside (OpenID Connect Core §5.4).
       schema:
