@@ -40,7 +40,7 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         started <- edge.login(preset, None)
         paths <- recorder.paths
       yield assertTrue(
-        started == EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState),
+        started == EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)),
         paths == Vector("GET /login/" + StubSut.preset),
       )
     },
@@ -50,6 +50,14 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
         (_, edge) = both
         started <- edge.login(preset, Some(List(Acr.OtpLevel, Acr.PasswordLevel)))
       yield assertTrue(started.authorizeUrl.contains("acr_values=" + Acr.OtpLevel + "+" + Acr.PasswordLevel))
+    },
+    // A FAPI 2.0 web client pushes its request (RFC 9126): the authorize URL edge redirects to
+    // carries `client_id` and `request_uri` only, and `state` is inside the pushed request.
+    test("a pushed request has no state on the authorize URL, and login still starts") {
+      for
+        edge <- edgeAnswering(Response.seeOther(URL.decode(StubSut.authUrl + "/authorize?client_id=web-otp&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Ar1").toOption.get))
+        started <- edge.login(preset, None)
+      yield assertTrue(started.state.isEmpty, started.authorizeUrl.contains("request_uri="))
     },
     test("a preset edge does not know is the emulator's own misconfiguration, not an outcome") {
       for
@@ -78,17 +86,51 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
       for
         both <- edgeForStub
         (recorder, edge) = both
-        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None)
+        conversation <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None)
         paths <- recorder.paths
       yield assertTrue(
-        conversation == ConversationCookie(StubSut.conversation),
+        conversation == EdgeAuthorization.Conversation(ConversationCookie(StubSut.conversation)),
         paths == Vector("GET /authorize"),
       )
+    },
+    // §7.4: an SSO session that already satisfies the request is answered with the redirect
+    // straight back to edge, no conversation -- the web path meets it on a step-up whose level the
+    // session has since reached.
+    test("an authorize response that redirects back with a code answers the flow, with the session it was sent") {
+      val back = StubSut.edgeUrl + "/complete?code=silent-code&state=" + StubSut.edgeState + "&iss=" + StubSut.authUrl
+      for
+        edge <- edgeAnswering(Response.seeOther(URL.decode(back).toOption.get))
+        answered <- edge.startConversation(
+          EdgeLoginStarted(StubSut.authorizeUrl, None),
+          Some(SsoSession(StubSut.ssoSession)),
+        )
+      yield assertTrue(
+        answered == EdgeAuthorization.Answered(
+          ConversationOutcome.Completed(
+            ConversationCompleted(AuthCode("silent-code"), Some(StubSut.edgeState), Some(StubSut.authUrl), Some(SsoSession(StubSut.ssoSession))),
+          ),
+        ),
+      )
+    },
+    test("an authorize response that redirects back with an error is a refusal, carrying its state") {
+      val back = StubSut.edgeUrl + "/complete?error=login_required&state=" + StubSut.edgeState
+      for
+        edge <- edgeAnswering(Response.seeOther(URL.decode(back).toOption.get))
+        answered <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, None), None)
+      yield assertTrue(answered == EdgeAuthorization.Answered(ConversationOutcome.Refused("login_required", Some(StubSut.edgeState))))
+    },
+    test("an authorize response that is neither names where it was sent") {
+      for
+        edge <- edgeAnswering(Response.seeOther(URL.decode("/somewhere/else").toOption.get))
+        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, None), None).either
+      yield assertTrue(failure.left.exists:
+        case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("/somewhere/else") && detail.contains("SSO_CONVERSATION")
+        case _ => false)
     },
     test("an authorize response that starts no conversation is malformed") {
       for
         edge <- edgeAnswering(Response.seeOther(URL.decode("/challenge").toOption.get))
-        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, StubSut.edgeState), None).either
+        failure <- edge.startConversation(EdgeLoginStarted(StubSut.authorizeUrl, Some(StubSut.edgeState)), None).either
       yield assertTrue(failure.left.exists:
         case ProtocolError.MalformedResponse("/authorize", detail) => detail.contains("SSO_CONVERSATION")
         case _ => false)

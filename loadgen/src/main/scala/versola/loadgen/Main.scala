@@ -53,7 +53,13 @@ object Main extends VersolaApp("loadgen"):
         // The driver's load generation and `VersolaApp`'s server are raced rather than sequenced:
         // the server never returns, and the campaign has to be able to end the process when the
         // coordinator stops it or the run latches an abort.
-        case LoadgenRole.Driver => ZIO.scoped(Driver.run(config)).raceFirst(super.run)
+        case LoadgenRole.Driver =>
+          ZIO.scoped(Driver.run(config)).raceFirst(super.run).catchSomeCause:
+            // A finished campaign is a success. The loser of the race is `super.run`, which never
+            // returns, and ZIO surfaces its interruption as the app's own exit cause -- logged as an
+            // ERROR with exit code 1, which a kubelet reads as a crash and restarts with back-off.
+            // Only an interruption is let through: a failed campaign still fails.
+            case cause if Driver.endedByInterruption(cause) => ZIO.logInfo("Driver finished; exiting")
         case _ => super.run
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =

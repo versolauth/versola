@@ -50,6 +50,16 @@ object Driver:
     */
   val healthInterval: Duration = 5.seconds
 
+  /** Whether `cause` is nothing but the interruption of the fiber the driver raced against the
+    * server (`Main`): a ZIO interrupt, or the `InterruptedException` it surfaces as when a fiber
+    * blocked in the server's finalizers is stopped -- which arrives as a failure or a defect with
+    * that exception as its value, not as an `Interrupt`, and is why a finished campaign exited 1.
+    * Any other failure, mixed in or alone, is not this.
+    */
+  def endedByInterruption(cause: Cause[Any]): Boolean =
+    val values: List[Any] = cause.failures ++ cause.defects
+    !cause.isEmpty && (cause.isInterruptedOnly || (values.nonEmpty && values.forall(_.isInstanceOf[InterruptedException])))
+
   def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Tracing, Throwable, Unit] =
     boot(config).provideSome[Scope & ConfigProvider & EnvName & Tracing](LoadgenHttpClient.live)
 
@@ -118,6 +128,8 @@ object Driver:
       _ <- SnapshotPublisher(config.campaign.name, driverId, latencies, snapshots).run(SnapshotPublisher.interval)
       _ <- lagQuantile.run(lag, ScheduleLagQuantile.sampleInterval)
       _ <- healthReporter(lag, busy, buffer).flatMap(_.run(healthInterval).forkScoped)
+      // Before it says it is ready, so that nothing a campaign measures is the process's first call.
+      _ <- Warmup.run(client, config.targets, dpop)
       _ <- ZIO.logInfo(
         s"Driver $driverId ready for campaign '${config.campaign.name}' on shard ${shard.index}; " +
           s"polling ${config.coordinator.url} every ${config.coordinator.pollInterval.render}",

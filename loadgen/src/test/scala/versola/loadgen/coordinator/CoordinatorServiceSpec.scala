@@ -414,6 +414,29 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           !report.passed,
         )
       },
+      // A warm-up's cold connections are the p99 of a few hundred samples: a phase marked
+      // `measured = false` is driven and reported on, but its latency is left out of the quantiles.
+      test("leaves the latency snapshots of an unmeasured phase out of the quantiles") {
+        for
+          config <- CoordinatorFixture.coordinatorConfig
+          unmeasured = config.copy(campaign = config.campaign.copy(
+            phases = config.campaign.phases.map(phase => if phase.name == "warmup" then phase.copy(measured = false) else phase),
+          ))
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            // Five minutes in: inside the 15-minute warm-up. Twenty: inside the ramp.
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0.plusSeconds(300), tokenRefresh, 90_000L, 100L),
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0.plusSeconds(1_200), tokenRefresh, 90_000L, 70L),
+          )
+          harness <- harness(ZIO.succeed(unmeasured), users, snapshots)
+          _ <- harness.service.start
+          report <- harness.service.report(campaign)
+        yield assertTrue(
+          report.latency.map(_.count) == List(70L),
+          report.run.phases.map(_.measured) == unmeasured.campaign.phases.map(_.measured),
+          !report.run.phases.head.measured,
+        )
+      },
       test("carries the SUT's database section once both boundaries have been captured") {
         for
           users <- FakeVirtualUsers.make()

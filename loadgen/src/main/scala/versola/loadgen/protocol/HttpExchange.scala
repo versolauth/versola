@@ -1,5 +1,7 @@
 package versola.loadgen.protocol
 
+import io.netty.handler.codec.PrematureChannelClosureException
+import versola.loadgen.metrics.LoadgenMetrics
 import zio.http.*
 import zio.{Duration, IO, NonEmptyChunk, ZIO}
 
@@ -32,17 +34,35 @@ private[protocol] final class HttpExchange(client: Client, requestTimeout: Durat
 
   def send(request: Request): IO[ProtocolError, Received] =
     InflightRequests.around:
-      http
-        .request(request)
-        .timeoutFail(HttpExchange.timedOut)(requestTimeout)
-        .flatMap(response => response.body.asString.map(Received(response, _)))
-        .mapError(ProtocolError.Transport.apply)
+      attempt(request).catchSome:
+        // A pooled connection the far side closed while the request was going out (a proxy that
+        // retires a connection after N requests, or an idle timeout racing the next request):
+        // the request was never answered, and for a method that is safe to repeat it is retried
+        // once on a fresh connection, as a browser does (RFC 9112 §9.3.1). Counted, so a rate
+        // that climbs is visible rather than absorbed.
+        case ProtocolError.Transport(cause) if HttpExchange.retriable(request.method, cause) =>
+          LoadgenMetrics.transportRetried *> attempt(request)
+
+  private def attempt(request: Request): IO[ProtocolError, Received] =
+    http
+      .request(request)
+      .timeoutFail(HttpExchange.timedOut)(requestTimeout)
+      .flatMap(response => response.body.asString.map(Received(response, _)))
+      .mapError(ProtocolError.Transport.apply)
 
 private[protocol] object HttpExchange:
   /** One shared instance: filling in a stack trace per timed-out request is exactly the kind of
     * cost that shows up as the emulator's own latency once the SUT starts timing out.
     */
   private val timedOut = TimeoutException("loadgen request timeout")
+
+  /** Whether a failed request may be sent again unchanged: the connection closed under it before
+    * any response, and its method is safe (RFC 9110 §9.2.1) so repeating it cannot do twice what
+    * it did once. A POST is never retried here -- the caller knows whether its form is replayable,
+    * and `/token` and `/par` are not.
+    */
+  def retriable(method: Method, cause: Throwable): Boolean =
+    (method == Method.GET || method == Method.HEAD) && cause.isInstanceOf[PrematureChannelClosureException]
 
   val formContentType: Header.ContentType = Header.ContentType(MediaType.application.`x-www-form-urlencoded`)
 

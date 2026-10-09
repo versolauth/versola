@@ -294,6 +294,14 @@ case class CampaignPhaseConfig(
     scale: Option[Double],
     scaleFrom: Option[Double],
     scaleTo: Option[Double],
+    /** Whether this phase's latencies count toward the report's quantiles. A warm-up or a ramp
+      * does not describe the system at its load: connections are cold, caches empty, and the
+      * first calls of a driver pay for it, which on a few hundred samples *is* the p99. A phase
+      * with `measured = false` is still driven, and its errors, health and database deltas are
+      * still reported; only its latency snapshots are left out of the merge. Absent: measured, as
+      * every campaign before this existed.
+      */
+    measured: Boolean = true,
 )
 
 object CampaignPhaseConfig:

@@ -73,8 +73,10 @@ final class WebFlows(
     FlowTiming.flow(observer, flow):
       for
         started <- FlowTiming.step(observer, flow, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
-        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
-        outcome <- conversation.walk(flow, credentials, conversationCookie)
+        authorized <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
+        outcome <- authorized match
+          case EdgeAuthorization.Conversation(cookie) => conversation.walk(flow, credentials, cookie)
+          case EdgeAuthorization.Answered(answer) => ZIO.succeed(answer)
         completed <- refusalCompleted(flow, outcome)
         state <- echoedState(started, completed)
         cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code))
@@ -173,7 +175,10 @@ final class WebFlows(
     HttpExchange
       .required(completed.state, completeEndpoint, "no state on the redirect back to edge")
       .flatMap: state =>
-        if state == started.state then ZIO.succeed(state)
+        // A pushed request carries its state inside, so edge's own is not known until here; the
+        // check then falls to edge, which looks the login up by this value and refuses one it
+        // never recorded.
+        if started.state.forall(_ == state) then ZIO.succeed(state)
         else ZIO.fail(ProtocolError.MalformedResponse(completeEndpoint, "state " + state + " is not the one edge recorded"))
 
 object WebFlows:

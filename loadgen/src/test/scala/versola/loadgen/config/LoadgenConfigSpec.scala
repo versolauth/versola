@@ -580,6 +580,15 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       // A target of zero makes the reported delta the measurement itself, which reads as a driver
       // fault rather than as the config error it is. A p99 below its own p50 is not a
       // distribution any sampler can have produced.
+      test("a phase is measured unless it says otherwise") {
+        for
+          explicit <- decodePhase("{ name = warmup, duration = 15m, scale = 0.1, measured = false }")
+          absent <- decodePhase("{ name = warmup,  duration = 15m, scale = 0.1 }")
+        yield assertTrue(
+          !explicit.campaign.phases.head.measured,
+          absent.campaign.phases.head.measured,
+        )
+      },
       test("rejects a non-positive target and a p99 below its own p50") {
         for
           zero <- decodeCalibration(calibration.replaceFirst("p-50 = 6298micros", "p-50 = 0micros")).exit

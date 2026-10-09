@@ -242,6 +242,28 @@ object WebFlowsSpec extends ZIOSpecDefault:
         live,
       )
     },
+    // §7.4: a step-up the session already satisfies is answered silently, with no conversation to
+    // walk. The web path met it as `malformed: no SSO_CONVERSATION cookie` on 4 of 7 step-ups.
+    test("a step-up an existing SSO session already satisfies completes without a conversation") {
+      for
+        stub <- StubSut.makeWebSilent
+        (sut, routes) = stub
+        recorder <- observer
+        flows <- flowsFor(routes, recorder)
+        (cookie, ssoSession) <- flows.stepUp(
+          WebLoginRequest(PresetId(StubSut.preset), Some(List(Acr.PasswordLevel)), Some(SsoSession(StubSut.ssoSession))),
+          credentials,
+        )
+        hops <- sut.paths
+        steps <- recorder.stepNames
+      yield assertTrue(
+        cookie == EdgeCookie(EdgeSession(StubSut.edgeSession), Some(StubSut.edgeCookieTtl)),
+        // The session that answered is still the one the row holds.
+        ssoSession == Some(SsoSession(StubSut.ssoSession)),
+        hops == Vector("GET /login/" + StubSut.preset, "GET /authorize", "GET /complete"),
+        steps == Vector("edge-login", "authorize", "edge-complete"),
+      )
+    },
     test("a refused authorization still consumes edge's pending login, and reports the SUT's error") {
       for
         stub <- StubSut.makeWebRefused(List("credential", "otp"))

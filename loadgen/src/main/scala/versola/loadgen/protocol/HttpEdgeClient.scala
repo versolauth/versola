@@ -59,14 +59,15 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
       else
         for
           location <- HttpExchange.required(received.location, loginEndpoint, "redirect without a Location header")
-          state <- HttpExchange.required(
-            HttpExchange.redirectParam(location, stateParam),
-            loginEndpoint,
-            "no state on the authorize URL edge redirected to",
-          )
+          state = HttpExchange.redirectParam(location, stateParam)
+          // Neither a `state` nor a pushed request to carry one is an authorize URL no flow can
+          // be completed from.
+          _ <- ZIO
+            .fail(ProtocolError.MalformedResponse(loginEndpoint, "neither a state nor a request_uri on the authorize URL edge redirected to"))
+            .when(state.isEmpty && HttpExchange.redirectParam(location, requestUriParam).isEmpty)
         yield EdgeLoginStarted(location, state)
 
-  override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, ConversationCookie] =
+  override def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, EdgeAuthorization] =
     for
       url <- ZIO
         .fromEither(URL.decode(started.authorizeUrl))
@@ -76,17 +77,34 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
         request.addHeader(HttpExchange.cookieHeader(HttpAuthClient.ssoSessionCookie, session.value)),
       )
       received <- exchange.send(withSession)
-      conversation <-
+      authorization <-
         if HttpExchange.isRedirect(received.status) || received.status == Status.Ok then
-          HttpExchange
-            .required(
-              HttpExchange.setCookie(received.response, HttpAuthClient.conversationCookie),
-              authorizeEndpoint,
-              "no " + HttpAuthClient.conversationCookie + " cookie on the /authorize response",
-            )
-            .map(cookie => ConversationCookie(cookie.content))
+          HttpExchange.setCookie(received.response, HttpAuthClient.conversationCookie) match
+            case Some(cookie) => ZIO.succeed(EdgeAuthorization.Conversation(ConversationCookie(cookie.content)))
+            // No conversation: an SSO session that already satisfies the request is answered with
+            // the redirect back to edge itself, carrying the code (or the refusal). Anything else
+            // is malformed, and names where it was sent so the cause is not a guess.
+            case None => answered(received, ssoSession)
         else ZIO.fail(HttpExchange.unexpected(expectedConversation, received.status, authorizeEndpoint))
-    yield conversation
+    yield authorization
+
+  private def answered(received: Received, ssoSession: Option[SsoSession]): IO[ProtocolError, EdgeAuthorization] =
+    val location = received.location
+    location.flatMap(HttpExchange.redirectParam(_, codeParam)) match
+      case Some(code) =>
+        val at = location.get
+        ZIO.succeed(EdgeAuthorization.Answered(ConversationOutcome.Completed(
+          ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(at, stateParam), HttpExchange.redirectParam(at, "iss"), ssoSession),
+        )))
+      case None =>
+        location.flatMap(at => HttpExchange.redirectParam(at, errorParam).map(error => (at, error))) match
+          case Some((at, error)) =>
+            ZIO.succeed(EdgeAuthorization.Answered(ConversationOutcome.Refused(error, HttpExchange.redirectParam(at, stateParam))))
+          case None =>
+            ZIO.fail(ProtocolError.MalformedResponse(
+              authorizeEndpoint,
+              "no " + HttpAuthClient.conversationCookie + " cookie, and no code or error on the redirect: " + location.getOrElse("status " + received.status.code),
+            ))
 
   override def complete(state: String, code: AuthCode): IO[ProtocolError, EdgeCookie] =
     val url = endpoints.complete.addQueryParams(List(codeParam -> code.value, stateParam -> state))
@@ -133,6 +151,7 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
 object HttpEdgeClient:
   private val acrValuesParam = "acr_values"
   private val stateParam = "state"
+  private val requestUriParam = "request_uri"
   private val codeParam = "code"
   private val errorParam = "error"
 

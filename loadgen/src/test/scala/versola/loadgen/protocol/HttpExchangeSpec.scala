@@ -33,6 +33,18 @@ object HttpExchangeSpec extends ZIOSpecDefault:
     Routes(Method.GET / "fast" -> handler(Response.text("ok")))
 
   def spec = suite("HttpExchange")(
+    // The unanswered request on a connection the far side retired is repeated for a safe method
+    // and never for a POST, whose form may not be replayable (a code, a refresh token).
+    test("repeats a GET or HEAD whose connection was closed under it, and nothing else") {
+      val closed = io.netty.handler.codec.PrematureChannelClosureException()
+      assertTrue(
+        HttpExchange.retriable(Method.GET, closed),
+        HttpExchange.retriable(Method.HEAD, closed),
+        !HttpExchange.retriable(Method.POST, closed),
+        !HttpExchange.retriable(Method.PUT, closed),
+        !HttpExchange.retriable(Method.GET, java.util.concurrent.TimeoutException("slow")),
+      )
+    },
     test("times out a request whose body stalls, not just one whose headers never arrive") {
       for
         _ <- TestClient.addRoutes(slowBodyRoute)
