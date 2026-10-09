@@ -176,6 +176,41 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
       )
     yield ()
 
+  /** Edge as the chart configures it: `versola-internal-url` is plaintext -- no certificate can be
+    * presented over it, and nothing listens there -- and the TLS endpoint is auth's mutual-TLS
+    * listener, named by `native.auth-mutual-tls-url` and pinned by `native.trusted-certificates`.
+    * `internalTrust` is deliberately a different pin from the listener's, to show which one is read. */
+  private def chartEdgeConfig(port: Int, listenerTrust: Path, internalTrust: Path): EdgeConfig =
+    edgeConfig(port, Some(internalTrust)).copy(
+      versolaInternalUrl = Some(URL.decode("http://localhost:1").toOption.get),
+      native = Some(
+        EdgeConfig.Native(
+          authMutualTlsUrl = URL.decode(s"https://localhost:$port").toOption.get,
+          trustedCertificates = Set(listenerTrust.toString),
+          blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+        ),
+      ),
+    )
+
+  private def exchangeViaChartTopology(
+      certificate: TestCertificates.Generated,
+      listenerTrust: Path,
+      internalTrust: Path,
+      port: Int,
+  ): ZIO[Client & ClientCertificateFiles, Throwable, Unit] =
+    for
+      httpClient <- ZIO.service[Client]
+      files <- ZIO.service[ClientCertificateFiles]
+      sso = SSOClient.Impl(httpClient, chartEdgeConfig(port, listenerTrust, internalTrust), files)
+      _ <- sso.exchangeAuthorizationCode(
+        Code("c-1"),
+        CodeVerifier("v-1"),
+        redirectUri,
+        clientId,
+        ClientCredential.MutualTls(material(certificate)),
+      )
+    yield ()
+
   /** A rejected handshake reaches the caller as a closed channel: whichever side refuses,
     * zio-http reports `PrematureChannelClosureException` and the TLS alert behind it is not
     * in the cause chain. So the failure's type says nothing, and what the negative tests
@@ -205,6 +240,29 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
         // RFC 8705 §3.1 binds a token to, and two certificates can share a subject.
         presented.contains(client.certificate),
       )
+    },
+    // The chart's topology (#551): a plaintext `versola-internal-url` and the native back channel.
+    // The certificate client's call has to leave the plaintext url for the listener, and what it
+    // authenticates the listener with is `native.trusted-certificates`.
+    test("with a plaintext internal url the certificate is presented to the listener the native block names") {
+      for
+        pem <- ZIO.service[Pem]
+        listening <- ZIO.service[Listener]
+        _ <- listening.seen.set(None)
+        _ <- exchangeViaChartTopology(client, pem.serverTrust, pem.foreignTrust, listening.port)
+        presented <- listening.seen.get
+      yield assertTrue(presented.contains(client.certificate))
+    },
+    test("the listener is authenticated by the native pins, not by the internal ones") {
+      for
+        pem <- ZIO.service[Pem]
+        listening <- ZIO.service[Listener]
+        _ <- listening.seen.set(None)
+        // Right internal pin, wrong native pin: refused before the certificate is sent.
+        result <- exchangeViaChartTopology(client, pem.foreignTrust, pem.serverTrust, listening.port).either
+        presented <- listening.seen.get
+        serving <- stillServes(pem, listening)
+      yield assertTrue(result.isLeft, presented.isEmpty, serving)
     },
     test("a certificate the server does not trust is refused in the handshake") {
       // The guard on the test above: the server validates what it is sent, so reaching the
