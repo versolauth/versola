@@ -73,6 +73,7 @@ object Seeder:
           audience = warm.audience,
           scope = versola.loadgen.provision.CampaignBlueprint.scopes.toList,
           refreshTokenTtl = config.session.refreshTokenTtl,
+          names = versola.loadgen.provision.CampaignBlueprint.Names(seedConfig.namespace),
         )
       _ <- ZIO.logInfo("Seeding mobile warm sessions (dev spec §10 step 6)").when(warmSessions.isDefined)
       _ <- run(services, config.population, seedConfig, warmSessions)
@@ -267,7 +268,7 @@ object Seeder:
           SeedRows.vuSessions(
             seeded = seededUser,
             material = material,
-            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            clientId = SeedRows.mobileClientId(config.names, seededUser.user.credential),
             now = now,
             refreshExpiresAt = now.plusSeconds(config.refreshTokenTtl.toSeconds),
           )

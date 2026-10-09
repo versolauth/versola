@@ -12,11 +12,21 @@ import zio.Duration
   *   invisible until a resumed session's first API call 403s on the wrong `aud`.
   * @param scope
   *   [[versola.loadgen.provision.CampaignBlueprint.scopes]], every client's fixed request.
+  * @param names
+  *   the client ids the warm sessions are issued to
   * @param refreshTokenTtl
   *   [[versola.loadgen.config.SessionConfig.refreshTokenTtl]], so a warm token's `expires_at`
   *   agrees with what the session model already assumes a live refresh token's lifetime is.
   */
-case class WarmSessionConfig(audience: List[String], scope: List[String], refreshTokenTtl: Duration)
+case class WarmSessionConfig(
+    audience: List[String],
+    scope: List[String],
+    refreshTokenTtl: Duration,
+    /** The campaign's client ids, namespaced when `provision.namespace` is: a warm token is bound
+      * to the client it was issued to, so one seeded for `mobile-otp` is refused (`invalid_grant`)
+      * when the driver refreshes as `fapi-mobile-otp`. */
+    names: versola.loadgen.provision.CampaignBlueprint.Names = versola.loadgen.provision.CampaignBlueprint.Names(None),
+)
 
 /** The credentials of one warm mobile session (§10 step 6): a refresh token auth will accept
   * from a `grant_type=refresh_token` exchange the user never actually performed.

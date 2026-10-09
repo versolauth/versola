@@ -1,6 +1,6 @@
 package versola.loadgen.protocol
 
-import zio.IO
+import zio.{IO, ZIO}
 
 /** Everything a virtual user's device can do against auth directly -- the `mobile-*` clients of
   * §8.1-8.3. No admin calls, no assertions: a driver never has more surface than a real client
@@ -88,6 +88,15 @@ trait AuthClient:
     * at the wire from reuse detection, which is why [[versola.loadgen.protocol.DpopKeyPool]] goes
     * to the trouble of being reproducible rather than generating keys per process.
     */
+  /** What a client that checks its callback does with the redirect that ended the conversation,
+    * before it redeems the code. A flow whose authorization request was pushed on the device's
+    * behalf ([[NativeAuthClient]]) holds the `state` and the issuer the callback must name, and
+    * refuses one that names others -- the check a real app makes and edge repeats. The direct
+    * client has nothing to compare, so the default does nothing.
+    */
+  def checkCallback(started: AuthorizeStarted, completed: ConversationCompleted): IO[ProtocolError, Unit] =
+    ZIO.unit
+
   def exchangeRefresh(token: RefreshToken, client: ClientCreds, key: Option[DpopKey]): IO[ProtocolError, Tokens]
 
   def logout(idToken: IdToken): IO[ProtocolError, Unit]

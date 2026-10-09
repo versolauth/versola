@@ -135,6 +135,11 @@ object LoadgenMetrics:
     * (`... * on (namespace) group_left (campaign, tenant, profile) loadgen_campaign_info`) to tell
     * a `fapi2` campaign's panels from a `standard` one's when both run against one SUT; every
     * other loadgen series stays label-for-label what it was.
+    *
+    * The coordinator and every driver each publish it, so within a namespace it is not unique and
+    * a bare `group_left` join fails with a many-to-many match. Collapse it first:
+    * `... * on (namespace) group_left (campaign, tenant, profile)
+    * max by (namespace, campaign, tenant, profile) (loadgen_campaign_info)`.
     */
   def campaignInfo(campaign: String, tenant: Option[String], profile: Option[String], tokenMode: String): UIO[Unit] =
     campaignInfoGauge

@@ -65,7 +65,15 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
   /** A campaign of its own: a tenant it creates on the profile it is run for, and ids scoped under
     * a namespace so that it can sit beside the standard campaign above in one central. */
   private def fapi2Provision(c: E2EConfig, tenantId: String, namespace: String): ProvisionConfig =
-    provision(c).copy(tenantId = tenantId, namespace = Some(namespace), fapi2 = true)
+    val base = provision(c)
+    // A preset id is a primary key across tenants, like a client id, and the standard case above
+    // already holds `e2e-web-otp`.
+    base.copy(
+      tenantId = tenantId,
+      namespace = Some(namespace),
+      fapi2 = true,
+      preset = base.preset.copy(id = s"$namespace-web-otp"),
+    )
 
   def spec = suite("loadgen provision: the real admin client against a real central")(
     // The tenant's profile is fixed when it is created, and `default` is on fapi2: a fapi2

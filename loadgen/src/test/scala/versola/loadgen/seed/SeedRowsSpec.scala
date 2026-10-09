@@ -209,6 +209,9 @@ object SeedRowsSpec extends ZIOSpecDefault:
       import versola.loadgen.provision.CampaignBlueprint
       assertTrue(
         SeedRows.mobileClientId(CredentialKind.Otp) == CampaignBlueprint.mobileOtpClientId,
+        // A warm token is bound to the client it was issued to, so under a namespace it has to be
+        // issued to the namespaced one the driver will refresh as.
+        SeedRows.mobileClientId(CampaignBlueprint.Names(Some("fapi")), CredentialKind.Passkey) == "fapi-mobile-passkey",
         SeedRows.mobileClientId(CredentialKind.OtpPassword) == CampaignBlueprint.mobileOtpPasswordClientId,
         SeedRows.mobileClientId(CredentialKind.Passkey) == CampaignBlueprint.mobilePasskeyClientId,
         SeedRows.amrFor(CredentialKind.Otp) == List("otp", "sms"),

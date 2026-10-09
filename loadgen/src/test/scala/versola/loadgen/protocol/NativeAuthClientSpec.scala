@@ -162,6 +162,27 @@ object NativeAuthClientSpec extends ZIOSpecDefault:
         calls.count(_.path == "/.well-known/openid-configuration") == 1,
       )
     },
+    // A real app refuses a callback that does not name the state it was given and the issuer it
+    // pushed to; so must the driver, or the values it sends on to /native/complete -- which come
+    // from /native/start and the config -- would turn such a redirect into a successful flow.
+    test("refuses a callback with another state or issuer, and one that names neither") {
+      for
+        sut <- stub(startChallenges = 0)
+        auth <- authFor(sut)
+        started = AuthorizeStarted(ConversationCookie("c"), CodeVerifier("st-1.blob-1"), "st-1")
+        completed = (state: Option[String], iss: Option[String]) => ConversationCompleted(AuthCode("code"), state, iss, None)
+        good <- auth.checkCallback(started, completed(Some("st-1"), Some(StubSut.authUrl))).either
+        slash <- auth.checkCallback(started, completed(Some("st-1"), Some(StubSut.authUrl + "/"))).either
+        otherState <- auth.checkCallback(started, completed(Some("st-2"), Some(StubSut.authUrl))).either
+        otherIss <- auth.checkCallback(started, completed(Some("st-1"), Some("https://evil.test"))).either
+        noIss <- auth.checkCallback(started, completed(Some("st-1"), None)).either
+        noState <- auth.checkCallback(started, completed(None, Some(StubSut.authUrl))).either
+      yield assertTrue(
+        good.isRight,
+        slash.isRight,
+        List(otherState, otherIss, noIss, noState).forall(_.left.exists(_.isInstanceOf[ProtocolError.MalformedResponse])),
+      )
+    },
     test("a native flow without a device key is a configuration fault, not a bearer fallback") {
       for
         sut <- stub(startChallenges = 0)

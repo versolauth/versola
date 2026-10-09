@@ -107,7 +107,7 @@ final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String):
           SeedRows.refreshTokens(
             seeded = seededUser,
             material = material,
-            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            clientId = SeedRows.mobileClientId(config.names, seededUser.user.credential),
             audience = config.audience,
             scope = config.scope,
             amr = SeedRows.amrFor(seededUser.user.credential),

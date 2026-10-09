@@ -591,6 +591,9 @@ case class SeedConfig(
     shardCount: Int,
     hashParallelism: Int,
     batchSize: Int,
+    /** `provision.namespace` of the same campaign: the warm sessions are issued to the namespaced
+      * clients, and a token seeded for another client id is refused at the first refresh. */
+    namespace: Option[String] = None,
     /** `seed.warm-sessions` (§10 step 6), absent by default: an existing `seed` config with no
       * such block seeds exactly as it always has, mobile users included, no `refresh_tokens` row
       * and no `vu_sessions` row for any of them. Present, it turns on [[BulkTokenMinter]] for the

@@ -730,8 +730,11 @@ object BootstrapService:
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
     if envName.isProd then centralEndpointCatalog else centralEndpointCatalog ++ serviceEndpointCatalog
 
-  /** What a campaign's provisioning writes, and only that: clients, resources, roles,
-    * permissions, presets and challenge settings, plus the syncs. Deliberately without
+  /** What a campaign's provisioning writes, and only that: its tenant, clients, resources, roles,
+    * permissions, presets and challenge settings, plus the syncs. The tenant because a campaign's
+    * security profile is fixed when its tenant is created, so `loadgen provision` creates one;
+    * `tenants:manage` also admits deleting a tenant, which provisioning never does, but the
+    * permission model has no narrower grant. Deliberately without
     * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
     * secret this client replaces could read every one of them.
     */
@@ -745,6 +748,8 @@ object BootstrapService:
     Permission("resources:manage"),
     Permission("security:read"),
     Permission("security:manage"),
+    Permission("tenants:read"),
+    Permission("tenants:manage"),
     Permission("service:operate"),
   )
 

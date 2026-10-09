@@ -214,7 +214,12 @@ object SeedRows:
     * presents to the same client its first login would have.
     */
   def mobileClientId(credential: CredentialKind): String =
-    import versola.loadgen.provision.CampaignBlueprint.*
+    mobileClientId(versola.loadgen.provision.CampaignBlueprint.Names(None), credential)
+
+  /** [[mobileClientId]] under the campaign's namespace (`seed.namespace`, which has to be the
+    * `provision.namespace` the clients were registered with). */
+  def mobileClientId(names: versola.loadgen.provision.CampaignBlueprint.Names, credential: CredentialKind): String =
+    import names.*
     credential match
       case CredentialKind.Otp => mobileOtpClientId
       case CredentialKind.OtpPassword => mobileOtpPasswordClientId

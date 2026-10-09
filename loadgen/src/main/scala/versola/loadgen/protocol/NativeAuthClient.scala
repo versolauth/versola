@@ -115,9 +115,28 @@ final class NativeAuthClient(
       _ <- endpoints.set(Some(NativeEndpoints(started.token_endpoint, started.revocation_endpoint)))
       hop <- auth.authorizePushed(id, started.request_uri, sessionCookie)
       grant = NativeGrant.encode(started.state, started.blob)
-    yield hop match
-      case Left(conversation) => AuthorizeOutcome.Started(AuthorizeStarted(conversation, grant, started.state))
-      case Right(code) => AuthorizeOutcome.Authorized(code, grant)
+      outcome <- hop match
+        case Left(conversation) => ZIO.succeed(AuthorizeOutcome.Started(AuthorizeStarted(conversation, grant, started.state)))
+        case Right(redirect) =>
+          verifyCallback(started.state, redirect.state, redirect.iss).as(AuthorizeOutcome.Authorized(redirect.code, grant))
+    yield outcome
+
+  override def checkCallback(started: AuthorizeStarted, completed: ConversationCompleted): IO[ProtocolError, Unit] =
+    verifyCallback(started.state, completed.state, completed.iss)
+
+  /** What a native app does with the redirect before it presents the code: the `state` has to be
+    * the one `/native/start` returned and the `iss` (RFC 9207) the issuer the request was pushed
+    * to. Checked here, not left to edge's `/native/complete`, because the values sent on are the
+    * ones `/native/start` and the configuration supplied -- so a redirect that named others would
+    * otherwise be rewritten into a valid request and recorded as a flow that succeeded, which a
+    * real app would have refused.
+    */
+  private def verifyCallback(expectedState: String, state: Option[String], iss: Option[String]): IO[ProtocolError, Unit] =
+    if !state.contains(expectedState) then
+      ZIO.fail(ProtocolError.MalformedResponse(authorizeEndpoint, "the callback's state is not the one /native/start returned"))
+    else if !iss.exists(_.stripSuffix("/") == issuer) then
+      ZIO.fail(ProtocolError.MalformedResponse(authorizeEndpoint, "the callback's iss is not the authorization server the request was pushed to"))
+    else ZIO.unit
 
   override def exchangeCode(
       code: AuthCode,
@@ -228,6 +247,7 @@ final class NativeAuthClient(
 
 object NativeAuthClient:
   private val startEndpoint = "/native/start/{clientId}"
+  private val authorizeEndpoint = "/authorize"
   private val completeEndpoint = "/native/complete/{clientId}"
   private val refreshEndpoint = "/native/token/{clientId}"
   private val discoveryEndpoint = "/.well-known/openid-configuration"

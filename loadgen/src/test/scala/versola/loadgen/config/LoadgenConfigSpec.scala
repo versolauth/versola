@@ -329,6 +329,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             "payment-amount-threshold = 1000000",
             "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-id = edge-1\n  mtls-certificate-header = x-client-cert",
           )
+          .replace("shard-count      = 8", "shard-count      = 8\n  namespace         = fapi")
           .replace("roles { retail-user = 0.90, retail-basic = 0.10 }", "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi")
         for
           config <- loadConfig(hoconFapi2)
@@ -339,6 +340,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.provision.flatMap(_.edgeId) == Some("edge-1"),
           config.provision.map(_.mtlsCertificateHeader) == Some("x-client-cert"),
           config.provision.map(_.mtlsCertificateEncoding) == Some("urlEncodedPem"),
+          config.seed.flatMap(_.namespace) == Some("fapi"),
           config.population.phonePrefix == "+49157",
           config.population.idNamespace == "fapi",
           bad.isFailure,

@@ -133,26 +133,26 @@ final class HttpAuthClient(
       hop <- authorizeHop(params, sessionCookie)
     yield hop match
       case Left(conversation) => AuthorizeOutcome.Started(AuthorizeStarted(conversation, pkce.verifier, state))
-      case Right(code) => AuthorizeOutcome.Authorized(code, pkce.verifier)
+      case Right(redirect) => AuthorizeOutcome.Authorized(redirect.code, pkce.verifier)
 
   /** RFC 9126 §4's authorization hop for a request already pushed: `client_id` and `request_uri`
     * are the whole query, everything else (PKCE, `state`, `dpop_jkt`, the redirect URI) travelled
     * in the push. Used by [[NativeAuthClient]], whose pushes edge makes on the device's behalf.
     *
-    * Left is a conversation to walk, Right a code auth answered with directly because the
+    * Left is a conversation to walk, Right the redirect auth answered with directly because the
     * `SSO_SESSION` supplied already satisfied the request (§7.4).
     */
   private[protocol] def authorizePushed(
       clientId: String,
       requestUri: String,
       sessionCookie: Option[SsoSession],
-  ): IO[ProtocolError, Either[ConversationCookie, AuthCode]] =
+  ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
     authorizeHop(List("client_id" -> clientId, "request_uri" -> requestUri), sessionCookie)
 
   private def authorizeHop(
       params: List[(String, String)],
       sessionCookie: Option[SsoSession],
-  ): IO[ProtocolError, Either[ConversationCookie, AuthCode]] =
+  ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
     val request = Request.get(endpoints.authorize.addQueryParams(params))
     val withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
     exchange.send(withSession).flatMap: received =>
@@ -170,7 +170,7 @@ final class HttpAuthClient(
               authorizeEndpoint,
               "no " + conversationCookie + " cookie and no code on the /authorize redirect",
             )
-          yield Right(AuthCode(code))
+          yield Right(AuthorizedRedirect(AuthCode(code), HttpExchange.redirectParam(location, "state"), HttpExchange.redirectParam(location, "iss")))
 
   override def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage] =
     exchange
@@ -426,6 +426,11 @@ final class HttpAuthClient(
           raw.id_token.map(IdToken.apply),
           raw.expires_in,
         )
+
+/** The redirect to the client's `redirect_uri` that carries the code: what `state` and `iss`
+  * (RFC 9207) it named, which a client that checks its callback compares against what it sent.
+  */
+private[protocol] case class AuthorizedRedirect(code: AuthCode, state: Option[String], iss: Option[String])
 
 object HttpAuthClient:
   private[protocol] val conversationCookie = "SSO_CONVERSATION"
