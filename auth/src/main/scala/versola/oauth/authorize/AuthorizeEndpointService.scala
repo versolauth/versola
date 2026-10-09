@@ -184,6 +184,7 @@ object AuthorizeEndpointService:
                             targetAcr = Some(targetAcr),
                             missingUser = reauthMissingUser,
                             priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                           )
                     case _ =>
                       // Skipping the credential card for a known user is only sound when something
@@ -210,6 +211,7 @@ object AuthorizeEndpointService:
                         knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                       )
                 else if !acrSatisfied then
                   // A deleted user has no auth factors registered, so resolveAchievableAcr would
@@ -240,6 +242,7 @@ object AuthorizeEndpointService:
                             targetAcr = Some(targetAcr),
                             missingUser = MissingUserBehavior.Deny,
                             priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                           )
                 else if !factorsSatisfied then
                   createConversation(
@@ -253,6 +256,7 @@ object AuthorizeEndpointService:
                     knownUserId = Some(session.userId),
                     missingUser = MissingUserBehavior.Deny,
                     priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                   )
                 else if clientRecord.consentFlow.isEmpty then
                   // No consent flow configured for this client: skip the decision entirely,
@@ -281,6 +285,7 @@ object AuthorizeEndpointService:
                         targetAcr = satisfiedAcr,
                         missingUser = MissingUserBehavior.Deny,
                         priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                       )
                     case ConsentDecision.Satisfied(grantedScope) =>
                       silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr, grantedScope)
@@ -308,6 +313,7 @@ object AuthorizeEndpointService:
         targetAcr: Option[Acr] = None,
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
         priorSessionId: Option[MAC.Of[SessionId]] = None,
+        priorSessionUserId: Option[UserId] = None,
     ): Task[AuthorizeResponse] =
       for
         userOpt <- knownUserId match
@@ -367,6 +373,7 @@ object AuthorizeEndpointService:
           targetAcr = targetAcr,
           csrfToken = csrfToken,
           priorSessionId = priorSessionId,
+          priorSessionUserId = priorSessionUserId,
           resources = request.resources,
           authorizationDetails = request.authorizationDetails,
           grantedScope = None,

@@ -740,13 +740,13 @@ object ConversationService:
             // again: migrating them renews *their* authentication time and methods, which another
             // user's login (an account switch, which the credential card allows) must not do. The
             // previous user's tokens are expired instead.
-            priorSession <- ZIO.foreach(conversation.priorSessionId): prior =>
-              sessionRepository.findSession(prior).map: previous =>
-                val sameUser = previous.exists(_.userId == userId)
-                if conversation.hasOfflineAccess && sameUser then
-                  PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
-                else
-                  PriorSession.Invalidate(prior)
+            // The prior session's user was recorded when /authorize looked that session up.
+            priorSession = conversation.priorSessionId.map: prior =>
+              val sameUser = conversation.priorSessionUserId.contains(userId)
+              if conversation.hasOfflineAccess && sameUser then
+                PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
+              else
+                PriorSession.Invalidate(prior)
             _ <- sessionRepository.create(sessionIdMac, session, sessionTtl, sessionIdleTtl, priorSession)
             idTokenData <-
               if conversation.responseType.contains(ResponseTypeEntry.IdToken) && conversation.effectiveScope.contains(ScopeToken.OpenId) then
