@@ -91,6 +91,40 @@ object PhoneSpec extends UnitSpecBase:
           input = "+0123456789",
           expectedResult = Left("Could not interpret numbers after plus-sign.")
         ),
+
+        // Canonical E.164
+        TestCase(
+          description = "drop the Kazakh trunk prefix 8 after the country code",
+          input = "+787011234567",
+          expectedResult = Right(Phone("+77011234567"))
+        ),
+
+        TestCase(
+          description = "drop the UK trunk prefix 0 after the country code",
+          input = "+4407911123456",
+          expectedResult = Right(Phone("+447911123456"))
+        ),
+
+        TestCase(
+          description = "keep canonical Kazakh number unchanged",
+          input = "+77011234567",
+          expectedResult = Right(Phone("+77011234567"))
+        ),
       ).map(testCase)
-    }
+    },
+    test("forms of one number parse to one value") {
+      val parsed = List("+77011234567", "+787011234567").map(Phone.parse)
+      assertTrue(parsed.distinct == List(Right(Phone("+77011234567"))))
+    },
+    suite("regionCode")(
+      test("Kazakh number") {
+        assertTrue(Phone.regionCode(Phone("+77011234567")).contains("KZ"))
+      },
+      test("Russian number") {
+        assertTrue(Phone.regionCode(Phone("+79152234455")).contains("RU"))
+      },
+      test("invalid value") {
+        assertTrue(Phone.regionCode(Phone("+0123")).isEmpty)
+      },
+    ),
   )
