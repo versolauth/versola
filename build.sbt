@@ -240,6 +240,17 @@ lazy val tools = project
     // object is still named `genEnv` regardless of the vararg parameter,
     // which the generated `main(args: Array[String])` just forwards along.
     Compile / mainClass := Some("genEnv"),
+    // Tests for the pieces of gen-env.scala that are plain functions (the secret schema),
+    // in scripts/src/test/scala. Test scope only, so none of it reaches the staged jar
+    // the versola-tools image ships -- the reason `commonSettings` is avoided above.
+    // zio-json is here to parse secrets.schema.json back, which gen-env.scala itself
+    // writes by hand.
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio-test" % Versions.zio % Test,
+      "dev.zio" %% "zio-test-sbt" % Versions.zio % Test,
+      "dev.zio" %% "zio-json" % Versions.zioJson % Test,
+    ),
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
   )
 
 // versola-loadgen: coordinator + driver for the load emulator (see
