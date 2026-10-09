@@ -516,12 +516,24 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
       expiredPriorSessionLeavesTokensAlone(env)("migrating", later => PriorSession.MigrateTokens(sessionId1, Set.empty, later, None)),
       expiredPriorSessionLeavesTokensAlone(env)("invalidating", _ => PriorSession.Invalidate(sessionId1)),
       test("create carries over prior session's client ids on rotation") {
+        // The same user signs in again (step-up, re-authentication): their RPs stay registered.
+        val rotated = session2.copy(userId = userId1, clients = List(ClientEntry(clientId1, Instant.EPOCH)))
+        for
+          _     <- env.repository.create(sessionId1, session1, ttl, None, None)
+          _     <- env.repository.registerClient(sessionId1, clientId2)
+          _     <- env.repository.create(sessionId2, rotated, ttl, None, Some(PriorSession.Invalidate(sessionId1)))
+          found <- env.repository.findSession(sessionId2)
+        yield assertTrue(found.exists(_.clients.map(_.clientId).toSet == Set(clientId1, clientId2)))
+      },
+      // Another user signing in on the same browser (an account switch) must not inherit the previous
+      // user's RPs: their logout would notify, and so log out, clients they never used.
+      test("create does not carry over the prior session's client ids when another user signed in") {
         for
           _     <- env.repository.create(sessionId1, session1, ttl, None, None)
           _     <- env.repository.registerClient(sessionId1, clientId2)
           _     <- env.repository.create(sessionId2, session2, ttl, None, Some(PriorSession.Invalidate(sessionId1)))
           found <- env.repository.findSession(sessionId2)
-        yield assertTrue(found.exists(_.clients.map(_.clientId).toSet == Set(clientId1, clientId2)))
+        yield assertTrue(found.exists(_.clients.map(_.clientId) == List(clientId2)))
       },
     )
 
