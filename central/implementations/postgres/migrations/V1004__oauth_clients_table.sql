@@ -13,14 +13,14 @@ CREATE TABLE oauth_clients (
     auth_flow         JSONB,
     otp_template_id   TEXT NOT NULL,
     front_channel_logout_uri TEXT,
-    front_channel_logout_session_required BOOLEAN NOT NULL DEFAULT FALSE,
+    front_channel_logout_session_required BOOLEAN NOT NULL,
     back_channel_logout_uri TEXT,
     -- RFC 8705 §2.1 `tls_client_auth`. NULL means the client does not authenticate with a
     -- certificate.
     mtls_auth JSONB,
     -- RFC 8705 §3.4. Only consulted for clients that authenticate some other way: a client
     -- with mtls_auth set binds regardless, see OAuthClientRecord.bindsAccessTokens.
-    certificate_bound_access_tokens BOOLEAN NOT NULL DEFAULT FALSE,
+    certificate_bound_access_tokens BOOLEAN NOT NULL,
     theme TEXT NOT NULL REFERENCES themes(id),
     registration_flow JSONB,
     logo_uri TEXT,
@@ -29,9 +29,9 @@ CREATE TABLE oauth_clients (
     consent_flow JSONB,
     -- RFC 9449 section 5.2 `dpop_bound_access_tokens`: a client registered with this flag always
     -- uses DPoP, so the token endpoint refuses a token request from it that carries no proof
-    -- instead of falling back to a bearer token. FALSE: DPoP stays opt-in per request unless a
-    -- deployment asks otherwise.
-    dpop_bound_access_tokens BOOLEAN NOT NULL DEFAULT FALSE,
+    -- instead of falling back to a bearer token. A client is registered without it unless a
+    -- deployment asks otherwise, so DPoP stays opt-in per request.
+    dpop_bound_access_tokens BOOLEAN NOT NULL,
     -- RFC 7523 §2.2 `private_key_jwt`: the JWK Set the client signs its assertions with. NULL
     -- means the client does not use the method. Stored as the document registered rather than
     -- as parsed key material, so JWK members central has no opinion on survive the round trip.
@@ -39,10 +39,9 @@ CREATE TABLE oauth_clients (
     jwks JSONB,
     -- RFC 9101 §10.5 `require_signed_request_object` and RFC 9126 §6.2
     -- `require_pushed_authorization_requests`: what a client must use to state an authorization
-    -- request. Both default to FALSE; the requirement only takes effect once an operator turns
-    -- it on.
-    require_signed_request_object BOOLEAN NOT NULL DEFAULT FALSE,
-    require_pushed_authorization_requests BOOLEAN NOT NULL DEFAULT FALSE,
+    -- request. Registered off; the requirement only takes effect once an operator turns it on.
+    require_signed_request_object BOOLEAN NOT NULL,
+    require_pushed_authorization_requests BOOLEAN NOT NULL,
     -- RFC 9449 §5.1 proof key policy, per client: which signing algorithms a proof from it may
     -- use, and how long an RSA proof key's modulus must be.
     --
@@ -50,7 +49,7 @@ CREATE TABLE oauth_clients (
     -- dpop_signing_alg_values_supported advertises. A NULL dpop_min_rsa_key_size leaves the
     -- RFC 7518 §3.3 floor of 2048 bits, which auth applies whether or not a client registered
     -- anything; the column can only raise it.
-    dpop_signing_algs TEXT[] NOT NULL DEFAULT '{}',
+    dpop_signing_algs TEXT[] NOT NULL,
     dpop_min_rsa_key_size INTEGER,
     -- The private key an edge fronting this client signs with: RFC 7523 §2.2 client assertions
     -- at the token endpoint, and RFC 9101 request objects at the authorization endpoint. NULL
@@ -94,7 +93,7 @@ CREATE TABLE oauth_clients (
     -- say "this differs from what you asked for". NULL for a client registered through the API
     -- rather than the wizard: a guess would be indistinguishable from a recorded choice.
     template JSONB,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    created_at TIMESTAMPTZ NOT NULL,
     -- OIDC Dynamic Client Registration §2 `application_type`: what kind of program a client is,
     -- held apart from how it authenticates (`auth_method`). The two cannot be read off each
     -- other: an app fronted by edge (#421) is native (App Link redirect, DPoP key on the device)
@@ -102,5 +101,5 @@ CREATE TABLE oauth_clients (
     --
     -- No CHECK against the known values, like every other enum-shaped text column here: a value
     -- outside the set fails at the application decoder on read.
-    application_type TEXT NOT NULL DEFAULT 'web'
+    application_type TEXT NOT NULL
 );

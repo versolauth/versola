@@ -4,7 +4,7 @@ import versola.central.CentralConfig
 import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
 import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientRecord, OAuthClientRepository, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
-import versola.central.configuration.edges.{EdgeId, EdgeRepository}
+import versola.central.configuration.edges.{EdgeId, EdgeRepository, EdgeRecord}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
@@ -1254,7 +1254,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None    => edgeRepo.createEdge(seed.id, seed.publicKeyJwk)
+          case None    => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the

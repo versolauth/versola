@@ -45,7 +45,7 @@ object EdgeService:
     override def registerEdge(id: EdgeId): Task[RsaKeyPair] =
       for
         keyPair <- securityService.generateRsaKeyPair
-        _ <- edgeRepository.createEdge(id, keyPair.toPublicJwk)
+        _ <- edgeRepository.createEdge(id, keyPair.toPublicJwk, EdgeRecord.DefaultRequireDpopNonce)
       yield keyPair
 
     override def rotateEdgeKey(id: EdgeId): Task[RsaKeyPair] =

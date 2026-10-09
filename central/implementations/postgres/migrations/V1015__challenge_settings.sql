@@ -8,10 +8,10 @@ CREATE TABLE challenge_settings (
     auth_conversation_ttl_seconds INT NOT NULL,
     session_ttl_seconds          INT NOT NULL,
     session_idle_ttl_seconds     INT,
-    user_agent_ttl_seconds       INT NOT NULL DEFAULT 15552000,
+    user_agent_ttl_seconds       INT NOT NULL,
     ip_header                    TEXT NOT NULL,
     acr_vocabulary               JSONB,
-    post_logout_redirect_uris    TEXT[] NOT NULL DEFAULT '{}',
+    post_logout_redirect_uris    TEXT[] NOT NULL,
     -- Header the tenant's reverse proxy sets with the client certificate it terminated mTLS
     -- for. NULL means the proxy does not terminate mTLS for this tenant.
     mtls_certificate_header      TEXT,
@@ -25,10 +25,10 @@ CREATE TABLE challenge_settings (
     --
     -- Tenant-scoped rather than a per-deployment config value because turning it on breaks every
     -- client that has not implemented the `use_dpop_nonce` retry, so it has to be enablable for
-    -- one tenant's clients at a time. FALSE by default: a nonce costs each client an extra round
+    -- one tenant's clients at a time. Registered off: a nonce costs each client an extra round
     -- trip per endpoint, and unlike a proxied API call a token request is not something a
     -- captured proof buys much against.
-    require_dpop_nonce           BOOLEAN NOT NULL DEFAULT FALSE,
+    require_dpop_nonce           BOOLEAN NOT NULL,
     -- Which published key this tenant's tokens are signed with. A bare algorithm name could not
     -- address a key: during a rotation two keys share one `alg`, and a stored `alg` can disagree
     -- with the key behind the kid. The algorithm is read from the key's own JWK instead.
@@ -37,11 +37,11 @@ CREATE TABLE challenge_settings (
     --
     -- The reference means a key cannot be deleted out from under a tenant still signing with it.
     signing_key_id               TEXT REFERENCES jwks (kid),
-    client_assertion_max_lifetime_seconds INT NOT NULL DEFAULT 300,
+    client_assertion_max_lifetime_seconds INT NOT NULL,
     -- Issue #353: which FAPI profile a tenant's clients are held to. `standard`/`fapi2` today,
     -- stored as text rather than a Postgres enum so a future profile needs no type migration.
     -- Fixed when the tenant is created.
-    security_profile             TEXT NOT NULL DEFAULT 'fapi2',
+    security_profile             TEXT NOT NULL,
     PRIMARY KEY (tenant_id)
 );
 
