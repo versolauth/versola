@@ -350,14 +350,9 @@ lazy val securityPins = Seq(
   "io.netty" % "netty-transport-native-kqueue"    % "4.2.19.Final",
   "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
   "com.google.protobuf" % "protobuf-java"       % "4.36.2",
-  "org.jsoup" % "jsoup"                          % "1.23.2",
-  "org.jline" % "jline-reader"                  % "3.30.17",
-  "org.jline" % "jline-terminal"                % "3.30.17",
-  "org.jline" % "jline-terminal-jna"            % "3.30.17",
   "org.yaml" % "snakeyaml"                       % "2.7",
-  "com.squareup.okhttp3" % "okhttp-jvm"           % "5.5.0",
   "com.nimbusds" % "nimbus-jose-jwt"              % "10.10",
-  )
+)
 
 lazy val commonSettings =
   Seq(
