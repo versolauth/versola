@@ -1535,9 +1535,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
     accountRequest(
       Method.PATCH,
       "/settings/password",
-      Nil,
+      caller.query,
       Some(
-        caller.bodyWith(
+        Json.Obj(
           "currentPassword" -> Json.Str(currentPassword),
           "newPassword"     -> Json.Str(newPassword),
         ),

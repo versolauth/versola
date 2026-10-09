@@ -211,15 +211,9 @@ object BootstrapService:
     InjectRule(InjectTarget.query, "clientId", "token.client_id"),
     InjectRule(InjectTarget.query, "sessionId", "token.sid"),
   )
-
-  private val accountCallerBodyInjects = Vector(
-    InjectRule(InjectTarget.body, "userId", "token.sub"),
-    InjectRule(InjectTarget.body, "clientId", "token.client_id"),
-  )
-
+  
   private[versola] def accountCallerInjects(method: String, path: String) =
-    if method == "GET" then accountCallerQueryInjects
-    else accountCallerBodyInjects
+    accountCallerQueryInjects
 
   /** The caller may not revoke the session the page is being viewed from: edge compares the
     * requested session against the `sid` of the token it authenticated and rejects the match
