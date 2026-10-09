@@ -48,6 +48,13 @@ case class WarmSessionConfig(audience: List[String], scope: List[String], refres
   *   16 random bytes for `refresh_tokens.public_session_id`, in
   *   [[AuthPropertyGenerator.nextPublicSessionId]]'s own shape -- observability-only on the
   *   refresh path (`Observability.setSessionId`), never looked up.
+  * @param dpopJkt
+  *   the RFC 7638 thumbprint of the DPoP key [[versola.loadgen.protocol.DpopKeyPool.keyFor]]
+  *   assigns this user, written as `refresh_tokens.cnf = {"jkt": ...}`. `None` on a bearer
+  *   campaign. Without it a seeded session's first refresh under DPoP is refused: auth holds a
+  *   refresh token to the key it was issued to, and a row with no binding was issued to none --
+  *   the first proof's key would be accepted and then bound, but a tenant that requires a
+  *   sender-constrained refresh refuses the unbound row outright.
   */
 case class RefreshTokenMaterial(
     rawToken: Array[Byte],
@@ -55,4 +62,5 @@ case class RefreshTokenMaterial(
     sessionMac: Array[Byte],
     familyId: Array[Byte],
     publicSessionId: Array[Byte],
+    dpopJkt: Option[String],
 )

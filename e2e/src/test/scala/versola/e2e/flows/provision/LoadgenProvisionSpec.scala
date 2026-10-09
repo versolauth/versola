@@ -62,7 +62,32 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
       paymentAmountThreshold = 1000000L,
     )
 
+  /** A campaign of its own: a tenant it creates on the profile it is run for, and ids scoped under
+    * a namespace so that it can sit beside the standard campaign above in one central. */
+  private def fapi2Provision(c: E2EConfig, tenantId: String, namespace: String): ProvisionConfig =
+    provision(c).copy(tenantId = tenantId, namespace = Some(namespace), fapi2 = true)
+
   def spec = suite("loadgen provision: the real admin client against a real central")(
+    // The tenant's profile is fixed when it is created, and `default` is on fapi2: a fapi2
+    // campaign gets a tenant of its own, created by `provision`, whose clients are the
+    // certificate clients the profile admits -- registered against the real central, which
+    // refuses a client_secret one outright.
+    test("provisions a fapi2 campaign into a tenant of its own, beside the standard one") {
+      for
+        c <- ZIO.service[E2EConfig]
+        client <- ZIO.service[Client]
+        centralApi <- ZIO.service[CentralApi]
+        tenantId <- CentralApi.id("e2e-lg-fapi2")
+        namespace = tenantId.takeRight(12)
+        config = fapi2Provision(c, tenantId, namespace)
+        flows <- FlowResources.load
+        blueprint = CampaignBlueprint(targets(c), config, flows)
+        admin <- HttpAdminClient.make(client, targets(c), config)
+        created <- Provisioner.run(admin, blueprint)
+          .retry(Schedule.recurs(40) && Schedule.spaced(2.seconds))
+          .ensuring(centralApi.delete("/configuration/tenants", "tenantId" -> tenantId).ignore)
+      yield assertTrue(created.keySet == blueprint.clients.map(_.clientId).toSet, blueprint.tenant.securityProfile == "fapi2")
+    },
     test("provisions the campaign's clients, and a second pass changes nothing") {
       for
         c <- ZIO.service[E2EConfig]

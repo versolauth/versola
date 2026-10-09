@@ -1,6 +1,6 @@
 package versola.loadgen.provision
 
-import versola.loadgen.config.LoadgenConfig
+import versola.loadgen.config.{LoadgenConfig, ProvisionConfig, SecurityProfile}
 import versola.loadgen.protocol.{AdminClient, ClientCreds, HttpAdminClient}
 import zio.*
 import zio.http.Client
@@ -16,7 +16,9 @@ import zio.http.Client
   */
 object Provisioner:
 
-  /** The order is not cosmetic. Resources come before permissions because a permission grants an
+  /** The order is not cosmetic. The tenant comes first, and its settings next, because every
+    * other write is made into it and a client is validated against the profile and the
+    * certificate header those settings hold. Resources come before permissions because a permission grants an
     * endpoint id the resource has to have declared; permissions before roles because a role
     * grants a permission; roles before clients because a client's registration flow grants a
     * role by id and central rejects the write with a `400` if that role does not exist yet;
@@ -26,13 +28,16 @@ object Provisioner:
     */
   def run(admin: AdminClient, blueprint: CampaignBlueprint): Task[Map[String, ClientCreds]] =
     for
-      _ <- ZIO.logInfo("Provisioning campaign configuration")
+      _ <- ZIO.logInfo(s"Provisioning campaign configuration in tenant '${blueprint.tenant.tenantId}' (${blueprint.tenant.securityProfile})")
+      _ <- admin.ensureTenant(blueprint.tenant)
+      // Before the clients, not after them: a `tls_client_auth` client is refused by a tenant that
+      // has no certificate header yet, and the profile in these settings is already the tenant's.
+      _ <- admin.upsertChallengeSettings(blueprint.challengeSettings)
       _ <- ZIO.foreachDiscard(blueprint.resources)(admin.registerResource)
       _ <- admin.upsertPermissions(blueprint.permissions)
       _ <- admin.upsertRoles(blueprint.roles)
       creds <- ZIO.foreach(blueprint.clients)(spec => admin.registerClient(spec).map(spec.clientId -> _))
       _ <- ZIO.foreachDiscard(blueprint.presets)(admin.upsertAuthRequestPresets)
-      _ <- admin.upsertChallengeSettings(blueprint.challengeSettings)
       // The outbox carries user writes to auth. Nothing here creates a user, but the seeder (§10)
       // and a campaign's registration ramp both leave entries behind, and a campaign that starts
       // with users auth has not heard about yet measures failed logins.
@@ -55,16 +60,38 @@ object Provisioner:
     * than at decode time -- a driver's config legitimately omits it, and failing the decode for
     * everyone would stop `role` from being read at all.
     */
+  /** `campaign.security-profile` is where a campaign states its profile, so the tenant provision
+    * creates and the report the coordinator writes cannot disagree. `provision.fapi2` is what the
+    * blueprint reads, and is only consulted for a campaign configured without the profile; a
+    * config that sets both and contradicts itself is refused rather than resolved one way.
+    */
+  private def profileOf(config: LoadgenConfig, provision: ProvisionConfig): IO[ProvisionProfileConflict, ProvisionConfig] =
+    config.campaign.securityProfile match
+      case None => ZIO.succeed(provision)
+      case Some(profile) =>
+        val fapi2 = profile == SecurityProfile.Fapi2
+        ZIO
+          .fail(ProvisionProfileConflict(provision.fapi2, profile.wire))
+          .when(provision.fapi2 && !fapi2)
+          .as(provision.copy(fapi2 = fapi2))
+
   def provision(config: LoadgenConfig): RIO[Client, Unit] =
     for
-      provisionConfig <- ZIO
+      configured <- ZIO
         .fromOption(config.provision)
         .orElseFail(MissingProvisionConfig)
+      provisionConfig <- profileOf(config, configured)
       flows <- FlowResources.load
       client <- ZIO.service[Client]
       admin <- HttpAdminClient.make(client, config.targets, provisionConfig)
       _ <- run(admin, CampaignBlueprint(config.targets, provisionConfig, flows))
     yield ()
+
+case class ProvisionProfileConflict(provisionSays: Boolean, campaignSays: String)
+    extends RuntimeException(
+      s"provision.fapi2 = $provisionSays contradicts campaign.security-profile = $campaignSays; " +
+        "state the profile once, as campaign.security-profile",
+    )
 
 case object MissingProvisionConfig
     extends RuntimeException("role = provision requires a 'provision' configuration block")

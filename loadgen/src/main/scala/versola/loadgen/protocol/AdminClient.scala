@@ -14,6 +14,13 @@ import zio.Task
   * (§4); `registerClient`/`registerResource` keep theirs but behave the same way.
   */
 trait AdminClient:
+  /** Creates the campaign's tenant on its security profile when it does not exist, and leaves
+    * one that does alone -- creating a tenant writes its default settings, which would clear
+    * the ones a running tenant has. Fails when an existing tenant is on the other profile:
+    * that is fixed at creation, and every client the campaign registers is admitted under it.
+    */
+  def ensureTenant(spec: TenantSpec): Task[Unit]
+
   /** Answers the credentials a driver authenticates with, which for a confidential client means
     * a secret this call is the only source of -- central hands one back on registration and
     * never again.

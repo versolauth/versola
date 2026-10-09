@@ -112,6 +112,17 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
         exchangedAfter <- counter("loadgen_refresh_rejected_total", "reason" -> "already_exchanged")
       yield assertTrue(after - before == 1.0, exchangedAfter - exchanged == 1.0)
     },
+    // A fapi2 campaign and a standard one run side by side on one SUT; this is the series that
+    // tells their panels apart, so its label set is the contract.
+    test("the campaign's identity is a gauge of 1 carrying its tenant, profile and token mode") {
+      for
+        campaign <- unique("campaign")
+        _ <- LoadgenMetrics.campaignInfo(campaign, Some("loadgen-fapi2"), Some("fapi2"), "dpop")
+        _ <- LoadgenMetrics.campaignInfo(s"$campaign-legacy", None, None, "bearer")
+        known <- gauge("loadgen_campaign_info", "campaign" -> campaign, "tenant" -> "loadgen-fapi2", "profile" -> "fapi2", "token_mode" -> "dpop")
+        unnamed <- gauge("loadgen_campaign_info", "campaign" -> s"$campaign-legacy", "tenant" -> "unspecified", "profile" -> "unspecified", "token_mode" -> "bearer")
+      yield assertTrue(known == 1.0, unnamed == 1.0)
+    },
     test("population is a gauge per state") {
       for
         _ <- LoadgenMetrics.population(PopulationState.Planned, 1_000_000L)

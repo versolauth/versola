@@ -3,6 +3,7 @@ package versola.loadgen.seed
 import versola.loadgen.config.PopulationConfig
 import versola.loadgen.model.*
 import versola.loadgen.scheduler.ShardAssignment
+import versola.util.Phone
 
 import java.nio.ByteBuffer
 import java.util.UUID
@@ -46,7 +47,11 @@ object PopulationPlan:
     */
   val maxSupportedId: Long = 99_999_999L
 
-  def phoneOf(id: Long): String = f"+49151$id%08d"
+  def phoneOf(id: Long): String = phoneOf(PopulationConfig.DefaultPhonePrefix, id)
+
+  /** [[phoneOf]] under a population's own prefix (`population.phone-prefix`), which is what keeps
+    * two campaigns seeded into one SUT from sharing a number. */
+  def phoneOf(prefix: String, id: Long): String = f"$prefix$id%08d"
 
   /** The SUT's `users.id`, derived from the virtual-user id so that every table the seeder wrote
     * can be found again from the id alone. That is what makes the pre-write delete of §10's
@@ -60,9 +65,15 @@ object PopulationPlan:
     * the `sub` claim, never sorted on and never time-ordered (unlike `user_outbox.id`, which is
     * documented as UUIDv7 precisely because its ordering is load bearing).
     */
-  def sutUserIdOf(id: Long): UUID =
+  def sutUserIdOf(id: Long): UUID = sutUserIdOf("", id)
+
+  /** [[sutUserIdOf]] with a population's `id-namespace` mixed in. The empty namespace hashes
+    * exactly what the one-argument form always did, so a population seeded before namespaces
+    * existed keeps its ids. */
+  def sutUserIdOf(namespace: String, id: Long): UUID =
     val digest = java.security.MessageDigest.getInstance("SHA-256")
     digest.update("versola.loadgen.seed.user".getBytes(java.nio.charset.StandardCharsets.UTF_8))
+    if namespace.nonEmpty then digest.update(namespace.getBytes(java.nio.charset.StandardCharsets.UTF_8))
     digest.update(ByteBuffer.allocate(java.lang.Long.BYTES).putLong(id).array())
     val bytes = digest.digest()
     bytes(6) = ((bytes(6) & 0x0f) | 0x40).toByte // version 4
@@ -88,8 +99,8 @@ object PopulationPlan:
     val credential = draw(id, CredentialSalt, credentialShares(config))
     VirtualUser(
       id = id,
-      sutUserId = Some(sutUserIdOf(id)),
-      phone = phoneOf(id),
+      sutUserId = Some(sutUserIdOf(config.idNamespace, id)),
+      phone = phoneOf(config.phonePrefix, id),
       password = Option.when(credential == CredentialKind.OtpPassword)(passwordOf(id)),
       activityClass = draw(id, ActivitySalt, activityShares(config)),
       platform = draw(id, PlatformSalt, platformShares(config)),
@@ -124,6 +135,14 @@ object PopulationPlan:
           "PopulationPlan.phoneOf can produce; widen phoneOf before seeding a population this large",
       )
       _ <- Either.cond(shardCount > 0, (), s"seed.shard-count must be positive, got $shardCount")
+      _ <- Phone
+        .parse(phoneOf(config.phonePrefix, 1L))
+        .left
+        .map(_ => s"population.phone-prefix '${config.phonePrefix}' does not give a valid phone number")
+      _ <- Phone
+        .parse(phoneOf(config.phonePrefix, count))
+        .left
+        .map(_ => s"population.phone-prefix '${config.phonePrefix}' does not give a valid phone number at id $count")
       _ <- config.classes
         .map(_.name)
         .foldLeft[Either[String, Unit]](Right(())): (acc, name) =>

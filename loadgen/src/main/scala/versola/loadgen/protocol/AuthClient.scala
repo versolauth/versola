@@ -16,12 +16,17 @@ trait AuthClient:
     * as a cookie on this request when present. Passing it is what makes silent reauthorization
     * and an ACR step-up (§7.4: "re-run `/authorize` ... on the same SSO session") land on the
     * caller's own existing session instead of starting a fresh one.
+    *
+    * `key` is the device's DPoP key, which a flow that pushes its request through edge needs
+    * here and not only at `/token`: it is bound to the code as `dpop_jkt` when the request is
+    * pushed ([[NativeAuthClient]]). The direct client does not use it at this hop.
     */
   def authorize(
       scope: String,
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
+      key: Option[DpopKey],
   ): IO[ProtocolError, AuthorizeOutcome]
 
   def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage]

@@ -1,5 +1,6 @@
 package versola.loadgen.seed
 
+import versola.loadgen.protocol.DpopKeyPool
 import versola.util.{Secret, SecureRandom, SecurityService}
 import zio.{Chunk, Task, ZIO}
 
@@ -18,6 +19,7 @@ final class BulkTokenMinter(
     refreshTokensSecret: Secret.Bytes32,
     sessionsSecret: Secret.Bytes32,
     parallelism: Int,
+    dpop: Option[DpopKeyPool],
 ):
   def mintAll(ids: Chunk[Long]): Task[Chunk[(Long, RefreshTokenMaterial)]] =
     ZIO
@@ -35,5 +37,6 @@ final class BulkTokenMinter(
           sessionMac = sessionMac,
           familyId = familyId,
           publicSessionId = publicSessionId,
+          dpopJkt = dpop.map(_.keyFor(id).jkt),
         )
       .withParallelism(parallelism)

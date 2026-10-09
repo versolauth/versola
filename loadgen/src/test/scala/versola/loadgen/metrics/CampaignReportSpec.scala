@@ -1,6 +1,7 @@
 package versola.loadgen.metrics
 
 import versola.loadgen.store.SutStatPhase
+import versola.loadgen.config.SecurityProfile
 import versola.loadgen.sut.{SutStatsDelta, SutStatsFixture}
 import zio.json.*
 import zio.test.*
@@ -41,6 +42,8 @@ object CampaignReportSpec extends ZIOSpecDefault:
     shardCount = 8,
     shardEpoch = 4L,
     tokenMode = TokenMode.Bearer,
+    tenantId = None,
+    securityProfile = None,
     observedTokenTypes = List("Bearer"),
     accessTokenTtls = List(ObservedAccessTokenTtl("mobile-otp", List(900L))),
   )
@@ -391,6 +394,29 @@ object CampaignReportSpec extends ZIOSpecDefault:
           report.map(_.notEvaluated) == Right(List("token mode")),
           report.map(_.passed) == Right(false),
           report.map(_.checks.exists(_.name == "token mode")) == Right(false),
+        )
+      },
+      // The profile a campaign names is only worth reporting if it is the one it drove: a fapi2
+      // tenant admits no bearer token, so a fapi2 run presented as bearer measured something else.
+      test("names the profile the run was driven as, and fails a fapi2 run presented as bearer") {
+        def checks(run: CampaignRun) =
+          CampaignReport
+            .assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, run, thresholds, None, None, None)
+            .map(report => (report.passed, report.checks.filter(_.name == "security profile")))
+        val fapi = campaignRun.copy(
+          tokenMode = TokenMode.Dpop,
+          observedTokenTypes = List("DPoP"),
+          tenantId = Some("loadgen-fapi2"),
+          securityProfile = Some(SecurityProfile.Fapi2),
+        )
+        val misdriven = fapi.copy(tokenMode = TokenMode.Bearer, observedTokenTypes = List("Bearer"))
+        val standard = campaignRun.copy(securityProfile = Some(SecurityProfile.Standard))
+        assertTrue(
+          checks(fapi).map(_._2.map(_.passed)) == Right(List(true)),
+          checks(misdriven).map(_._1) == Right(false),
+          checks(misdriven).map(_._2.map(_.detail)) == Right(List("a fapi2 campaign driven with bearer tokens")),
+          checks(standard).map(_._2.map(_.detail)) == Right(List("driven as standard")),
+          checks(campaignRun).map(_._2) == Right(Nil),
         )
       },
       test("a lowercase bearer is the same mode, since RFC 6749 §5.1 makes the value case-insensitive") {

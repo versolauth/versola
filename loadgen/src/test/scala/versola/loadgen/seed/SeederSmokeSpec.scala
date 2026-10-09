@@ -92,7 +92,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
         .map(_.get[SecurityService])
       random <- SecureRandom.live.build.map(_.get[SecureRandom])
       services = SeedServices(
-        sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central)),
+        sut = SutWriter(CopySink.OfConnection(sut.auth), CopySink.OfConnection(sut.central), PopulationConfig.DefaultPhonePrefix),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, pepper, seedConfig.hashParallelism),
         minter = None,
@@ -394,7 +394,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             // issues five against auth (users, user_passwords, user_roles, passkeys,
             // refresh_tokens), so this lands inside batch two with batch one committed.
             crashing = harness.services.copy(
-              sut = SutWriter(Flaky(CopySink.OfConnection(harness.auth), 7, calls), CopySink.OfConnection(harness.central)),
+              sut = SutWriter(Flaky(CopySink.OfConnection(harness.auth), 7, calls), CopySink.OfConnection(harness.central), PopulationConfig.DefaultPhonePrefix),
             )
             crashed <- Seeder.run(crashing, population, seedConfig, None).exit
             resumed <- Seeder.run(harness.services, population, seedConfig, None).exit
@@ -431,6 +431,7 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             Secret.Bytes32(Array.tabulate(32)(index => (index * 11 + 5).toByte)),
             Secret.Bytes32(Array.tabulate(32)(index => (index * 13 + 7).toByte)),
             4,
+            None,
           )
           val passwordUser = cohort(CredentialKind.OtpPassword).head
           val passwordUserId = PopulationPlan.sutUserIdOf(passwordUser.id)

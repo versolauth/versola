@@ -24,7 +24,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("credential"))
         (recorder, routes) = stub
         auth <- clientFor(routes)
-        outcome <- auth.authorize("openid phone", None, Some(List(Acr.OtpLevel)), None)
+        outcome <- auth.authorize("openid phone", None, Some(List(Acr.OtpLevel)), None, None)
         query <- recorder.seen.get.map(_.head.url.queryParams)
         started = outcome match
           case AuthorizeOutcome.Started(started) => Some(started)
@@ -46,7 +46,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(Nil, silentReauthorize = true)
         (_, routes) = stub
         auth <- clientFor(routes)
-        outcome <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)))
+        outcome <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)), None)
       yield assertTrue(outcome match
         case AuthorizeOutcome.Authorized(code, _) => code == AuthCode(StubSut.code)
         case AuthorizeOutcome.Started(_) => false)
@@ -56,7 +56,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("credential"))
         (recorder, routes) = stub
         auth <- clientFor(routes)
-        _ <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)))
+        _ <- auth.authorize("openid", None, None, Some(SsoSession(StubSut.ssoSession)), None)
         cookie <- recorder.headerOf("/authorize", "cookie")
       yield assertTrue(cookie == Some("SSO_SESSION=" + StubSut.ssoSession))
     },
@@ -65,7 +65,7 @@ object HttpAuthClientSpec extends ZIOSpecDefault:
         stub <- StubSut.make(List("credential"))
         (_, routes) = stub
         auth <- clientFor(routes)
-        failure <- auth.authorize("openid", Some("never-registered"), None, None).either
+        failure <- auth.authorize("openid", Some("never-registered"), None, None, None).either
       yield assertTrue(failure == Left(ProtocolError.Misconfigured("no provisioned client with client_id=never-registered")))
     },
     test("challenge parses the step and the csrf token off the rendered page") {

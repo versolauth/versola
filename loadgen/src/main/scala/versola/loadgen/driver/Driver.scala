@@ -4,7 +4,7 @@ import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{ClientsConfig, LoadgenConfig, ShardConfig}
 import versola.loadgen.coordinator.{LoadPlan, PlanScenario}
-import versola.loadgen.metrics.{DriverHealthReporter, DriverHealthSource, LatencyRecorder, ProcessCpu}
+import versola.loadgen.metrics.{DriverHealthReporter, DriverHealthSource, LatencyRecorder, LoadgenMetrics, ProcessCpu}
 import versola.loadgen.protocol.*
 import versola.loadgen.scenario.*
 import versola.loadgen.scheduler.*
@@ -68,6 +68,12 @@ object Driver:
       _ <- ZIO.foreachDiscard(dpop): pool =>
         val algorithm = config.dpop.flatMap(_.algorithm).getOrElse(Dpop.Algorithm.ES256)
         ZIO.logInfo(s"Driving with RFC 9449 DPoP ($algorithm): ${pool.size} client keys shared across the fleet")
+      _ <- LoadgenMetrics.campaignInfo(
+        config.campaign.name,
+        config.campaign.tenantId,
+        config.campaign.securityProfile.map(_.wire),
+        if dpop.isDefined then "dpop" else "bearer",
+      )
       xa <- storeTransactor
       users = PostgresVirtualUserRepository(xa)
       sessions = PostgresDeviceSessionRepository(xa)
@@ -378,9 +384,18 @@ object Driver:
     val registry = registryOf(clients)
     val otpCode = Otp.nonProd(clients.otpLength)
     for
-      auth <- HttpAuthClient
+      web <- HttpAuthClient
         .make(client, config.targets, registry, LoadgenHttpClient.requestTimeout)
         .mapError(error => InvalidDriverConfig(error.toString))
+      auth <-
+        if !clients.nativeViaEdge then ZIO.succeed(web)
+        else
+          ZIO
+            .fail(InvalidDriverConfig("clients.native-via-edge needs the dpop block: the device key is the native flow's only sender constraint"))
+            .when(config.dpop.isEmpty)
+            *> NativeAuthClient
+              .make(client, config.targets, registry, web, LoadgenHttpClient.requestTimeout)
+              .mapError(error => InvalidDriverConfig(error.toString))
       actionClient <- EdgeActionClient
         .make(client, config.targets, LoadgenHttpClient.requestTimeout)
         .mapError(error => InvalidDriverConfig(error.toString))
@@ -389,7 +404,7 @@ object Driver:
         .mapError(error => InvalidDriverConfig(error.toString))
     yield ProtocolFlows(
       mobile = MobileFlows(auth, actionClient, registry, recorder, otpCode, config.targets.origin),
-      web = WebFlows(edge, auth, recorder, otpCode, config.targets.origin),
+      web = WebFlows(edge, web, recorder, otpCode, config.targets.origin),
     )
 
   /** The three mobile clients, public and authenticating with PKCE alone (design doc §2.2).

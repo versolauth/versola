@@ -16,6 +16,7 @@ import java.util.UUID
   * `provision` is about to write can be asserted on without a SUT.
   */
 case class CampaignBlueprint(
+    tenant: TenantSpec,
     clients: List[ClientSpec],
     resources: List[ResourceSpec],
     permissions: List[PermissionSpec],
@@ -53,6 +54,24 @@ object CampaignBlueprint:
     * refresh token, and §2.3's 96.7% refresh path -- the bulk of the campaign's traffic -- cannot
     * happen at all.
     */
+  /** The ids a campaign registers that are global to the deployment, under `namespace` when one
+    * is configured (`provision.namespace`). Two campaigns -- a `fapi2` one and a `standard` one,
+    * in tenants of their own -- share one central only if their client and resource ids differ:
+    * both are primary keys across tenants. Roles, permissions and scopes are per tenant and are
+    * not scoped.
+    */
+  case class Names(namespace: Option[String]):
+    private def scoped(id: String): String = namespace.fold(id)(prefix => s"$prefix-$id")
+
+    val mobileOtpClientId: String = scoped(CampaignBlueprint.mobileOtpClientId)
+    val mobileOtpPasswordClientId: String = scoped(CampaignBlueprint.mobileOtpPasswordClientId)
+    val mobilePasskeyClientId: String = scoped(CampaignBlueprint.mobilePasskeyClientId)
+    val webOtpClientId: String = scoped(CampaignBlueprint.webOtpClientId)
+    val clientIds: List[String] = List(mobileOtpClientId, mobileOtpPasswordClientId, mobilePasskeyClientId, webOtpClientId)
+    val coreResourceId: String = scoped(CampaignBlueprint.coreResourceId)
+    val payResourceId: String = scoped(CampaignBlueprint.payResourceId)
+    val notifyResourceId: String = scoped(CampaignBlueprint.notifyResourceId)
+
   val scopes: Set[String] = Set("openid", "profile", "phone", "offline_access")
 
   /** Design doc §5's access-token TTL; the session model (§5's `session.access-token-ttl`) reads
@@ -112,9 +131,9 @@ object CampaignBlueprint:
   private def amountRule(threshold: Long): String =
     s"!has(request.body.amount) || double(request.body.amount) <= ${threshold.toDouble}"
 
-  private def actions(threshold: Long): List[Action] = List(
+  private def actions(threshold: Long, names: Names): List[Action] = List(
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "GET",
       path = "/accounts",
       permission = "accounts:read",
@@ -125,7 +144,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "GET",
       path = "/accounts/{accountId}/transactions",
       permission = "transactions:read",
@@ -136,7 +155,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "GET",
       path = "/cards",
       permission = "cards:read",
@@ -149,7 +168,7 @@ object CampaignBlueprint:
     // The only action that asks edge to call `/userinfo`, which is what puts auth's claims path
     // under load at all (design doc §3 #4).
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "GET",
       path = "/profile",
       permission = "profile:read",
@@ -160,7 +179,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = notifyResourceId,
+      resourceId = names.notifyResourceId,
       method = "GET",
       path = "/notifications",
       permission = "notifications:read",
@@ -171,7 +190,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = payResourceId,
+      resourceId = names.payResourceId,
       method = "GET",
       path = "/templates",
       permission = "payments:read",
@@ -182,7 +201,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = payResourceId,
+      resourceId = names.payResourceId,
       method = "POST",
       path = "/p2p",
       permission = "payments:write",
@@ -193,7 +212,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = payResourceId,
+      resourceId = names.payResourceId,
       method = "POST",
       path = "/utility",
       permission = "payments:write",
@@ -204,7 +223,7 @@ object CampaignBlueprint:
       maxAgeSeconds = None,
     ),
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "PUT",
       path = "/cards/{cardId}/limits",
       permission = "cards:write",
@@ -215,7 +234,7 @@ object CampaignBlueprint:
       maxAgeSeconds = Some(cardLimitsMaxAgeSeconds),
     ),
     Action(
-      resourceId = coreResourceId,
+      resourceId = names.coreResourceId,
       method = "DELETE",
       path = "/profile/security/devices/{deviceId}",
       permission = "profile:write",
@@ -237,7 +256,8 @@ object CampaignBlueprint:
     UUID.nameUUIDFromBytes(s"versola-loadgen/$resourceId/$method$path".getBytes(StandardCharsets.UTF_8))
 
   def apply(targets: TargetsConfig, provision: ProvisionConfig, flows: CampaignFlows): CampaignBlueprint =
-    val allActions = actions(provision.paymentAmountThreshold)
+    val names = Names(provision.namespace)
+    val allActions = actions(provision.paymentAmountThreshold, names)
 
     // Where a completed edge login sends the browser, and where central posts this client's
     // back-channel logouts. The first is a redirect URI the browser must reach, so it is built on
@@ -247,7 +267,7 @@ object CampaignBlueprint:
     val edgeBackChannelLogoutUri = s"${targets.edgeUrl}/logout/backchannel"
 
     val mobileClients = List(
-      (mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow, Some(flows.registrationFlow)),
+      (names.mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow, Some(flows.registrationFlow)),
       // Registration flow kept: `phoneOtpPasswordAuthFlow`'s primary credential is phone, entered
       // on its own -- OTP and password are both required *factors*, sequential steps after it, not
       // an inline password on the primary step. `InvalidRegistrationConfiguration.validate` only
@@ -255,7 +275,7 @@ object CampaignBlueprint:
       // set; a client whose primary step itself asks for a password inline is a distinct, currently
       // unsupported scenario this cohort deliberately does not model.
       (
-        mobileOtpPasswordClientId,
+        names.mobileOtpPasswordClientId,
         "Loadgen mobile OTP + password",
         flows.phoneOtpPasswordAuthFlow,
         Some(flows.registrationFlow),
@@ -263,7 +283,7 @@ object CampaignBlueprint:
       // No registration flow: an account is registered from a credential card, and this client's
       // primary credential is the passkey the new account does not have yet. The passkey cohort
       // enrols from an already-registered session (§2.3's 0.5%/month enrolment).
-      (mobilePasskeyClientId, "Loadgen mobile passkey", flows.phonePasskeyAuthFlow, None),
+      (names.mobilePasskeyClientId, "Loadgen mobile passkey", flows.phonePasskeyAuthFlow, None),
     ).map: (clientId, name, authFlow, registrationFlow) =>
       ClientSpec(
         clientId = clientId,
@@ -276,10 +296,11 @@ object CampaignBlueprint:
         authFlow = authFlow,
         registrationFlow = registrationFlow,
         backChannelLogoutUri = None,
+        fapi2 = provision.fapi2,
       )
 
     val webClient = ClientSpec(
-      clientId = webOtpClientId,
+      clientId = names.webOtpClientId,
       clientName = "Loadgen web OTP",
       redirectUris = Set(edgeCompleteUri),
       allowedScopes = scopes,
@@ -294,6 +315,7 @@ object CampaignBlueprint:
       // Design doc §3 #10 exercises the back-channel logout, which only reaches edge if the
       // client edge fronts declares where to send it.
       backChannelLogoutUri = Some(edgeBackChannelLogoutUri),
+      fapi2 = provision.fapi2,
     )
 
     val clients = mobileClients :+ webClient
@@ -301,15 +323,15 @@ object CampaignBlueprint:
     // Every client may hold a token for every resource: a session's actions are drawn from all
     // ten regardless of how it authenticated, so a resource that named only some of the clients
     // would fail audience validation for the rest.
-    val audience = clientIds
+    val audience = names.clientIds
 
     val resourceUris = Map(
-      coreResourceId -> provision.resources.coreUri,
-      payResourceId -> provision.resources.payUri,
-      notifyResourceId -> provision.resources.notifyUri,
+      names.coreResourceId -> provision.resources.coreUri,
+      names.payResourceId -> provision.resources.payUri,
+      names.notifyResourceId -> provision.resources.notifyUri,
     )
 
-    val resources = List(coreResourceId, payResourceId, notifyResourceId).map: resourceId =>
+    val resources = List(names.coreResourceId, names.payResourceId, names.notifyResourceId).map: resourceId =>
       ResourceSpec(
         resourceId = resourceId,
         resourceUri = resourceUris(resourceId),
@@ -360,7 +382,7 @@ object CampaignBlueprint:
 
     val presets = List(
       AuthRequestPresetsSpec(
-        clientId = webOtpClientId,
+        clientId = names.webOtpClientId,
         presets = List(
           AuthRequestPresetSpec(
             presetId = provision.preset.id,
@@ -376,6 +398,8 @@ object CampaignBlueprint:
         ),
       ),
     )
+
+    val profile = if provision.fapi2 then "fapi2" else "standard"
 
     val challengeSettings = ChallengeSettingsSpec(
       allowedPrefixes = Nil,
@@ -394,12 +418,25 @@ object CampaignBlueprint:
         Acr.PasswordLevel -> List("password"),
         Acr.PasskeyLevel -> List("passkey"),
       ),
-      // The campaign's clients authenticate with client_secret (see webClient/mobileClients
-      // above), which FAPI 2.0 refuses -- `standard` is the only profile they satisfy.
-      securityProfile = "standard",
+      // Without `fapi2` the campaign's clients authenticate with client_secret (see
+      // webClient/mobileClients above), which FAPI 2.0 refuses -- `standard` is the only profile
+      // they satisfy. With it they are the certificate clients the profile admits.
+      securityProfile = profile,
+      // Only a `fapi2` campaign has `tls_client_auth` clients, and a tenant that does not know
+      // where to read the certificate from refuses them (RFC 8705 §6.5).
+      mtlsCertificateHeader = Option.when(provision.fapi2)(provision.mtlsCertificateHeader),
+      mtlsCertificateEncoding = Option.when(provision.fapi2)(provision.mtlsCertificateEncoding),
+    )
+
+    val tenant = TenantSpec(
+      tenantId = provision.tenantId,
+      description = s"Loadgen campaign ($profile)",
+      securityProfile = profile,
+      edgeId = provision.edgeId,
     )
 
     CampaignBlueprint(
+      tenant = tenant,
       clients = clients,
       resources = resources,
       permissions = permissions,

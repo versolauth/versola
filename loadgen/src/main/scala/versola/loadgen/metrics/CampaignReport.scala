@@ -1,5 +1,6 @@
 package versola.loadgen.metrics
 
+import versola.loadgen.config.SecurityProfile
 import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}
@@ -149,6 +150,11 @@ case class CampaignRun(
     shardCount: Int,
     shardEpoch: Long,
     tokenMode: TokenMode,
+    /** The tenant and the profile it is on, from `campaign.tenant-id` / `campaign.security-profile`.
+      * Absent for a campaign configured without them. What lets a `fapi2` run and a `standard`
+      * run be read side by side without guessing which is which from the token mode. */
+    tenantId: Option[String],
+    securityProfile: Option[SecurityProfile],
     observedTokenTypes: List[String],
     accessTokenTtls: List[ObservedAccessTokenTtl],
 ) derives JsonCodec
@@ -363,7 +369,18 @@ object CampaignReport:
           ),
         )
 
-    val outcomes = absolute ++ relative ++ List(health1, health2, tokenModeCheck)
+    // A `fapi2` tenant admits no bearer token, so a campaign that says it is one and drove bearer
+    // is not measuring the profile it names -- whatever the SUT answered, which for a client that
+    // authenticates by certificate would be sender-constrained regardless.
+    // Absent when the campaign names no profile: that is a campaign configured before profiles
+    // existed, not a criterion that went unmeasured, so it is neither a check nor `notEvaluated`.
+    val profileCheck: Option[Either[ReportCheck, String]] =
+      run.securityProfile.map: profile =>
+        if profile == SecurityProfile.Fapi2 && run.tokenMode == TokenMode.Bearer then
+          Left(ReportCheck("security profile", false, "a fapi2 campaign driven with bearer tokens"))
+        else Left(ReportCheck("security profile", true, s"driven as ${profile.wire}"))
+
+    val outcomes = absolute ++ relative ++ List(health1, health2, tokenModeCheck) ++ profileCheck
     (outcomes.collect { case Left(check) => check } ++ counters, outcomes.collect { case Right(missing) => missing })
 
   /** A measurement is only evaluable if something was actually recorded into it.

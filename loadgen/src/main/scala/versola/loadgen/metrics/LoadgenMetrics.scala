@@ -44,6 +44,7 @@ object LoadgenMetrics:
   private val busyUsersGauge = Metric.gauge("loadgen_busy_users")
   private val inflightRequestsGauge = Metric.gauge("loadgen_inflight_requests")
   private val refreshRejectedTotal = Metric.counter("loadgen_refresh_rejected_total")
+  private val campaignInfoGauge = Metric.gauge("loadgen_campaign_info")
   private val dpopNonceRetriedTotal = Metric.counter("loadgen_dpop_nonce_retried_total")
   private val storeFlushDroppedTotal = Metric.counter("loadgen_store_flush_dropped_total")
   private val populationGauge = Metric.gauge("loadgen_population")
@@ -128,6 +129,22 @@ object LoadgenMetrics:
 
   def population(state: PopulationState, count: Long): UIO[Unit] =
     populationGauge.tagged(labels("state" -> state.label)).set(count.toDouble)
+
+  /** What this process is part of: the campaign, its tenant, the tenant's profile and how tokens
+    * are presented, as labels on a gauge that is always `1`. Join it onto any other series
+    * (`... * on (namespace) group_left (campaign, tenant, profile) loadgen_campaign_info`) to tell
+    * a `fapi2` campaign's panels from a `standard` one's when both run against one SUT; every
+    * other loadgen series stays label-for-label what it was.
+    */
+  def campaignInfo(campaign: String, tenant: Option[String], profile: Option[String], tokenMode: String): UIO[Unit] =
+    campaignInfoGauge
+      .tagged(labels(
+        "campaign" -> campaign,
+        "tenant" -> tenant.getOrElse("unspecified"),
+        "profile" -> profile.getOrElse("unspecified"),
+        "token_mode" -> tokenMode,
+      ))
+      .set(1.0)
 
   def driverCpu(utilisation: Double): UIO[Unit] =
     driverCpuGauge.set(utilisation)

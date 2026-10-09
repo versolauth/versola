@@ -128,7 +128,7 @@ object SeedRows:
       now: Instant,
       expiresAt: Instant,
   ): String =
-    CopyRow.empty
+    val row = CopyRow.empty
       .bytes(material.tokenMac)
       .text(base64Url(material.familyId))
       .nullValue()
@@ -147,9 +147,8 @@ object SeedRows:
       .nullValue()
       .text(amr.map(value => "\"" + value + "\"").mkString("[", ",", "]"))
       .instant(now)
-      .nullValue()
-      .nullValue()
-      .render
+    val withCnf = material.dpopJkt.fold(row.nullValue())(jkt => row.text("{\"jkt\":\"" + jkt + "\"}"))
+    withCnf.nullValue().render
 
   /** `vu_sessions (id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
     * access_expires_at, refresh_expires_at, acr, auth_time, generation, refresh_generation,
