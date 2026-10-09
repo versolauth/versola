@@ -156,8 +156,17 @@ final class CoordinatorService private (
         _ <- ZIO
           .fail(CoordinatorRefusal.NotFound(s"no latency snapshots have been recorded for campaign '$name'"))
           .when(rows.isEmpty)
-        reports <- ZIO.fromEither(SnapshotMerge.toReports(rows)).mapError(IllegalStateException(_))
+        every <- ZIO.fromEither(SnapshotMerge.toReports(rows)).mapError(IllegalStateException(_))
         state <- control.get
+        // Only the phases that describe the system at load: a warm-up's cold connections would
+        // otherwise be the p99 of a few hundred samples (`CampaignPhaseConfig.measured`).
+        reports = MeasurementWindow.measured(every, MeasurementWindow.excluded(campaign.phases, state.startedAt))
+        _ <- ZIO
+          .fail(CoordinatorRefusal.NotFound(
+            s"no latency snapshots of campaign '$name' fall in a measured phase; " +
+              "it was stopped before the first one began, or every phase is `measured = false`",
+          ))
+          .when(reports.isEmpty)
         fleet <- drivers.view(now, state.shards.epoch)
         counts <- population.get
         databases <- sutDeltas(name)
@@ -197,6 +206,7 @@ final class CoordinatorService private (
           scale = phase.scale,
           scaleFrom = phase.scaleFrom,
           scaleTo = phase.scaleTo,
+          measured = phase.measured,
         ),
       population = counts.map((state, count) => state.toString.toLowerCase -> count),
       shardCount = state.shards.shardCount,

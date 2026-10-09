@@ -45,6 +45,12 @@
 # keep two campaigns from colliding on client ids, resource ids, phone numbers
 # and user ids, which are global to the deployment.
 #
+# Measured phases: a warm-up or a ramp does not describe the system at its load, and on a few hundred
+# samples the cold first calls of a driver *are* the p99. Mark such a phase `measured = false`
+# (`campaign.phases = [{ name = warmup, ..., measured = false }, ...]`): it is driven and its errors,
+# health and database deltas are reported, but its latency snapshots are left out of the report's
+# quantiles. Each driver also warms its connections, TLS and DPoP signing before it reports ready.
+#
 # Metrics: every series keeps its labels. `loadgen_campaign_info{campaign,
 # tenant, profile, token_mode} = 1` carries the campaign's identity, and the
 # report (`GET /report/{campaign}`) states `run.tenantId` and

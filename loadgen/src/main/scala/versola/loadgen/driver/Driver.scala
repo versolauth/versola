@@ -118,6 +118,8 @@ object Driver:
       _ <- SnapshotPublisher(config.campaign.name, driverId, latencies, snapshots).run(SnapshotPublisher.interval)
       _ <- lagQuantile.run(lag, ScheduleLagQuantile.sampleInterval)
       _ <- healthReporter(lag, busy, buffer).flatMap(_.run(healthInterval).forkScoped)
+      // Before it says it is ready, so that nothing a campaign measures is the process's first call.
+      _ <- Warmup.run(client, config.targets, dpop)
       _ <- ZIO.logInfo(
         s"Driver $driverId ready for campaign '${config.campaign.name}' on shard ${shard.index}; " +
           s"polling ${config.coordinator.url} every ${config.coordinator.pollInterval.render}",

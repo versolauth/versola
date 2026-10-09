@@ -117,6 +117,7 @@ case class RunPhase(
     scale: Option[Double],
     scaleFrom: Option[Double],
     scaleTo: Option[Double],
+    measured: Boolean = true,
 ) derives JsonCodec
 
 /** The distinct `expires_in` values one client was issued over the run. */
