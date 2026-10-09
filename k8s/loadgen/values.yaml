@@ -251,6 +251,11 @@ driver:
     # driver-statefulset.yaml fails the template instead.
     existingSecret: ""
     secretKey: env.conf
+  # Extra volumes and mounts, for what the config refers to by path: the CA of the Postgres behind
+  # `store.postgres` (`ssl-root-cert`), and a truststore for the SUT's TLS certificate when its CA
+  # is a private one (JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=... through `extraEnv`).
+  extraVolumes: []
+  extraVolumeMounts: []
   # Extra plain env vars: [{name: FOO, value: bar}, ...].
   extraEnv: []
   # Extra envFrom entries, beyond `secrets.existingSecret` above.
@@ -295,6 +300,12 @@ coordinator:
     # coordinator's config decodes without one).
     existingSecret: ""
     secretKey: env.conf
+  # Extra volumes and mounts, for what the config refers to by path: the CA of the Postgres behind
+  # `store.postgres` (`ssl-root-cert`), and the truststore a driver needs to verify the SUT's TLS
+  # certificate when its CA is a private one (see `extraEnv` for JAVA_TOOL_OPTIONS and the "Trusting
+  # the SUT's certificate" note at the top of this file).
+  extraVolumes: []
+  extraVolumeMounts: []
   extraEnv: []
   extraEnvFrom: []
 

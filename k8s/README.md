@@ -311,6 +311,7 @@ nothing is exposed that is not listed — there is no catch-all group.
 | `oidc` | auth | `/authorize` `/token` `/par` `/introspect` `/revoke` `/userinfo` `/logout` `/.well-known/` `/challenge` |
 | `login` | edge | `/login/` `/complete` `/logout/` |
 | `api` | edge | `/resources/` `/permissions/` |
+| `native` | edge | `/native/` — what a mobile app calls under FAPI 2.0 (#420); list it on any host with native clients |
 | `console` | console | `console.basePath` |
 | `users` | auth | `/users`, `/users/` — normally reached over cluster DNS instead |
 | `service` | auth | `/service/` — non-prod config-sync tooling, `404` when `env` is `prod` |

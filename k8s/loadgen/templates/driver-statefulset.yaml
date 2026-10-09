@@ -130,11 +130,16 @@ spec:
           envFrom:
             {{- . | nindent 12 }}
           {{- end }}
-          {{- if $driver.config.existingSecret }}
+          {{- if or $driver.config.existingSecret $driver.extraVolumeMounts }}
           volumeMounts:
+            {{- if $driver.config.existingSecret }}
             - name: config
               mountPath: /app/config
               readOnly: true
+            {{- end }}
+            {{- with $driver.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- end }}
           # /liveness and /readiness are served by the diagnostics server,
           # separate from application traffic on `http` -- see
@@ -160,13 +165,18 @@ spec:
                 command: ["sh", "-c", "sleep {{ $.Values.preStopSleepSeconds }}"]
           resources:
             {{- toYaml $driver.resources | nindent 12 }}
-      {{- if $driver.config.existingSecret }}
+      {{- if or $driver.config.existingSecret $driver.extraVolumes }}
       volumes:
+        {{- if $driver.config.existingSecret }}
         - name: config
           secret:
             secretName: {{ $driver.config.existingSecret }}
             items:
               - key: {{ $driver.config.secretKey }}
                 path: env.conf
+        {{- end }}
+        {{- with $driver.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
 {{- end }}

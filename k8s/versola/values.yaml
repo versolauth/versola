@@ -445,6 +445,9 @@ ingress:
   #                        /userinfo /logout /.well-known/ /challenge
   #   login    -> edge:    /login/ /complete /logout/
   #   api      -> edge:    /resources/ /permissions/
+  #   native   -> edge:    /native/ -- the endpoints a mobile app calls under FAPI 2.0
+  #                        (start, complete, token, revoke); list it on any host
+  #                        whose native clients reach edge through the Ingress
   #   console  -> console: console.basePath
   #
   # `users`, `service` and `settings` are not for public/browser traffic --

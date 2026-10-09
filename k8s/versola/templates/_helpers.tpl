@@ -307,6 +307,12 @@ login:
 api:
   - {path: /resources/, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
   - {path: /permissions/, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
+# A mobile app's front door under FAPI 2.0 (#420): /native/{start,complete,token,revoke}/{clientId}.
+# Public by design -- the device is the caller, and edge authenticates to auth on its behalf --
+# so a deployment with native clients has to list it; one without leaves it out, and edge
+# answers 404 for any clientId it does not front natively anyway.
+native:
+  - {path: /native/, pathType: Prefix, service: {{ $edge }}, port: {{ $edgePort }}}
 console:
   - {path: {{ .Values.console.basePath }}, pathType: Prefix, service: {{ $console }}, port: {{ .Values.console.port }}}
 # UserController -- central's own client (see AuthClient.scala) calls
