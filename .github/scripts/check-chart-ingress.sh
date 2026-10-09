@@ -85,6 +85,20 @@ gateway_api_needs_no_class() {
   if grep -q '^kind: Ingress$' <<<"$out"; then fail "gatewayAPI path rendered a plain Ingress too"; fi
 }
 
+native_routes_reach_edge() {
+  local out
+  out="$(render --set ingress.enabled=true --set ingress.className=nginx \
+                --set ingress.hosts[0].host=id.example.com --set 'ingress.hosts[0].routes={oidc,native}')" || {
+    fail "the native route group failed to render: $(cat /tmp/chart-ingress-err.txt)"
+    return
+  }
+  grep -q 'path: /native/' <<<"$out" || fail "no /native/ path rendered for the native group"
+  # The path must lead to edge, not auth: edge is what fronts a native client.
+  awk '/path: \/native\//{f=1} f && /name:/{print; exit}' <<<"$out" | grep -q 'versola-edge' \
+    || fail "/native/ is not routed to edge"
+  return 0
+}
+
 check() {
   local name="$1" before="$errors"
   checked=$((checked + 1))
@@ -96,6 +110,7 @@ check "a plain Ingress without className is refused" renders_without_a_class_is_
 check "a named className reaches the rendered Ingress" named_class_reaches_the_ingress
 check "a disabled ingress needs no className" disabled_ingress_needs_no_class
 check "the Gateway API path renders without a className" gateway_api_needs_no_class
+check "the native route group routes /native/ to edge" native_routes_reach_edge
 
 rm -f /tmp/chart-ingress-err.txt
 

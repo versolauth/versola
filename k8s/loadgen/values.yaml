@@ -21,6 +21,35 @@
 # secrets at all. A map keyed by name would have to carry every field for
 # every entry and guard most of them.
 
+# Two campaigns against one SUT: a `fapi2` one and a `standard` one.
+#
+# A tenant's FAPI profile is fixed when the tenant is created, and the `default`
+# tenant is `fapi2`. So each profile gets a tenant of its own, and a campaign is
+# one release of this chart with its own env.conf -- the only thing the two
+# releases must not share is state:
+#
+#   campaign { tenant-id = loadgen-fapi2, security-profile = fapi2 }   # or standard
+#   provision { tenant-id = loadgen-fapi2, fapi2 = ... (follows campaign), namespace = fapi }
+#   seed { tenant-id = loadgen-fapi2 }
+#   population { phone-prefix = "+49157", id-namespace = fapi }
+#   store.postgres { ... }            # its own database: vu_users has no campaign column
+#   clients { mobile-otp = fapi-mobile-otp, ..., native-via-edge = true }    # fapi2 only
+#   dpop { key-pool-size = ..., key-seed = ... }                             # fapi2 only
+#   session { access-token-ttl = 1h, ... }   # fapi2: central requires >= 3600s of a DPoP-bound client
+#   actions = [ { path = "/resources/fapi-core/accounts", ... } ]            # namespaced resource ids
+#
+# `loadgen provision` creates the tenant on the profile (bound to the `default`
+# tenant's edge unless `provision.edge-id` says otherwise) and registers the
+# clients the profile admits: certificate clients for `fapi2`, secret/public
+# ones for `standard`. `namespace`, `phone-prefix` and `id-namespace` are what
+# keep two campaigns from colliding on client ids, resource ids, phone numbers
+# and user ids, which are global to the deployment.
+#
+# Metrics: every series keeps its labels. `loadgen_campaign_info{campaign,
+# tenant, profile, token_mode} = 1` carries the campaign's identity, and the
+# report (`GET /report/{campaign}`) states `run.tenantId` and
+# `run.securityProfile`; join the first onto any panel to split two campaigns.
+
 nameOverride: ""
 fullnameOverride: ""
 
@@ -222,6 +251,11 @@ driver:
     # driver-statefulset.yaml fails the template instead.
     existingSecret: ""
     secretKey: env.conf
+  # Extra volumes and mounts, for what the config refers to by path: the CA of the Postgres behind
+  # `store.postgres` (`ssl-root-cert`), and a truststore for the SUT's TLS certificate when its CA
+  # is a private one (JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=... through `extraEnv`).
+  extraVolumes: []
+  extraVolumeMounts: []
   # Extra plain env vars: [{name: FOO, value: bar}, ...].
   extraEnv: []
   # Extra envFrom entries, beyond `secrets.existingSecret` above.
@@ -266,6 +300,12 @@ coordinator:
     # coordinator's config decodes without one).
     existingSecret: ""
     secretKey: env.conf
+  # Extra volumes and mounts, for what the config refers to by path: the CA of the Postgres behind
+  # `store.postgres` (`ssl-root-cert`), and the truststore a driver needs to verify the SUT's TLS
+  # certificate when its CA is a private one (see `extraEnv` for JAVA_TOOL_OPTIONS and the "Trusting
+  # the SUT's certificate" note at the top of this file).
+  extraVolumes: []
+  extraVolumeMounts: []
   extraEnv: []
   extraEnvFrom: []
 

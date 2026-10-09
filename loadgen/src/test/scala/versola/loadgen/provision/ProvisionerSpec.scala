@@ -20,17 +20,122 @@ object ProvisionerSpec extends ZIOSpecDefault:
   private val blueprint = ProvisionFixtures.blueprint
 
   private def fakeAdmin: ZIO[TestClient & Client, Throwable, (AdminClient, FakeCentral)] =
+    fakeAdminFor(ProvisionFixtures.provision)
+
+  private def fakeAdminFor(provision: versola.loadgen.config.ProvisionConfig): ZIO[TestClient & Client, Throwable, (AdminClient, FakeCentral)] =
     for
       fake <- FakeCentral.make()
       _ <- TestClient.addRoutes(fake.handler.toRoutes)
       client <- ZIO.service[Client]
-      admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, ProvisionFixtures.provision)
+      admin <- HttpAdminClient.make(client, ProvisionFixtures.targets, provision)
     yield (admin, fake)
+
+  private def fapi2Provision = ProvisionFixtures.provision.copy(tenantId = "loadgen-fapi2", fapi2 = true)
+
+  private def blueprintOf(provision: versola.loadgen.config.ProvisionConfig) =
+    CampaignBlueprint(ProvisionFixtures.targets, provision, ProvisionFixtures.flows)
 
   private def loadConfig(hocon: String): Task[LoadgenConfig] =
     TypesafeConfigProvider.fromHoconString(hocon).kebabCase.load(deriveConfig[LoadgenConfig])
 
   def spec = suite("Provisioner")(
+    // A tenant's profile is fixed when it is created, and `default` is created on fapi2: a standard
+    // campaign needs a tenant of its own, which `provision` creates on the profile it is run for,
+    // bound to the edge `default` is -- an edge only receives the tenants assigned to it.
+    test("creates the campaign's tenant on its profile, on default's edge, and not a second time") {
+      for
+        (admin, fake) <- fakeAdmin
+        _ <- Provisioner.run(admin, blueprint)
+        _ <- Provisioner.run(admin, blueprint)
+        state <- fake.snapshot
+        created = state.callsTo(Method.POST, "/configuration/tenants")
+        tenant = state.tenants.get("loadgen-standard")
+      yield assertTrue(
+        created.size == 1,
+        tenant.map(_.profile).contains("standard"),
+        tenant.flatMap(_.edgeId).contains("edge-1"),
+        state.tenants("default").profile == "fapi2",
+      )
+    },
+    test("a standard campaign pointed at the fapi2 default tenant is refused, and writes nothing into it") {
+      for
+        (admin, fake) <- fakeAdminFor(ProvisionFixtures.provision.copy(tenantId = "default"))
+        failure <- Provisioner.run(admin, blueprintOf(ProvisionFixtures.provision.copy(tenantId = "default"))).either
+        state <- fake.snapshot
+      yield assertTrue(
+        failure.left.exists(_.isInstanceOf[versola.loadgen.protocol.TenantProfileMismatch]),
+        state.clients.isEmpty,
+        state.callsTo(Method.POST, "/configuration/tenants").isEmpty,
+      )
+    },
+    test("a fapi2 campaign gets a fapi2 tenant that knows where to read client certificates, before any client") {
+      val fapi = blueprintOf(fapi2Provision)
+      for
+        (admin, fake) <- fakeAdminFor(fapi2Provision)
+        _ <- Provisioner.run(admin, fapi)
+        state <- fake.snapshot
+        settings = state.challengeSettings.get
+        settingsAt = state.calls.indexWhere(call => call.path == "/configuration/challenges/challenge-settings" && call.method == Method.PUT)
+        firstClient = state.calls.indexWhere(call => call.path == "/configuration/clients" && call.method == Method.POST)
+      yield assertTrue(
+        state.tenants("loadgen-fapi2").profile == "fapi2",
+        FakeCentral.optionalStr(settings, "mtlsCertificateHeader").contains("ssl-client-cert"),
+        FakeCentral.optionalStr(settings, "mtlsCertificateEncoding").contains("urlEncodedPem"),
+        settingsAt >= 0,
+        settingsAt < firstClient,
+      )
+    },
+    test("a standard campaign leaves a tenant's certificate header alone") {
+      for
+        (admin, fake) <- fakeAdmin
+        _ <- Provisioner.run(admin, blueprint)
+        state <- fake.snapshot
+      yield assertTrue(
+        FakeCentral.optionalStr(state.challengeSettings.get, "mtlsCertificateHeader").isEmpty,
+        FakeCentral.optionalStr(state.challengeSettings.get, "securityProfile").contains("standard"),
+      )
+    },
+    // Client and resource ids are primary keys across tenants, so two campaigns in one central --
+    // the point of giving each its own tenant -- only coexist if their ids differ.
+    test("two campaigns with their own namespaces share one central without colliding") {
+      val standard = ProvisionFixtures.provision.copy(namespace = Some("std"))
+      val fapi = fapi2Provision.copy(namespace = Some("fapi"))
+      for
+        fake <- FakeCentral.make()
+        _ <- TestClient.addRoutes(fake.handler.toRoutes)
+        client <- ZIO.service[Client]
+        first <- HttpAdminClient.make(client, ProvisionFixtures.targets, standard)
+        second <- HttpAdminClient.make(client, ProvisionFixtures.targets, fapi)
+        _ <- Provisioner.run(first, blueprintOf(standard))
+        _ <- Provisioner.run(second, blueprintOf(fapi))
+        state <- fake.snapshot
+      yield assertTrue(
+        state.clients.size == 8,
+        state.clients.keySet.count(_.startsWith("std-")) == 4,
+        state.clients.keySet.count(_.startsWith("fapi-")) == 4,
+        state.resources.keySet == Set("std-core", "std-pay", "std-notify", "fapi-core", "fapi-pay", "fapi-notify"),
+        state.tenants.keySet == Set("default", "loadgen-standard", "loadgen-fapi2"),
+      )
+    },
+    test("a namespace central would refuse as a resource id is rejected before any tenant is created") {
+      def provisioned(namespace: String) =
+        for
+          (_, fake) <- fakeAdmin
+          config <- loadConfig(
+            LoadgenConfigSpec.hocon.replace("payment-amount-threshold = 1000000", s"payment-amount-threshold = 1000000\n  namespace = \"$namespace\""),
+          )
+          result <- Provisioner.provision(config).either
+          state <- fake.snapshot
+        yield (result, state)
+      for
+        (bad, badState) <- provisioned("Fapi_1")
+        (good, _) <- provisioned("fapi-1")
+      yield assertTrue(
+        bad.left.exists(_.isInstanceOf[InvalidNamespace]),
+        badState.calls.isEmpty,
+        good.isRight,
+      )
+    },
     test("writes the campaign's clients, resources, permissions, roles, presets and settings") {
       for
         (admin, fake) <- fakeAdmin

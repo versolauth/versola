@@ -123,6 +123,40 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           str(update, "applicationType") == "web",
         )
       },
+      // #535: what a FAPI 2.0 tenant admits. The mobile client is native, fronted by edge and
+      // DPoP-bound; both kinds authenticate by the certificate central issues for edge and push
+      // every request; neither ever has a secret, so none is rotated on a re-run.
+      test("registers a fapi2 campaign's clients as certificate clients, native ones DPoP-bound, and rotates no secret") {
+        val fapi = CampaignBlueprint(ProvisionFixtures.targets, ProvisionFixtures.provision.copy(fapi2 = true), ProvisionFixtures.flows)
+        val web = fapi.clients.find(_.clientId == CampaignBlueprint.webOtpClientId).get
+        val mobile = fapi.clients.find(_.clientId == CampaignBlueprint.mobilePasskeyClientId).get
+        for
+          (admin, fake) <- fakeAdmin()
+          webCreds <- admin.registerClient(web)
+          mobileCreds <- admin.registerClient(mobile)
+          _ <- admin.registerClient(mobile)
+          state <- fake.snapshot
+          webBody = parse(state.callsTo(Method.POST, "/configuration/clients").head.body)
+          mobileBody = parse(state.callsTo(Method.POST, "/configuration/clients").last.body)
+          update = parse(state.callsTo(Method.PUT, "/configuration/clients").head.body)
+        yield assertTrue(
+          str(webBody, "authMethod") == "tls_client_auth",
+          str(mobileBody, "authMethod") == "tls_client_auth",
+          bool(webBody, "issueEdgeClientCertificate").contains(true),
+          bool(mobileBody, "issueEdgeClientCertificate").contains(true),
+          bool(webBody, "requirePushedAuthorizationRequests").contains(true),
+          bool(mobileBody, "requirePushedAuthorizationRequests").contains(true),
+          str(webBody, "applicationType") == "web",
+          str(mobileBody, "applicationType") == "native",
+          bool(webBody, "dpopBoundAccessTokens").contains(false),
+          bool(mobileBody, "dpopBoundAccessTokens").contains(true),
+          webCreds == ClientCreds(web.clientId, None),
+          mobileCreds == ClientCreds(mobile.clientId, None),
+          bool(update, "dpopBoundAccessTokens").contains(true),
+          bool(update, "requirePushedAuthorizationRequests").contains(true),
+          state.callsTo(Method.POST, "/configuration/clients/rotate-secret").isEmpty,
+        )
+      },
       test("marks a mobile client public and carries no secret back") {
         for
           (admin, fake) <- fakeAdmin()

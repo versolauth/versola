@@ -31,6 +31,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # A normal run takes ~15 minutes. Without a bound a hung e2e step holds the job for the 6-hour default.
+    timeout-minutes: 45
     services:
       postgres:
         image: postgres:18

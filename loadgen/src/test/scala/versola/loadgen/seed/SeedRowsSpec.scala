@@ -49,6 +49,28 @@ object SeedRowsSpec extends ZIOSpecDefault:
     // that fails loudly; a row with two same-typed fields transposed is a `COPY` that succeeds
     // and an unusable population, and the count is the cheap half of guarding against it. The
     // expensive half is SeederSmokeSpec reading the values back.
+    // A warm session seeded under DPoP has to look like one `/token` issued to the user's key: the
+    // first refresh is checked against `cnf.jkt`, so a NULL there is a session that cannot resume.
+    test("a warm refresh token carries the user's DPoP thumbprint as cnf, and none on a bearer campaign") {
+      def material(jkt: Option[String]) = RefreshTokenMaterial(
+        rawToken = Array.fill(32)(6.toByte),
+        tokenMac = Array.fill(32)(7.toByte),
+        sessionMac = Array.fill(32)(8.toByte),
+        familyId = Array.fill(16)(9.toByte),
+        publicSessionId = Array.fill(16)(10.toByte),
+        dpopJkt = jkt,
+      )
+      def row(jkt: Option[String]) =
+        SeedRows.refreshTokens(
+          seeded(1L), material(jkt), clientId = "mobile-otp", audience = List("https://core.example"),
+          scope = List("openid"), amr = List("otp"), now = now, expiresAt = now.plusSeconds(60),
+        )
+      assertTrue(
+        row(Some("thumb-1")).contains("{\"\"jkt\"\":\"\"thumb-1\"\"}"),
+        !row(None).contains("jkt"),
+        fields(row(Some("thumb-1"))) == SutSchema.refreshTokens.columns.size,
+      )
+    },
     test("every rendered row has exactly as many fields as SutSchema declares columns") {
       val user = seeded(1L)
       val password = HashedPassword(1L, versola.util.Salt(Array.fill(16)(1.toByte)), versola.util.MAC(Array.fill(32)(2.toByte)))
@@ -59,6 +81,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
         sessionMac = Array.fill(32)(8.toByte),
         familyId = Array.fill(16)(9.toByte),
         publicSessionId = Array.fill(16)(10.toByte),
+        dpopJkt = None,
       )
       assertTrue(
         fields(SeedRows.users(user)) == SutSchema.users.columns.size,
@@ -186,6 +209,9 @@ object SeedRowsSpec extends ZIOSpecDefault:
       import versola.loadgen.provision.CampaignBlueprint
       assertTrue(
         SeedRows.mobileClientId(CredentialKind.Otp) == CampaignBlueprint.mobileOtpClientId,
+        // A warm token is bound to the client it was issued to, so under a namespace it has to be
+        // issued to the namespaced one the driver will refresh as.
+        SeedRows.mobileClientId(CampaignBlueprint.Names(Some("fapi")), CredentialKind.Passkey) == "fapi-mobile-passkey",
         SeedRows.mobileClientId(CredentialKind.OtpPassword) == CampaignBlueprint.mobileOtpPasswordClientId,
         SeedRows.mobileClientId(CredentialKind.Passkey) == CampaignBlueprint.mobilePasskeyClientId,
         SeedRows.amrFor(CredentialKind.Otp) == List("otp", "sms"),
@@ -211,7 +237,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
         def execute(statement: String): zio.Task[Unit] = zio.ZIO.unit
         def atomically[A](effect: zio.Task[A]): zio.Task[A] = effect
 
-      val writer = SutWriter(short, short)
+      val writer = SutWriter(short, short, PopulationConfig.DefaultPhonePrefix)
       writer
         .write(zio.Chunk(seeded(1L), seeded(2L)), "default", now, 1L, 3L, None)
         .exit

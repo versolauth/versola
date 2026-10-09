@@ -128,7 +128,7 @@ object SeedRows:
       now: Instant,
       expiresAt: Instant,
   ): String =
-    CopyRow.empty
+    val row = CopyRow.empty
       .bytes(material.tokenMac)
       .text(base64Url(material.familyId))
       .nullValue()
@@ -147,9 +147,8 @@ object SeedRows:
       .nullValue()
       .text(amr.map(value => "\"" + value + "\"").mkString("[", ",", "]"))
       .instant(now)
-      .nullValue()
-      .nullValue()
-      .render
+    val withCnf = material.dpopJkt.fold(row.nullValue())(jkt => row.text("{\"jkt\":\"" + jkt + "\"}"))
+    withCnf.nullValue().render
 
   /** `vu_sessions (id, user_id, kind, client_id, refresh_token, edge_cookie, sso_session,
     * access_expires_at, refresh_expires_at, acr, auth_time, generation, refresh_generation,
@@ -215,7 +214,12 @@ object SeedRows:
     * presents to the same client its first login would have.
     */
   def mobileClientId(credential: CredentialKind): String =
-    import versola.loadgen.provision.CampaignBlueprint.*
+    mobileClientId(versola.loadgen.provision.CampaignBlueprint.Names(None), credential)
+
+  /** [[mobileClientId]] under the campaign's namespace (`seed.namespace`, which has to be the
+    * `provision.namespace` the clients were registered with). */
+  def mobileClientId(names: versola.loadgen.provision.CampaignBlueprint.Names, credential: CredentialKind): String =
+    import names.*
     credential match
       case CredentialKind.Otp => mobileOtpClientId
       case CredentialKind.OtpPassword => mobileOtpPasswordClientId

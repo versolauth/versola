@@ -7,7 +7,8 @@ import versola.loadgen.model.VirtualUser
 import versola.loadgen.seed.SutSchema.SchemaOwner
 import versola.loadgen.store.LoadgenMigrations
 import versola.util.postgres.PostgresHikariDataSource
-import versola.util.{Argon2Config, SecureRandom, SecurityService}
+import versola.loadgen.protocol.DpopKeyPool
+import versola.util.{Argon2Config, Dpop, SecureRandom, SecurityService}
 import zio.*
 
 import java.sql.{Connection, DriverManager}
@@ -53,12 +54,18 @@ object Seeder:
       store <- storeTransactor
       security <- securityService(seedConfig)
       random <- secureRandom
+      // The pool the drivers derive from the same block, so a user's seeded `cnf.jkt` is the key
+      // its driver will sign the first refresh with.
+      dpop <- ZIO.foreach(config.dpop): settings =>
+        DpopKeyPool
+          .derive(settings.keySeed, settings.keyPoolSize, settings.algorithm.getOrElse(Dpop.Algorithm.ES256))
+          .mapError(error => InvalidPopulation(error.toString))
       services = SeedServices(
-        sut = SutWriter(CopySink.OfConnection(auth), CopySink.OfConnection(central)),
+        sut = SutWriter(CopySink.OfConnection(auth), CopySink.OfConnection(central), config.population.phonePrefix),
         store = CopySink.OfTransactor(store),
         hasher = BulkHasher(security, random, seedConfig.passwordsSecret, seedConfig.hashParallelism),
         minter = seedConfig.warmSessions.map: warm =>
-          BulkTokenMinter(security, random, warm.refreshTokensSecret, warm.sessionsSecret, seedConfig.hashParallelism),
+          BulkTokenMinter(security, random, warm.refreshTokensSecret, warm.sessionsSecret, seedConfig.hashParallelism, dpop),
         storeQueries = StoreQueries(store),
       )
       warmSessions = seedConfig.warmSessions.map: warm =>
@@ -66,6 +73,7 @@ object Seeder:
           audience = warm.audience,
           scope = versola.loadgen.provision.CampaignBlueprint.scopes.toList,
           refreshTokenTtl = config.session.refreshTokenTtl,
+          names = versola.loadgen.provision.CampaignBlueprint.Names(seedConfig.namespace),
         )
       _ <- ZIO.logInfo("Seeding mobile warm sessions (dev spec §10 step 6)").when(warmSessions.isDefined)
       _ <- run(services, config.population, seedConfig, warmSessions)
@@ -260,7 +268,7 @@ object Seeder:
           SeedRows.vuSessions(
             seeded = seededUser,
             material = material,
-            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            clientId = SeedRows.mobileClientId(config.names, seededUser.user.credential),
             now = now,
             refreshExpiresAt = now.plusSeconds(config.refreshTokenTtl.toSeconds),
           )

@@ -202,6 +202,8 @@ final class CoordinatorService private (
       shardCount = state.shards.shardCount,
       shardEpoch = state.shards.epoch,
       tokenMode = tokenMode,
+      tenantId = campaign.tenantId,
+      securityProfile = campaign.securityProfile,
       observedTokenTypes = fleet.observed.tokenTypes.toList.sorted,
       accessTokenTtls = fleet.observed.accessTokenTtlsByClient.toList.sorted.map: (clientId, ttls) =>
         ObservedAccessTokenTtl(clientId, ttls.toList.sorted),
@@ -297,6 +299,14 @@ final class CoordinatorService private (
     */
   def run: ZIO[Scope, Nothing, Unit] =
     for
+      _ <- LoadgenMetrics.campaignInfo(
+        campaign.name,
+        campaign.tenantId,
+        campaign.securityProfile.map(_.wire),
+        tokenMode match
+          case TokenMode.Dpop => "dpop"
+          case TokenMode.Bearer => "bearer",
+      )
       _ <- settle.repeat(Schedule.spaced(CoordinatorService.settleInterval)).forkScoped
       _ <- controllerTick.repeat(Schedule.spaced(RegistrationController.interval)).forkScoped
       _ <- sampleQueues.repeat(Schedule.spaced(PoolerQueueRecorder.sampleInterval)).forkScoped

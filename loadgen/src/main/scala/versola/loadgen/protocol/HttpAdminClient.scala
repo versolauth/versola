@@ -39,6 +39,63 @@ final class HttpAdminClient(
 
   import HttpAdminClient.*
 
+  override def ensureTenant(spec: TenantSpec): Task[Unit] =
+    for
+      tenants <- listTenants
+      edge = spec.edgeId.orElse(tenants.get(DefaultTenantId).flatMap(_.edgeId))
+      _ <- tenants.get(spec.tenantId) match
+        case None =>
+          val body = CreateTenantBody(
+            id = spec.tenantId,
+            description = spec.description,
+            edgeId = edge,
+            securityProfile = spec.securityProfile,
+          )
+          send(Method.POST, central("configuration", "tenants"), Some(body.toJson))
+            .flatMap(expectSuccess("createTenant", _))
+        case Some(existing) =>
+          // Only moved when the campaign names the edge: a tenant someone else bound is theirs.
+          ZIO.when(spec.edgeId.exists(wanted => !existing.edgeId.contains(wanted))):
+            val body = UpdateTenantBody(id = spec.tenantId, description = existing.description, edgeId = spec.edgeId)
+            send(Method.PUT, central("configuration", "tenants"), Some(body.toJson))
+              .flatMap(expectSuccess("updateTenant", _))
+      _ <- awaitProfile(spec)
+    yield ()
+
+  private def listTenants: Task[Map[String, TenantState]] =
+    send(Method.GET, central("configuration", "tenants"), None).flatMap: response =>
+      expectSuccess("listTenants", response)
+        *> decode[TenantListBody]("listTenants", response)
+          .map(_.tenants.map(entry => entry.id -> TenantState(entry.description, entry.edgeId)).toMap)
+
+  /** The profile central reports for the tenant, which is read from the settings a Postgres
+    * notification refreshes and so is absent for a moment after a tenant is created. Waited for,
+    * because a campaign provisioned against the wrong profile registers clients that are refused
+    * one at a time, with an error that does not name the cause.
+    */
+  private def awaitProfile(spec: TenantSpec): Task[Unit] =
+    val url = central("configuration", "challenges", "challenge-settings").addQueryParam("tenantId", spec.tenantId)
+    val read: Task[Option[String]] =
+      send(Method.GET, url, None).flatMap: response =>
+        if response.status == Status.NotFound then ZIO.none
+        else
+          expectSuccess("readChallengeSettings", response)
+            *> ZIO
+              .fromEither(response.body.fromJson[Json.Obj])
+              .mapError(error => AdminCallFailed("readChallengeSettings", response.status, s"unreadable response: $error"))
+              .map: document =>
+                document.get("settings").flatMap(_.asObject).flatMap(_.get("securityProfile")).collect { case Json.Str(value) => value }
+    read
+      .flatMap:
+        case Some(actual) if actual != spec.securityProfile =>
+          ZIO.fail(TenantProfileMismatch(spec.tenantId, actual, spec.securityProfile))
+        case other => ZIO.succeed(other)
+      .repeat(Schedule.spaced(200.millis) *> Schedule.recurUntil[Option[String]](_.isDefined))
+      .timeout(10.seconds)
+      .withClock(Clock.ClockLive)
+      .someOrFail(AdminCallFailed("readChallengeSettings", Status.NotFound, s"central reports no settings for tenant '${spec.tenantId}'"))
+      .unit
+
   override def registerClient(spec: ClientSpec): Task[ClientCreds] =
     for
       existing <- listClients
@@ -63,7 +120,7 @@ final class HttpAdminClient(
     */
   private def adoptClient(spec: ClientSpec, current: ClientState): Task[ClientCreds] =
     updateClient(spec, current) *>
-      (if spec.publicClient then ZIO.none else rotateClientSecret(spec.clientId).asSome)
+      (if spec.publicClient || spec.fapi2 then ZIO.none else rotateClientSecret(spec.clientId).asSome)
         .map(ClientCreds(spec.clientId, _))
 
   private def createClient(spec: ClientSpec): Task[Option[Option[String]]] =
@@ -89,19 +146,22 @@ final class HttpAdminClient(
       consentFlow = None,
       // A campaign's clients never vary DPoP, mTLS, JAR/PAR or an edge signing key -- see
       // AdminSpecs.ClientSpec -- but the DTO requires every one of these named regardless.
-      dpopBoundAccessTokens = false,
+      dpopBoundAccessTokens = fapi2Native(spec),
       dpopSigningAlgs = Set.empty,
       dpopMinRsaKeySize = None,
-      authMethod = if spec.publicClient then publicAuthMethod else clientSecretAuthMethod,
+      authMethod =
+        if spec.fapi2 then tlsClientAuthMethod
+        else if spec.publicClient then publicAuthMethod
+        else clientSecretAuthMethod,
       mtlsAuth = None,
       certificateBoundAccessTokens = false,
       jwks = None,
       requireSignedRequestObject = false,
-      requirePushedAuthorizationRequests = false,
+      requirePushedAuthorizationRequests = spec.fapi2,
       edgeSigningKey = None,
       template = None,
       applicationType = applicationType(spec),
-      issueEdgeClientCertificate = false,
+      issueEdgeClientCertificate = spec.fapi2,
       enrollEdgeClientCertificate = false,
     )
     send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
@@ -139,9 +199,9 @@ final class HttpAdminClient(
       // keeping a setting the campaign cannot satisfy.
       certificateBoundAccessTokens = false,
       dpopSigningAlgs = Set.empty,
-      dpopBoundAccessTokens = false,
+      dpopBoundAccessTokens = fapi2Native(spec),
       requireSignedRequestObject = false,
-      requirePushedAuthorizationRequests = false,
+      requirePushedAuthorizationRequests = spec.fapi2,
       // Written on the update too, on the same convergence terms as the resets above -- a
       // client a previous configuration left `native` (or vice versa) converges on the
       // blueprint's type rather than keeping whatever it registered with.
@@ -153,6 +213,12 @@ final class HttpAdminClient(
   /** OIDC Registration §2 `application_type`, as central's `ApplicationType` enum encodes it:
     * `spec.publicClient` is the same PKCE-only-vs-confidential distinction [[ClientSpec]] names
     * it for (see its scaladoc), just under central's own vocabulary. */
+  /** Only the edge-fronted native client is DPoP-bound at registration: the device key is its
+    * sender constraint, and central refuses to register it without (`validateEdgeFrontedNative`).
+    * The web client is constrained by the certificate it authenticates with.
+    */
+  private def fapi2Native(spec: ClientSpec): Boolean = spec.fapi2 && spec.publicClient
+
   private def applicationType(spec: ClientSpec): String =
     if spec.publicClient then nativeApplicationType else webApplicationType
 
@@ -345,6 +411,8 @@ final class HttpAdminClient(
       ipHeader = spec.ipHeader,
       acrVocabulary = Some(spec.acrVocabulary),
       securityProfile = spec.securityProfile,
+      mtlsCertificateHeader = spec.mtlsCertificateHeader,
+      mtlsCertificateEncoding = spec.mtlsCertificateEncoding,
     )
     send(Method.PUT, central("configuration", "challenges", "challenge-settings"), Some(body.toJson))
       .flatMap(expectSuccess("upsertChallengeSettings", _))
@@ -612,8 +680,10 @@ object HttpAdminClient:
   private val englishTag = "en"
   private val defaultTheme = "default"
   private val defaultOtpTemplateId = "default"
+  private val DefaultTenantId = "default"
   private val publicAuthMethod = "none"
   private val clientSecretAuthMethod = "client_secret"
+  private val tlsClientAuthMethod = "tls_client_auth"
   private val nativeApplicationType = "native"
   private val webApplicationType = "web"
 
@@ -851,7 +921,27 @@ object HttpAdminClient:
       ipHeader: String,
       acrVocabulary: Option[Map[String, List[String]]],
       securityProfile: String,
+      mtlsCertificateHeader: Option[String],
+      mtlsCertificateEncoding: Option[String],
   ) derives JsonEncoder
+
+  private case class CreateTenantBody(id: String, description: String, edgeId: Option[String], securityProfile: String)
+      derives JsonEncoder
+
+  private case class UpdateTenantBody(id: String, description: String, edgeId: Option[String]) derives JsonEncoder
+
+  private case class TenantListEntry(id: String, description: String, edgeId: Option[String]) derives JsonDecoder
+
+  private case class TenantListBody(tenants: List[TenantListEntry]) derives JsonDecoder
+
+  private case class TenantState(description: String, edgeId: Option[String])
+
+/** The tenant already exists on another security profile, which cannot be changed. */
+final case class TenantProfileMismatch(tenantId: String, actual: String, wanted: String)
+    extends RuntimeException(
+      s"tenant '$tenantId' is on the $actual profile and the campaign needs $wanted; a profile is fixed when a tenant " +
+        "is created, so give this campaign a tenant of its own (provision.tenant-id)",
+    )
 
 final case class InvalidAdminUrl(setting: String, url: String, cause: Throwable)
     extends RuntimeException(s"targets.$setting is not a valid URL: $url", cause)

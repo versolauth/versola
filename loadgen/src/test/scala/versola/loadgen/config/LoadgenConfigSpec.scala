@@ -93,6 +93,10 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |
       |campaign {
       |  name = "c3-10m-steady"
+      |  # The tenant and its FAPI profile, which a tenant is created on and keeps: `default` is
+      |  # fapi2, so a standard campaign gets a tenant of its own.
+      |  tenant-id = loadgen-standard
+      |  security-profile = standard
       |  phases = [
       |    { name = warmup,  duration = 15m, scale = 0.1 },
       |    { name = ramp,    duration = 30m, scale-from = 0.1, scale-to = 1.0 },
@@ -121,7 +125,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |}
       |
       |provision {
-      |  tenant-id = default
+      |  tenant-id = loadgen-standard
       |  provisioner-client-id = utils
       |  provisioner-secret = "cHJvdmlzaW9uZXItc2VjcmV0"
       |  mobile-redirect-uri = "https://app.versola.test/callback"
@@ -151,7 +155,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |    user     = "central"
       |    password = "centralpass"
       |  }
-      |  tenant-id        = default
+      |  tenant-id        = loadgen-standard
       |  passwords-secret = "AAECAwQFBgcICQoLDA0ODw"
       |  shard-count      = 8
       |  hash-parallelism = 16
@@ -232,7 +236,13 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.plan.map(_.acceptance.mockBackend) == Some(MeasurementRefConfig(None, "mock-accounts")),
           config.actions(1).acr == Some("password-level"),
           config.actions(0).acr == None,
-          config.provision.map(_.tenantId) == Some("default"),
+          config.provision.map(_.tenantId) == Some("loadgen-standard"),
+          config.campaign.tenantId == Some("loadgen-standard"),
+          config.campaign.securityProfile == Some(SecurityProfile.Standard),
+          config.population.phonePrefix == "+49151",
+          config.population.idNamespace == "",
+          config.provision.exists(_.namespace.isEmpty),
+          config.provision.exists(!_.fapi2),
           config.provision.map(_.resources.coreUri) == Some("http://mockapi-core:8100"),
           config.provision.flatMap(_.preset.cookieDomain) == Some("bank.example.test"),
           config.provision.map(_.passkey.rpId) == Some("bank.example.test"),
@@ -241,7 +251,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           config.provision.exists(_.provisionerPrivateKey.isEmpty),
           config.seed.map(_.auth.url) == Some("jdbc:postgresql://auth-db:5432/auth"),
           config.seed.map(_.central.user) == Some("central"),
-          config.seed.map(_.tenantId) == Some("default"),
+          config.seed.map(_.tenantId) == Some("loadgen-standard"),
           config.seed.map(_.shardCount) == Some(8),
           config.seed.map(_.hashParallelism) == Some(16),
           config.seed.map(_.batchSize) == Some(10000),
@@ -308,6 +318,33 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           named <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = PS256 }")
           unknown <- decodeSutStats("dpop { key-pool-size = 4, key-seed = \"c\", algorithm = HS256 }").exit
         yield assertTrue(named.dpop.flatMap(_.algorithm) == Some(Dpop.Algorithm.PS256), unknown.isFailure)
+      },
+      // The two campaigns of one SUT: a fapi2 one and a standard one, each in a tenant of its own.
+      // Everything they must not share -- ids, phone numbers, user ids -- is a config key.
+      test("reads the keys that let a fapi2 and a standard campaign share one SUT") {
+        val hoconFapi2 = hocon
+          .replace("security-profile = standard", "security-profile = fapi2")
+          .replace("tenant-id = loadgen-standard", "tenant-id = loadgen-fapi2")
+          .replace(
+            "payment-amount-threshold = 1000000",
+            "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-id = edge-1\n  mtls-certificate-header = x-client-cert",
+          )
+          .replace("shard-count      = 8", "shard-count      = 8\n  namespace         = fapi")
+          .replace("roles { retail-user = 0.90, retail-basic = 0.10 }", "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi")
+        for
+          config <- loadConfig(hoconFapi2)
+          bad <- loadConfig(hocon.replace("security-profile = standard", "security-profile = fapi3")).exit
+        yield assertTrue(
+          config.campaign.securityProfile == Some(SecurityProfile.Fapi2),
+          config.provision.flatMap(_.namespace) == Some("fapi"),
+          config.provision.flatMap(_.edgeId) == Some("edge-1"),
+          config.provision.map(_.mtlsCertificateHeader) == Some("x-client-cert"),
+          config.provision.map(_.mtlsCertificateEncoding) == Some("urlEncodedPem"),
+          config.seed.flatMap(_.namespace) == Some("fapi"),
+          config.population.phonePrefix == "+49157",
+          config.population.idNamespace == "fapi",
+          bad.isFailure,
+        )
       },
       // V0006's identity index is `(campaign, pooler, phase)`, so a duplicated name has
       // sut-stats' consequence: the second reading is dropped and one pooler's numbers appear
@@ -615,6 +652,9 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
        |  ]
        |}
        |""".stripMargin
+
+  private def loadConfig(source: String) =
+    TypesafeConfigProvider.fromHoconString(source).kebabCase.load(loadgenConfigDescriptor)
 
   private def decodeSutStats(block: String) =
     TypesafeConfigProvider

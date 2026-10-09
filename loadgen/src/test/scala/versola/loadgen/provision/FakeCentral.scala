@@ -275,8 +275,54 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             s.copy(presets = s.presets.updated(str(spec, "clientId"), objects(spec, "presets"))),
           )
 
+      // Tenants, as central serves them. A profile is fixed when a tenant is created, which is what
+      // the challenge-settings write below holds a request to.
+      case (Method.GET, "/configuration/tenants") =>
+        state.get.map: s =>
+          json(Json.Obj("tenants" -> array(s.tenants.toList.sortBy(_._1).map { (id, tenant) =>
+            Json.Obj(
+              Chunk[(String, Json)]("id" -> Json.Str(id), "description" -> Json.Str(tenant.description)) ++
+                Chunk.fromIterable(tenant.edgeId.map(edge => "edgeId" -> Json.Str(edge))),
+            )
+          })))
+
+      case (Method.POST, "/configuration/tenants") =>
+        val spec = parse(body)
+        val id = str(spec, "id")
+        val profile = optionalStr(spec, "securityProfile").getOrElse("fapi2")
+        state.modify: s =>
+          s.tenants.get(id) match
+            case Some(existing) if existing.profile != profile =>
+              (Response.text("cannot be changed after the tenant is created").status(Status.BadRequest), s)
+            case _ =>
+              (
+                Response.status(Status.Created),
+                s.copy(tenants = s.tenants.updated(id, StoredTenant(str(spec, "description"), optionalStr(spec, "edgeId"), profile))),
+              )
+
+      case (Method.PUT, "/configuration/tenants") =>
+        val spec = parse(body)
+        val id = str(spec, "id")
+        state.modify: s =>
+          (
+            Response.status(Status.NoContent),
+            s.copy(tenants = s.tenants.updatedWith(id)(_.map(_.copy(edgeId = optionalStr(spec, "edgeId"))))),
+          )
+
+      case (Method.GET, "/configuration/challenges/challenge-settings") =>
+        val tenant = request.url.queryParams.getAll("tenantId").headOption.getOrElse("")
+        state.get.map: s =>
+          s.tenants.get(tenant) match
+            case Some(found) => json(Json.Obj("settings" -> Json.Obj("securityProfile" -> Json.Str(found.profile))))
+            case None => Response.status(Status.NotFound)
+
       case (Method.PUT, "/configuration/challenges/challenge-settings") =>
-        state.modify(s => (Response.status(Status.NoContent), s.copy(challengeSettings = Some(parse(body)))))
+        val spec = parse(body)
+        state.modify: s =>
+          val fixed = s.tenants.get(str(spec, "tenantId")).map(_.profile)
+          if optionalStr(spec, "securityProfile").exists(wanted => fixed.exists(_ != wanted)) then
+            (Response.text("securityProfile cannot be changed after the tenant is created").status(Status.BadRequest), s)
+          else (Response.status(Status.NoContent), s.copy(challengeSettings = Some(spec)))
 
       case (Method.POST, "/service/users/outbox/flush") =>
         state.modify(s => (Response.status(Status.NoContent), s.copy(outboxFlushes = s.outboxFlushes + 1)))
@@ -447,6 +493,8 @@ object FakeCentral:
     private def patched(current: Set[String], patch: Json.Obj): Set[String] =
       current -- strings(patch, "remove") ++ strings(patch, "add")
 
+  case class StoredTenant(description: String, edgeId: Option[String], profile: String)
+
   case class StoredResource(spec: Json.Obj, endpointIds: Set[UUID], audience: Set[String] = Set.empty):
     /** Applies the audience patch the way central's `PatchAudience.patch` does: remove before
       * add, so a client moved from one resource's audience to another in the same run is not
@@ -468,6 +516,7 @@ object FakeCentral:
       roles: Map[String, Set[String]],
       presets: Map[String, List[Json.Obj]],
       challengeSettings: Option[Json.Obj],
+      tenants: Map[String, StoredTenant],
       authSyncs: Int,
       tokensIssued: Int,
       outboxFlushes: Int,
@@ -484,6 +533,8 @@ object FakeCentral:
     roles = Map.empty,
     presets = Map.empty,
     challengeSettings = None,
+    // Every deployment starts with `default`, on FAPI 2.0, bound to its edge.
+    tenants = Map("default" -> StoredTenant("Default tenant", Some("edge-1"), "fapi2")),
     authSyncs = 0,
     tokensIssued = 0,
     outboxFlushes = 0,
@@ -561,7 +612,7 @@ object ProvisionFixtures:
   )
 
   val provision: ProvisionConfig = ProvisionConfig(
-    tenantId = "default",
+    tenantId = "loadgen-standard",
     provisionerClientId = "utils",
     provisionerSecret = Some(Config.Secret("provisioner-secret")),
     mobileRedirectUri = "https://app.versola.test/callback",

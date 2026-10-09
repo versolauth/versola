@@ -1,6 +1,6 @@
 package versola.loadgen.protocol
 
-import zio.IO
+import zio.{IO, ZIO}
 
 /** Everything a virtual user's device can do against auth directly -- the `mobile-*` clients of
   * §8.1-8.3. No admin calls, no assertions: a driver never has more surface than a real client
@@ -16,12 +16,17 @@ trait AuthClient:
     * as a cookie on this request when present. Passing it is what makes silent reauthorization
     * and an ACR step-up (§7.4: "re-run `/authorize` ... on the same SSO session") land on the
     * caller's own existing session instead of starting a fresh one.
+    *
+    * `key` is the device's DPoP key, which a flow that pushes its request through edge needs
+    * here and not only at `/token`: it is bound to the code as `dpop_jkt` when the request is
+    * pushed ([[NativeAuthClient]]). The direct client does not use it at this hop.
     */
   def authorize(
       scope: String,
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
+      key: Option[DpopKey],
   ): IO[ProtocolError, AuthorizeOutcome]
 
   def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage]
@@ -83,6 +88,15 @@ trait AuthClient:
     * at the wire from reuse detection, which is why [[versola.loadgen.protocol.DpopKeyPool]] goes
     * to the trouble of being reproducible rather than generating keys per process.
     */
+  /** What a client that checks its callback does with the redirect that ended the conversation,
+    * before it redeems the code. A flow whose authorization request was pushed on the device's
+    * behalf ([[NativeAuthClient]]) holds the `state` and the issuer the callback must name, and
+    * refuses one that names others -- the check a real app makes and edge repeats. The direct
+    * client has nothing to compare, so the default does nothing.
+    */
+  def checkCallback(started: AuthorizeStarted, completed: ConversationCompleted): IO[ProtocolError, Unit] =
+    ZIO.unit
+
   def exchangeRefresh(token: RefreshToken, client: ClientCreds, key: Option[DpopKey]): IO[ProtocolError, Tokens]
 
   def logout(idToken: IdToken): IO[ProtocolError, Unit]

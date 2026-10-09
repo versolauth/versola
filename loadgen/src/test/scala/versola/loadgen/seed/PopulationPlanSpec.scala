@@ -60,6 +60,30 @@ object PopulationPlanSpec extends ZIOSpecDefault:
         PopulationPlan.phoneOf(99L) < PopulationPlan.phoneOf(100L),
       )
     },
+    // Two campaigns seeded into one SUT -- a fapi2 one and a standard one -- write into the same
+    // `users` table, where phone is unique and id is the primary key. Without a prefix and a
+    // namespace of their own the second seed collides with the first on every row.
+    test("a population with its own phone prefix and id namespace shares no phone and no user id with another") {
+      val other = population.copy(phonePrefix = "+49157", idNamespace = "fapi")
+      val ids = (1L to 2_000L)
+      val mine = ids.map(PopulationPlan.userOf(population, shardCount, _))
+      val theirs = ids.map(PopulationPlan.userOf(other, shardCount, _))
+      assertTrue(
+        mine.map(_.phone).toSet.intersect(theirs.map(_.phone).toSet).isEmpty,
+        mine.flatMap(_.sutUserId).toSet.intersect(theirs.flatMap(_.sutUserId).toSet).isEmpty,
+        theirs.forall(user => Phone.parse(user.phone).isRight),
+        // The default is what existing populations were seeded with, so they keep their identity.
+        mine.head.phone == PopulationPlan.phoneOf(1L),
+        mine.head.sutUserId == Some(PopulationPlan.sutUserIdOf(1L)),
+      )
+    },
+    test("a phone prefix that does not make valid numbers is refused before anything is hashed") {
+      val bad = population.copy(phonePrefix = "+0")
+      assertTrue(
+        PopulationPlan.validate(bad, shardCount, 1_000L).isLeft,
+        PopulationPlan.validate(population.copy(phonePrefix = "+49157"), shardCount, 1_000L).isRight,
+      )
+    },
     test("a user is a total function of its id, so a resumed or repeated seed reproduces it") {
       val once = PopulationPlan.userOf(population, shardCount, 123_456L)
       val again = PopulationPlan.userOf(population, shardCount, 123_456L)

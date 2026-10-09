@@ -12,11 +12,21 @@ import zio.Duration
   *   invisible until a resumed session's first API call 403s on the wrong `aud`.
   * @param scope
   *   [[versola.loadgen.provision.CampaignBlueprint.scopes]], every client's fixed request.
+  * @param names
+  *   the client ids the warm sessions are issued to
   * @param refreshTokenTtl
   *   [[versola.loadgen.config.SessionConfig.refreshTokenTtl]], so a warm token's `expires_at`
   *   agrees with what the session model already assumes a live refresh token's lifetime is.
   */
-case class WarmSessionConfig(audience: List[String], scope: List[String], refreshTokenTtl: Duration)
+case class WarmSessionConfig(
+    audience: List[String],
+    scope: List[String],
+    refreshTokenTtl: Duration,
+    /** The campaign's client ids, namespaced when `provision.namespace` is: a warm token is bound
+      * to the client it was issued to, so one seeded for `mobile-otp` is refused (`invalid_grant`)
+      * when the driver refreshes as `fapi-mobile-otp`. */
+    names: versola.loadgen.provision.CampaignBlueprint.Names = versola.loadgen.provision.CampaignBlueprint.Names(None),
+)
 
 /** The credentials of one warm mobile session (§10 step 6): a refresh token auth will accept
   * from a `grant_type=refresh_token` exchange the user never actually performed.
@@ -48,6 +58,13 @@ case class WarmSessionConfig(audience: List[String], scope: List[String], refres
   *   16 random bytes for `refresh_tokens.public_session_id`, in
   *   [[AuthPropertyGenerator.nextPublicSessionId]]'s own shape -- observability-only on the
   *   refresh path (`Observability.setSessionId`), never looked up.
+  * @param dpopJkt
+  *   the RFC 7638 thumbprint of the DPoP key [[versola.loadgen.protocol.DpopKeyPool.keyFor]]
+  *   assigns this user, written as `refresh_tokens.cnf = {"jkt": ...}`. `None` on a bearer
+  *   campaign. Without it a seeded session's first refresh under DPoP is refused: auth holds a
+  *   refresh token to the key it was issued to, and a row with no binding was issued to none --
+  *   the first proof's key would be accepted and then bound, but a tenant that requires a
+  *   sender-constrained refresh refuses the unbound row outright.
   */
 case class RefreshTokenMaterial(
     rawToken: Array[Byte],
@@ -55,4 +72,5 @@ case class RefreshTokenMaterial(
     sessionMac: Array[Byte],
     familyId: Array[Byte],
     publicSessionId: Array[Byte],
+    dpopJkt: Option[String],
 )

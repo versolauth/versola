@@ -21,7 +21,7 @@ enum Credentials:
   * edge's own `state` to compare against, and a mismatch there means the login is about to be
   * completed against another virtual user's pending record.
   */
-case class ConversationCompleted(code: AuthCode, state: Option[String], ssoSession: Option[SsoSession])
+case class ConversationCompleted(code: AuthCode, state: Option[String], iss: Option[String], ssoSession: Option[SsoSession])
 
 /** How a conversation ended. A refusal is reported rather than failed here because the two
   * flows owe the SUT different things afterwards: a mobile refusal redirects to the client's
@@ -100,7 +100,7 @@ private[protocol] final class ChallengeConversation(
     HttpExchange.redirectParam(location, "code") match
       case Some(code) =>
         ZIO.succeed(
-          ConversationOutcome.Completed(ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(location, stateParam), ssoSession)),
+          ConversationOutcome.Completed(ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(location, stateParam), HttpExchange.redirectParam(location, "iss"), ssoSession)),
         )
       case None =>
         HttpExchange.redirectParam(location, "error") match

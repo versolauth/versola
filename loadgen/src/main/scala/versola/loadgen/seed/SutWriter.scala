@@ -15,7 +15,7 @@ import java.time.Instant
   * commits leaves one batch of users in auth that central's routing index does not know about,
   * and the resume path's [[deleteRange]] removes them before rewriting the range.
   */
-final class SutWriter(auth: CopySink, central: CopySink):
+final class SutWriter(auth: CopySink, central: CopySink, phonePrefix: String):
 
   def write(
       seeded: Chunk[SeededUser],
@@ -69,8 +69,8 @@ final class SutWriter(auth: CopySink, central: CopySink):
       yield ()
 
   private def deleteRefreshTokens(sink: CopySink, from: Long, until: Long): Task[Unit] =
-    val low = PopulationPlan.phoneOf(from)
-    val high = PopulationPlan.phoneOf(until - 1)
+    val low = PopulationPlan.phoneOf(phonePrefix, from)
+    val high = PopulationPlan.phoneOf(phonePrefix, until - 1)
     sink.execute(
       s"DELETE FROM refresh_tokens WHERE user_id IN (SELECT id FROM users WHERE phone BETWEEN '$low' AND '$high')",
     )
@@ -107,7 +107,7 @@ final class SutWriter(auth: CopySink, central: CopySink):
           SeedRows.refreshTokens(
             seeded = seededUser,
             material = material,
-            clientId = SeedRows.mobileClientId(seededUser.user.credential),
+            clientId = SeedRows.mobileClientId(config.names, seededUser.user.credential),
             audience = config.audience,
             scope = config.scope,
             amr = SeedRows.amrFor(seededUser.user.credential),
@@ -133,8 +133,8 @@ final class SutWriter(auth: CopySink, central: CopySink):
     * statements it is given (this and `ANALYZE`) stay visible as literals.
     */
   private[seed] def deleteRange(sink: CopySink, owner: SchemaOwner, from: Long, until: Long): Task[Unit] =
-    val low = PopulationPlan.phoneOf(from)
-    val high = PopulationPlan.phoneOf(until - 1)
+    val low = PopulationPlan.phoneOf(phonePrefix, from)
+    val high = PopulationPlan.phoneOf(phonePrefix, until - 1)
     val range = s"phone BETWEEN '$low' AND '$high'"
     owner match
       case SchemaOwner.Auth =>

@@ -164,6 +164,12 @@ case class ClientsConfig(
     webPreset: String,
     scope: String,
     otpLength: Int,
+    /** Drives the three mobile clients through edge's `native/{start,complete,token}` endpoints
+      * (#420) instead of against auth directly: the shape a mobile client takes under a FAPI 2.0
+      * tenant, where it cannot be public. Requires the `dpop` block -- the device key is the
+      * flow's only sender constraint -- and clients provisioned as `native` and fronted by edge.
+      */
+    nativeViaEdge: Boolean = false,
 )
 
 case class WriteBehindConfig(flushInterval: Duration, batchSize: Int)
@@ -212,7 +218,22 @@ case class PopulationConfig(
     platform: PlatformMixConfig,
     credentials: CredentialMixConfig,
     roles: RoleMixConfig,
+    /** What every seeded phone number starts with, followed by eight digits of the user id.
+      * Two campaigns seeded into one SUT -- a `fapi2` one and a `standard` one, each in a tenant
+      * of its own -- need disjoint numbers, since `users.phone` is unique across tenants.
+      * `+49151` is the e2e suite's own range; another German mobile prefix (`+49152`, `+49157`)
+      * gives a second population.
+      */
+    phonePrefix: String = PopulationConfig.DefaultPhonePrefix,
+    /** Mixed into every derived SUT user id (`PopulationPlan.sutUserIdOf`), for the same reason
+      * as [[phonePrefix]]: `users.id` is a primary key shared by every tenant. Empty reproduces
+      * the ids of a population seeded before this existed.
+      */
+    idNamespace: String = "",
 )
+
+object PopulationConfig:
+  val DefaultPhonePrefix: String = "+49151"
 
 case class FullLoginProbabilityConfig(mobile: Double, web: Double)
 
@@ -323,11 +344,42 @@ case class RegistrationConfig(
     duration: Duration,
 )
 
+/** The FAPI profile of the tenant a campaign runs in (`standard` or `fapi2`). A profile is fixed
+  * when a tenant is created, so this names a property of the campaign as much as of the tenant:
+  * the two are run, reported and compared separately.
+  */
+enum SecurityProfile(val wire: String) derives CanEqual:
+  case Standard extends SecurityProfile("standard")
+  case Fapi2 extends SecurityProfile("fapi2")
+
+object SecurityProfile:
+  def fromWire(value: String): Option[SecurityProfile] = values.find(_.wire == value)
+
+  given DeriveConfig[SecurityProfile] = DeriveConfig[String]
+    .mapOrFail: str =>
+      fromWire(str).toRight(Config.Error.InvalidData(message = s"unknown security profile: $str; expected standard or fapi2"))
+
+  given zio.json.JsonCodec[SecurityProfile] = zio.json.JsonCodec(
+    zio.json.JsonEncoder[String].contramap(_.wire),
+    zio.json.JsonDecoder[String].mapOrFail(value => fromWire(value).toRight(s"unknown security profile: $value")),
+  )
+
+/** @param tenantId
+  *   the tenant the campaign runs in, for the report and the `loadgen_campaign_info` metric.
+  *   `provision.tenant-id` and `seed.tenant-id` name the same tenant for their roles; this is the
+  *   one the coordinator and the drivers can read.
+  * @param securityProfile
+  *   the profile that tenant is on. Read by `provision` as well, which creates the tenant on it:
+  *   a campaign is a `fapi2` one or a `standard` one, and states it once. Absent on a campaign
+  *   configured before profiles, which then reports neither.
+  */
 case class CampaignConfig(
     name: String,
     phases: List[CampaignPhaseConfig],
     diurnal: DiurnalConfig,
     registration: RegistrationConfig,
+    tenantId: Option[String] = None,
+    securityProfile: Option[SecurityProfile] = None,
 )
 
 /** What `role = coordinator` needs beyond the blocks every role shares in order to publish a
@@ -451,6 +503,39 @@ case class ProvisionConfig(
     preset: ProvisionPresetConfig,
     passkey: ProvisionPasskeyConfig,
     paymentAmountThreshold: Long,
+    /** Prefixes the ids of everything this campaign registers whose id is global to the
+      * deployment -- the four clients (`<namespace>-web-otp`) and the three resources
+      * (`<namespace>-core`) -- so that two campaigns can share one central. Roles, permissions
+      * and scopes are per tenant and keep their names. The drivers' `clients.*` ids and the
+      * `actions` paths (`/resources/<namespace>-core/accounts`) have to name the same ids.
+      * Absent: the bare ids, as before.
+      */
+    namespace: Option[String] = None,
+    /** The edge the campaign's tenant is bound to. Absent: the `default` tenant's edge, which is
+      * what lets edge receive the tenant's clients and presets at all (an edge only receives the
+      * tenants assigned to it).
+      */
+    edgeId: Option[String] = None,
+    /** Where auth reads a client certificate from, for a tenant whose clients authenticate with
+      * `tls_client_auth` (RFC 8705 §6.5): a new tenant is not told, and refuses them. Written to
+      * the tenant's challenge settings when [[fapi2]] is on, to what the TLS terminator in front
+      * of auth forwards it as -- `ssl-client-cert`, PEM, URL-encoded, in the local stack.
+      */
+    mtlsCertificateHeader: String = "ssl-client-cert",
+    mtlsCertificateEncoding: String = "urlEncodedPem",
+    /** Provisions the tenant under the FAPI 2.0 security profile and its clients the way that
+      * profile admits them (#535): `tls_client_auth` by a certificate central issues for edge,
+      * pushed authorization requests, the mobile clients native and fronted by edge. Pair it with
+      * `clients.native-via-edge` and the `dpop` block on the drivers. Off: the `standard` profile
+      * and `client_secret` clients, as before.
+      *
+      * The tenant (`tenantId`) is created by `provision` when it does not exist, on this profile.
+      * A profile is fixed when a tenant is created, so a campaign never switches an existing
+      * tenant between modes: `provision` refuses a tenant that already exists on the other one,
+      * and the `default` tenant, which is `fapi2`, cannot host a `standard` campaign. Give each
+      * mode a tenant of its own.
+      */
+    fapi2: Boolean = false,
 )
 
 /** The three `mockapi`-backed resources' RFC 8707 identifiers, which are also the base URIs edge
@@ -506,6 +591,9 @@ case class SeedConfig(
     shardCount: Int,
     hashParallelism: Int,
     batchSize: Int,
+    /** `provision.namespace` of the same campaign: the warm sessions are issued to the namespaced
+      * clients, and a token seeded for another client id is refused at the first refresh. */
+    namespace: Option[String] = None,
     /** `seed.warm-sessions` (§10 step 6), absent by default: an existing `seed` config with no
       * such block seeds exactly as it always has, mobile users included, no `refresh_tokens` row
       * and no `vu_sessions` row for any of them. Present, it turns on [[BulkTokenMinter]] for the

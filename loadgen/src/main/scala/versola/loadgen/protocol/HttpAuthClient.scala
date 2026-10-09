@@ -115,6 +115,7 @@ final class HttpAuthClient(
       clientId: Option[String],
       acrValues: Option[List[String]],
       sessionCookie: Option[SsoSession],
+      key: Option[DpopKey],
   ): IO[ProtocolError, AuthorizeOutcome] =
     for
       registration <- ZIO.fromEither(clients.resolve(clientId))
@@ -129,12 +130,34 @@ final class HttpAuthClient(
         "code_challenge" -> pkce.challenge,
         "code_challenge_method" -> "S256",
       ) ++ acrValues.map(values => "acr_values" -> values.mkString(" "))
-      request = Request.get(endpoints.authorize.addQueryParams(params))
-      withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
-      received <- exchange.send(withSession)
-      outcome <- HttpExchange.setCookie(received.response, conversationCookie) match
-        case Some(cookie) =>
-          ZIO.succeed(AuthorizeOutcome.Started(AuthorizeStarted(ConversationCookie(cookie.content), pkce.verifier, state)))
+      hop <- authorizeHop(params, sessionCookie)
+    yield hop match
+      case Left(conversation) => AuthorizeOutcome.Started(AuthorizeStarted(conversation, pkce.verifier, state))
+      case Right(redirect) => AuthorizeOutcome.Authorized(redirect.code, pkce.verifier)
+
+  /** RFC 9126 §4's authorization hop for a request already pushed: `client_id` and `request_uri`
+    * are the whole query, everything else (PKCE, `state`, `dpop_jkt`, the redirect URI) travelled
+    * in the push. Used by [[NativeAuthClient]], whose pushes edge makes on the device's behalf.
+    *
+    * Left is a conversation to walk, Right the redirect auth answered with directly because the
+    * `SSO_SESSION` supplied already satisfied the request (§7.4).
+    */
+  private[protocol] def authorizePushed(
+      clientId: String,
+      requestUri: String,
+      sessionCookie: Option[SsoSession],
+  ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
+    authorizeHop(List("client_id" -> clientId, "request_uri" -> requestUri), sessionCookie)
+
+  private def authorizeHop(
+      params: List[(String, String)],
+      sessionCookie: Option[SsoSession],
+  ): IO[ProtocolError, Either[ConversationCookie, AuthorizedRedirect]] =
+    val request = Request.get(endpoints.authorize.addQueryParams(params))
+    val withSession = sessionCookie.fold(request)(session => request.addHeader(HttpExchange.cookieHeader(ssoSessionCookie, session.value)))
+    exchange.send(withSession).flatMap: received =>
+      HttpExchange.setCookie(received.response, conversationCookie) match
+        case Some(cookie) => ZIO.succeed(Left(ConversationCookie(cookie.content)))
         case None =>
           for
             location <- HttpExchange.required(
@@ -147,8 +170,7 @@ final class HttpAuthClient(
               authorizeEndpoint,
               "no " + conversationCookie + " cookie and no code on the /authorize redirect",
             )
-          yield AuthorizeOutcome.Authorized(AuthCode(code), pkce.verifier)
-    yield outcome
+          yield Right(AuthorizedRedirect(AuthCode(code), HttpExchange.redirectParam(location, "state"), HttpExchange.redirectParam(location, "iss")))
 
   override def challenge(conversation: ConversationCookie): IO[ProtocolError, ChallengePage] =
     exchange
@@ -405,6 +427,11 @@ final class HttpAuthClient(
           raw.expires_in,
         )
 
+/** The redirect to the client's `redirect_uri` that carries the code: what `state` and `iss`
+  * (RFC 9207) it named, which a client that checks its callback compares against what it sent.
+  */
+private[protocol] case class AuthorizedRedirect(code: AuthCode, state: Option[String], iss: Option[String])
+
 object HttpAuthClient:
   private[protocol] val conversationCookie = "SSO_CONVERSATION"
   private[protocol] val ssoSessionCookie = "SSO_SESSION"
@@ -455,12 +482,12 @@ object HttpAuthClient:
     * driver's own bookkeeping (it knows the token's TTL and its own generation counter); this
     * reports what was actually received.
     */
-  private def refreshRejection(received: Received): RefreshRejection =
+  private[protocol] def refreshRejection(received: Received): RefreshRejection =
     received.body.fromJson[TokenErrorBody] match
       case Right(error) => RefreshRejection.Unknown(error.error)
       case Left(_) => RefreshRejection.Unknown(received.status.code.toString)
 
-  def make(client: Client, targets: TargetsConfig, clients: ClientRegistry, requestTimeout: Duration): IO[ProtocolError, AuthClient] =
+  def make(client: Client, targets: TargetsConfig, clients: ClientRegistry, requestTimeout: Duration): IO[ProtocolError, HttpAuthClient] =
     for
       endpoints <- ZIO.fromEither(AuthEndpoints.from(targets.authUrl))
       nonce <- Ref.make(Option.empty[String])

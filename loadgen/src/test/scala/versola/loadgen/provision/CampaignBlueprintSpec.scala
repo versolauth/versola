@@ -23,6 +23,32 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
 
   def spec = suite("CampaignBlueprint")(
     suite("clients")(
+      // Client and resource ids are primary keys across tenants; a namespace is what lets a second
+      // campaign register its own set beside the first.
+      test("scopes the global ids under the namespace, and nothing else") {
+        val scoped = CampaignBlueprint(
+          ProvisionFixtures.targets,
+          ProvisionFixtures.provision.copy(namespace = Some("fapi")),
+          ProvisionFixtures.flows,
+        )
+        assertTrue(
+          scoped.clients.map(_.clientId).toSet == Set("fapi-mobile-otp", "fapi-mobile-otp-password", "fapi-mobile-passkey", "fapi-web-otp"),
+          scoped.resources.map(_.resourceId).toSet == Set("fapi-core", "fapi-pay", "fapi-notify"),
+          scoped.resources.forall(_.audience.toSet == scoped.clients.map(_.clientId).toSet),
+          scoped.presets.map(_.clientId) == List("fapi-web-otp"),
+          scoped.roles.map(_.roleId).toSet == blueprint.roles.map(_.roleId).toSet,
+          scoped.permissions.map(_.permission) == blueprint.permissions.map(_.permission),
+          blueprint.clients.map(_.clientId).toSet == CampaignBlueprint.clientIds.toSet,
+        )
+      },
+      // Central refuses a DPoP-bound client a TTL under an hour; the standard campaign keeps 900 s.
+      test("gives a fapi2 campaign's clients the one-hour access-token TTL DPoP-bound clients need") {
+        val fapi = CampaignBlueprint(ProvisionFixtures.targets, ProvisionFixtures.provision.copy(fapi2 = true), ProvisionFixtures.flows)
+        assertTrue(
+          fapi.clients.forall(_.accessTokenTtlSeconds == 3600),
+          blueprint.clients.forall(_.accessTokenTtlSeconds == 900),
+        )
+      },
       test("declares the four clients of design doc §2.2") {
         assertTrue(blueprint.clients.map(_.clientId) == CampaignBlueprint.clientIds)
       },
@@ -219,6 +245,16 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
       // (§2.2) -- a campaign that asserted fapi2 would have its own clients rejected.
       test("declares standard, matching the client_secret confidential client it registers") {
         assertTrue(blueprint.challengeSettings.securityProfile == "standard")
+      },
+      // #535: the same campaign under the profile -- the clients stop being the ones `standard`
+      // needed, so the tenant is `fapi2` and every client is marked for the certificate shape.
+      test("with fapi2 on, declares the profile and marks every client for it") {
+        val fapi = CampaignBlueprint(ProvisionFixtures.targets, ProvisionFixtures.provision.copy(fapi2 = true), ProvisionFixtures.flows)
+        assertTrue(
+          fapi.challengeSettings.securityProfile == "fapi2",
+          fapi.clients.forall(_.fapi2),
+          blueprint.clients.forall(!_.fapi2),
+        )
       },
     ),
   )

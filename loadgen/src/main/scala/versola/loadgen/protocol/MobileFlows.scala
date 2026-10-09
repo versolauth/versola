@@ -107,11 +107,12 @@ final class MobileFlows(
       for
         registration <- ZIO.fromEither(clients.resolve(request.clientId))
         outcome <- FlowTiming.step(observer, flow, StepName.Authorize):
-          auth.authorize(request.scope, request.clientId, request.acrValues, request.sessionCookie)
+          auth.authorize(request.scope, request.clientId, request.acrValues, request.sessionCookie, request.key)
         result <- outcome match
           case AuthorizeOutcome.Started(started) =>
             for
               completed <- conversation.walk(flow, credentials, started.conversation).flatMap(ChallengeConversation.orFail)
+              _ <- auth.checkCallback(started, completed)
               tokens <- FlowTiming.step(observer, flow, StepName.TokenCode):
                 auth.exchangeCode(completed.code, started.codeVerifier, registration.creds, request.key)
             yield (tokens, completed.ssoSession)
