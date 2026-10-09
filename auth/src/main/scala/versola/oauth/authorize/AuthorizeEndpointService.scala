@@ -21,7 +21,7 @@ import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, 
 import zio.json.ast.Json
 import zio.json.{JsonDecoder, ast}
 import zio.prelude.{NonEmptyList, NonEmptySet}
-import zio.{Chunk, Clock, Task, ZIO, ZLayer, durationInt}
+import zio.{Chunk, Clock, Task, UIO, ZIO, ZLayer, durationInt}
 
 import java.util.UUID
 
@@ -492,17 +492,13 @@ object AuthorizeEndpointService:
                   ZIO.fail(Error.IdTokenHintInvalid(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
 
     /** Narrows the requested ui_locales to those configured in central, preserving the client's
-     * preference order. Rejects the request when none of the requested locales are available.
+     * preference order. OIDC Core §3.1.2.1 asks the server to use the best match it has, not to
+     * refuse a request it has no match for, so when none is available the default locale applies.
      */
-    private def resolveUiLocales(request: AuthorizeRequest): ZIO[Any, Error.UnsupportedUiLocales, Option[List[String]]] =
+    private def resolveUiLocales(request: AuthorizeRequest): UIO[Option[List[String]]] =
       request.uiLocales match
         case None => ZIO.none
         case Some(requested) =>
-          configurationService.getLocales.flatMap: locales =>
+          configurationService.getLocales.map: locales =>
             val available = locales.locales.map(_.code).toSet
-            val intersection = requested.filter(available.contains)
-            ZIO.cond(
-              intersection.nonEmpty,
-              Some(intersection),
-              Error.UnsupportedUiLocales(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode),
-            )
+            Some(requested.filter(available.contains)).filter(_.nonEmpty)
