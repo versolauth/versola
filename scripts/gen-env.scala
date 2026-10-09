@@ -888,7 +888,7 @@ def writeGeneratedSecrets(dir: File, name: String, secrets: Seq[(String, String)
        |  "revocation_endpoint": "$authUrl/revoke",
        |  "pushed_authorization_request_endpoint": "$authUrl/par",
        |  "end_session_endpoint": "$authUrl/logout",
-       |  "scopes_supported": ["openid", "profile", "email", "phone", "offline_access"],
+       |  "scopes_supported": ["openid", "profile", "email", "address", "phone", "offline_access"],
        |  "response_types_supported": ["code", "code id_token"],
        |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
        |  "code_challenge_methods_supported": ["S256"],

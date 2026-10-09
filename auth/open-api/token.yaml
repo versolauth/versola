@@ -303,6 +303,16 @@ components:
   responses:
     Tokens:
       description: Tokens issued.
+      headers:
+        Cache-Control:
+          description: RFC 6749 §5.1 -- the response carries tokens and must not be cached.
+          schema:
+            type: string
+            const: no-store
+        Pragma:
+          schema:
+            type: string
+            const: no-cache
       content:
         application/json:
           schema:

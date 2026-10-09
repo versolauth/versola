@@ -4,7 +4,7 @@ import com.nimbusds.jose.crypto.RSASSASigner
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{ClientId, ScopeToken, SecurityProfile}
 import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
@@ -41,6 +41,10 @@ object UserInfoController extends Controller:
 
   private val DpopHeader = "DPoP"
 
+  /** What a compact JWT is made of: three base64url segments. Held to this for a token read from a
+    * body, so that nothing but the token itself (a stray comma, a space) reaches verification. */
+  private val BodyTokenFormat = "[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+".r
+
   /** RFC 9449 §4.3 compares a proof's `htu` against the endpoint's own URI, which -- this
     * endpoint being served at an RFC 8705 §5 alias too -- depends on the listener the request
     * arrived at. Matching `TokenEndpointController`'s `tokenEndpointUri`, whose doc comment
@@ -68,10 +72,19 @@ object UserInfoController extends Controller:
         userInfoService <- ZIO.service[UserInfoService]
         config <- ZIO.service[CoreConfig]
         publicKeys <- ZIO.serviceWithZIO[JwksService](_.getPublicKeys)
-        (tokenString, scheme) <- extractToken(request)
+        (tokenString, scheme, fromBody) <- extractToken(request)
         token <- JWT.deserialize[AccessTokenPayload](tokenString, publicKeys, JWT.Type.AccessToken)
           .orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setToken(token.id.encoded) *> Observability.setClientId(token.clientId)
+
+        // RFC 6750 §2.2 lets a form-encoded body carry the token, and OIDC Core §5.3.1 lets a
+        // UserInfo request use it. FAPI 2.0 §5.3.2.2 does not: a token in a body ends up in
+        // proxy and application logs, and cannot be sender-constrained -- so it is the tenant's
+        // profile, known only once the token names its client, that decides whether it may be
+        // presented that way.
+        _ <- ZIO.when(fromBody):
+          ZIO.serviceWithZIO[OAuthConfigurationService](_.getSecurityProfile(token.clientId)).flatMap: profile =>
+            ZIO.fail(UserInfoError.Unauthorized).unless(profile == SecurityProfile.standard)
 
         userId <- ZIO.fromOption(token.userId).orElseFail(UserInfoError.InvalidToken)
         _ <- Observability.setUserId(userId.toString)
@@ -182,15 +195,47 @@ object UserInfoController extends Controller:
             ZIO.fail(error)
     }
 
-  private def extractToken(request: Request): IO[UserInfoError, (String, AuthScheme)] =
-    ZIO.fromOption:
+  /** The token and the scheme it was presented under, and whether it came from the request body
+    * rather than the `Authorization` header (RFC 6750 §2.2: a POST with
+    * `application/x-www-form-urlencoded` and an `access_token` field). A request that uses both is
+    * refused: §2 allows one method per request.
+    */
+  private def extractToken(request: Request): IO[UserInfoError, (String, AuthScheme, Boolean)] =
+    val fromHeader: Option[(String, AuthScheme)] =
       request.header(Header.Authorization).collect:
         case Header.Authorization.Bearer(token) => (token.value.asString, AuthScheme.Bearer)
         // zio-http has no `DPoP` case, so the scheme arrives unparsed with the token as its
         // parameters. RFC 9110 §11.1 makes scheme matching case-insensitive.
         case Header.Authorization.Unparsed(scheme, token) if scheme.equalsIgnoreCase(DpopHeader) =>
           (token.stringValue, AuthScheme.Dpop)
-    .orElseFail(UserInfoError.Unauthorized)
+
+    val isForm = request.method == Method.POST &&
+      request.header(Header.ContentType).exists(_.mediaType == MediaType.application.`x-www-form-urlencoded`)
+
+    for
+      fromBody <-
+        if !isForm then ZIO.none
+        else
+          request.body.asURLEncodedForm
+            .orElseFail(UserInfoError.Unauthorized)
+            .flatMap: form =>
+              // RFC 6750 §3.1: a parameter that appears more than once is `invalid_request`. It also
+              // has to be checked here rather than left to the lookup, which would merge repeats into
+              // one comma-joined value whose signature the JWT library still verifies (it ignores the
+              // comma), returning claims for a request that was malformed.
+              form.formData.filter(_.name == "access_token").toList match
+                case Nil => ZIO.none
+                case single :: Nil =>
+                  single.stringValue.filter(BodyTokenFormat.matches) match
+                    case Some(token) => ZIO.some(token)
+                    case None => ZIO.fail(UserInfoError.Unauthorized)
+                case _ => ZIO.fail(UserInfoError.Unauthorized)
+      extracted <- (fromHeader, fromBody) match
+        case (Some(_), Some(_)) => ZIO.fail(UserInfoError.Unauthorized)
+        case (Some((token, scheme)), None) => ZIO.succeed((token, scheme, false))
+        case (None, Some(token)) => ZIO.succeed((token, AuthScheme.Bearer, true))
+        case (None, None) => ZIO.fail(UserInfoError.Unauthorized)
+    yield extracted
 
   /** RFC 9449 §7.1: decides what the presented token and scheme oblige the caller to prove.
     *

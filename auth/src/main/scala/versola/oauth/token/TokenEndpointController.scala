@@ -86,7 +86,11 @@ object TokenEndpointController extends Controller:
         // the tenant is only known once the grant has identified whose tokens these are.
         signingKey <- ZIO.serviceWithZIO[JwksService](_.signingKey(issuedTokens.tenantId))
         response <- toTokenResponse(issuedTokens, config, signingKey)
-      yield Response.json(response.toJson))
+      // RFC 6749 §5.1: a successful response carries tokens, so it must not be stored -- the same
+      // two headers the error response below already sets, which §5.2 does not strictly ask for.
+      yield Response.json(response.toJson)
+        .addHeader(Header.CacheControl.NoStore)
+        .addHeader(Header.Pragma.NoCache))
         .catchAll {
           case error: TokenEndpointError =>
             Observability.setError(error.error, error.logDescription).as:

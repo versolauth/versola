@@ -213,7 +213,14 @@ components:
       required: false
       description: |
         Space-delimited Authentication Context Class Reference values, in order of preference.
-        Present but empty is rejected.
+        Present but empty is rejected. A voluntary request (OpenID Connect Core §3.1.2.1): values
+        the client's tenant does not define are ignored, and when none is left the request carries
+        no ACR requirement. For a user the server already knows (an existing session, or an
+        `id_token_hint`), a value the tenant defines but that cannot be met is refused with
+        `unmet_authentication_requirements`. For a fresh login with neither there is no user to
+        check achievability against, so the request proceeds with normal authentication and the
+        `acr` claim reports what was actually achieved: the request is not a guarantee, and the
+        client has to read that claim.
       schema:
         type: string
 
@@ -221,7 +228,10 @@ components:
       name: ui_locales
       in: query
       required: false
-      description: Space-delimited BCP 47 language tags, in order of preference.
+      description: |
+        Space-delimited BCP 47 language tags, in order of preference. The best match among the
+        configured locales is used; when none is configured the default locale applies, and the
+        request is not refused.
       schema:
         type: string
       example: ru en
@@ -246,9 +256,10 @@ components:
       required: false
       description: |
         Pre-fills the identifier on the login form. A value beginning with `+` followed by
-        digits is treated as a phone number, anything else as an email address. The hint is
-        rejected unless the client's auth flow accepts that credential type, and phone hints
-        must additionally match one of the configured phone prefixes.
+        digits is treated as a phone number, anything else as an email address. It is only a hint
+        (OpenID Connect Core §3.1.2.1): one the client's auth flow does not accept for that
+        credential type, one outside the configured phone prefixes, or one that is not a valid
+        identifier is ignored, and the user signs in without it.
       schema:
         type: string
       example: user@example.com

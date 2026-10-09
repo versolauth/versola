@@ -181,17 +181,20 @@ object StepUpFlowSpec extends E2ESpec:
         yield assertCompletes
       },
 
-      test("unknown ACR value not in vocabulary → unmet_authentication_requirements redirect") {
+      // OIDC Core §3.1.2.1: acr_values is voluntary, and a value the tenant does not define can never
+      // be satisfied, so it is ignored (the client reads the `acr` it actually got). A value the tenant
+      // does define and cannot be met still fails, as the test above shows.
+      test("unknown ACR value not in vocabulary is ignored → the session is used as it is") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)
           sessionCookie <- completeOtpAuth(s, auth)
-          _ <- auth.authorizeRaw(
+          code <- auth.authorizeRaw(
             clientId = s.clientId,
             redirectUri = s.redirectUri,
             sessionCookie = Some(sessionCookie),
             acrValues = Some("urn:unknown:acr:level99"),
-          ).assertErrorRedirect("unmet_authentication_requirements")
-        yield assertCompletes
+          ).assertCodeRedirect
+        yield assertTrue(code.nonEmpty)
       },
     ),
 

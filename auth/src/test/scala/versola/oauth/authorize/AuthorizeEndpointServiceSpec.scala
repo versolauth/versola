@@ -1681,15 +1681,25 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.head._2.uiLocales == Some(List("fr")),
       )
     },
-    test("fail with UnsupportedUiLocales when requested locales don't overlap with configured locales") {
+    // OIDC Core §3.1.2.1: use the best match, and carry on when there is none -- the
+    // oidcc-ui-locales conformance test sends a locale no tenant has and expects a login.
+    test("carry on with the default locale when no requested ui_locale is configured") {
       val env = Env()
+      val uuid = UUID.randomUUID()
       for
-        _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
         _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
         _ <- env.configurationService.getLocales.succeedsWith(
           versola.oauth.client.model.Locales(Vector(versola.oauth.client.model.LocaleRecord("en", "English")), "en"),
         )
-        result <- env.service.authorize(baseRequest.copy(uiLocales = Some(List("de")))).flip
-      yield assertTrue(result == Error.UnsupportedUiLocales(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(uiLocales = Some(List("se"))))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.uiLocales.isEmpty,
+      )
     },
   )

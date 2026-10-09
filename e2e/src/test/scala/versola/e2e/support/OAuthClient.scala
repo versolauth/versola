@@ -560,6 +560,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       sessionCookie: Option[String] = None,
       acrValues: Option[String] = None,
       idTokenHint: Option[String] = None,
+      /** OIDC Core §3.1.2.1 hints a client may send and a server is free to ignore. */
+      uiLocales: Option[String] = None,
+      loginHint: Option[String] = None,
       requestUri: Option[String] = None,
       omitClientId: Boolean = false,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
@@ -591,6 +594,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "max_age"              -> maxAge.map(_.toString),
           "acr_values"           -> acrValues,
           "id_token_hint"        -> idTokenHint,
+          "ui_locales"           -> uiLocales,
+          "login_hint"           -> loginHint,
           "authorization_details" -> authorizationDetails,
           "nonce"                -> nonce,
           "request"              -> request,
@@ -1453,6 +1458,19 @@ final class OAuthClient(client: Client, config: E2EConfig):
         certificate,
       ),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
+
+  /** POST /userinfo with the access token as a form field of the body (RFC 6750 §2.2), the way the
+    * conformance suite's oidcc-userinfo-post-body presents it. `alsoInHeader` adds the same token to
+    * the `Authorization` header too, which RFC 6750 §2 forbids (one method per request). */
+  def userinfoTokenInBody(accessToken: String, alsoInHeader: Boolean = false): Task[UserinfoResult] =
+    val base = Request
+      .post(
+        s"${config.authUrl}/userinfo",
+        Body.fromURLEncodedForm(Form.fromStrings("access_token" -> accessToken)),
+      )
+      .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
+    Client.batched(if alsoInHeader then base.addHeader(Authorization.Bearer(accessToken)) else base)
+      .provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
 
   /** GET /userinfo under the `DPoP` scheme (RFC 9449 §7.1), with a proof naming this endpoint
     * and the token it accompanies. The scheme travels unparsed, the way edge sends it.

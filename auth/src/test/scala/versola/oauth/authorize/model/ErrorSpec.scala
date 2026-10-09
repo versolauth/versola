@@ -59,12 +59,6 @@ object ErrorSpec extends ZIOSpecDefault:
         ErrorCode.InvalidRequest,
         "login_hint and id_token_hint must not be used together",
       ),
-      check(
-        "LoginHintInvalid",
-        Error.LoginHintInvalid(clientId, uri, state, responseMode = ResponseMode.Query),
-        ErrorCode.InvalidRequest,
-        "The login_hint parameter is invalid or not supported by the client auth flow",
-      ),
     ),
     suite("request rejections")(
       check(
@@ -84,12 +78,6 @@ object ErrorSpec extends ZIOSpecDefault:
         Error.InvalidClaims(clientId, uri, state, responseMode = ResponseMode.Query),
         ErrorCode.InvalidRequest,
         "Invalid claims parameter - must be valid JSON",
-      ),
-      check(
-        "UnsupportedUiLocales",
-        Error.UnsupportedUiLocales(clientId, uri, state, responseMode = ResponseMode.Query),
-        ErrorCode.InvalidRequest,
-        "None of the requested ui_locales are supported",
       ),
       check(
         "UnmetAuthenticationRequirements",

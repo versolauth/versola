@@ -13,7 +13,7 @@ import versola.util.{Base64, Dpop, Email, JsonSchemaValidator, Phone, RequestObj
 import zio.http.{Form, Header, Method, Request, URL}
 import zio.json.*
 import zio.prelude.{NonEmptyList, NonEmptySet}
-import zio.{Chunk, IO, Task, ZIO, ZLayer}
+import zio.{Chunk, IO, Task, UIO, ZIO, ZLayer}
 
 trait AuthorizeRequestParser:
   def parse(
@@ -290,9 +290,11 @@ object AuthorizeRequestParser:
           .flatMap:
             case None => ZIO.none
             case Some(values) =>
-              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').map(Acr(_)).toList))
+              // Blank tokens are not values: `acr_values=` or a run of spaces names none, which is
+              // refused as before rather than read as one empty value the tenant does not define.
+              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').filter(_.nonEmpty).map(Acr(_)).toList))
                 .orElseFail(Error.NoValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
-                .asSome
+                .flatMap(requested => voluntaryAcrValues(clientId, requested))
 
         userAgent =
           request.header(Header.UserAgent)
@@ -310,8 +312,7 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "login_hint", responseMode = responseMode))
           .flatMap {
             case None => ZIO.none
-            case Some(value) if value.startsWith("+") && value.drop(1).forall(_.isDigit) => parsePhoneLoginHint(value, client, redirectUri, state, responseMode)
-            case Some(value) => parseEmailLoginHint(value, client, redirectUri, state, responseMode)
+            case Some(value) => parseLoginHint(value, client)
           }
 
         idTokenHint <- getParam(params, "id_token_hint")
@@ -411,34 +412,33 @@ object AuthorizeRequestParser:
               .mapError(resource => Error.InvalidTarget(client.id, redirectUri, state, resource.toString, responseMode = responseMode)),
           )
 
-    private def parseEmailLoginHint(
-        value: String,
-        client: OAuthClientRecord,
-        redirectUri: URL,
-        state: Option[State],
-        responseMode: ResponseMode,
-    ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
-      val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.email))
-      if !allowed then ZIO.fail(Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode))
-      else
-        ZIO.fromEither(Email.from(value))
-          .mapBoth(_ => Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode), e => Some(Left(e)))
+    /** OIDC Core §3.1.2.1: `acr_values` is a *voluntary* request -- the server tries to satisfy it
+      * and reports what was achieved in the `acr` claim. A value the tenant's vocabulary does not
+      * define can never be satisfied, so it is dropped; when none is left the request carries no
+      * acr requirement at all. Values the tenant does define are kept as before, and one that
+      * cannot be met for this user is still refused downstream (a step-up has to be able to fail).
+      */
+    private def voluntaryAcrValues(clientId: ClientId, requested: NonEmptyList[Acr]): UIO[Option[NonEmptyList[Acr]]] =
+      oauthClientService.getAcrVocabulary(clientId).map: vocabulary =>
+        NonEmptyList.fromIterableOption(requested.toList.filter(vocabulary.contains))
 
-    private def parsePhoneLoginHint(
-        value: String,
-        client: OAuthClientRecord,
-        redirectUri: URL,
-        state: Option[State],
-        responseMode: ResponseMode,
-    ): IO[Error.LoginHintInvalid, Option[Either[Email, Phone]]] =
-      val allowed = client.authFlow.exists(_.primary.credentials.contains(PrimaryCredential.phone))
-      if !allowed then ZIO.fail(Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode))
-      else if value.drop(1).forall(_.isDigit) then
-        oauthClientService.getAllowedPhonePrefixes(client.id).flatMap: prefixes =>
-          if prefixes.isEmpty || prefixes.exists(value.startsWith) then
-            ZIO.fromEither(Phone.parse(value)).mapBoth(_ => Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode), p => Some(Right(p)))
-          else ZIO.fail(Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode))
-      else ZIO.fail(Error.LoginHintInvalid(client.id, redirectUri, state, responseMode = responseMode))
+    /** OIDC Core §3.1.2.1: `login_hint` is a hint, which the server may act on or not. One that
+      * names no identifier this client's flow accepts -- or is not one at all -- is therefore
+      * ignored rather than answered with an error: the user simply signs in without it.
+      */
+    private def parseLoginHint(value: String, client: OAuthClientRecord): UIO[Option[Either[Email, Phone]]] =
+      def accepts(credential: PrimaryCredential): Boolean =
+        client.authFlow.exists(_.primary.credentials.contains(credential))
+
+      if value.startsWith("+") && value.drop(1).forall(_.isDigit) then
+        if !accepts(PrimaryCredential.phone) then ZIO.none
+        else
+          oauthClientService.getAllowedPhonePrefixes(client.id).map: prefixes =>
+            Option.when(prefixes.isEmpty || prefixes.exists(value.startsWith))(Phone.parse(value))
+              .flatMap(_.toOption)
+              .map(Right(_))
+      else
+        ZIO.succeed(Option.when(accepts(PrimaryCredential.email))(Email.from(value)).flatMap(_.toOption).map(Left(_)))
 
     private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")

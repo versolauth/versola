@@ -2,6 +2,7 @@ package versola.e2e.flows.basic
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Header
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -64,7 +65,13 @@ object BasicAuthFlowSpec extends E2ESpec:
       yield assertTrue(token.tokenType.toLowerCase == "bearer")
         .label("token_type must be 'bearer'") &&
         assertTrue(token.accessToken.nonEmpty)
-          .label("access_token must not be empty")
+          .label("access_token must not be empty") &&
+        // RFC 6749 §5.1: a response carrying tokens must not be cached -- what the conformance
+        // suite's oidcc-refresh-token checks, and over real HTTP rather than a handler.
+        assertTrue(token.response.headers.get(Header.CacheControl).contains(Header.CacheControl.NoStore))
+          .label("the token response must carry Cache-Control: no-store") &&
+        assertTrue(token.response.headers.get(Header.Pragma).contains(Header.Pragma.NoCache))
+          .label("the token response must carry Pragma: no-cache")
     },
     // OIDC Core §5.4: with an access token issued, the claims a scope stands for are UserInfo's;
     // the ID Token does not repeat them (the conformance suite warns when it does).
@@ -128,6 +135,30 @@ object BasicAuthFlowSpec extends E2ESpec:
         (_, userinfoEmail) <- loginForClaims("openid email", Some("""{"userinfo":{"email":null}}"""))
       yield assertTrue(userinfoEmail.nonEmpty)
         .label("a null claim is the claim with no constraints, so UserInfo still carries it")
+    },
+    // RFC 6750 §2.2 / OIDC Core §5.3.1: the access token may travel in a form body. Only a `standard`
+    // tenant allows it (FAPI 2.0 does not); the suite's tenant is on `standard`.
+    test("UserInfo accepts the access token in a form body, and not in both places at once") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+          .assertChallengeRedirect
+        challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
+        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, challenge.csrf)
+          .assertRedirect(auth, authorize.conversationCookie.get)
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+        viaBody <- auth.userinfoTokenInBody(token.accessToken)
+        bothPlaces <- auth.userinfoTokenInBody(token.accessToken, alsoInHeader = true)
+      yield assertTrue(viaBody.isInstanceOf[UserinfoResult.Success])
+        .label(s"a token in the form body must be accepted for a standard tenant, got $viaBody") &&
+        assertTrue(bothPlaces.response.status == zio.http.Status.Unauthorized)
+          .label(s"a token in both the header and the body must be refused, got ${bothPlaces.response.status}")
     },
     test("otp + permanent password: complete otp flow") {
       for
