@@ -919,7 +919,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderSubmit(result, conversationRecord)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
-          assertTrue(response.headers.get(Header.SetCookie).exists(_.renderedValue.contains("SSO_SESSION"))) &&
+          assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
+            c.value.name == "SSO_SESSION",
+          )) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
             c.value.name == "SSO_CONVERSATION" && c.value.maxAge.contains(Duration.Zero),
           ))

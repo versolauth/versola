@@ -29,8 +29,7 @@ object ResourcesSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ResourcesURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request))
-        response <- response.bodyAs[GetResourcesSyncResponse]
+        response <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetResourcesSyncResponse]))
         resources <- ZIO.foreach(response.resources) { resource =>
           ZIO.foreach(resource.secret)(decryptSecret).map { secret =>
             Resource(resource.resourceId, resource.resource, resource.endpoints, secret)

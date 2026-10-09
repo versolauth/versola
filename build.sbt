@@ -314,6 +314,7 @@ lazy val mockapi = project
   .enablePlugins(JavaAppPackaging)
   .settings(
     name := "mockapi",
+    dependencyOverrides ++= securityPins,
     scalaVersion := "3.8.1",
     scalacOptions ++= Seq(
       "-deprecation",
@@ -340,6 +341,30 @@ lazy val sbtForkSettings = Seq(
     .toSeq,
 )
 
+// Pins for transitive dependencies with open Dependabot alerts, shared by every project that
+// resolves them: `commonSettings` and `mockapi` (which opts out of commonSettings). Netty is
+// pinned as one set so all its modules stay on the same version.
+lazy val securityPins = Seq(
+  "io.netty" % "netty-buffer"                     % "4.2.19.Final",
+  "io.netty" % "netty-codec-base"                % "4.2.19.Final",
+  "io.netty" % "netty-codec-compression"         % "4.2.19.Final",
+  "io.netty" % "netty-codec-http"                % "4.2.19.Final",
+  "io.netty" % "netty-codec-socks"               % "4.2.19.Final",
+  "io.netty" % "netty-common"                    % "4.2.19.Final",
+  "io.netty" % "netty-handler"                   % "4.2.19.Final",
+  "io.netty" % "netty-handler-proxy"             % "4.2.19.Final",
+  "io.netty" % "netty-resolver"                  % "4.2.19.Final",
+  "io.netty" % "netty-transport"                 % "4.2.19.Final",
+  "io.netty" % "netty-transport-classes-epoll"    % "4.2.19.Final",
+  "io.netty" % "netty-transport-classes-kqueue"   % "4.2.19.Final",
+  "io.netty" % "netty-transport-native-epoll"     % "4.2.19.Final",
+  "io.netty" % "netty-transport-native-kqueue"    % "4.2.19.Final",
+  "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
+  "com.google.protobuf" % "protobuf-java"       % "4.36.2",
+  "org.yaml" % "snakeyaml"                       % "2.7",
+  "com.nimbusds" % "nimbus-jose-jwt"              % "10.10",
+)
+
 lazy val commonSettings =
   Seq(
     scalaVersion := "3.8.1",
@@ -357,34 +382,7 @@ lazy val commonSettings =
       "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.3",
       "com.fasterxml.jackson.dataformat" % "jackson-dataformat-yaml"  % "2.22.3",
     ),
-    // Pins for transitive dependencies with open Dependabot alerts. Netty is pinned as one
-    // set so all its modules stay on the same version; jsoup/jline/snakeyaml/okhttp/nimbus/
-    // protobuf are pinned only to lift them past the vulnerable ranges.
-    dependencyOverrides ++= Seq(
-      "io.netty" % "netty-buffer"                     % "4.2.19.Final",
-      "io.netty" % "netty-codec-base"                % "4.2.19.Final",
-      "io.netty" % "netty-codec-compression"         % "4.2.19.Final",
-      "io.netty" % "netty-codec-http"                % "4.2.19.Final",
-      "io.netty" % "netty-codec-socks"               % "4.2.19.Final",
-      "io.netty" % "netty-common"                    % "4.2.19.Final",
-      "io.netty" % "netty-handler"                   % "4.2.19.Final",
-      "io.netty" % "netty-handler-proxy"             % "4.2.19.Final",
-      "io.netty" % "netty-resolver"                  % "4.2.19.Final",
-      "io.netty" % "netty-transport"                 % "4.2.19.Final",
-      "io.netty" % "netty-transport-classes-epoll"    % "4.2.19.Final",
-      "io.netty" % "netty-transport-classes-kqueue"   % "4.2.19.Final",
-      "io.netty" % "netty-transport-native-epoll"     % "4.2.19.Final",
-      "io.netty" % "netty-transport-native-kqueue"    % "4.2.19.Final",
-      "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
-      "com.google.protobuf" % "protobuf-java"       % "4.36.2",
-      "org.jsoup" % "jsoup"                          % "1.23.2",
-      "org.jline" % "jline-reader"                  % "3.30.17",
-      "org.jline" % "jline-terminal"                % "3.30.17",
-      "org.jline" % "jline-terminal-jna"            % "3.30.17",
-      "org.yaml" % "snakeyaml"                       % "2.7",
-      "com.squareup.okhttp3" % "okhttp-jvm"           % "5.5.0",
-      "com.nimbusds" % "nimbus-jose-jwt"              % "10.10",
-    ),
+    dependencyOverrides ++= securityPins,
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",
