@@ -12,7 +12,7 @@ import java.time.Instant
 
 /** Records proofs into a fixed ring of partitions keyed by the proof's own `iat`, so that expiry
   * is a truncate of a whole slot rather than a delete per proof. See
-  * `V0014__dpop_proofs_table.sql` for why the slot is derived from `iat` and not from arrival
+  * `V0012__dpop_proofs_table.sql` for why the slot is derived from `iat` and not from arrival
   * time.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
@@ -76,7 +76,7 @@ class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository
     .unit
 
 object PostgresDpopProofRepository:
-  /** Ring geometry. Must match the partitions created in `V0014__dpop_proofs_table.sql`. */
+  /** Ring geometry. Must match the partitions created in `V0012__dpop_proofs_table.sql`. */
   val SlotCount = 12
   val SlotWidth: Duration = 30.seconds
 

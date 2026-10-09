@@ -11,7 +11,7 @@ import java.time.Instant
 
 /** Records client assertions into a fixed ring of partitions keyed by the assertion's own
   * `exp`, so that expiry is a truncate of a whole slot rather than a delete per assertion.
-  * See `V0016__client_assertions_table.sql`, and `PostgresDpopProofRepository` for the same
+  * See `V0013__client_assertions_table.sql`, and `PostgresDpopProofRepository` for the same
   * design argued in full.
   */
 class PostgresClientAssertionRepository(xa: TransactorZIO) extends ClientAssertionRepository, BasicCodecs:
@@ -57,7 +57,7 @@ class PostgresClientAssertionRepository(xa: TransactorZIO) extends ClientAsserti
     .unit
 
 object PostgresClientAssertionRepository:
-  /** Ring geometry. Must match the partitions created in `V0016__client_assertions_table.sql`.
+  /** Ring geometry. Must match the partitions created in `V0013__client_assertions_table.sql`.
     *
     * Wider slots than the DPoP ring's and the same count: the window here is a whole assertion
     * lifetime rather than an `iat` leeway, so the lap has to be minutes rather than seconds,
