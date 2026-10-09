@@ -121,6 +121,21 @@ object BasicAuthFlowSpec extends E2ESpec:
         assertTrue(token.accessToken.nonEmpty)
           .label("a code of the new length must still redeem")
     },
+    // OIDC Core §5.5: a `claims` request may name just one member, and a claim's value may be null. The
+    // request is stored with the conversation and read back at the token step, so completing the login
+    // is what shows the stored shape round-trips through Postgres, not only that the parser accepts it.
+    test("a claims request that names only the userinfo member completes the login") {
+      for
+        (_, userinfoEmail) <- loginForClaims("openid email", Some("""{"userinfo":{"email":{"essential":true}}}"""))
+      yield assertTrue(userinfoEmail.nonEmpty)
+        .label("UserInfo must carry the email the request asked for")
+    },
+    test("a claims request whose claim is null completes the login") {
+      for
+        (_, userinfoEmail) <- loginForClaims("openid email", Some("""{"userinfo":{"email":null}}"""))
+      yield assertTrue(userinfoEmail.nonEmpty)
+        .label("a null claim is the claim with no constraints, so UserInfo still carries it")
+    },
     // RFC 6750 §2.2 / OIDC Core §5.3.1: the access token may travel in a form body. Only a `standard`
     // tenant allows it (FAPI 2.0 does not); the suite's tenant is on `standard`.
     test("UserInfo accepts the access token in a form body, and not in both places at once") {
