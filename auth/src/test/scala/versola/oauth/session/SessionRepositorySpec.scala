@@ -65,6 +65,47 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
   private def withoutExpiry(r: Option[SessionRecord]): Option[SessionRecord] =
     r.map(_.copy(expiresAt = Instant.EPOCH))
 
+  private def expiredPriorSessionLeavesTokensAlone(env: SessionRepositorySpec.Env)(
+      what: String,
+      prior: Instant => PriorSession,
+  ): Spec[SessionRepositorySpec.Env & Scope, Any] =
+    test(s"a prior session that expired while the conversation was open: $what its tokens changes nothing") {
+      for
+        now <- Clock.instant
+        record = RefreshTokenRecord(
+          familyId = familyId1,
+          sessionId = sessionId1,
+          publicSessionId = publicId1,
+          userId = userId1,
+          clientId = clientId1,
+          audience = List.empty,
+          authorizationDetails = None,
+          scope = Set(ScopeToken("read")),
+          issuedAt = now,
+          expiresAt = now.plusSeconds(30.days.toSeconds),
+          requestedClaims = None,
+          uiLocales = None,
+          nonce = None,
+          amr = Set(AuthMethodRef.pwd),
+          authTime = now,
+          acr = None,
+          cnf = None,
+        )
+        _ <- env.repository.create(sessionId1, session1, ttl, None, None)
+        _ <- env.repository.createRefreshToken(atomicTokenId, None, record, None)
+        // The session's TTL passes; the token's (30 days) does not.
+        _ <- TestClock.adjust(ttl + 1.minute)
+        later <- Clock.instant
+        _ <- env.repository.create(sessionId2, session2, ttl, None, Some(prior(later)))
+        token <- env.repository.findToken(atomicTokenId)
+        newSession <- env.repository.findSession(sessionId2)
+      yield assertTrue(
+        newSession.isDefined,
+        // Still on the prior session (a MAC is a byte array, compared by content) and not expired.
+        token.exists(t => java.util.Arrays.equals(t.sessionId: Array[Byte], sessionId1: Array[Byte])),
+      )
+    }
+
   def testCases(env: SessionRepositorySpec.Env): List[Spec[SessionRepositorySpec.Env & Scope, Any]] =
     List(
       test("create and find session") {
@@ -468,6 +509,12 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
           found <- env.repository.findSession(sessionId1)
         yield assertTrue(found.exists(_.clients.map(_.clientId) == List(clientId1)))
       },
+      // A conversation can outlive the session it started from (the session expired, or was ended
+      // elsewhere). Both prior-session operations are guarded by `expires_at > now`, so completing
+      // the login then neither fails nor touches the prior session's tokens: they are not moved onto
+      // the new session, and not expired either.
+      expiredPriorSessionLeavesTokensAlone(env)("migrating", later => PriorSession.MigrateTokens(sessionId1, Set.empty, later, None)),
+      expiredPriorSessionLeavesTokensAlone(env)("invalidating", _ => PriorSession.Invalidate(sessionId1)),
       test("create carries over prior session's client ids on rotation") {
         for
           _     <- env.repository.create(sessionId1, session1, ttl, None, None)
