@@ -201,10 +201,15 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           InjectRule(InjectTarget.query, "clientId", "token.client_id"),
           InjectRule(InjectTarget.query, "sessionId", "token.sid"),
         )
+        val expectedBodyInjects = Vector(
+          InjectRule(InjectTarget.body, "userId", "token.sub"),
+          InjectRule(InjectTarget.body, "clientId", "token.client_id"),
+        )
         assertTrue(
           BootstrapService.accountEndpointRecords.forall: endpoint =>
             endpoint.inject == BootstrapService.accountCallerInjects(endpoint.method, endpoint.path),
-          BootstrapService.accountEndpointRecords.forall(_.inject == expectedQueryInjects),
+          BootstrapService.accountEndpointRecords.exists(_.inject == expectedQueryInjects),
+          BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
           BootstrapService.accountEndpointRecords.forall(_.stepUpCondition.isEmpty),
           BootstrapService.accountEndpointRecords.forall(_.stepUpAcr.isEmpty),
           BootstrapService.accountEndpointRecords.forall(_.maxAge.isEmpty),
