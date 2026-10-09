@@ -277,6 +277,11 @@ object StubSut:
   def makeWeb(steps: List[String]): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
     started(steps, false, edgeCodeRedirect)
 
+  /** The web path against an SSO session that already satisfies the request: auth answers
+    * `/authorize` with the redirect straight back to edge, no conversation (§7.4). */
+  def makeWebSilent: ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
+    started(Nil, true, edgeCodeRedirect)
+
   /** The same stub with auth refusing the authorization at the end of the conversation. */
   def makeWebRefused(steps: List[String]): ZIO[Any, Nothing, (Recorder, Routes[Any, Nothing])] =
     started(steps, false, edgeErrorRedirect)

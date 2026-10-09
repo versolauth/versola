@@ -73,8 +73,10 @@ final class WebFlows(
     FlowTiming.flow(observer, flow):
       for
         started <- FlowTiming.step(observer, flow, StepName.EdgeLogin)(edge.login(request.preset, request.acrValues))
-        conversationCookie <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
-        outcome <- conversation.walk(flow, credentials, conversationCookie)
+        authorized <- FlowTiming.step(observer, flow, StepName.Authorize)(edge.startConversation(started, request.ssoSession))
+        outcome <- authorized match
+          case EdgeAuthorization.Conversation(cookie) => conversation.walk(flow, credentials, cookie)
+          case EdgeAuthorization.Answered(answer) => ZIO.succeed(answer)
         completed <- refusalCompleted(flow, outcome)
         state <- echoedState(started, completed)
         cookie <- FlowTiming.step(observer, flow, StepName.EdgeComplete)(edge.complete(state, completed.code))
