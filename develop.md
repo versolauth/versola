@@ -206,10 +206,24 @@ supplied by the operator. The `file` field names where a value is written when i
 that the store doesn't have yet. On vps `POSTGRES_PASSWORD` is one value for all three services;
 the users and URLs are separate flags and are not checked.
 
+The schema has a revision of its own, `SecretSchema.Revision` (`"revision"` at the top of
+`secrets.schema.json`; not `schemaVersion`, which is the version of the file's *format*), and every
+entry says in which revision it appeared (`since`; everything the schema started with is 1). It is
+how `versola-cli` tells, on an upgrade, a secret that is new in this version (generate it) from one
+that was lost from the store (for `generate-on-first-install-only`, stop). A reader treats a file
+with no `revision`/`since` as revision 1 / since 1. **When you add a secret to the schema, raise
+`Revision` by one and give the new secret `since = Revision`.** If you forget (for a
+`generate-on-first-install-only` secret), the new secret looks like one that always existed, so an
+upgrade refuses to continue on it as "lost": a safe failure, never a silently regenerated value, but
+it fails every upgrade until it is fixed. The revision is one number per file, shared by all targets,
+and the consumer has to record the revision it last applied; removing or renaming a secret is not
+expressed by `since`. Members of a group
+share one `since`; `sbt tools/test` checks that every `since` is within `1..Revision`.
+
 Adding a secret takes four edits that must agree: a `SecretSpec` in `SecretSchema.specs`, a
 `secretField`/`secretKeyField` placeholder in the service's config, an entry in that service's
 `writeGeneratedSecrets` list, and, for k8s, `versola.requiredSecretVars` in
-`k8s/versola/templates/_helpers.tpl`. gen-env stops when the keys it writes differ from the schema;
+`k8s/versola/templates/_helpers.tpl` (and the `Revision` bump above). gen-env stops when the keys it writes differ from the schema;
 `sbt tools/test` covers the schema itself and `.github/scripts/check-secret-schema.sh` runs the
 generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
 

@@ -47,10 +47,11 @@ object SecretSchemaSpec extends ZIOSpecDefault:
       size: Option[Int],
       group: Option[String],
       onMissing: String,
+      since: Int,
       file: Option[String],
   ) derives JsonDecoder
 
-  private final case class Doc(schemaVersion: Int, target: String, secrets: List[Entry]) derives JsonDecoder
+  private final case class Doc(schemaVersion: Int, revision: Int, target: String, secrets: List[Entry]) derives JsonDecoder
 
   private def parsed(target: SecretTarget): Doc =
     SecretSchema.toJson(target).fromJson[Doc].fold(error => throw RuntimeException(error), identity)
@@ -69,7 +70,7 @@ object SecretSchemaSpec extends ZIOSpecDefault:
     SecretSchema.specs.filter(_.group.contains(group)).map(_.name).toSet
 
   /** A sound schema entry to break one rule of at a time. */
-  private val sound = SecretSpec("A_SECRET", List("auth"), SecretType.Base64Url, Some(32), None, OnMissing.Generate, Set(SecretTarget.Vps))
+  private val sound = SecretSpec("A_SECRET", List("auth"), SecretType.Base64Url, Some(32), None, OnMissing.Generate, Set(SecretTarget.Vps), 1)
 
   private val keyTests: List[Spec[Any, Nothing]] =
     expected.map { (target, service, keys) =>
@@ -83,13 +84,14 @@ object SecretSchemaSpec extends ZIOSpecDefault:
       test(s"${target.json}: parses and describes exactly the schema for the target") {
         val doc = parsed(target)
         val described = doc.secrets.map { entry =>
-          (entry.name, entry.services, entry.`type`, entry.size, entry.group, entry.onMissing, entry.file)
+          (entry.name, entry.services, entry.`type`, entry.size, entry.group, entry.onMissing, entry.since, entry.file)
         }
         val declared = SecretSchema.forTarget(target).map { s =>
-          (s.name, s.services, s.tpe.json, s.size, s.group, s.onMissing.json, s.file)
+          (s.name, s.services, s.tpe.json, s.size, s.group, s.onMissing.json, s.since, s.file)
         }
         assertTrue(
           doc.schemaVersion == SecretSchema.SchemaVersion,
+          doc.revision == SecretSchema.Revision,
           doc.target == target.json,
           described == declared,
         )
@@ -138,6 +140,16 @@ object SecretSchemaSpec extends ZIOSpecDefault:
     suite("the schema itself")(
       test("has no problems") {
         assertTrue(SecretSchema.problems(SecretSchema.specs) == Nil)
+      },
+      test("the revision is at least 1, and every `since` is within 1..revision") {
+        assertTrue(
+          SecretSchema.Revision >= 1,
+          SecretSchema.specs.forall(spec => spec.since >= 1 && spec.since <= SecretSchema.Revision),
+        )
+      },
+      test("the members of a group appeared in the same revision") {
+        val byGroup = SecretSchema.specs.flatMap(spec => spec.group.map(_ -> spec.since)).groupBy(_._1)
+        assertTrue(byGroup.nonEmpty, byGroup.values.forall(_.map(_._2).distinct.size == 1))
       },
       test("every service a key goes to is one gen-env.scala writes for, or `utils`") {
         val holders = SecretSchema.Services.toSet + "utils"
@@ -273,6 +285,22 @@ object SecretSchemaSpec extends ZIOSpecDefault:
           SecretSchema.problems(List(sound.copy(file = Some("x.jwk")))).exists(_.contains("names a file")),
           SecretSchema.problems(List(sound.copy(services = List("utils")))).exists(_.contains("names no file")),
         )
+      },
+      test("a `since` after the current revision, or before the first") {
+        assertTrue(
+          // The revision is passed explicitly, so these hold whatever SecretSchema.Revision is.
+          SecretSchema.problems(List(sound.copy(since = 3)), revision = 2).exists(_.contains("A_SECRET: since 3 is outside 1..2")),
+          SecretSchema.problems(List(sound.copy(since = 0)), revision = 2).exists(_.contains("A_SECRET: since 0 is outside 1..2")),
+          SecretSchema.problems(List(sound.copy(since = 2)), revision = 2) == Nil,
+        )
+      },
+      test("a revision below 1") {
+        assertTrue(SecretSchema.problems(List(sound), revision = 0).exists(_.contains("revision must be at least 1")))
+      },
+      test("a group whose members differ in since") {
+        val first  = sound.copy(name = "A_ONE", group = Some("pair"), since = 1)
+        val second = sound.copy(name = "A_TWO", group = Some("pair"), since = 2)
+        assertTrue(SecretSchema.problems(List(first, second), revision = 2).exists(_.contains("group pair: members have different since")))
       },
       test("a group of one") {
         assertTrue(SecretSchema.problems(List(sound.copy(group = Some("lonely")))).exists(_.contains("group lonely: fewer than two")))
