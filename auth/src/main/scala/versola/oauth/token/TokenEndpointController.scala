@@ -228,6 +228,7 @@ object TokenEndpointController extends Controller:
 
           userInfo <- userInfoService.getUserInfoForIdToken(
             user = user,
+            clientId = tokens.clientId,
             scope = tokens.scope,
             requestedClaims = tokens.requestedClaims,
             uiLocales = tokens.uiLocales,

@@ -1043,6 +1043,7 @@ object ConversationService:
       for
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
+          clientId = conversation.clientId,
           scope = conversation.effectiveScope,
           requestedClaims = conversation.requestedClaims,
           uiLocales = conversation.uiLocales,

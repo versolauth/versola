@@ -460,6 +460,7 @@ object AuthorizeEndpointService:
           .orElseFail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
+          clientId = request.clientId,
           scope = grantedScope,
           requestedClaims = request.requestedClaims,
           uiLocales = uiLocales,

@@ -84,6 +84,7 @@ object UserInfoController extends Controller:
 
         userInfo <- userInfoService.getUserInfo(
           userId = userId,
+          clientId = token.clientId,
           scope = token.scope,
           requestedClaims = token.requestedClaims,
         )
