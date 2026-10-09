@@ -50,6 +50,16 @@ object Driver:
     */
   val healthInterval: Duration = 5.seconds
 
+  /** Whether `cause` is nothing but the interruption of the fiber the driver raced against the
+    * server (`Main`): a ZIO interrupt, or the `InterruptedException` it surfaces as when a fiber
+    * blocked in the server's finalizers is stopped -- which arrives as a failure or a defect with
+    * that exception as its value, not as an `Interrupt`, and is why a finished campaign exited 1.
+    * Any other failure, mixed in or alone, is not this.
+    */
+  def endedByInterruption(cause: Cause[Any]): Boolean =
+    val values: List[Any] = cause.failures ++ cause.defects
+    !cause.isEmpty && (cause.isInterruptedOnly || (values.nonEmpty && values.forall(_.isInstanceOf[InterruptedException])))
+
   def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Tracing, Throwable, Unit] =
     boot(config).provideSome[Scope & ConfigProvider & EnvName & Tracing](LoadgenHttpClient.live)
 

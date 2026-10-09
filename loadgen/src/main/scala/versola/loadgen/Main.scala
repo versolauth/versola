@@ -59,7 +59,7 @@ object Main extends VersolaApp("loadgen"):
             // returns, and ZIO surfaces its interruption as the app's own exit cause -- logged as an
             // ERROR with exit code 1, which a kubelet reads as a crash and restarts with back-off.
             // Only an interruption is let through: a failed campaign still fails.
-            case cause if cause.isInterruptedOnly => ZIO.logInfo("Driver finished; exiting")
+            case cause if Driver.endedByInterruption(cause) => ZIO.logInfo("Driver finished; exiting")
         case _ => super.run
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
