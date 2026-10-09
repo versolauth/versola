@@ -46,8 +46,9 @@ reachable from the cluster, before the first install.
 - **Helm.** Helm 4 applies manifests server-side, which matters in one place — see
   [§5](#5-applying-migrations).
 - **Published images** in `ghcr.io/versolauth/`: `versola-auth`, `versola-central`,
-  `versola-edge`, `versola-gateway` for the system; `versola-loadgen`, `versola-mockapi` for the
-  emulator; `versola-tools` for migrations. All are public, so no `imagePullSecrets` are needed.
+  `versola-edge` for the system; `versola-loadgen`, `versola-mockapi` for the
+  emulator; `versola-tools` for migrations, and for the console, which is a stock nginx serving the
+  static build `versola-tools` carries (an init container copies it out). All are public, so no `imagePullSecrets` are needed.
   Both charts default their image tag to their own `appVersion`, and CI guards that this matches
   a tag that was actually published.
 

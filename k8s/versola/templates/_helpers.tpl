@@ -186,14 +186,15 @@ also proxies to auth/edge, because on a single VPS nginx is the only thing
 in front of the services. Here the Ingress does that, so everything below
 is about serving one directory.
 
-The image bakes central-ui's dist/ at /usr/share/nginx/html/central/admin
-(docker/Dockerfile.gateway); `alias` re-exposes it at console.basePath.
+central-ui's dist/ is mounted at /usr/share/nginx/html/central/admin -- copied there
+by an init container out of the versola-tools image (docker/Dockerfile.tools);
+`alias` re-exposes it at console.basePath.
 vite.config.ts emits relative asset URLs (#222), so index.html resolves
 versola-admin.js correctly regardless of which path that is.
 
 sub_filter stamps console-mode onto <versola-admin> on the way out. The
-attribute exists (#223) but the published image can't hardcode it -- the
-same image serves docker-compose, which needs the other mode. Rewriting
+attribute exists (#223) but the build can't hardcode it -- the same
+files serve docker-compose, which needs the other mode. Rewriting
 one tag here keeps that a deployment choice rather than a second image.
 ngx_http_sub_module is compiled into the official nginx images.
 */}}

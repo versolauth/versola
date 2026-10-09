@@ -335,22 +335,33 @@ pki:
 metrics:
   prometheusAnnotations: true
 
-# console: nginx with central-ui's static build baked in (see
-# docker/Dockerfile.gateway) -- not a VersolaApp service, so it has no
-# PORT/DPORT and no /liveness or /readiness to probe (see
+# console: a stock nginx serving central-ui's static build -- not a VersolaApp
+# service, so it has no PORT/DPORT and no /liveness or /readiness to probe (see
 # templates/console-deployment.yaml for how it's probed instead).
 #
-# Under docker-compose this same image also proxies /resources, /login,
-# /authorize etc. to edge/auth (docker/versola-tools/nginx.conf.template).
-# Here it only serves files: routing is the Ingress's job (see `ingress`
-# below), so the pod needs no upstreams and no knowledge of auth/edge.
-# The image is still published as `versola-gateway` -- only its role in
-# this chart is narrower.
+# The build is not baked into an image of its own: `versola-tools` carries
+# central-ui's dist at /opt/versola-tools/central-ui (docker/Dockerfile.tools),
+# and an init container copies it into a volume the web server reads. So the
+# console's files are exactly the ones the release's tools image ships, and
+# there is no second image to publish. (This replaces the `versola-gateway`
+# image, which is no longer published.)
+#
+# Under docker-compose nginx also proxies /resources, /login, /authorize etc. to
+# edge/auth (docker/versola-tools/nginx.conf.template). Here it only serves
+# files: routing is the Ingress's job (see `ingress` below), so the pod needs no
+# upstreams and no knowledge of auth/edge.
 console:
   enabled: true
+  # The image the assets are copied out of: versola-tools, from the same registry
+  # and repository as the services (`global.imageRegistry` / `imageRepository`).
   image:
-    repository: versola-gateway
+    repository: versola-tools
     tag: ""
+  # The web server. A full image reference, not prefixed with the registry above:
+  # any nginx that reads /etc/nginx/conf.d and has ngx_http_sub_module (the
+  # official images do). Pin by digest where your policy asks for it.
+  server:
+    image: nginx:1.31-alpine
   replicaCount: 1
   # Placement for the console alone; overrides, never merges with, `global`'s.
   nodeSelector: {}
