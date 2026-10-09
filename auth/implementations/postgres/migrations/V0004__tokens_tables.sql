@@ -38,7 +38,9 @@ CREATE TABLE refresh_tokens(
     -- RFC 7800 confirmation claim. An object rather than a bare thumbprint because its
     -- members name the mechanism that produced them: `jkt` for an RFC 9449 DPoP key,
     -- `x5t#S256` for an RFC 8705 client certificate.
-    cnf JSONB
+    cnf JSONB,
+    -- RFC 9396 `authorization_details`, stored verbatim; see auth_conversations.
+    authorization_details JSONB[]
 );
 
 CREATE INDEX refresh_tokens_family_id_idx ON refresh_tokens (family_id);

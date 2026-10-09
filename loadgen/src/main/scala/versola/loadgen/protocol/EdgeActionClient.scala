@@ -33,7 +33,7 @@ final class EdgeActionClient(exchange: HttpExchange, resources: URL, nonce: Ref[
     *
     * Not an edge case the way it is at `/token`, where a client's `require_dpop_nonce` is off
     * unless a tenant turns it on: a registered edge requires a nonce by default
-    * (`V1024__edges_require_dpop_nonce.sql`). Without the handshake every action is answered
+    * (`V1001__edges_table.sql`). Without the handshake every action is answered
     * `use_dpop_nonce`, which carries no `acr_values` and so reads as an expired token -- the
     * session refreshes, retries, is refused again, and not one business call reaches the
     * resource while the campaign records a plausible-looking action rate.

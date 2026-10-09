@@ -5,7 +5,8 @@ CREATE TABLE system_settings (
     id                     INTEGER PRIMARY KEY CHECK (id = 1), -- singleton row
     password_regex         TEXT NOT NULL,
     password_history_size  INT NOT NULL,
-    password_num_different  INT NOT NULL
+    password_num_different  INT NOT NULL,
+    identity_provider_logo TEXT
 );
 
 

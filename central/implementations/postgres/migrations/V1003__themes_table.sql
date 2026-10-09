@@ -4,8 +4,6 @@ CREATE TABLE themes (
     css       TEXT NOT NULL
 );
 
-ALTER TABLE oauth_clients ADD COLUMN theme TEXT NOT NULL REFERENCES themes(id);
-
 CREATE OR REPLACE FUNCTION notify_theme_change()
 RETURNS trigger AS $$
 BEGIN

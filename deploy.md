@@ -652,6 +652,24 @@ edited a migration production had already applied. There is no clean fix: recrea
 ([6](#6-recreating-the-database-from-scratch)). This happened in September 2026 across all three
 schemas; see the check in [4](#4-deploying-a-new-version).
 
+**October 2026: the `ALTER TABLE` migrations were folded into the migrations that create their
+tables** (auth `V0001`–`V0013`, central `V1001`–`V1020`, edge unchanged). The resulting schema is
+byte-for-byte the one the old chain produced — same tables, column order, constraints, indexes and
+triggers — but the files, versions and checksums are new, so **an existing database fails
+validation** and has to be re-adopted. Its data is untouched by that: the column layout is
+identical, so a data-only dump loads into a freshly migrated schema. Per schema, with the services
+stopped:
+
+```bash
+pg_dump --data-only --exclude-table=flyway_schema_history <db> > <db>-data.sql   # the backup, too
+# drop and recreate the schema/database, then:
+versola migrate                                                                  # new chain
+psql <db> < <db>-data.sql
+```
+
+Take the dump before upgrading to the release that contains the squash; there is no in-place
+path, and `flyway repair` will not do it (the applied versions no longer exist locally).
+
 `versola migrate --dry-run` currently reports *pending* migrations as a validation failure too
 (`Detected resolved migration not applied to database`) — that one is a known bug in the dry run,
 not a problem with the database; plain `versola migrate` applies them fine.

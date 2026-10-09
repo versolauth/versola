@@ -4,7 +4,7 @@
 -- Same design as dpop_proofs, and for the same reason: a record only has to outlive the
 -- assertion it guards, so a fixed ring of partitions reclaimed by TRUNCATE costs no delete per
 -- insert and no vacuum churn at the token endpoint's full request rate. See
--- V0014__dpop_proofs_table.sql for the argument in full.
+-- V0012__dpop_proofs_table.sql for the argument in full.
 --
 -- A separate ring rather than a share of that one, because the two windows are different
 -- sizes. A proof is acceptable for `iat-leeway` either side of its `iat` (90s at most, by that
@@ -22,7 +22,7 @@
 -- The geometry is fixed here rather than configured, so that it cannot drift out of step with
 -- the code; it must match PostgresClientAssertionRepository.{SlotCount, SlotWidth}.
 --
--- Every partition is UNLOGGED, individually, for the reason V0014 gives: `exp` already bounds
+-- Every partition is UNLOGGED, individually, for the reason V0012 gives: `exp` already bounds
 -- how long a record can matter, and a crash costs one lifetime window of replay protection,
 -- the same exposure a restart already carries. Persistence is NOT inherited from the parent,
 -- so any partition added later must repeat the keyword; PostgresClientAssertionRepositorySpec
