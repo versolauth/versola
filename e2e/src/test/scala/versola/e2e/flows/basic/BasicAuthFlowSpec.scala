@@ -169,6 +169,13 @@ object BasicAuthFlowSpec extends E2ESpec:
       yield assertTrue(userinfoEmail.nonEmpty)
         .label("a first-party client's claims request must release email although only openid was granted")
     },
+    // The same rule for the ID Token: `email` is registered for the client but only `openid` is granted.
+    test("a first-party client gets a claim it names in claims.id_token without the scope granted") {
+      for
+        (idTokenClaims, _) <- loginForClaims("openid", Some("""{"id_token":{"email":{"essential":true}}}"""))
+      yield assertTrue(idTokenClaims.fields.exists(_._1 == "email"))
+        .label(s"a first-party client's claims.id_token request must put email in the ID Token, got ${idTokenClaims.toJson}")
+    },
     test("otp + permanent password: complete otp flow") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
