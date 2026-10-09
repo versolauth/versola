@@ -111,6 +111,7 @@ components:
           type: boolean
         phone_number:
           type: string
+          description: The user's phone number in canonical E.164, e.g. `+77011234567`.
         phone_number_verified:
           type: boolean
         updated_at:
