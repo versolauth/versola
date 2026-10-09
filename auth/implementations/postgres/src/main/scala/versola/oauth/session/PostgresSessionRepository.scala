@@ -75,9 +75,12 @@ class PostgresSessionRepository(xa: TransactorZIO)
       xa.transactMeasured("create-session"):
         // The new session continues the same browser session as the prior one (step-up,
         // idle-slide re-issue): carry over the RPs already registered on it so none of them
-        // miss a later logout notification because of the rotation.
+        // miss a later logout notification because of the rotation. Only when the same user is
+        // signed in: a different user (an account switch) starts with their own clients, since
+        // the previous user's RPs would otherwise be told about, and logged out by, their logout.
         val priorClients = priorId.toList.flatMap: prior =>
-          sql"""SELECT clients FROM sso_sessions WHERE id = $prior""".query[List[ClientEntry]].run().headOption.getOrElse(Nil)
+          sql"""SELECT clients FROM sso_sessions WHERE id = $prior AND user_id = ${session.userId}"""
+            .query[List[ClientEntry]].run().headOption.getOrElse(Nil)
         val clients = (session.clients ++ priorClients).distinctBy(_.clientId)
         sql"""
           INSERT INTO sso_sessions (id, public_id, clients, user_id, user_agent_id, created_at, amr, expires_at, idle_expires_at)

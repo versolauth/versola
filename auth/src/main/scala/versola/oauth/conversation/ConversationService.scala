@@ -736,8 +736,14 @@ object ConversationService:
             // When offline_access is in scope the client holds a refresh token on-device:
             // migrate prior session's tokens to the new session so the device RT stays valid.
             // Otherwise (web/BFF) expire the prior session's tokens outright.
+            // A device's refresh tokens move to the new session only when the same user signed in
+            // again: migrating them renews *their* authentication time and methods, which another
+            // user's login (an account switch, which the credential card allows) must not do. The
+            // previous user's tokens are expired instead.
+            // The prior session's user was recorded when /authorize looked that session up.
             priorSession = conversation.priorSessionId.map: prior =>
-              if conversation.hasOfflineAccess then
+              val sameUser = conversation.priorSessionUserId.contains(userId)
+              if conversation.hasOfflineAccess && sameUser then
                 PriorSession.MigrateTokens(prior, amr, now, conversation.targetAcr)
               else
                 PriorSession.Invalidate(prior)

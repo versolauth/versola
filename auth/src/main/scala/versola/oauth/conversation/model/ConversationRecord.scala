@@ -50,6 +50,9 @@ case class ConversationRecord(
     csrfToken: String,
     /** MAC of the session that existed before this conversation was started. */
     priorSessionId: Option[MAC.Of[SessionId]],
+    /** The user that prior session belonged to, so completion can tell "the same user signed in
+      * again" from "another user did" without looking the session up a second time. */
+    priorSessionUserId: Option[UserId] = None,
     /** RFC 8707 `resource` parameter(s) requested at `/authorize`. */
     resources: List[ResourceUri],
     /** RFC 9396 `authorization_details` requested at `/authorize`; `None` when the parameter

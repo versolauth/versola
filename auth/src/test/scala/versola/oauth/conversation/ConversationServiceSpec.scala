@@ -466,6 +466,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val record = consentedRecord.copy(
           userId = Some(userId),
           priorSessionId = Some(priorSessionIdMac),
+          priorSessionUserId = Some(userId),
           scope = consentedRecord.scope + ScopeToken.OfflineAccess,
           grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
         )
@@ -478,6 +479,48 @@ object ConversationServiceSpec extends UnitSpecBase:
           result.isInstanceOf[ConversationResult.Complete],
           sessionCalls.head._5 == Some(PriorSession.MigrateTokens(priorSessionIdMac, Set.empty, now, None)),
         )
+      },
+      // Migrating a prior session's tokens renews *their* authentication time and methods, so it is
+      // only for the same user signing in again. Another user's login (an account switch) expires the
+      // previous user's tokens instead of carrying them onto the new session.
+      test("invalidates the prior session rather than migrating its tokens when another user signed in") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val otherUser = versola.user.model.UserId(UUID.randomUUID())
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+          priorSessionUserId = Some(otherUser),
+          scope = consentedRecord.scope + ScopeToken.OfflineAccess,
+          grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
+        )
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, record)
+          sessionCalls = env.sessionRepository.create.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          sessionCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)),
+        )
+      },
+      test("invalidates the prior session when its user was not recorded") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+          scope = consentedRecord.scope + ScopeToken.OfflineAccess,
+          grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
+        )
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          result <- env.service.finish(authId, record)
+          sessionCalls = env.sessionRepository.create.calls
+        yield assertTrue(sessionCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
       },
       test("completes conversation and creates session/code") {
         val env = Env()
