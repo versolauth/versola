@@ -1459,6 +1459,18 @@ final class OAuthClient(client: Client, config: E2EConfig):
       ),
     ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
 
+  /** POST /userinfo with the access token only as a form field of the body (RFC 6750 §2.2). Not an
+    * accepted way to present it: the token is read from the `Authorization` header alone. */
+  def userinfoTokenInBodyOnly(accessToken: String): Task[UserinfoResult] =
+    Client.batched(
+      Request
+        .post(
+          s"${config.authUrl}/userinfo",
+          Body.fromURLEncodedForm(Form.fromStrings("access_token" -> accessToken)),
+        )
+        .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+    ).provide(ZLayer.succeed(client)).flatMap(UserinfoResult.parse)
+
   /** GET /userinfo under the `DPoP` scheme (RFC 9449 §7.1), with a proof naming this endpoint
     * and the token it accompanies. The scheme travels unparsed, the way edge sends it.
     */

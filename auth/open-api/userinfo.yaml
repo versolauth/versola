@@ -59,8 +59,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        The access token from `/token`, sent as `Authorization: Bearer <token>`. This is the
-        only accepted way to present the token.
+        The access token from `/token`, sent in the `Authorization` header as
+        `Bearer <token>`, or as `DPoP <token>` with a `DPoP` proof header for a key-bound token
+        (RFC 9449 §7.1; a key-bound token presented as `Bearer` is refused). The header is the
+        only place the token is read from: a form body (RFC 6750 §2.2) or a query parameter is
+        not, and a request that carries the token only there is answered with `invalid_request`.
 
   parameters:
     Accept:
@@ -139,7 +142,8 @@ components:
       description: |
         The error is reported in the `WWW-Authenticate` header; the body is empty.
 
-        - `invalid_request` — no `Authorization: Bearer` header was sent.
+        - `invalid_request` — no `Authorization` header with a `Bearer` or `DPoP` token was sent
+          (a token in the request body or the query string is not read).
         - `invalid_token` — the token failed verification, expired, or is not bound to a user.
         - `insufficient_scope` — the token was not granted the `openid` scope.
       headers:

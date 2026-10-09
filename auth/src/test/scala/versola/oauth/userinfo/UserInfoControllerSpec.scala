@@ -805,5 +805,32 @@ object UserInfoControllerSpec extends UnitSpecBase:
             userInfo.claims.contains("sub"),
           ),
       ),
+      // The token is read from the Authorization header only. A valid token in a form body
+      // (RFC 6750 §2.2) is not accepted: it would end up in proxy and application logs and cannot
+      // be sender-constrained. The conformance suite's oidcc-userinfo-post-body records that as a
+      // warning, which is the accepted outcome.
+      userInfoTestCase(
+        description = "refuse a valid access token that is only in the form body",
+        request = Request.post(
+          url = URL.empty / "userinfo",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "access_token" -> createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
+          )),
+        ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
+        expectedStatus = Status.Unauthorized,
+        verify = response =>
+          for
+            wwwAuth <- ZIO.fromOption(response.header(Header.WWWAuthenticate))
+              .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
+          yield assertTrue(wwwAuth.renderedValue.contains("invalid_request")),
+      ),
+      userInfoTestCase(
+        description = "refuse a valid access token that is only in the query string",
+        request = Request.get(URL.empty / "userinfo").addQueryParam(
+          "access_token",
+          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
+        ),
+        expectedStatus = Status.Unauthorized,
+      ),
     ),
   )
