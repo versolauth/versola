@@ -44,8 +44,7 @@ object OAuthClientsSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(ClientsURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request))
-        response <- response.bodyAs[GetOAuthClientsSyncResponse]
+        response <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[GetOAuthClientsSyncResponse]))
       yield response
 
     override def getAll: Task[Map[ClientId, OAuthClient]] =
