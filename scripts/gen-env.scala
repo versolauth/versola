@@ -419,6 +419,12 @@ enum SecretTarget(val json: String):
   * @param size     Base64Url: bytes before encoding; otherwise None.
   * @param group    secrets that only work as a set (a key pair split across services,
   *                 tied together by a kid): all of a group's members are taken, or none.
+  * @param since    the schema `Revision` in which this secret first appeared. It lets a
+  *                 consumer tell, on an upgrade, a secret that is NEW in this version (not in
+  *                 the store yet because nothing could have put it there: generate it) from one
+  *                 that was LOST (the store held it, or should have: stop). Everything the
+  *                 schema started with is 1. A secret added later gets the `Revision` it is
+  *                 added in -- see `Revision`.
   * @param file     the file this script writes the value to instead of a
   *                 *.generated-secrets.env, when it isn't in one.
   */
@@ -430,12 +436,40 @@ final case class SecretSpec(
     group: Option[String],
     onMissing: OnMissing,
     targets: Set[SecretTarget],
+    since: Int,
     file: Option[String] = None,
 )
 
 object SecretSchema:
-  /** Bumped when the shape of secrets.schema.json changes incompatibly. */
+  /** The version of the FORMAT of secrets.schema.json (which fields an entry has and what they
+    * mean). Bumped only when that changes incompatibly. Not the same thing as `Revision`: this
+    * says how to read the file, `Revision` says which secrets it lists. A reader treats a file
+    * with no `revision` at the top and no `since` in an entry as revision 1 / since 1: the
+    * fields were added compatibly, so SchemaVersion stays 1. */
   val SchemaVersion = 1
+
+  /** The revision of the CONTENT of the schema: which secrets it lists, counting from 1.
+    *
+    * Rule for whoever adds a secret to `specs`: raise `Revision` by one and give the new secret
+    * `since = Revision`. versola-cli compares a secret's `since` with the revision of the
+    * deployment it is upgrading from: a secret introduced after that deployment is new and may
+    * be generated; one that already existed then and is gone from the store is lost, and for a
+    * `generate-on-first-install-only` secret that is an error. Forget to raise it, and a new
+    * `generate-on-first-install-only` secret looks like one that always existed, so an upgrade
+    * stops on it as "lost" -- a safe refusal, never a silent regeneration, but a refusal on every
+    * upgrade until it is fixed. (For `generate` and `external` secrets a forgotten bump changes
+    * nothing the consumer acts on.)
+    *
+    * The revision is one number for the whole file, across targets: a secret that exists on k8s
+    * only raises it for vps and docker-local too. A consumer must RECORD the revision it last
+    * applied for a deployment (a deployment with no record is revision 1) and compare `since`
+    * with that; this file only says what the current content is. Removing or renaming a secret
+    * is not described by `since`. */
+  val Revision = 1
+
+  /** `since` of everything the schema started with: the secrets that existed before it had a
+    * revision at all. Deliberately a constant of its own and not `Revision`, which moves. */
+  private val Baseline = 1
 
   /** The services whose *.generated-secrets.env this script writes. */
   val Services: List[String] = List("auth", "central", "edge")
@@ -449,27 +483,33 @@ object SecretSchema:
 
   /** A value k8s takes from the operator's prompt or flag: nothing here generates it, and
     * nothing about its shape is promised. */
-  private def k8sOperatorSecret(name: String, service: String): SecretSpec =
-    SecretSpec(name, List(service), SecretType.Opaque, None, None, OnMissing.External, Set(SecretTarget.K8s))
+  private def k8sOperatorSecret(name: String, service: String, since: Int = Baseline): SecretSpec =
+    SecretSpec(name, List(service), SecretType.Opaque, None, None, OnMissing.External, Set(SecretTarget.K8s), since)
 
   private def base64Url(
       name: String,
       services: List[String],
       bytes: Int,
       onMissing: OnMissing = OnMissing.Generate,
+      since: Int = Baseline,
   ): SecretSpec =
-    SecretSpec(name, services, SecretType.Base64Url, Some(bytes), None, onMissing, everywhere)
+    SecretSpec(name, services, SecretType.Base64Url, Some(bytes), None, onMissing, everywhere, since)
 
   /** A value that persisted data depends on: a hash key, an at-rest encryption key, a signing
     * key. Losing it after the first install doesn't rotate it, it destroys what it protects --
     * so a store that lacks it on an upgrade is an error, not an invitation to generate. */
-  private def bound(name: String, services: List[String], bytes: Int): SecretSpec =
-    base64Url(name, services, bytes, OnMissing.GenerateOnFirstInstallOnly)
+  private def bound(name: String, services: List[String], bytes: Int, since: Int = Baseline): SecretSpec =
+    base64Url(name, services, bytes, OnMissing.GenerateOnFirstInstallOnly, since)
 
   /** A value the services decode as a plain `Secret` (base64url of ANY length) or as text: the
     * generated one has a size, but nothing rejects another, so no size is promised. */
-  private def opaque(name: String, services: List[String], onMissing: OnMissing = OnMissing.Generate): SecretSpec =
-    SecretSpec(name, services, SecretType.Opaque, None, None, onMissing, everywhere)
+  private def opaque(
+      name: String,
+      services: List[String],
+      onMissing: OnMissing = OnMissing.Generate,
+      since: Int = Baseline,
+  ): SecretSpec =
+    SecretSpec(name, services, SecretType.Opaque, None, None, onMissing, everywhere, since)
 
   private def grouped(
       name: String,
@@ -479,8 +519,9 @@ object SecretSchema:
       group: String,
       file: Option[String] = None,
       onMissing: OnMissing = OnMissing.Generate,
+      since: Int = Baseline,
   ): SecretSpec =
-    SecretSpec(name, services, tpe, size, Some(group), onMissing, everywhere, file)
+    SecretSpec(name, services, tpe, size, Some(group), onMissing, everywhere, since, file)
 
   /** Every secret, in the order they are written. The sizes mirror the `rand(rng, N)` calls in
     * genEnv; check-secret-schema.sh decodes the generated values and compares their length. */
@@ -554,6 +595,7 @@ object SecretSchema:
       None,
       OnMissing.GenerateOnFirstInstallOnly,
       Set(SecretTarget.Vps),
+      Baseline,
     ),
     // k8s: three Postgres instances, three passwords the operator types (--*-postgres-password);
     // the chart keeps them under separate keys. The same name in several entries, one service
@@ -570,6 +612,7 @@ object SecretSchema:
       None,
       OnMissing.Generate,
       Set(SecretTarget.Vps),
+      Baseline,
     ),
     // k8s: whatever the operator types (--admin-password); the default is not generated.
     k8sOperatorSecret("ADMIN_BOOTSTRAP_PASSWORD", "auth"),
@@ -621,7 +664,8 @@ object SecretSchema:
       )
 
   /** Everything wrong with `candidates` as a schema, as messages; empty when it is sound. */
-  def problems(candidates: List[SecretSpec]): List[String] =
+  def problems(candidates: List[SecretSpec], revision: Int = Revision): List[String] =
+    val revisionProblem = if revision < 1 then List(s"revision must be at least 1, not $revision") else Nil
     // A name may repeat (k8s has a POSTGRES_PASSWORD per service), but not for the same service
     // on the same target: that would be two answers to one question.
     val slots = candidates.flatMap(spec => for target <- spec.targets.toList; service <- spec.services yield (spec.name, service, target.json))
@@ -644,7 +688,13 @@ object SecretSchema:
         if holdsFile && spec.file.isEmpty then List(s"${spec.name}: held by utils but names no file")
         else if !holdsFile && spec.file.nonEmpty then List(s"${spec.name}: names a file but is in a *.generated-secrets.env")
         else Nil
-      noServices ++ unknownServices ++ noTargets ++ sizeProblem ++ fileProblem
+      // 1 is the oldest revision there is, and nothing can have appeared in a revision that
+      // doesn't exist yet.
+      val sinceProblem =
+        if spec.since < 1 || spec.since > revision then
+          List(s"${spec.name}: since ${spec.since} is outside 1..$revision")
+        else Nil
+      noServices ++ unknownServices ++ noTargets ++ sizeProblem ++ fileProblem ++ sinceProblem
     val groupProblems = candidates
       .flatMap(spec => spec.group.map(_ -> spec))
       .groupBy((group, _) => group)
@@ -658,8 +708,11 @@ object SecretSchema:
         // A set is taken whole or not at all, so it can't be generated on upgrade for one member only.
         val policies = specsOfGroup.map(_.onMissing).distinct
         val mixed = if policies.size > 1 then List(s"group $group: members have different onMissing") else Nil
-        tooSmall ++ split ++ mixed
-    duplicateNames.map(name => s"duplicate name $name") ++ perSpec ++ groupProblems
+        // The members are one unit, so they appeared together.
+        val sinces = specsOfGroup.map(_.since).distinct
+        val unevenSince = if sinces.size > 1 then List(s"group $group: members have different since") else Nil
+        tooSmall ++ split ++ mixed ++ unevenSince
+    revisionProblem ++ duplicateNames.map(name => s"duplicate name $name") ++ perSpec ++ groupProblems
 
   /** `s` as a JSON string literal. This script has no JSON dependency (see the comment on
     * writeGeneratedSecrets), and the schema only holds names and fixed words, but escaping
@@ -693,11 +746,13 @@ object SecretSchema:
         s""""size":$size,""" +
         s""""group":$group,""" +
         s""""onMissing":${jsonString(spec.onMissing.json)},""" +
+        s""""since":${spec.since},""" +
         s""""file":$file""" +
         "}"
     List(
       "{",
       s"""  "schemaVersion": $SchemaVersion,""",
+      s"""  "revision": $Revision,""",
       s"""  "target": ${jsonString(target.json)},""",
       """  "secrets": [""",
       entries.mkString(",\n"),
