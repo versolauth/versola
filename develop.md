@@ -358,9 +358,12 @@ counterparts that a fresh one won't match, and each mismatch fails differently:
   holding the public key of `JWT_PRIVATE_KEY` (same RSA modulus) with an `alg`.
 - **`UTILITY_CLIENT_PUBLIC_JWK` / `UTILS_PRIVATE_KEY_JWK`** — central re-applies the
   utility client's public key on every boot, so a fresh pair silently replaces the
-  key loadgen and versola-cli authenticate with. Reuse the existing pair (an EC
-  P-256 private JWK for gen-env's reuse path; k8s/README.md covers a client
-  that was seeded with a `client_secret`).
+  key loadgen and versola-cli authenticate with. Reuse the existing pair: the public
+  half goes into central's path in step 2 (`kv patch` below); the private half is not
+  stored in OpenBao at all, it stays wherever loadgen/the operator already keeps it
+  (the `utils.private-key.jwk` that a fresh `configure` writes into the bundle is a
+  new, unrelated key; ignore it). gen-env's reuse path takes an EC P-256 private JWK;
+  k8s/README.md covers a client that was seeded with a `client_secret`.
 
 Existing values in OpenBao always win, but with automatic setup OpenBao only
 exists once `configure` has run — and that same first run already stores
@@ -383,7 +386,8 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
   bao kv patch -mount=secret versola/vps/central \
     POSTGRES_PASSWORD='<real password>' CLIENT_SECRETS_SECRET='<real value>' \
     EDGE_PUBLIC_JWK='<real public JWK, single-line JSON>' JWKS_JSON='{"keys":[<real auth public JWK>]}' \
-    CENTRAL_RESOURCE_SECRET='<real value>'
+    CENTRAL_RESOURCE_SECRET='<real value>' \
+    UTILITY_CLIENT_PUBLIC_JWK='<public half of the existing utils key, single-line JSON>'
 docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
   bao kv patch -mount=secret versola/vps/edge \
     POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>' \
