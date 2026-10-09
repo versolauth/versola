@@ -86,7 +86,8 @@ object LoadgenProvisionSpec extends ZIOSpec[Client & E2EConfig & EdgeApi & OAuth
         client <- ZIO.service[Client]
         centralApi <- ZIO.service[CentralApi]
         tenantId <- CentralApi.id("e2e-lg-fapi2")
-        namespace = tenantId.takeRight(12)
+        // Becomes part of a resource id, which central holds to `^[a-z][a-z0-9-]*$`.
+        namespace = "lg" + tenantId.filter(_.isLetterOrDigit).toLowerCase.takeRight(10)
         config = fapi2Provision(c, tenantId, namespace)
         flows <- FlowResources.load
         blueprint = CampaignBlueprint(targets(c), config, flows)

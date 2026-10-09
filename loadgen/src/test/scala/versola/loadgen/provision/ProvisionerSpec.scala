@@ -117,6 +117,25 @@ object ProvisionerSpec extends ZIOSpecDefault:
         state.tenants.keySet == Set("default", "loadgen-standard", "loadgen-fapi2"),
       )
     },
+    test("a namespace central would refuse as a resource id is rejected before any tenant is created") {
+      def provisioned(namespace: String) =
+        for
+          (_, fake) <- fakeAdmin
+          config <- loadConfig(
+            LoadgenConfigSpec.hocon.replace("payment-amount-threshold = 1000000", s"payment-amount-threshold = 1000000\n  namespace = \"$namespace\""),
+          )
+          result <- Provisioner.provision(config).either
+          state <- fake.snapshot
+        yield (result, state)
+      for
+        (bad, badState) <- provisioned("Fapi_1")
+        (good, _) <- provisioned("fapi-1")
+      yield assertTrue(
+        bad.left.exists(_.isInstanceOf[InvalidNamespace]),
+        badState.calls.isEmpty,
+        good.isRight,
+      )
+    },
     test("writes the campaign's clients, resources, permissions, roles, presets and settings") {
       for
         (admin, fake) <- fakeAdmin

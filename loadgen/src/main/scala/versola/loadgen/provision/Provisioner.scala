@@ -65,6 +65,8 @@ object Provisioner:
     * blueprint reads, and is only consulted for a campaign configured without the profile; a
     * config that sets both and contradicts itself is refused rather than resolved one way.
     */
+  private val namespacePattern = "^[a-z][a-z0-9-]*$".r
+
   private def profileOf(config: LoadgenConfig, provision: ProvisionConfig): IO[ProvisionProfileConflict, ProvisionConfig] =
     config.campaign.securityProfile match
       case None => ZIO.succeed(provision)
@@ -81,11 +83,18 @@ object Provisioner:
         .fromOption(config.provision)
         .orElseFail(MissingProvisionConfig)
       provisionConfig <- profileOf(config, configured)
+      _ <- ZIO.foreachDiscard(provisionConfig.namespace): namespace =>
+        ZIO.fail(InvalidNamespace(namespace)).unless(namespacePattern.matches(namespace))
       flows <- FlowResources.load
       client <- ZIO.service[Client]
       admin <- HttpAdminClient.make(client, config.targets, provisionConfig)
       _ <- run(admin, CampaignBlueprint(config.targets, provisionConfig, flows))
     yield ()
+
+/** A resource id is prefixed with the namespace and central holds it to `^[a-z][a-z0-9-]*$`;
+  * refused here, before a tenant is created, rather than by the first resource write. */
+case class InvalidNamespace(namespace: String)
+    extends RuntimeException(s"provision.namespace '$namespace' must match ^[a-z][a-z0-9-]*$$ (it prefixes resource ids)")
 
 case class ProvisionProfileConflict(provisionSays: Boolean, campaignSays: String)
     extends RuntimeException(
