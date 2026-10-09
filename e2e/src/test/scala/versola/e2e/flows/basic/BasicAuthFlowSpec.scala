@@ -136,9 +136,9 @@ object BasicAuthFlowSpec extends E2ESpec:
       yield assertTrue(userinfoEmail.nonEmpty)
         .label("a null claim is the claim with no constraints, so UserInfo still carries it")
     },
-    // RFC 6750 §2.2 / OIDC Core §5.3.1: the access token may travel in a form body. Only a `standard`
-    // tenant allows it (FAPI 2.0 does not); the suite's tenant is on `standard`.
-    test("UserInfo accepts the access token in a form body, and not in both places at once") {
+    // The token is read from the Authorization header only; a valid one in a form body is refused
+    // (the conformance suite's oidcc-userinfo-post-body records that as a warning, the accepted result).
+    test("UserInfo refuses an access token that is only in a form body") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
@@ -153,12 +153,12 @@ object BasicAuthFlowSpec extends E2ESpec:
           clientSecret = Some(s.clientSecret),
           redirectUri = Some(s.redirectUri),
         ).success
-        viaBody <- auth.userinfoTokenInBody(token.accessToken)
-        bothPlaces <- auth.userinfoTokenInBody(token.accessToken, alsoInHeader = true)
-      yield assertTrue(viaBody.isInstanceOf[UserinfoResult.Success])
-        .label(s"a token in the form body must be accepted for a standard tenant, got $viaBody") &&
-        assertTrue(bothPlaces.response.status == zio.http.Status.Unauthorized)
-          .label(s"a token in both the header and the body must be refused, got ${bothPlaces.response.status}")
+        viaBody <- auth.userinfoTokenInBodyOnly(token.accessToken)
+        viaHeader <- auth.userinfo(token.accessToken)
+      yield assertTrue(viaBody.response.status == zio.http.Status.Unauthorized)
+        .label(s"a token only in the form body must be refused, got ${viaBody.response.status}") &&
+        assertTrue(viaHeader.isInstanceOf[UserinfoResult.Success])
+          .label("the same token in the Authorization header must still be accepted")
     },
     test("otp + permanent password: complete otp flow") {
       for

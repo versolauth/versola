@@ -7,7 +7,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, SecurityProfile, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.clientauth.ClientAuthentication
 import versola.oauth.dpop.{DpopService, EdgeAssertionService}
 import versola.oauth.jwks.JwksService
@@ -119,21 +119,6 @@ object UserInfoControllerSpec extends UnitSpecBase:
     val signer = new RSASSASigner(config.jwt.privateKey)
     jwt.sign(signer)
     jwt.serialize()
-
-  /** RFC 6750 §2.2: the access token as a form field of a POST body. */
-  private def formBodyRequest(accessToken: String): Request =
-    Request.post(
-      url = URL.empty / "userinfo",
-      body = Body.fromURLEncodedForm(Form.fromStrings("access_token" -> accessToken)),
-    ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
-
-  /** The lookups the fixture client gets, plus the security profile of its tenant. */
-  private def withSecurityProfile(profile: SecurityProfile): Stub[OAuthConfigurationService] => UIO[Unit] =
-    service =>
-      service.find.succeedsWith(Some(client1)) *> service.get.succeedsWith(client1) *>
-        service.requireDpopNonce.succeedsWith(false) *>
-        service.getDpopSigningAlgorithms.succeedsWith(deploymentDpopAlgorithms) *>
-        service.getSecurityProfile.succeedsWith(profile)
 
   def userInfoTestCase(
       description: String,
@@ -820,80 +805,31 @@ object UserInfoControllerSpec extends UnitSpecBase:
             userInfo.claims.contains("sub"),
           ),
       ),
-      // RFC 6750 §2.2 / OIDC Core §5.3.1: the token may travel in a form-encoded body. The
-      // oidcc-userinfo-post-body conformance test sends exactly this. Only a `standard` tenant
-      // allows it; FAPI 2.0 does not.
+      // The token is read from the Authorization header only. A valid token in a form body
+      // (RFC 6750 §2.2) is not accepted: it would end up in proxy and application logs and cannot
+      // be sender-constrained. The conformance suite's oidcc-userinfo-post-body records that as a
+      // warning, which is the accepted outcome.
       userInfoTestCase(
-        description = "return user info for an access token in the form body of a standard tenant's client",
-        request = formBodyRequest(
-          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("profile")), TestEnvConfig.coreConfig),
-        ),
-        expectedStatus = Status.Ok,
-        setup = userInfoService => userInfoService.getUserInfo.succeedsWith(userInfoResponse),
-        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.standard),
-        verify = response =>
-          for
-            body <- response.body.asString
-            userInfo <- ZIO.fromEither(body.fromJson[UserInfoResponse]).mapError(new RuntimeException(_))
-          yield assertTrue(userInfo.claims.get("sub").contains(Json.Str(userId1.toString))),
-      ),
-      userInfoTestCase(
-        description = "refuse an access token in the form body for a fapi2 tenant's client",
-        request = formBodyRequest(
-          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("profile")), TestEnvConfig.coreConfig),
-        ),
+        description = "refuse a valid access token that is only in the form body",
+        request = Request.post(
+          url = URL.empty / "userinfo",
+          body = Body.fromURLEncodedForm(Form.fromStrings(
+            "access_token" -> createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
+          )),
+        ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
         expectedStatus = Status.Unauthorized,
-        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.fapi2),
         verify = response =>
           for
             wwwAuth <- ZIO.fromOption(response.header(Header.WWWAuthenticate))
               .orElseFail(new RuntimeException("Missing WWW-Authenticate header"))
           yield assertTrue(wwwAuth.renderedValue.contains("invalid_request")),
       ),
-      // RFC 6750 §2: one method per request.
       userInfoTestCase(
-        description = "refuse a token presented in both the Authorization header and the form body",
-        request = formBodyRequest(
+        description = "refuse a valid access token that is only in the query string",
+        request = Request.get(URL.empty / "userinfo").addQueryParam(
+          "access_token",
           createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
-        ).addHeader(Header.Authorization.Bearer(
-          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
-        )),
-        expectedStatus = Status.Unauthorized,
-      ),
-      // RFC 6750 §3.1: a repeated parameter is invalid_request. zio-http would merge the two values into
-      // `<jwt>,`, which the JWT library still verifies, so it has to be refused before the lookup.
-      userInfoTestCase(
-        description = "refuse a form body that repeats access_token",
-        request = Request.post(
-          url = URL.empty / "userinfo",
-          body = Body.fromURLEncodedForm(Form.fromStrings(
-            "access_token" -> createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig),
-            "access_token" -> "",
-          )),
-        ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
-        expectedStatus = Status.Unauthorized,
-        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.standard),
-      ),
-      userInfoTestCase(
-        description = "refuse a form body token that is not a bare compact JWT",
-        request = formBodyRequest(
-          createAccessToken(userId1, clientId1, Set(ScopeToken.OpenId), TestEnvConfig.coreConfig) + ",",
         ),
-        expectedStatus = Status.Unauthorized,
-        oAuthConfigurationSetup = withSecurityProfile(SecurityProfile.standard),
-      ),
-      userInfoTestCase(
-        description = "refuse a form body that carries no access_token",
-        request = Request.post(
-          url = URL.empty / "userinfo",
-          body = Body.fromURLEncodedForm(Form.fromStrings("something" -> "else")),
-        ).addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`)),
-        expectedStatus = Status.Unauthorized,
-      ),
-      // The body is a POST-only carrier (RFC 6750 §2.2); a GET has no body to read it from.
-      userInfoTestCase(
-        description = "ignore an access_token query parameter on a GET",
-        request = Request.get(URL.empty / "userinfo").addQueryParam("access_token", "anything"),
         expectedStatus = Status.Unauthorized,
       ),
     ),
