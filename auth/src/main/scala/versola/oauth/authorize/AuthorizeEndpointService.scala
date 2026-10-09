@@ -202,6 +202,11 @@ object AuthorizeEndpointService:
                         registrationFlow,
                         uiLocales,
                         Map.empty,
+                        // A re-authentication must not take a `login_hint` as the user's answer: when the
+                        // card is shown again nobody has been identified yet, and submitting the hint
+                        // would identify them and, for a flow with no factor after the card, finish
+                        // the login without anything having verified them.
+                        applyHint = false,
                         knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),

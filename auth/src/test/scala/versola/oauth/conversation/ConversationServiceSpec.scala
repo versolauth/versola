@@ -188,6 +188,18 @@ object ConversationServiceSpec extends UnitSpecBase:
   private val requestedScope = conversationRecord.scope
 
   /** Everything `issueCode` reaches for, so consent tests can assert on what it was handed. */
+  /** The session a re-authentication replaces, as the repository would return it. */
+  private def priorSessionOf(user: versola.user.model.UserId): SessionRecord =
+    SessionRecord(
+      userId = user,
+      clients = Nil,
+      userAgentId = UserAgentId(UUID.randomUUID()),
+      createdAt = Instant.EPOCH,
+      amr = Map.empty,
+      publicId = PublicSessionId("prior-public-session"),
+      expiresAt = Instant.EPOCH.plusSeconds(3600),
+    )
+
   private def issueCodeStubs(env: Env) =
     for
       _ <- env.authPropertyGenerator.nextAuthorizationCode.succeedsWith(AuthorizationCode.fromString("code"))
@@ -472,12 +484,56 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- TestClock.setTime(now)
           _ <- issueCodeStubs(env)
+          _ <- env.sessionRepository.findSession.succeedsWith(Some(priorSessionOf(userId)))
           result <- env.service.finish(authId, record)
           sessionCalls = env.sessionRepository.create.calls
         yield assertTrue(
           result.isInstanceOf[ConversationResult.Complete],
           sessionCalls.head._5 == Some(PriorSession.MigrateTokens(priorSessionIdMac, Set.empty, now, None)),
         )
+      },
+      // Migrating a prior session's tokens renews *their* authentication time and methods, so it is
+      // only for the same user signing in again. Another user's login (an account switch) expires the
+      // previous user's tokens instead of carrying them onto the new session.
+      test("invalidates the prior session rather than migrating its tokens when another user signed in") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val otherUser = versola.user.model.UserId(UUID.randomUUID())
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+          scope = consentedRecord.scope + ScopeToken.OfflineAccess,
+          grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
+        )
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          _ <- env.sessionRepository.findSession.succeedsWith(Some(priorSessionOf(otherUser)))
+          result <- env.service.finish(authId, record)
+          sessionCalls = env.sessionRepository.create.calls
+        yield assertTrue(
+          result.isInstanceOf[ConversationResult.Complete],
+          sessionCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)),
+        )
+      },
+      test("invalidates the prior session when it can no longer be found") {
+        val env = Env()
+        val now = Instant.parse("2026-07-13T10:00:00Z")
+        val priorSessionIdMac = MAC(Array.fill(32)(2.toByte))
+        val record = consentedRecord.copy(
+          userId = Some(userId),
+          priorSessionId = Some(priorSessionIdMac),
+          scope = consentedRecord.scope + ScopeToken.OfflineAccess,
+          grantedScope = Some(consentedRecord.scope + ScopeToken.OfflineAccess),
+        )
+        for
+          _ <- TestClock.setTime(now)
+          _ <- issueCodeStubs(env)
+          _ <- env.sessionRepository.findSession.succeedsWith(None)
+          result <- env.service.finish(authId, record)
+          sessionCalls = env.sessionRepository.create.calls
+        yield assertTrue(sessionCalls.head._5 == Some(PriorSession.Invalidate(priorSessionIdMac)))
       },
       test("completes conversation and creates session/code") {
         val env = Env()
@@ -546,6 +602,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.findSession.succeedsWith(Some(priorSessionOf(userId)))
           result <- env.service.finish(authId, record)
           createCalls = env.sessionRepository.create.calls
         yield result match
@@ -589,6 +646,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
+          _ <- env.sessionRepository.findSession.succeedsWith(Some(priorSessionOf(userId)))
           result <- env.service.finish(authId, record)
           createCalls = env.sessionRepository.create.calls
         yield result match
