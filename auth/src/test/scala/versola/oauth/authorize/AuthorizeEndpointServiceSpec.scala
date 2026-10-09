@@ -576,6 +576,86 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         createCalls.nonEmpty,
       )
     },
+    // A flow whose password lives in the credential card and asks no further factor leaves nothing
+    // to verify once that card is skipped for the session's user, so the conversation would finish as
+    // soon as it was created -- a re-authentication in which nobody authenticated, followed by a
+    // /challenge with no conversation behind it (ConversationExpired). The card is shown again instead.
+    test("show the credential card again on max_age when no verifying factor would be left") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val inlinePasswordFlow = otpFlow.copy(
+        primary = otpFlow.primary.copy(
+          credentials = List(PrimaryCredential.email),
+          inlinePassword = true,
+          factors = Nil,
+        ),
+      )
+      val sessionUserId = versola.user.model.UserId(UUID.randomUUID())
+      val oldSession = SessionRecord(
+        userId = sessionUserId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
+        userAgentId = testUserAgentId,
+        createdAt = Instant.EPOCH.minusSeconds(1),
+        amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.pwd))),
+        publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0)))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId.isEmpty,
+        createCalls.head._2.step.isInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential],
+        env.conversationRouter.advance.calls.isEmpty,
+      )
+    },
+    test("do not submit a login_hint on the user's behalf when the credential card is shown again") {
+      val env = Env()
+      val uuid = UUID.randomUUID()
+      val inlinePasswordFlow = otpFlow.copy(
+        primary = otpFlow.primary.copy(
+          credentials = List(PrimaryCredential.email),
+          inlinePassword = true,
+          factors = Nil,
+        ),
+      )
+      val sessionUserId = versola.user.model.UserId(UUID.randomUUID())
+      val oldSession = SessionRecord(
+        userId = sessionUserId,
+        clients = List(ClientEntry(clientId, Instant.EPOCH.minusSeconds(1))),
+        userAgentId = testUserAgentId,
+        createdAt = Instant.EPOCH.minusSeconds(1),
+        amr = Map(PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH.minusSeconds(1), Set(AuthMethodRef.pwd))),
+        publicId = publicSessionId,
+        expiresAt = Instant.EPOCH.plusSeconds(86400),
+      )
+      for
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
+        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+        _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, oldSession)))
+        _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
+        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
+        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
+        _ <- env.conversationRepository.create.succeedsWith(())
+        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0), loginHint = Some(Right(versola.util.Phone("+12025551234")))))
+        createCalls = env.conversationRepository.create.calls
+      yield assertTrue(
+        result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
+        createCalls.head._2.userId.isEmpty,
+        createCalls.head._2.step.isInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential],
+        // Submitting the hint would identify the user and, with no factor after the card, finish the
+        // login without anything having verified them.
+        env.conversationRouter.submit.calls.isEmpty,
+      )
+    },
     test("fail with LoginRequired when max_age exceeded and prompt=none") {
       val env = Env()
       val oldSession = SessionRecord(

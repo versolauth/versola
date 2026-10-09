@@ -80,7 +80,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -121,6 +121,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 target_acr,
                 csrf_token,
                 prior_session_id,
+                prior_session_user_id,
                 resources,
                 authorization_details,
                 granted_scope,
@@ -158,6 +159,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.targetAcr},
                 ${record.csrfToken},
                 ${record.priorSessionId},
+                ${record.priorSessionUserId},
                 ${record.resources},
                 ${record.authorizationDetails},
                 ${record.grantedScope}::text[],
@@ -185,6 +187,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               needs_password_change = ${record.needsPasswordChange},
               target_acr = ${record.targetAcr},
               prior_session_id = ${record.priorSessionId},
+              prior_session_user_id = ${record.priorSessionUserId},
               granted_scope = ${record.grantedScope}::text[],
               version = version + 1
             where id = $authId and version = ${record.version}"""
