@@ -174,4 +174,8 @@ object DpopKeyPolicySpec extends E2ESpec:
               "unbind a token an operator's later edit would not have allowed",
           )
     },
-  ) @@ TestAspect.sequential
+  ) @@ TestAspect.sequential @@
+    // `awaitKnown` retries on a schedule, which under the test clock never fires: a client auth has
+    // not synced yet then waits for a clock nobody advances, and the suite hangs for the life of
+    // the job instead of failing.
+    TestAspect.withLiveClock
