@@ -443,8 +443,9 @@ final class CoordinatorService private (
         else
           windowSkipped.update(_ + phase) *>
             ZIO.logWarning(
-              s"The measured window's $phase of campaign '${campaign.name}' (at $at) was passed while the run " +
-                "was not running; no snapshot is taken for it and the report omits the window's database figures",
+              s"The measured window's $phase of campaign '${campaign.name}' (at $at) was passed more than " +
+                s"${CoordinatorService.windowTolerance.toSeconds}s before the timer ran (a stalled or restarted coordinator); " +
+                "no snapshot is taken for it and the report omits the window's database figures",
             )
     yield ()
 
