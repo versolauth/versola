@@ -1,0 +1,18 @@
+{{- if .Values.priorityClasses.create }}
+{{- range $tier := list "customerFacing" "controlPlane" }}
+{{- $class := index $.Values.priorityClasses $tier }}
+---
+# Cluster-scoped, so created only when `priorityClasses.create` asks for it: installing this chart
+# with a namespace-scoped role must not need rights over cluster objects (versolauth/versola#211).
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ $class.name }}
+  labels:
+    {{- include "versola.labels" $ | nindent 4 }}
+value: {{ int $class.value }}
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: {{ (ternary "Versola's admin/configuration plane (central); evicted before the login path under node pressure." "Versola's customer-facing login path (auth, edge)." (eq $tier "controlPlane")) | quote }}
+{{- end }}
+{{- end }}

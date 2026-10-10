@@ -8,7 +8,10 @@ metadata:
   labels:
     {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
 spec:
+  {{- /* Under an HPA the Deployment states no replica count: it would reset the autoscaler's on every upgrade. */}}
+  {{- if not $svc.autoscaling.enabled }}
   replicas: {{ $svc.replicaCount }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 6 }}
@@ -43,6 +46,13 @@ spec:
       {{- with ($svc.affinity | default $.Values.global.affinity) }}
       affinity:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with include "versola.priorityClassName" (dict "root" $ "name" $name "svc" $svc) }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with include "versola.topologySpreadConstraints" (dict "root" $ "name" $name "svc" $svc) }}
+      topologySpreadConstraints:
+        {{- . | nindent 8 }}
       {{- end }}
       # See values.yaml's top-level comment on preStopSleepSeconds /
       # terminationGracePeriodSeconds for why this has to cover both the
