@@ -45,3 +45,26 @@ For Scala source questions, use ScalaSemantic MCP tools before shell text tools.
 Do not use `cat`, `sed`, `rg`, or similar tools to inspect `.scala` files for symbol, type, signature, hierarchy, implicit, reference, or call-path questions when ScalaSemantic tools are available.
 
 Use shell for builds, tests, git, config, docs, scripts, and non-Scala text work.
+
+# Scala Import Rules
+
+Do not use fully qualified names in code. Import the class, object, or type and refer to it
+by its simple name.
+
+- Wrong: `val id: java.util.UUID = java.util.UUID.randomUUID()`
+- Right: `import java.util.UUID` and `val id: UUID = UUID.randomUUID()`
+
+The one exception is a member of an enclosing type, which is referenced through that type
+without importing the member itself:
+
+```scala
+enum Foo:
+  case Bar
+
+val x = Foo.Bar   // not `import Foo.Bar` and `Bar`
+```
+
+The same applies to a nested class or object, an `object`'s members, and companion members:
+write `Outer.Inner`, not a bare `Inner` imported from `Outer`. Import the outer type, not the
+nested one. On a genuine name clash, prefer an import rename (`import a.Foo as AFoo`) over a
+full path.
