@@ -38,7 +38,7 @@
 # (http_server_requests_total, auth_authorize_total, ...) undercounted and
 # jittered -- first surfaced as a several-times distortion during the
 # 1M-run loadgen campaign. It also never carried a `pod` label at all,
-# which the dashboards (k8s/loadgen/dashboards/) select on alongside `job`
+# which the dashboards (dashboards/grafana/) select on alongside `job`
 # and `namespace`.
 #
 # Fixed by switching to `kubernetes_sd_configs: role: pod`, scoped to the

@@ -519,9 +519,7 @@ All of these have open issues; none of them has a fix in the chart yet.
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
 | [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
-Observability is external by design. The dashboards in `loadgen/dashboards/` are checked in but
-not installed: `dashboards.configMap.enabled` is off by default, and turning it on only helps if
-Grafana's sidecar watches that label. Nothing here deploys Prometheus, and neither chart creates
+Observability is external by design. The Grafana dashboard is checked in under `dashboards/grafana/` at the repository root, outside both charts, and is not installed by either. Nothing here deploys Prometheus, and neither chart creates
 `ServiceMonitor` or `PodMonitor` objects — both `loadgen` and `versola` carry `prometheus.io/scrape`
 annotations on every pod (`versola`'s via `metrics.prometheusAnnotations`, default `true`), so how
 scraping happens is still the cluster's business, but a `kubernetes_sd_configs`/annotation-based
@@ -543,11 +541,4 @@ distortion during the 1M-run loadgen campaign) — see
 fix, checked in there because it previously existed only as a live Helm release nobody had a copy
 of.
 
-`sut-red.json`, `driver-red.json` and `db-pools.json` are hand-authored, each built around a
-specific set of pass criteria (design doc §6.7, #267's definition of done, the report's pool
-section) rather than one panel per metric. `auth-funnel.json`, `security-dpop-revocation.json` and
-`db-cleanup-batches.json` are the other kind: a mechanical board over a metric family with no
-curated narrative yet, built by `loadgen/dashboards/generate.py`. Re-run it after adding a `Metric.*`
-registration anywhere in the
-codebase that its `CATALOG` does not cover — it will not touch the three hand-authored boards, and
-it will not invent a threshold for a metric with no documented SLA rather than guess one.
+The dashboard and how to load it are described in [`dashboards/grafana/README.md`](../dashboards/grafana/README.md). It selects series by `namespace` and the `app_kubernetes_io_component` label, which the vmagent job above copies from the pod label onto every series.
