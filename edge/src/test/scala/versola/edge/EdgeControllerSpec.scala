@@ -92,14 +92,14 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       revoked: Boolean = false,
       // Only the `logout` endpoint reads presets directly (every other route goes through
       // EdgeService), so it is left unconfigured by default and opted into per test.
-      presetsSetup: Stub[AuthorizationPresetsSyncClient] => UIO[Unit] = _ => ZIO.unit,
+      presetsSetup: Stub[OAuthClientService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[versola.edge.dpop.DpopVerifier] => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
       client <- ZIO.service[Client]
       service = stub[EdgeService]
       jwks = stub[JwksService]
-      presets = stub[AuthorizationPresetsSyncClient]
+      presets = stub[OAuthClientService]
       revocation = stub[TokenRevocationService]
       dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
       tracing <- tracingLayer.build
@@ -109,7 +109,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
               ZEnvironment[TokenRevocationService](revocation) ++
-              ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
+              ZEnvironment[OAuthClientService](presets) ++
               ZEnvironment[EdgeConfig](edgeConfig) ++
               ZEnvironment[versola.edge.dpop.DpopVerifier](dpopVerifier) ++
               tracing,
@@ -373,7 +373,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
-  // The endpoint reads AuthorizationPresetsSyncClient directly (not through EdgeService),
+  // The endpoint reads the preset cache (OAuthClientService) directly (not through EdgeService),
   // so every case here is driven via `presetsSetup` rather than the `setup` callback.
   private val logoutSuite = suite("GET /logout/{presetId}")(
     test("redirects to /logout with post_logout_redirect_uri appended when the preset has one") {
@@ -396,7 +396,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+          presetsSetup = presets => presets.findPreset.succeedsWith(Some(preset)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -422,7 +422,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+          presetsSetup = presets => presets.findPreset.succeedsWith(Some(preset)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -436,18 +436,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/missing").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map.empty),
-        )
-      yield assertTrue(response.status == Status.InternalServerError)
-    },
-    // Distinct from the missing-preset case above: here presets.getAll itself fails, so the
-    // `mapError` on `someOrFail` takes its `case error: Throwable => error` branch and
-    // re-raises the original error unchanged, rather than wrapping a RuntimeException.
-    test("returns 500 when presets.getAll itself fails") {
-      for
-        (response, _, _) <- run(
-          Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.failsWith(RuntimeException("sync client unreachable")),
+          presetsSetup = presets => presets.findPreset.succeedsWith(None),
         )
       yield assertTrue(response.status == Status.InternalServerError)
     },
