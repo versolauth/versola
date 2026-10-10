@@ -1,5 +1,6 @@
 package versola
 
+import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
@@ -127,65 +128,65 @@ object PostgresCentralApp extends VersolaApp("central"):
     ).reduce(_ ++ _)
 
   private val repositories =
-    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >+>
-      SecureRandom.live >+> (
-        PostgresTenantRepository.live >+>
-          PostgresPermissionRepository.live >+>
-          PostgresResourceRepository.live >+>
-          PostgresOAuthClientRepository.live >+>
-          PostgresClientCertificateIssuanceRepository.live >+>
-          PostgresEdgeCertificateEnrollmentRepository.live >+>
-          PostgresAuthorizationPresetRepository.live >+>
-          PostgresOAuthScopeRepository.live >+>
-          PostgresAuthorizationDetailTypeRepository.live >+>
-          PostgresRoleRepository.live >+>
-          PostgresEdgeRepository.live >+>
-          PostgresFormRepository.live >+>
-          PostgresLocaleRepository.live >+>
-          PostgresThemeRepository.live >+>
-          PostgresOtpChallengeRepository.live >+>
-          PostgresChallengeSettingsRepository.live >+>
-          PostgresSystemSettingsRepository.live >+>
-          PostgresCacheSyncRepository.live >+>
-          PostgresJwksRepository.live >+>
-          PostgresServerMetadataRepository.live >+>
+    PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>
+      SecureRandom.live >++> (
+        PostgresTenantRepository.live >++>
+          PostgresPermissionRepository.live >++>
+          PostgresResourceRepository.live >++>
+          PostgresOAuthClientRepository.live >++>
+          PostgresClientCertificateIssuanceRepository.live >++>
+          PostgresEdgeCertificateEnrollmentRepository.live >++>
+          PostgresAuthorizationPresetRepository.live >++>
+          PostgresOAuthScopeRepository.live >++>
+          PostgresAuthorizationDetailTypeRepository.live >++>
+          PostgresRoleRepository.live >++>
+          PostgresEdgeRepository.live >++>
+          PostgresFormRepository.live >++>
+          PostgresLocaleRepository.live >++>
+          PostgresThemeRepository.live >++>
+          PostgresOtpChallengeRepository.live >++>
+          PostgresChallengeSettingsRepository.live >++>
+          PostgresSystemSettingsRepository.live >++>
+          PostgresCacheSyncRepository.live >++>
+          PostgresJwksRepository.live >++>
+          PostgresServerMetadataRepository.live >++>
           PostgresUserRepository.live
       )
 
   override val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    parseConfig[CentralConfig] >+>
-      repositories >+>
-      SecurityService.live >+>
-      CelEvaluator.live >+>
-      JsonSchemaValidator.live >+>
-      ChallengeSettingsService.signingKeyReferences >+>
-      ChallengeSettingsService.live >+>
+    parseConfig[CentralConfig] >++>
+      repositories >++>
+      SecurityService.live >++>
+      CelEvaluator.live >++>
+      JsonSchemaValidator.live >++>
+      ChallengeSettingsService.signingKeyReferences >++>
+      ChallengeSettingsService.live >++>
       // RFC 8705 §6.5: registering `mtlsAuth` is refused unless the client's tenant names a
       // certificate header, so client registration reads the challenge settings.
-      ClientCertificateAuthority.live >+>
-      OAuthClientService.live >+>
-      ClientCertificateIssuer.live >+>
-      ClientCertificateService.live >+>
-      BootstrapService.live >+>
-      TenantService.live >+>
-      PermissionService.live >+>
-      ResourceService.live >+>
-      AuthorizationPresetService.live >+>
-      OAuthScopeService.live >+>
-      ServerMetadataService.live >+>
-      AuthorizationDetailTypeService.live >+>
-      RoleService.live >+>
-      EdgeService.live >+>
-      LocaleCompletenessValidator.live >+> LocaleService.live >+>
-      JwksService.live >+>
-      FormService.live >+>
-      ThemeService.live >+>
-      OtpChallengeService.live >+>
-      SystemSettingsService.live >+>
-      CacheSyncService.live >+>
-      AuthClient.live >+>
-      UserService.live >+>
-      UserOutboxProcessor.live >+>
+      ClientCertificateAuthority.live >++>
+      OAuthClientService.live >++>
+      ClientCertificateIssuer.live >++>
+      ClientCertificateService.live >++>
+      BootstrapService.live >++>
+      TenantService.live >++>
+      PermissionService.live >++>
+      ResourceService.live >++>
+      AuthorizationPresetService.live >++>
+      OAuthScopeService.live >++>
+      ServerMetadataService.live >++>
+      AuthorizationDetailTypeService.live >++>
+      RoleService.live >++>
+      EdgeService.live >++>
+      LocaleCompletenessValidator.live >++> LocaleService.live >++>
+      JwksService.live >++>
+      FormService.live >++>
+      ThemeService.live >++>
+      OtpChallengeService.live >++>
+      SystemSettingsService.live >++>
+      CacheSyncService.live >++>
+      AuthClient.live >++>
+      UserService.live >++>
+      UserOutboxProcessor.live >++>
       // Renews the certificates central issued, for as long as it runs. A no-op where
       // `client-certificates` is not configured.
       ClientCertificateService.renewal

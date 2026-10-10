@@ -1,6 +1,7 @@
 
 package versola
 
+import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
@@ -69,42 +70,42 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
     // rather than the leaf it is documented to require -- see that field's own comment.
-    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >+>
-      // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
+    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >++>
+      // `>++>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
-      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>
+      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >++>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresRevocationRepository.live ++
           PostgresDpopProofRepository.live ++
-          PostgresCleanupManager.live)) >+>
-      PostgresRevocationNotifications.live >+>
-      SecureRandom.live >+>
-      SecurityService.live >+>
-      CentralSyncTokenService.live >+>
-      AuthorizationPresetsSyncClient.live >+>
-      ClientCertificateEnrollment.live >+>
-      OAuthClientsSyncClient.live >+>
-      versola.edge.ClientPermissionsSyncClient.live >+>
-      CelEvaluator.live >+>
-      ResourcesSyncClient.live >+>
-      RolesSyncClient.live >+>
-      PermissionsSyncClient.live >+>
-      DpopAlgorithmsSyncClient.live >+>
-      DpopPolicySyncClient.live >+>
-      DpopPolicyService.live >+>
-      JwksSyncClient.live >+>
-      OAuthClientService.live >+>
-      ResourceService.live >+>
-      PermissionService.live >+>
-      JwksService.live >+>
-      TokenRevocationService.live >+>
-      ClientCertificateFiles.live >+>
-      SSOClient.live >+>
-      DpopReplayGuard.shared >+>
-      DpopVerifier.live >+>
-      EdgeService.live >+>
-      NativeAuthClient.live >+>
+          PostgresCleanupManager.live)) >++>
+      PostgresRevocationNotifications.live >++>
+      SecureRandom.live >++>
+      SecurityService.live >++>
+      CentralSyncTokenService.live >++>
+      AuthorizationPresetsSyncClient.live >++>
+      ClientCertificateEnrollment.live >++>
+      OAuthClientsSyncClient.live >++>
+      versola.edge.ClientPermissionsSyncClient.live >++>
+      CelEvaluator.live >++>
+      ResourcesSyncClient.live >++>
+      RolesSyncClient.live >++>
+      PermissionsSyncClient.live >++>
+      DpopAlgorithmsSyncClient.live >++>
+      DpopPolicySyncClient.live >++>
+      DpopPolicyService.live >++>
+      JwksSyncClient.live >++>
+      OAuthClientService.live >++>
+      ResourceService.live >++>
+      PermissionService.live >++>
+      JwksService.live >++>
+      TokenRevocationService.live >++>
+      ClientCertificateFiles.live >++>
+      SSOClient.live >++>
+      DpopReplayGuard.shared >++>
+      DpopVerifier.live >++>
+      EdgeService.live >++>
+      NativeAuthClient.live >++>
       NativeService.live
 
 

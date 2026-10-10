@@ -1,5 +1,6 @@
 package versola.oauth.dpop
 
+import versola.util.SequentialLayers.*
 import versola.oauth.client.model.TenantId
 import versola.oauth.client.{CentralSyncTokenService, EdgeRegistrySyncClient}
 import versola.util.{CacheSource, CoreConfig, EdgeAssertion, ReloadingCache}
@@ -44,7 +45,7 @@ object EdgeAssertionService:
   private val rejections = Metric.counter("dpop_edge_assertion_rejections_total")
 
   val live: ZLayer[Scope & CoreConfig & Client & DpopProofRepository, Throwable, EdgeAssertionService] =
-    CentralSyncTokenService.live >+> EdgeRegistrySyncClient.live >+> cacheLayer >>>
+    CentralSyncTokenService.live >++> EdgeRegistrySyncClient.live >++> cacheLayer >>>
       ZLayer.fromFunction(Impl(_, _))
 
   private val cacheLayer: ZLayer[

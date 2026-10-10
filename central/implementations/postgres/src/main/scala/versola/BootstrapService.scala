@@ -1,5 +1,6 @@
 package versola
 
+import versola.util.SequentialLayers.*
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
@@ -764,8 +765,8 @@ object BootstrapService:
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >+>
-      ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
+      ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >++>
       ZLayer(refreshCachesAfterBootstrap)
 
   /** Reloads the two caches built before bootstrap -- it registers central-admin through
