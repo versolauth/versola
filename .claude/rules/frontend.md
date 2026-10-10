@@ -63,8 +63,9 @@ A UI change is judged by looking at it. For any change that alters what a screen
    and `page.screenshot({ path: 'test-results/ui-review/<name>.png' })`; run it with
    `npx playwright test <file>`, and delete the spec before committing. `test-results/` is gitignored.
    `tests/docs-screenshots.spec.ts` is a working example (including full-page shots).
-3. **Login forms** have no mock harness in the repo that I know of; render them against the running
-   stack (`develop.md`) or say that you could not.
+3. **Login forms:** `tests/form-harness.ts` renders a form from source with its real strings, no
+   backend needed: `await renderForm(page, 'otp', { step: {...} })`, then `page.screenshot(...)` the
+   same way. See `tests/login-forms.spec.ts` for the step shapes of each form.
 4. **Show it, do not describe it:** open the PNG yourself to inspect it, and give the operator a
    markdown link to the file (it is inside the session's folder). If you cannot produce a screenshot,
    say so and do not claim the UI works.
@@ -125,7 +126,14 @@ before the change is shown as done. Numbers are from WCAG 2.2 unless noted.
 
 ## Tests
 
-- Logic (validators, theme, presets) gets a Vitest test next to it (`*.test.ts`).
+- Logic (validators, theme, presets) gets a Vitest test next to it (`*.test.ts`), under `src/` or
+  `forms/`. `forms/i18n.test.ts` checks every form has the same keys and `{placeholders}` in all its
+  languages: add the string to every language in `<form>.i18n.json`.
+- **Login forms:** behaviour is tested in `tests/login-forms.spec.ts` through `tests/form-harness.ts`,
+  which builds the form with the same esbuild options as `build-forms.mjs`, serves it in the page
+  shell the server uses and records what the form posts (path, `ui_locale`, fields, CSRF). A new form
+  or a changed step gets a test of what the user can do and what is sent, plus an entry in that
+  file's axe list. Add the form to `scripts/build-forms.mjs` too.
 - Screens get a Playwright spec in `tests/`, using `loadAdminApp` from `tests/fixtures.ts`
   (mock data, `PLAYWRIGHT=true`).
 - `tests/docs-screenshots.spec.ts` produces the screenshots for the public docs

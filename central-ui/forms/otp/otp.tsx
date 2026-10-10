@@ -132,6 +132,7 @@ function OtpForm(props: { config: FormConfig }) {
             ref={inputRef}
             type="text"
             name="code"
+            aria-label={t().code_placeholder}
             class="otp-hidden-input"
             inputmode="numeric"
             autocomplete="one-time-code"
