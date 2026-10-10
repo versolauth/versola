@@ -307,6 +307,32 @@ The wait is two minutes, and only for a central that cannot be *reached*. A cent
 and rejects the request — wrong URL, wrong sync key — still fails startup within seconds rather
 than spending the whole budget on something waiting cannot fix.
 
+### Availability: spread, disruption budgets, priority, autoscaling
+
+Four things keep a node drain, a zone loss or a traffic peak from taking the login path with it
+([#211](https://github.com/versolauth/versola/issues/211)). Every default below is a starting point, not
+a guarantee — the right numbers depend on your traffic profile — and every one is overridable per
+service under `services.<name>` (or `global` for the spread).
+
+| | Default | What it does |
+|---|---|---|
+| Topology spread | on, **soft** (`ScheduleAnyway`) across hostname and zone | Replicas of one component are spread over nodes and zones. Soft, because a hard constraint leaves pods Pending on a cluster with fewer nodes or zones than replicas. A constraint with no `labelSelector` gets the component's own, so `auth` replicas spread among `auth` replicas. A component's own list **replaces** `global`'s; `[]` turns spreading off. |
+| PodDisruptionBudget | on, `maxUnavailable: 1` | Rendered only for a service running more than one replica (`replicaCount`, or `autoscaling.minReplicas` under an HPA): with one, any budget either protects nothing or makes a drain hang. Set `minAvailable` instead (and `maxUnavailable: null`), not both. |
+| PriorityClass | off | `priorityClasses.create: true` creates `versola-customer-facing` (auth, edge) and `versola-control-plane` (central), so node pressure evicts the admin plane first. Off because a PriorityClass is cluster-scoped and installing the chart should not need rights over cluster objects; `services.<name>.priorityClassName` names an existing class either way. |
+| HorizontalPodAutoscaler | off | `services.<name>.autoscaling.enabled`. The Deployment then stops stating `replicas` (it would reset the autoscaler on every upgrade). |
+
+**Do not scale these services on memory, and be careful with CPU.** The JVMs run a fixed heap
+(`-Xms512m -Xmx512m`), so memory use is flat in load and says nothing about demand. CPU is a weak signal
+too: RSA signing and Argon2id hashing are the CPU-bound hot paths and both run behind semaphores, so
+under load CPU saturates at what those admit instead of rising with demand, and a utilisation target can
+sit below its threshold while requests queue. The default metric is CPU utilisation of the request
+(`targetCPUUtilizationPercentage: 70`, which needs `resources.requests.cpu`); `autoscaling.metrics`
+replaces it with any autoscaling/v2 metric list — a Pods metric from `/metrics` through an adapter, for
+instance — and `autoscaling.behavior` slows scale-in. `central` is the admin plane and is better left at a
+fixed replica count.
+
+Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
+
 ---
 
 ## 7. Ingress

@@ -1242,6 +1242,27 @@ jobs:
       - name: Check chart pod placement
         run: .github/scripts/check-chart-placement.sh
 
+  # Availability rendering (versolauth/versola#211): HPA, PDB, topology spread and priority
+  # classes each fail silently when wrong -- a PDB selecting no pods, an HPA fighting a Deployment that
+  # still states `replicas`, a spread selector matching every service's pods together -- so the
+  # script asserts on `helm template` output and on the render refusals.
+  #
+  # Its own job, like helm-placement. Needs only Helm and the runner's system python3 with PyYAML;
+  # the script exits 2, not 0, if PyYAML is absent.
+  helm-availability:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.3
+
+      - name: Check chart availability rendering
+        run: .github/scripts/check-chart-availability.sh
+
   # The plain-Ingress path's className contract: the chart must refuse to
   # render an Ingress with no class rather than fall back to a cluster default
   # that may not exist, while the Gateway API path keeps rendering without one.

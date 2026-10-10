@@ -6,8 +6,9 @@
 #   - No bundled secret backend. This chart consumes secret values/refs
 #     (native Secret, External Secrets Operator, Vault, ...), it never
 #     generates or mandates one.
-#   - HPA/PDB/topology spread are a separate issue (#211) -- out of scope
-#     here.
+#   - Availability -- HPA, PodDisruptionBudget, topology spread, priority
+#     classes (#211) -- is configurable per service, with defaults that are
+#     starting points; only the PDB and the soft spread are on by default.
 
 nameOverride: ""
 fullnameOverride: ""
@@ -37,6 +38,32 @@ global:
   nodeSelector: {}
   tolerations: []
   affinity: {}
+  # Spread each component's replicas across nodes and zones, so one node or zone going away does not
+  # take every replica of a component with it. Soft (ScheduleAnyway) on purpose: a hard constraint
+  # leaves pods Pending on a cluster with fewer nodes or zones than replicas, and "running unevenly"
+  # is better than "not running". A component's own `topologySpreadConstraints`, when non-empty,
+  # REPLACES this list, like the placement fields above; an empty one inherits it. A constraint with
+  # no labelSelector gets the component's own selector labels. Set [] to turn spreading off.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+    - maxSkew: 1
+      topologyKey: topology.kubernetes.io/zone
+      whenUnsatisfiable: ScheduleAnyway
+
+# Two PriorityClasses so node pressure evicts the admin plane (central) before the login path (auth,
+# edge). Off by default, because a PriorityClass is cluster-scoped and installing this chart should
+# not need rights over cluster objects. Off, no pod names a class unless `services.<name>.
+# priorityClassName` does. On, auth and edge use `customerFacing` and central `controlPlane`.
+priorityClasses:
+  create: false
+  customerFacing:
+    name: versola-customer-facing
+    value: 1000000
+  controlPlane:
+    name: versola-control-plane
+    value: 100000
 
 # terminationGracePeriodSeconds / preStopSleepSeconds for the JVM services
 # (auth, central, edge) below.
@@ -140,6 +167,38 @@ services:
         memory: 1Gi
       limits:
         memory: 1Gi
+    # Availability (versolauth/versola#211). Every value here is a starting point, not a guarantee:
+    # the right numbers depend on the customer's traffic profile.
+    # auth and edge are the customer-facing login path.
+    #
+    # priorityClassName: empty means none, or the class this chart creates for it when
+    # `priorityClasses.create` is on (see `priorityClasses` below).
+    priorityClassName: ""
+    # Replaces `global.topologySpreadConstraints` when non-empty; a constraint with no labelSelector
+    # gets this service's own.
+    topologySpreadConstraints: []
+    # Rendered only while the service runs more than one replica (see templates/pdb.yaml). Set one of
+    # the two, not both; leaving both unset means maxUnavailable: 1.
+    podDisruptionBudget:
+      enabled: true
+      minAvailable:
+      maxUnavailable: 1
+    # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
+    # stating one, and minReplicas/maxReplicas bound the autoscaler.
+    #
+    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
+    # saturates at what those admit instead of rising with demand: a CPU target can sit below its
+    # threshold while requests queue. `metrics` replaces the default CPU metric with an
+    # autoscaling/v2 list (a Pods metric from the /metrics endpoint through an adapter, an External
+    # one, ...) and `behavior` is autoscaling/v2's, to slow scale-in.
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      metrics: []
+      behavior: {}
     config:
       # Name of a Secret that already contains an env.conf key (HOCON --
       # see deploy.md 3.2/3.3), mounted at CONFIG_PATH. Left empty by
@@ -179,6 +238,39 @@ services:
         memory: 1Gi
       limits:
         memory: 1Gi
+    # Availability (versolauth/versola#211). Every value here is a starting point, not a guarantee:
+    # the right numbers depend on the customer's traffic profile.
+    # central is the admin/configuration plane: it scales on admin traffic, not login traffic, so
+    # it stays a fixed replica count unless there is a reason to autoscale it.
+    #
+    # priorityClassName: empty means none, or the class this chart creates for it when
+    # `priorityClasses.create` is on (see `priorityClasses` below).
+    priorityClassName: ""
+    # Replaces `global.topologySpreadConstraints` when non-empty; a constraint with no labelSelector
+    # gets this service's own.
+    topologySpreadConstraints: []
+    # Rendered only while the service runs more than one replica (see templates/pdb.yaml). Set one of
+    # the two, not both; leaving both unset means maxUnavailable: 1.
+    podDisruptionBudget:
+      enabled: true
+      minAvailable:
+      maxUnavailable: 1
+    # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
+    # stating one, and minReplicas/maxReplicas bound the autoscaler.
+    #
+    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
+    # saturates at what those admit instead of rising with demand: a CPU target can sit below its
+    # threshold while requests queue. `metrics` replaces the default CPU metric with an
+    # autoscaling/v2 list (a Pods metric from the /metrics endpoint through an adapter, an External
+    # one, ...) and `behavior` is autoscaling/v2's, to slow scale-in.
+    autoscaling:
+      enabled: false
+      minReplicas: 1
+      maxReplicas: 2
+      targetCPUUtilizationPercentage: 70
+      metrics: []
+      behavior: {}
     config:
       existingSecret: ""
       secretKey: env.conf
@@ -211,6 +303,38 @@ services:
         memory: 1Gi
       limits:
         memory: 1Gi
+    # Availability (versolauth/versola#211). Every value here is a starting point, not a guarantee:
+    # the right numbers depend on the customer's traffic profile.
+    # auth and edge are the customer-facing login path.
+    #
+    # priorityClassName: empty means none, or the class this chart creates for it when
+    # `priorityClasses.create` is on (see `priorityClasses` below).
+    priorityClassName: ""
+    # Replaces `global.topologySpreadConstraints` when non-empty; a constraint with no labelSelector
+    # gets this service's own.
+    topologySpreadConstraints: []
+    # Rendered only while the service runs more than one replica (see templates/pdb.yaml). Set one of
+    # the two, not both; leaving both unset means maxUnavailable: 1.
+    podDisruptionBudget:
+      enabled: true
+      minAvailable:
+      maxUnavailable: 1
+    # HorizontalPodAutoscaler. Off: replicaCount is the replica count. On, the Deployment stops
+    # stating one, and minReplicas/maxReplicas bound the autoscaler.
+    #
+    # CPU is a weak signal for this service. RSA signing and Argon2id hashing are its CPU-bound hot
+    # paths and both run behind semaphores (`Argon2Config.maxConcurrent`), so under load CPU
+    # saturates at what those admit instead of rising with demand: a CPU target can sit below its
+    # threshold while requests queue. `metrics` replaces the default CPU metric with an
+    # autoscaling/v2 list (a Pods metric from the /metrics endpoint through an adapter, an External
+    # one, ...) and `behavior` is autoscaling/v2's, to slow scale-in.
+    autoscaling:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+      metrics: []
+      behavior: {}
     config:
       existingSecret: ""
       secretKey: env.conf

@@ -1,0 +1,26 @@
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled $svc.podDisruptionBudget.enabled (gt (int (include "versola.minReplicas" (dict "svc" $svc))) 1) }}
+---
+# PodDisruptionBudget for one service (versolauth/versola#211): a node drain or a cluster upgrade
+# evicts pods one at a time instead of all replicas of a service at once.
+#
+# Rendered only for a service that runs more than one replica. With one, any budget either allows the
+# eviction (and protects nothing) or forbids it (and a drain then never finishes); neither is a
+# budget worth installing.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "versola.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+spec:
+  {{- if not (kindIs "invalid" $svc.podDisruptionBudget.minAvailable) }}
+  minAvailable: {{ $svc.podDisruptionBudget.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ default 1 $svc.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "versola.componentSelectorLabels" (dict "component" $name "context" $) | nindent 6 }}
+{{- end }}
+{{- end }}

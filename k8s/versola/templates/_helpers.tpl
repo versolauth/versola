@@ -478,3 +478,63 @@ The env central.conf's `client-certificates.cert-manager` block reads (scripts/g
   value: {{ printf "%s-client-ca" (include "versola.fullname" .) | quote }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+How many replicas a service runs at least: `autoscaling.minReplicas` when its HPA is on, the Deployment's
+`replicaCount` otherwise. A PodDisruptionBudget only means something above one (see pdb.yaml).
+*/}}
+{{- define "versola.minReplicas" -}}
+{{- if .svc.autoscaling.enabled -}}{{ .svc.autoscaling.minReplicas }}{{- else -}}{{ .svc.replicaCount }}{{- end -}}
+{{- end -}}
+
+{{/*
+The PriorityClass a service's pods run under: the service's own `priorityClassName` when set; otherwise,
+only when this chart creates the classes (`priorityClasses.create`), `controlPlane` for central and
+`customerFacing` for auth and edge. Empty -- no priorityClassName on the pod -- in every other case: a
+name that no cluster object carries leaves the pod unschedulable, so the chart does not guess one.
+*/}}
+{{- define "versola.priorityClassName" -}}
+{{- if .svc.priorityClassName -}}
+{{- .svc.priorityClassName -}}
+{{- else if .root.Values.priorityClasses.create -}}
+{{- if eq .name "central" -}}{{ .root.Values.priorityClasses.controlPlane.name }}{{- else -}}{{ .root.Values.priorityClasses.customerFacing.name }}{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A service's topologySpreadConstraints: its own when non-empty, otherwise `global`'s -- a replacement, not a
+merge, like the rest of the placement fields. A constraint without a `labelSelector` gets the service's own
+selector labels, so one global list spreads each service across its own replicas, not all pods together.
+*/}}
+{{- define "versola.topologySpreadConstraints" -}}
+{{- $selector := dict "matchLabels" (include "versola.componentSelectorLabels" (dict "component" .name "context" .root) | fromYaml) -}}
+{{- $constraints := list -}}
+{{- range $constraint := (.svc.topologySpreadConstraints | default .root.Values.global.topologySpreadConstraints) -}}
+{{- $constraints = append $constraints (ternary $constraint (merge (deepCopy $constraint) (dict "labelSelector" $selector)) (hasKey $constraint "labelSelector")) -}}
+{{- end -}}
+{{- if $constraints -}}{{ toYaml $constraints }}{{- end -}}
+{{- end -}}
+
+{{/*
+Refuses availability settings that would otherwise render something other than what was asked for.
+Called from validate-values.yaml.
+*/}}
+{{- define "versola.checkAvailability" -}}
+{{- range $name, $svc := .Values.services -}}
+{{- if $svc.enabled -}}
+{{- $hpa := $svc.autoscaling -}}
+{{- if $hpa.enabled -}}
+{{- if lt (int $hpa.maxReplicas) (int $hpa.minReplicas) -}}
+{{- fail (printf "services.%s.autoscaling: maxReplicas (%v) is below minReplicas (%v)" $name $hpa.maxReplicas $hpa.minReplicas) -}}
+{{- end -}}
+{{- if and (not $hpa.metrics) (not (dig "requests" "cpu" "" ($svc.resources | default dict))) -}}
+{{- fail (printf "services.%s.autoscaling: the default CPU metric is a utilisation of the CPU request, and services.%s.resources.requests.cpu is not set; set it, or give autoscaling.metrics explicitly" $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- $pdb := $svc.podDisruptionBudget -}}
+{{- if and $pdb.enabled (kindIs "invalid" $pdb.minAvailable | not) (kindIs "invalid" $pdb.maxUnavailable | not) -}}
+{{- fail (printf "services.%s.podDisruptionBudget: set minAvailable or maxUnavailable, not both" $name) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

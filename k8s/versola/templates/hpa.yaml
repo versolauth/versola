@@ -1,0 +1,36 @@
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled $svc.autoscaling.enabled }}
+---
+# HorizontalPodAutoscaler for one service (versolauth/versola#211). Off by default: the thresholds
+# depend on the traffic profile, and a CPU target alone is a poor signal here -- see values.yaml's
+# `autoscaling` block on why, and for `metrics` to give a better one.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "versola.fullname" $ }}-{{ $name }}
+  labels:
+    {{- include "versola.componentLabels" (dict "component" $name "context" $) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "versola.fullname" $ }}-{{ $name }}
+  minReplicas: {{ $svc.autoscaling.minReplicas }}
+  maxReplicas: {{ $svc.autoscaling.maxReplicas }}
+  metrics:
+    {{- if $svc.autoscaling.metrics }}
+    {{- toYaml $svc.autoscaling.metrics | nindent 4 }}
+    {{- else }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+  {{- with $svc.autoscaling.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}
+{{- end }}
