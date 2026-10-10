@@ -630,7 +630,7 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           _ <- harness.service.captureMeasuredWindow
           _ <- harness.service.captureMeasuredWindow
           opened <- sutStats.phases
-          _ <- TestClock.adjust(11.hours)
+          _ <- TestClock.adjust(645.minutes)
           _ <- harness.service.captureMeasuredWindow
           _ <- harness.service.captureMeasuredWindow
           closed <- sutStats.phases
@@ -655,6 +655,41 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
         yield assertTrue(
           phases == List(SutStatPhase.Before, SutStatPhase.MeasuredStart, SutStatPhase.MeasuredEnd, SutStatPhase.After),
         )
+      },
+      // A resume shifts the campaign's start by the pause (`CampaignControl.start`), so the window
+      // moves with the schedule: a pause before the window delays it rather than skipping it.
+      test("a pause before the window delays the window with the schedule") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.start
+          _ <- harness.service.pause
+          _ <- TestClock.adjust(20.hours)
+          _ <- harness.service.start
+          _ <- harness.service.captureMeasuredWindow
+          phases <- sutStats.phases
+        yield assertTrue(phases == List(SutStatPhase.Before, SutStatPhase.MeasuredStart))
+      },
+      // A boundary is captured within a tolerance of its instant. A coordinator that was not
+      // ticking (stalled, or not yet restarted) must not put a snapshot of "now" under the
+      // window's name: the delta would cover the wrong span and the report would call it the window.
+      test("a boundary passed long before the timer ran is skipped, not captured late") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.start
+          _ <- TestClock.adjust(2.hours)
+          _ <- harness.service.captureMeasuredWindow
+          _ <- harness.service.captureMeasuredWindow
+          _ <- TestClock.adjust(20.hours)
+          _ <- harness.service.captureMeasuredWindow
+          phases <- sutStats.phases
+          window <- sutStats.windowDeltas(campaign)
+        yield assertTrue(phases == List(SutStatPhase.Before), window.isEmpty)
       },
       test("nothing in the window is captured before a run starts or while it is paused") {
         for

@@ -68,6 +68,7 @@ final class CoordinatorService private (
     poolerStats: Option[PoolerStatsCapture],
     transitionLock: Semaphore,
     windowCaptured: Ref[Set[SutStatPhase]],
+    windowSkipped: Ref[Set[SutStatPhase]],
     environment: Option[EnvironmentReader],
 ):
 
@@ -391,7 +392,7 @@ final class CoordinatorService private (
       // A new run starts with no window snapshot taken; one stopped inside its measured window
       // closes the window where it stopped, so the window section is not lost to an early stop.
       (phase match
-        case SutStatPhase.Before => windowCaptured.set(Set.empty)
+        case SutStatPhase.Before => windowCaptured.set(Set.empty) *> windowSkipped.set(Set.empty)
         case _ =>
           windowCaptured.get.flatMap: done =>
             ZIO.when(done(SutStatPhase.MeasuredStart) && !done(SutStatPhase.MeasuredEnd))(
@@ -412,21 +413,40 @@ final class CoordinatorService private (
     * because nothing else happens at those instants: phases are positions on a clock, not
     * transitions. Serialised with [[transition]] so a stop cannot interleave with the capture
     * it would otherwise duplicate.
+    *
+    * A boundary is captured only within [[CoordinatorService.windowTolerance]] of its instant. A
+    * coordinator that was stalled or restarted past a boundary would otherwise put a snapshot of
+    * "now" under a report that says it covers the measured window; such a boundary is skipped
+    * instead, which leaves `measuredDatabases` out of the report, and logged. A pause does not
+    * cause this: `CampaignControl.start` shifts the start by the pause, so the window moves with
+    * the schedule.
     */
   def captureMeasuredWindow: UIO[Unit] =
     transitionLock.withPermit:
       for
         now <- Clock.instant
         state <- control.get
-        done <- windowCaptured.get
         _ <- ZIO.foreachDiscard(
           Option.when(state.state == CampaignState.Running)(MeasurementWindow.bounds(campaign.phases, state.startedAt)).flatten,
         ): (from, until) =>
-          ZIO.when(!now.isBefore(from) && !done(SutStatPhase.MeasuredStart))(captureWindow(SutStatPhase.MeasuredStart)) *>
-            ZIO.when(
-              !now.isBefore(until) && done(SutStatPhase.MeasuredStart) && !done(SutStatPhase.MeasuredEnd),
-            )(captureWindow(SutStatPhase.MeasuredEnd))
+          boundary(now, SutStatPhase.MeasuredStart, from, requires = None) *>
+            boundary(now, SutStatPhase.MeasuredEnd, until, requires = Some(SutStatPhase.MeasuredStart))
       yield ()
+
+  private def boundary(now: Instant, phase: SutStatPhase, at: Instant, requires: Option[SutStatPhase]): UIO[Unit] =
+    for
+      taken <- windowCaptured.get
+      skipped <- windowSkipped.get
+      due = !now.isBefore(at) && !taken(phase) && !skipped(phase) && requires.forall(taken)
+      _ <- ZIO.when(due):
+        if java.time.Duration.between(at, now).compareTo(CoordinatorService.windowTolerance) <= 0 then captureWindow(phase)
+        else
+          windowSkipped.update(_ + phase) *>
+            ZIO.logWarning(
+              s"The measured window's $phase of campaign '${campaign.name}' (at $at) was passed while the run " +
+                "was not running; no snapshot is taken for it and the report omits the window's database figures",
+            )
+    yield ()
 
   /** Which boundary, if either, a transition is. Shared by both captures so that §3 and §4 can
     * never end up bracketing different things.
@@ -507,6 +527,12 @@ final class CoordinatorService private (
 
 object CoordinatorService:
 
+  /** How far past a measured-window boundary a snapshot may still be taken for it. Several ticks of
+    * the one-second timer, so a busy coordinator does not lose a boundary, and nothing like a
+    * pause.
+    */
+  val windowTolerance: java.time.Duration = java.time.Duration.ofSeconds(10)
+
   /** How often the drain deadline is checked. A second, because the deadline is an instant an
     * operator chose and the epoch boundary should not drift visibly past it; the check is one
     * `Ref` read on the ordinary tick.
@@ -558,6 +584,7 @@ object CoordinatorService:
       registry <- DriverRegistry.make(config.campaign.name, staleAfter(config.coordinator.pollInterval))
       transitionLock <- Semaphore.make(1L)
       windowCaptured <- Ref.make(Set.empty[SutStatPhase])
+      windowSkipped <- Ref.make(Set.empty[SutStatPhase])
     yield CoordinatorService(
       campaign = config.campaign,
       // Read off this process's own configuration, which is the only thing that can be read: the
@@ -586,6 +613,7 @@ object CoordinatorService:
       poolerStats = poolerStats,
       transitionLock = transitionLock,
       windowCaptured = windowCaptured,
+      windowSkipped = windowSkipped,
       environment = environment,
     )
 
