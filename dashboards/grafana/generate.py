@@ -228,6 +228,26 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
              desc="In-flight requests per pod. A pod whose line keeps climbing is stuck on something slow; a flat uneven split means poor load balancing.")
 
 
+def cleanup(b: Board) -> None:
+    """Expired-row cleanup, which auth and edge run (central does not). The batch duration and failures come
+    from the per-operation database histogram, which already has them; what a batch removed, whether tables
+    keep up and when each was last cleaned come from cleanup_* metrics."""
+    b.row(f"{b.component} — Cleanup of expired data")
+    s = b.sel
+    batches = f'{{{s}, operation=~"cleanup-batch-.*"}}'
+    b.ts("Expired rows removed / s", [(f"sum by (table) (rate(cleanup_rows_deleted_total{{{s}}}[$__rate_interval]))", "{{table}}")], unit="ops", stack=True,
+         desc="Rows the cleanup job deleted, per table. Should follow the rate rows are created at (sessions, tokens, codes, …); flat zero on a table that is being written to means it is not being cleaned.")
+    b.ts("Time since each table was last cleaned", [(f"time() - max by (table) (cleanup_last_success_timestamp_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0,
+         desc="Per table. Compare with the table's cleanup interval in the service config: a line that keeps climbing past it means cleanup of that table has stopped.")
+    b.ts("Tables falling behind (full batches / s)", [(f"sum by (table) (rate(cleanup_full_batches_total{{{s}}}[$__rate_interval]))", "{{table}}")], unit="ops",
+         desc="A batch that deleted as many rows as it is allowed to; more expired rows were probably waiting. Occasional is fine. Sustained means rows expire faster than they are removed, and the table grows.")
+    b.ts("Cleanup batch duration (p99)", [(f"histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{batches}[$__rate_interval])))", "{{operation}}")], unit="s",
+         desc="How long one delete batch takes, per table. Growing duration with a stable batch size means the table is bloating or the index is not keeping up.")
+    b.ts("Failed cleanup batches / s", [(f'sum by (operation) (rate(db_client_operation_duration_seconds_count{{{s}, operation=~"cleanup-batch-.*", outcome="failure"}}[$__rate_interval]))', "{{operation}}")], unit="ops",
+         line=steps((None, GREEN), (0.0001, RED)),
+         desc="Empty is healthy. A failed batch ends that table's cleanup job until the service restarts (the job's schedule stops on the first failure), so one failure here means the table stops being cleaned.")
+
+
 def dependencies(b: Board) -> None:
     b.row(f"{b.component} — Database and dependencies", collapsed=True)
     sel = b.sel
@@ -311,6 +331,7 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
     b.ts("Edge assertions rejected (DPoP)", [(f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"), (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "exempted")], unit="ops",
          desc="Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.")
+    cleanup(b)
     dependencies(b)
     runtime(b)
 
@@ -373,6 +394,7 @@ def add_edge(b: Board, phase: str) -> None:
         (f"sum(rate(dpop_shared_ring_fallbacks_total{{{s}}}[$__rate_interval]))", "fell back to shared check"),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
+    cleanup(b)
     dependencies(b)
     runtime(b)
 

@@ -1,6 +1,7 @@
 package versola.cleanup
 
 import zio.*
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 object CleanupManagerSpec extends ZIOSpecDefault:
@@ -38,7 +39,33 @@ object CleanupManagerSpec extends ZIOSpecDefault:
       keyColumn: Option[String] = None,
   ) = TableCleanupConfig(tableName, batchSize, interval, keyColumn)
 
+  private def counter(name: String, table: String): UIO[Double] =
+    Metric.counter(name).tagged(MetricLabel("table", table)).value.map(_.count)
+
+  private def gauge(name: String, table: String): UIO[Double] =
+    Metric.gauge(name).tagged(MetricLabel("table", table)).value.map(_.value)
+
   def spec = suite("CleanupManager.Base")(
+    test("counts the rows it deletes and the batches that came back full, per table") {
+      val config = CleanupConfig(maxThreads = 1, tables = List(tableConfig("metrics_rows", batchSize = 2)))
+      for
+        rowsBefore <- counter("cleanup_rows_deleted_total", "metrics_rows")
+        fullBefore <- counter("cleanup_full_batches_total", "metrics_rows")
+        (cleanup, _, _) <- manager(config, counts = List(2, 2, 1))
+        _ <- ZIO.scoped(cleanup.start() *> TestClock.adjust(0.seconds))
+        rows <- counter("cleanup_rows_deleted_total", "metrics_rows")
+        full <- counter("cleanup_full_batches_total", "metrics_rows")
+      yield assertTrue(rows - rowsBefore == 5.0, full - fullBefore == 2.0)
+    },
+    test("records when a table was last cleaned") {
+      val config = CleanupConfig(maxThreads = 1, tables = List(tableConfig("last_clean_rows")))
+      for
+        _ <- TestClock.setTime(java.time.Instant.ofEpochSecond(1_000_000))
+        (cleanup, _, _) <- manager(config, counts = List(0))
+        _ <- ZIO.scoped(cleanup.start() *> TestClock.adjust(0.seconds))
+        at <- gauge("cleanup_last_success_timestamp_seconds", "last_clean_rows")
+      yield assertTrue(at == 1_000_000.0)
+    },
     test("drains a table in a single batch when fewer rows than the batch size are deleted") {
       val config = CleanupConfig(maxThreads = 1, tables = List(tableConfig(batchSize = 10)))
       for

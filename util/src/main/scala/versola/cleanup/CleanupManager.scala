@@ -87,6 +87,7 @@ object CleanupManager:
           for
             start <- Clock.currentTime(TimeUnit.MILLISECONDS)
             deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
+            _ <- CleanupMetrics.batchSucceeded(config.tableName, deleted, full = deleted >= config.batchSize)
             end <- Clock.currentTime(TimeUnit.MILLISECONDS)
             _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${end - start}ms")
           yield deleted
