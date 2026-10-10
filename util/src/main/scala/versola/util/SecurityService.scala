@@ -76,14 +76,18 @@ object SecurityService:
     live(Argon2Config.default)
 
   def live(argon2Config: Argon2Config): URLayer[SecureRandom, SecurityService] =
+    live(argon2Config, AdmissionMetrics.default)
+
+  def live(argon2Config: Argon2Config, metrics: AdmissionMetrics): URLayer[SecureRandom, SecurityService] =
     ZLayer.fromZIO {
       for
         secureRandom <- ZIO.service[SecureRandom]
         hashingSemaphore <- Semaphore.make(argon2Config.maxConcurrent.toLong)
-      yield Impl(secureRandom, hashingSemaphore)
+        _ <- metrics.maxConcurrent.set(argon2Config.maxConcurrent.toDouble)
+      yield Impl(secureRandom, hashingSemaphore, metrics)
     }
 
-  class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore) extends SecurityService:
+  class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore, metrics: AdmissionMetrics = AdmissionMetrics.default) extends SecurityService:
 
     private val Algorithm = "AES"
     private val Transformation = "AES/GCM/NoPadding"
@@ -169,7 +173,10 @@ object SecurityService:
       // concurrency (this runs on ZIO's unbounded blocking pool) is an OOM vector under login
       // load. The semaphore caps concurrent hashes; excess requests queue as cheap fibers
       // instead of each claiming 19 MiB up front.
-      hashingSemaphore.withPermit(hashEffect)
+      //
+      // Observed through AdmissionMetrics (queue, permits held, wait, hash time): CPU alone cannot
+      // tell a pod that has capacity from one whose permits are all taken.
+      metrics.admitted[Any, Throwable, MAC](effect => hashingSemaphore.withPermit(effect))(hashEffect)
 
     override def generateRsaKeyPair: UIO[RsaKeyPair] =
       for

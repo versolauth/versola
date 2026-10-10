@@ -28,6 +28,18 @@ object RuntimeMetricsSpec extends E2ESpec:
     "jvm_threads_current",
   )
 
+  /** What a deployment scales auth's replicas on once CPU stops following demand: Argon2id hashing
+    * runs behind a semaphore, so the pod's CPU sits at what the permits admit while logins queue.
+    * `AdmissionMetrics` is only worth anything if its names reach the scrape of a real process.
+    */
+  private val admission = List(
+    "argon2_max_concurrent",
+    "argon2_hashes_in_flight",
+    "argon2_hashes_waiting",
+    "argon2_hash_wait_seconds_count",
+    "argon2_hash_duration_seconds_count",
+  )
+
   def spec = suite("Runtime metrics")(
     test("auth's diagnostics endpoint publishes JVM runtime metrics alongside application ones") {
       for
@@ -39,5 +51,14 @@ object RuntimeMetricsSpec extends E2ESpec:
         .label(s"/metrics must answer 200 on the diagnostics port, got ${response.status}") &&
         assertTrue(missing.isEmpty)
           .label(s"/metrics is missing ${missing.mkString(", ")}")
+    },
+    test("auth's /metrics reports the Argon2id admission control after a password login") {
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        response <- auth.probe(Method.GET, s"${auth.authDiagnosticsBaseUrl}/metrics")
+        body <- response.body.asString
+        missing = admission.filterNot(body.contains)
+      yield assertTrue(missing.isEmpty)
+        .label(s"/metrics is missing ${missing.mkString(", ")}")
     },
   )
