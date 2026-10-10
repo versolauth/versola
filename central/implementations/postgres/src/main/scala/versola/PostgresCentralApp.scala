@@ -1,6 +1,5 @@
 package versola
 
-import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
@@ -64,9 +63,10 @@ import versola.configuration.tenants.PostgresTenantRepository
 import versola.configuration.themes.PostgresThemeRepository
 import versola.users.PostgresUserRepository
 import versola.util.*
+import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
+import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.DeriveConfig
 import zio.http.*
@@ -153,6 +153,7 @@ object PostgresCentralApp extends VersolaApp("central"):
 
   private val repositories =
     PostgresHikariDataSource.transactor(serviceName = Some("central"), migrate = runMigrations) >++>
+      PostgresWalMetrics.live() >++>
       SecureRandom.live >++> (
         PostgresTenantRepository.live >++>
           PostgresPermissionRepository.live >++>

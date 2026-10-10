@@ -1,6 +1,5 @@
 package versola
 
-import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
@@ -37,9 +36,10 @@ import versola.edge.{
   ServiceController,
 }
 import versola.util.*
+import versola.util.SequentialLayers.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
+import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
@@ -103,7 +103,8 @@ object PostgresEdgeApp extends VersolaApp("edge"):
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresRevocationRepository.live ++
           PostgresDpopProofRepository.live ++
-          PostgresCleanupManager.live)) >++>
+          PostgresCleanupManager.live ++
+          PostgresWalMetrics.live())) >++>
       PostgresRevocationNotifications.live >++>
       SecureRandom.live >++>
       SecurityService.live >++>
