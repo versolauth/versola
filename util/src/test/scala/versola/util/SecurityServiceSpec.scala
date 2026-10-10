@@ -7,6 +7,24 @@ import java.security.Signature
 
 object SecurityServiceSpec extends ZIOSpecDefault:
 
+  // One set per test: the registry is process-wide and ZIO Test runs tests of a suite in parallel.
+  private def metricsFor(test: String) = AdmissionMetrics(Set(zio.metrics.MetricLabel("test", test)))
+  private val queueMetrics = metricsFor("queue")
+  private val interruptMetrics = metricsFor("interrupt")
+
+  private def hash(service: SecurityService) =
+    service.hashPassword(Secret("password".getBytes), Salt(Array.fill(16)(1.toByte)), Secret.Bytes16(Array.fill(16)(2.toByte)))
+
+  private def gauge(metric: zio.metrics.Metric.Gauge[Double]): ZIO[Any, Nothing, Double] =
+    metric.value.map(_.value)
+
+  /** Polls until `condition` holds, with a bound, so a timing-dependent assertion cannot hang the suite. */
+  private def eventually(condition: ZIO[Any, Nothing, Boolean], attempts: Int = 5000): ZIO[Any, Nothing, Boolean] =
+    condition.flatMap: ok =>
+      if ok then ZIO.succeed(true)
+      else if attempts <= 0 then ZIO.succeed(false)
+      else ZIO.sleep(zio.Duration.fromMillis(1)) *> eventually(condition, attempts - 1)
+
   def spec = suite("SecurityService")(
     test("generateRsaKeyPair produces valid 2048-bit RSA key pair with timestamp-based ID") {
       for
@@ -34,6 +52,34 @@ object SecurityServiceSpec extends ZIOSpecDefault:
           fieldsMap.contains("e"), // exponent
         )
     }.provide(SecurityService.live, SecureRandom.live),
+
+    // CPU stops following demand once every permit is held, so the queue is what shows a pod at
+    // its limit; both a hash that waits and one that gives up while waiting have to leave it right.
+    test("admission metrics: queue and permits held while hashes wait, all back to zero after") {
+      for
+        service <- ZIO.service[SecurityService]
+        fibers <- ZIO.foreach(1 to 4)(_ => hash(service).fork)
+        sawQueue <- eventually(gauge(queueMetrics.waiting).map(_ >= 1.0))
+        heldWhileQueued <- gauge(queueMetrics.inFlight)
+        _ <- ZIO.foreachDiscard(fibers)(_.join)
+        waiting <- gauge(queueMetrics.waiting)
+        inFlight <- gauge(queueMetrics.inFlight)
+        max <- gauge(queueMetrics.maxConcurrent)
+      yield assertTrue(sawQueue, heldWhileQueued <= 1.0, waiting == 0.0, inFlight == 0.0, max == 1.0)
+    }.provide(SecurityService.live(Argon2Config(maxConcurrent = 1), queueMetrics), SecureRandom.live) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
+
+    test("admission metrics: a hash interrupted while queued does not stay counted") {
+      for
+        service <- ZIO.service[SecurityService]
+        running <- hash(service).fork
+        queued <- ZIO.foreach(1 to 3)(_ => hash(service).fork)
+        _ <- eventually(gauge(interruptMetrics.waiting).map(_ >= 1.0))
+        _ <- ZIO.foreachDiscard(queued)(_.interrupt)
+        _ <- running.join
+        drained <- eventually(gauge(interruptMetrics.waiting).map(_ == 0.0))
+        inFlight <- gauge(interruptMetrics.inFlight)
+      yield assertTrue(drained, inFlight == 0.0)
+    }.provide(SecurityService.live(Argon2Config(maxConcurrent = 1), interruptMetrics), SecureRandom.live) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
 
     test("generated RSA keys can sign and verify data") {
       val originalData = "Hello, World! This is a test message.".getBytes("UTF-8")
