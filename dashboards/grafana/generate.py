@@ -106,7 +106,8 @@ class Board:
         }, w, 3)
 
     def ts(self, title: str, queries: list[tuple[str, str]], unit: str = "short", desc: str = "", w: int = 12, h: int = 8,
-           stack: bool = False, line: dict | None = None, minimum: float | None = None, maximum: float | None = None) -> None:
+           stack: bool = False, line: dict | None = None, minimum: float | None = None, maximum: float | None = None,
+           overrides: list[dict] | None = None) -> None:
         """`line` draws a dashed threshold on the chart; it never colors the data."""
         custom: dict = {"drawStyle": "line", "lineWidth": 1, "fillOpacity": 25 if stack else 0, "showPoints": "never", "spanNulls": False}
         if stack:
@@ -121,7 +122,7 @@ class Board:
             defaults["thresholds"] = line
         self._place({
             "type": "timeseries", "title": title, "description": desc, "datasource": DS,
-            "fieldConfig": {"defaults": defaults, "overrides": []},
+            "fieldConfig": {"defaults": defaults, "overrides": overrides or []},
             "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": True}, "tooltip": {"mode": "multi", "sort": "desc"}},
             "targets": [{"refId": chr(ord("A") + i), "datasource": DS, "expr": e, "legendFormat": legend} for i, (e, legend) in enumerate(queries)],
         }, w, h)
@@ -315,6 +316,56 @@ def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
          desc="How long ago the oldest row that should already be gone expired. Unlike the count it has no cap. With cleanup keeping up it stays within about one cleanup interval of the table; a line that keeps climbing is a table whose cleanup has stopped.")
 
 
+def wal(b: Board) -> None:
+    """The database's write-ahead log, as the service's own database reports it (PostgresWalMetrics). Built
+    around the decisions an operator makes about it, not around the raw counters:
+
+      is WAL written faster than max_wal_size / checkpoint_timeout allows  -> headroom tile, rate vs budget
+      are checkpoints already coming from volume instead of the timer       -> requested checkpoints
+      what should max_wal_size be                                           -> recommended tile
+      is something holding WAL back, as a stuck replication slot does       -> slot tiles and graph
+
+    The services share a database only when the deployment shares one; each reads its own, so with one
+    Postgres per service the three sections show three different databases.
+    """
+    b.row(f"{b.component} — Database write-ahead log (WAL)")
+    s = b.sel
+    budget = f"max(db_wal_max_size_bytes{{{s}}}) / max(db_checkpoint_timeout_seconds{{{s}}})"
+    rate = f"max(rate(db_wal_bytes_total{{{s}}}[$__rate_interval]))"
+    requested = f'max(increase(db_checkpoints_total{{{s}, type="requested"}}[$__range]))'
+    timed = f'max(increase(db_checkpoints_total{{{s}, type="timed"}}[$__range]))'
+    b.stat("WAL headroom", f"clamp_max({budget} / clamp_min({rate}, 1), 99)", unit="suffix:×", decimals=1,
+           desc="The WAL rate the checkpoint settings allow, divided by the rate now. Below 1× WAL is written faster than max_wal_size / checkpoint_timeout allows: checkpoints start from volume instead of the timer, which writes more full-page images, which is more WAL. 99× means idle. The 1× line is the documented boundary; Postgres can start a checkpoint a little before it, so treat 1–2× as close.",
+           thresholds=steps((None, RED), (1, YELLOW), (2, GREEN)), w=4)
+    b.stat("Checkpoints on request", f"{requested} / clamp_min({timed} + {requested}, 1)", unit="percentunit", decimals=0,
+           desc="Share of checkpoints in the selected time range that were started by WAL volume rather than the timer. The aim is 0%; anything else means max_wal_size is too small for the write rate.", w=4)
+    b.stat("max_wal_size now", f"max(db_wal_max_size_bytes{{{s}}})", unit="bytes", decimals=1, desc="The database's current setting.", w=4)
+    b.stat("max_wal_size suggested", f"2 * max(max_over_time(rate(db_wal_bytes_total{{{s}}}[5m])[1h:])) * max(db_checkpoint_timeout_seconds{{{s}}})",
+           unit="bytes", decimals=1,
+           desc="2 × the peak WAL rate of the last hour × checkpoint_timeout: the rule of thumb in loadgen-runbook/docs/07-wal-tuning.md. Compare with the setting on the left. It is a starting point; it needs disk for that much pg_wal.", w=4)
+    b.stat("Idle replication slots", f"sum(max by (slot) (db_replication_slot_active{{{s}}}) == bool 0) or (max(db_wal_retained_by_slots_bytes{{{s}}}) * 0)", unit="short", decimals=0,
+           desc="Replication slots nothing is reading from. WAL is kept for them without limit, which is the usual way pg_wal fills a disk. Must be 0. Red as soon as there is one; which one and how much it holds is in the graph below.",
+           thresholds=steps((None, GREEN), (1, RED)), w=4)
+    b.stat("WAL held by slots", f"max(db_wal_retained_by_slots_bytes{{{s}}})", unit="bytes", decimals=1,
+           desc="The most WAL any one replication slot is holding back from being recycled.", w=4)
+    b.ts("WAL written against what checkpoints allow", [
+        (rate, "WAL written / s"),
+        (budget, "limit: max_wal_size / checkpoint_timeout"),
+    ], unit="Bps", minimum=0,
+         overrides=[{"matcher": {"id": "byName", "options": "limit: max_wal_size / checkpoint_timeout"}, "properties": [
+             {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}},
+             {"id": "custom.lineStyle", "value": {"fill": "dash", "dash": [10, 10]}},
+             {"id": "custom.lineWidth", "value": 2},
+         ]}],
+         desc="WAL rate against the rate this database's own settings allow. Above the dashed line checkpoints come from volume, not the timer. Raise max_wal_size (see the suggested value above) or checkpoint_timeout.")
+    b.ts("Checkpoints per minute", [(f"max by (type) (rate(db_checkpoints_total{{{s}}}[$__rate_interval])) * 60", "{{type}}")], unit="short", stack=True, minimum=0,
+         desc="timed = started by checkpoint_timeout, requested = started because WAL reached max_wal_size. Mostly timed is healthy; a rising 'requested' is the same problem as the headroom tile, seen from the other side.")
+    b.ts("Full-page images in the WAL", [(f"clamp_max(max(rate(db_wal_fpi_total{{{s}}}[$__rate_interval])) * 8192 / clamp_min({rate}, 1), 1)", "share of WAL")], unit="percentunit", minimum=0, maximum=1,
+         desc="Approximate share of WAL that is whole 8 KiB pages (images x 8 KiB, before compression). A large share is what wal_compression and fewer checkpoints reduce; see loadgen-runbook/docs/07-wal-tuning.md.")
+    b.ts("WAL held back by replication slots", [(f"max by (slot) (db_replication_slot_retained_bytes{{{s}}})", "{{slot}}")], unit="bytes", minimum=0,
+         desc="Per slot. A line that only climbs for a slot with nothing reading it is the disk filling. Drop the slot if its consumer is gone. Empty when the database has no slots.")
+
+
 def dependencies(b: Board) -> None:
     b.row(f"{b.component} — Database and dependencies", collapsed=True)
     sel = b.sel
@@ -399,6 +450,7 @@ def add_auth(b: Board, phase: str) -> None:
     b.ts("Edge assertions rejected (DPoP)", [(f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"), (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "exempted")], unit="ops",
          desc="Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.")
     cleanup(b, volume=[("Users", "users"), ("Sessions", "sso_sessions"), ("Refresh tokens", "refresh_tokens")], expiring="sso_sessions|refresh_tokens")
+    wal(b)
     dependencies(b)
     runtime(b)
 
@@ -462,6 +514,7 @@ def add_edge(b: Board, phase: str) -> None:
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
     cleanup(b, volume=[("Sessions", "edge_sessions"), ("Revocations", "revocations")], expiring="edge_sessions|revocations")
+    wal(b)
     dependencies(b)
     runtime(b)
 
@@ -499,6 +552,7 @@ def add_central(b: Board, phase: str) -> None:
         (f"sum(rate(db_notification_listener_silent_total{{{s}}}[$__rate_interval]))", "silent windows"),
         (f"sum(rate(db_notification_listener_queue_overflow_total{{{s}}}[$__rate_interval]))", "queue overflows"),
     ], unit="ops", desc="Reconnects, long stretches without any message, and dropped notifications. Empty is healthy.")
+    wal(b)
     dependencies(b)
     runtime(b)
 
