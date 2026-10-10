@@ -600,6 +600,25 @@ object ObservabilitySpec extends ZIOSpecDefault:
           entry.http.response.code == 400,
         )
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+      // Where a pool is too small this gauge is what climbs: a request waiting for a connection is in
+      // flight from its caller's side. It must also go back down, whatever way the request ends.
+      test("counts outbound requests in flight per peer and returns to zero afterwards") {
+        val peer = Set(MetricLabel("peer", "unknown"))
+        def inFlight = Metric.gauge("http_client_active_requests").tagged(peer).value.map(_.value)
+        for
+          release <- Promise.make[Nothing, Unit]
+          _ <- TestClient.addRoutes(Routes(Method.GET / "held" -> handler(release.await.as(Response.ok))))
+          rawClient <- ZIO.service[Client]
+          tracing <- ZIO.service[Tracing]
+          client = rawClient @@ Observability.clientMiddleware(tracing)
+          fibers <- ZIO.foreach(1 to 3)(_ => client.batched(Request.get(URL.empty / "held")).fork)
+          _ <- inFlight.repeatUntil(_ == 3.0).timeoutFail(new RuntimeException("never 3 in flight"))(5.seconds)
+          during <- inFlight
+          _ <- release.succeed(())
+          _ <- ZIO.foreachDiscard(fibers)(_.join)
+          after <- inFlight
+        yield assertTrue(during == 3.0, after == 0.0)
+      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging @@ TestAspect.withLiveClock,
       test("logs WARN for 5xx responses") {
         for
           _ <- TestClient.addRoutes(Routes(Method.GET / "server-error" -> Handler.internalServerError))
