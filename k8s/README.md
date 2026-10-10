@@ -543,11 +543,13 @@ distortion during the 1M-run loadgen campaign) — see
 fix, checked in there because it previously existed only as a live Helm release nobody had a copy
 of.
 
-`sut-red.json`, `driver-red.json` and `db-pools.json` are hand-authored, each built around a
-specific set of pass criteria (design doc §6.7, #267's definition of done, the report's pool
-section) rather than one panel per metric. `auth-funnel.json`, `security-dpop-revocation.json` and
-`db-cleanup-batches.json` are the other kind: a mechanical board over a metric family with no
-curated narrative yet, built by `loadgen/dashboards/generate.py`. Re-run it after adding a `Metric.*`
-registration anywhere in the
-codebase that its `CATALOG` does not cover — it will not touch the three hand-authored boards, and
-it will not invent a threshold for a metric with no documented SLA rather than guess one.
+There is one board, `loadgen/dashboards/versola.json`, covering auth, central and edge, and nothing about
+the load generator. It opens with an Overview matrix (two lines of four tiles per service: pods up,
+requests, 5xx share, p99, two service-specific tiles, DB pool and heap saturation), then one section per
+service: traffic/errors/latency per endpoint, the service's own signals (auth: sign-in funnel and token
+refresh; edge: proxying and the revocation cache; central: config syncs and admin writes), and two
+collapsed rows for database/outbound calls and JVM runtime. Series are selected by `namespace` and the
+`app_kubernetes_io_component` label (the pod label `app.kubernetes.io/component`, copied onto every
+series by the vmagent job above) — `job` is the same for all three services. The board is generated:
+edit `loadgen/dashboards/generate.py`, re-run it and commit the JSON. It only draws a threshold where
+one is defensible without a written SLA.

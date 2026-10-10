@@ -407,7 +407,7 @@ metrics:
   # board's own description panel.
   prometheusAnnotations: true
   # One series family the pods do NOT publish by default, and cannot be made
-  # to from here: the HikariCP pool readings of dashboards/db-pools.json
+  # to from here: the HikariCP pool readings of the Dependencies row on every board in dashboards/
   # (`db_client_connection_*`). They come from `util`, which every service
   # shares, so they are opt-in per pool via `postgres.pool-metrics-interval`
   # -- an absent interval means no MetricsTrackerFactory and no publishing

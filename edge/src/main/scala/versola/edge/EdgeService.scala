@@ -496,6 +496,7 @@ object EdgeService:
         request: Request,
     ): IO[Throwable | Outcome, Response] =
       for
+        started <- Clock.nanoTime
         (accessToken, authSource) <- extractAccessToken(request)
         publicKeys <- jwksService.getPublicKeys
         now <- Clock.instant
@@ -543,6 +544,8 @@ object EdgeService:
         // edge's own server, which streams it to the caller long after the upstream scope has
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
+        dispatched <- Clock.nanoTime
+        _ <- ProxyMetrics.beforeUpstream(resourceId, dispatched - started)
         response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)

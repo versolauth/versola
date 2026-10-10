@@ -1621,7 +1621,7 @@ object SecretSchema:
        |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
        |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
        |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
-       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  # the database rows of k8s/loadgen/dashboards/*.json read.
        |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |
@@ -1788,7 +1788,7 @@ object SecretSchema:
        |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
        |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
        |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
-       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  # the database rows of k8s/loadgen/dashboards/*.json read.
        |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |""".stripMargin
@@ -1842,7 +1842,7 @@ object SecretSchema:
        |  # without a MetricsTrackerFactory and this pool publishing nothing -- the state
        |  # this service has always run in. Set it (e.g. "10 seconds") to put the pool's
        |  # occupancy, acquisition wait and timeouts on the db_client_connection_* series
-       |  # k8s/loadgen/dashboards/db-pools.json reads.
+       |  # the database rows of k8s/loadgen/dashboards/*.json read.
        |  pool-metrics-interval = $${?POSTGRES_POOL_METRICS_INTERVAL}
        |}
        |

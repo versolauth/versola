@@ -64,12 +64,12 @@ does not create.
 
 {{ if .Values.metrics.prometheusAnnotations -}}
 Every pod carries prometheus.io/scrape annotations on its diagnostics port. The
-boards in k8s/loadgen/dashboards/ select on `namespace`, `job` and `pod`, none
-of which any Versola metric emits itself -- if your scrape configuration drops
-them, the fleet-wide sums still work and the per-pod breakdowns come up empty.
+board in k8s/loadgen/dashboards/ selects on `namespace` and `app_kubernetes_io_component`
+(the pod label, copied onto each series by pod-level service discovery) -- if your
+scrape configuration drops them, the board comes up empty.
 {{- else -}}
 metrics.prometheusAnnotations is false, so nothing here is discoverable by an
-annotation-based Prometheus. The boards in k8s/loadgen/dashboards/ will be
+annotation-based Prometheus. The board in k8s/loadgen/dashboards/ will be
 empty until something scrapes /metrics on each component's diagnostics port.
 {{- end }}
 {{- if not .Values.dashboards.configMap.enabled }}
