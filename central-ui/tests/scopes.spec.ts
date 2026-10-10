@@ -60,7 +60,7 @@ test('creates a scope with claims and shows it in the list', async ({ page }) =>
   await expect(created.locator('.claim-name')).toContainText('name');
   await expect(created.locator('.claim-description')).toContainText('Display name');
 
-  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/scopes')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'profile',
     description: { en: 'Profile data' },
@@ -93,7 +93,7 @@ test('creates localized scope and claim descriptions', async ({ page }) => {
   await page.getByRole('button', { name: 'Add Claim', exact: true }).click();
   await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
 
-  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/scopes')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'profile',
     description: { en: 'Profile data', ru: 'Данные профиля' },
@@ -119,7 +119,7 @@ test('edits a localization on an existing claim', async ({ page }) => {
   await editors.nth(1).locator('input').fill('Идентификатор субъекта');
   await page.getByRole('button', { name: 'Update Scope', exact: true }).click();
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/scopes').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/scopes')).body).toMatchObject({
     patch: {
       update: [{ id: 'sub', description: { add: { ru: 'Идентификатор субъекта' }, delete: [] } }],
     },
@@ -144,7 +144,7 @@ test('pressing Enter in claim fields adds the claim instead of submitting the sc
 
   await page.getByRole('button', { name: 'Create Scope', exact: true }).click();
 
-  expect(findRequest(api.requests, 'POST', '/configuration/scopes').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/scopes')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'profile',
     description: { en: 'Profile data' },
@@ -194,7 +194,7 @@ test('updates a scope and sends patch-style claim changes', async ({ page }) => 
   await expect(updated).toContainText('name');
   await expect(updated).not.toContainText('Email address');
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/scopes').body).toEqual({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/scopes')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'openid',
     patch: {
@@ -215,7 +215,7 @@ test('deletes a scope through the confirm dialog and reaches the empty state', a
   await scopeCard(page, 'openid').getByRole('button', { name: 'Delete scope openid' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/configuration/scopes').searchParams).toEqual({
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/scopes')).searchParams).toEqual({
     tenantId: 'tenant-alpha',
     scopeId: 'openid',
   });

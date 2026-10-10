@@ -28,8 +28,12 @@ export async function openTenantDropdown(page: Page) {
   await expect(page.getByLabel('Search tenants')).toBeVisible();
 }
 
-export function findRequest(requests: RequestLog[], method: string, pathname: string): RequestLog {
-  const match = [...requests].reverse().find(request => request.method === method && request.pathname === pathname);
-  expect(match, `Expected request ${method} ${pathname}`).toBeTruthy();
-  return match!;
+/** The latest request with this method and path. A request is logged when the mocked API receives
+  * it, which is after the click that causes it has returned, so this waits (up to the expect
+  * timeout) instead of checking once; a one-shot check passes on a fast machine and fails on a
+  * slow one. */
+export async function findRequest(requests: RequestLog[], method: string, pathname: string): Promise<RequestLog> {
+  const find = () => [...requests].reverse().find(request => request.method === method && request.pathname === pathname);
+  await expect.poll(() => find() !== undefined, { message: `Expected request ${method} ${pathname}` }).toBe(true);
+  return find()!;
 }

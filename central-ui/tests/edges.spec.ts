@@ -54,7 +54,7 @@ test('creates a new edge and shows the generated private key banner', async ({ p
   const created = edgeCard(page, 'edge-new');
   await expect(created).toContainText('edge-new');
 
-  expect(findRequest(api.requests, 'POST', '/configuration/edges').body).toEqual({ id: 'edge-new' });
+  expect((await findRequest(api.requests, 'POST', '/configuration/edges')).body).toEqual({ id: 'edge-new' });
 });
 
 test('shows edge form validation for invalid edge ID', async ({ page }) => {
@@ -126,7 +126,7 @@ test('turns off an edge DPoP nonce requirement and reflects it after the save', 
   await expect(toggle).toBeChecked();
   await toggle.uncheck();
 
-  const request = findRequest(api.requests, 'PUT', '/configuration/edges/dpop');
+  const request = await findRequest(api.requests, 'PUT', '/configuration/edges/dpop');
   expect(request.searchParams).toEqual({ edgeId: 'edge-alpha' });
   expect(request.body).toEqual({ requireDpopNonce: false });
   await expect(toggle).not.toBeChecked();
@@ -175,7 +175,7 @@ test('rotates edge key and shows the new private key banner', async ({ page }) =
   await expect(page.locator('.secret-banner')).toContainText('Edge Key Rotated');
   await expect(page.locator('.secret-value').first()).toBeVisible();
 
-  expect(findRequest(api.requests, 'POST', '/configuration/edges/rotate-key').searchParams).toEqual({ edgeId: 'edge-alpha' });
+  expect((await findRequest(api.requests, 'POST', '/configuration/edges/rotate-key')).searchParams).toEqual({ edgeId: 'edge-alpha' });
 });
 
 test('deletes an edge through the confirm dialog', async ({ page }) => {
@@ -187,7 +187,7 @@ test('deletes an edge through the confirm dialog', async ({ page }) => {
   await edgeCard(page, 'edge-bravo').getByRole('button', { name: 'Delete edge edge-bravo' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/configuration/edges').searchParams).toEqual({ edgeId: 'edge-bravo' });
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/edges')).searchParams).toEqual({ edgeId: 'edge-bravo' });
   await expect(page.locator('.edge-card').filter({ hasText: 'edge-bravo' })).toHaveCount(0);
   await expect(edgeCard(page, 'edge-alpha')).toBeVisible();
 });
