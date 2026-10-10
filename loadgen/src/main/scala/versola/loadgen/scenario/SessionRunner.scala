@@ -192,6 +192,12 @@ final class SessionRunner(
         // session, and a second one would be traffic §2.3's mix never asked for.
         remaining = extraRefreshLeft && !due
         refreshed <- if due then renew(user, session) else ZIO.some(session)
+        // The planned exchanges, one after another on the session each one rotates; the first that
+        // cannot complete leaves no credential, as above.
+        planned = if session.kind == SessionKind.MobileToken then plan.refreshesBefore.lift(index).getOrElse(0) else 0
+        refreshed <- ZIO.iterate(((refreshed, planned)))(state => state._1.isDefined && state._2 > 0): state =>
+          renew(user, state._1.get).map(next => (next, state._2 - 1))
+        .map(_._1)
         _ <- refreshed match
           // The refresh retired the row, so there is no credential left to act with. Continuing
           // on the expired one would put a request the scenario never planned on the wire and

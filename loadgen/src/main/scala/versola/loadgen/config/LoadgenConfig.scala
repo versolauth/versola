@@ -276,6 +276,25 @@ case class ActionCountConfig(mobileMean: Double, webMean: Double, dispersion: Do
 
 case class ThinkTimeConfig(median: Duration, sigma: Double)
 
+/** Refresh exchanges a mobile session performs *in addition* to the one a resume is and to the
+  * single TTL-gated one `extra-refresh-probability` allows, independent of the access-token TTL.
+  *
+  * Why a count and not the clock: a FAPI2 campaign runs on a 1h access-token TTL and a modelled
+  * session lasts about a minute, so the TTL-gated refresh essentially never fires and refreshes
+  * come only from resumes -- about twice the code exchanges, where the target profile has five to
+  * ten times. A real app refreshes many times between its rare full logins; the compressed
+  * session time cannot reach that by waiting, so the number of exchanges is drawn per session
+  * instead. Logins are not touched, so the code-exchange rate stays what the campaign configured.
+  *
+  * @param mobileMean
+  *   the mean of the NB2 count per mobile session; 0 (the default) draws none, as a campaign
+  *   written before this existed. Web has no field: edge refreshes behind the cookie, so there is
+  *   no exchange the driver could add.
+  * @param dispersion
+  *   NB2 α, as for [[ActionCountConfig]]
+  */
+case class RefreshCountConfig(mobileMean: Double = 0.0, dispersion: Double = 0.6)
+
 case class LogoutProbabilityConfig(mobile: Double, web: Double)
 
 /** @param refreshTokenTtl
@@ -297,6 +316,7 @@ case class SessionConfig(
     logoutProbability: LogoutProbabilityConfig,
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
+    refreshCount: RefreshCountConfig = RefreshCountConfig(),
 )
 
 /** One phase of the campaign's arrival-rate envelope (§7.3). Which kind of phase it is, is
