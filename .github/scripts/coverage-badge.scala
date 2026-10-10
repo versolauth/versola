@@ -1,4 +1,4 @@
-//> using scala 3.8.1
+//> using scala 3.9.0
 //> using dep org.scala-lang.modules::scala-xml:2.4.0
 //> using dep com.lihaoyi::requests:0.9.3
 //> using dep com.lihaoyi::os-lib:0.11.8

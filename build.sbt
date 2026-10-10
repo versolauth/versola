@@ -148,7 +148,7 @@ lazy val migrateTool = project
   .enablePlugins(JavaAppPackaging)
   .settings(
     name := "migrate-tool",
-    scalaVersion := "3.8.1",
+    scalaVersion := "3.9.0",
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",
@@ -213,7 +213,7 @@ lazy val tools = project
   .enablePlugins(JavaAppPackaging)
   .settings(
     name := "tools",
-    scalaVersion := "3.8.1",
+    scalaVersion := "3.9.0",
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",
@@ -315,7 +315,7 @@ lazy val mockapi = project
   .settings(
     name := "mockapi",
     dependencyOverrides ++= securityPins,
-    scalaVersion := "3.8.1",
+    scalaVersion := "3.9.0",
     scalacOptions ++= Seq(
       "-deprecation",
       "-source:future",
@@ -367,7 +367,7 @@ lazy val securityPins = Seq(
 
 lazy val commonSettings =
   Seq(
-    scalaVersion := "3.8.1",
+    scalaVersion := "3.9.0",
     // Keep all Jackson modules on one consistent version. Transitive deps drag the
     // datatype/dataformat modules (jsr310, jdk8, cbor) to 2.22.0, so core/databind/
     // annotations must match — otherwise cross-module NoSuchMethod/NoSuchField errors

@@ -31,4 +31,4 @@ jobs:
       - uses: sbt/setup-sbt@6158cb0903b8ceeae04f830055f3155e1b6a5ad7 # v1
       - uses: scalacenter/sbt-dependency-submission@d84eef4c09e633bcf5f113bcad7fd5e9af1baee9 # v3.2.3
         with:
-          configs-ignore: scala-tool scala-doc-tool
+          configs-ignore: scala-doc-tool
