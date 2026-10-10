@@ -323,10 +323,10 @@ object Observability:
     * answered the resource proxy with a p99 of ~1 s while the other pod and every CPU were fine; both held
     * exactly ten established connections to each backend (`/proc/net/tcp`).
     */
+  final val defaultClientPoolSize: Int = 128
+
   val clientPoolSize: Int =
     Option(java.lang.System.getenv("HTTP_CLIENT_POOL_SIZE")).flatMap(_.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
-
-  val defaultClientPoolSize: Int = 128
 
   def clientConfig(poolSize: Int): ZClient.Config =
     ZClient.Config.default.copy(connectionPool = ConnectionPoolConfig.Fixed(poolSize))

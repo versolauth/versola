@@ -34,6 +34,8 @@ object ClientPoolSpec extends ZIOSpecDefault:
     test("the default is 128 connections per target, not zio-http's 10") {
       assertTrue(
         Observability.defaultClientPoolSize == 128,
+        // The value the layer is built with. It was 0 once: the default was declared below the val that reads it.
+        Observability.clientPoolSize == 128,
         Observability.clientConfig(Observability.defaultClientPoolSize).connectionPool == ConnectionPoolConfig.Fixed(128),
         Observability.clientConfig(7).connectionPool == ConnectionPoolConfig.Fixed(7),
       )
