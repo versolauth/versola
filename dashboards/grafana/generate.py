@@ -135,7 +135,7 @@ class Board:
             "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": [
                 {"matcher": {"id": "byName", "options": name}, "properties": [{"id": "unit", "value": unit}]}
                 for name, _, unit in columns if unit != "short"
-            ] + [{"matcher": {"id": "byName", "options": key}, "properties": [{"id": "custom.align", "value": "left"}]}]},
+            ] + [{"matcher": {"id": "byName", "options": "Table"}, "properties": [{"id": "custom.align", "value": "left"}]}]},
             "options": {"showHeader": True, "cellHeight": "sm", "sortBy": [{"displayName": sort, "desc": True}]},
             "transformations": [
                 {"id": "joinByField", "options": {"byField": key, "mode": "outer"}},
@@ -258,8 +258,11 @@ def other(b: Board) -> None:
     b.row("Other")
     # `== bool 0` makes the sum 0 when every table is covered and leaves it empty only when the metric is
     # missing altogether, so a service that does not report it shows No data instead of a false green
-    b.stat("Tables without cleanup (count)", f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)",
-           desc="Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+    # a service that is missing while the other reports counts as one, so partial reporting cannot read green
+    b.stat("Tables without cleanup (count)",
+           f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)"
+           f" + (2 - count(count by (app_kubernetes_io_component) (cleanup_configured{{{sel}}})))",
+           desc="Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. A service that does not report it counts as one. No data means neither service is reporting it yet.",
            thresholds=steps((None, GREEN), (1, RED)), w=6)
     b._place({
         "type": "table", "title": "Which tables have no cleanup", "datasource": DS,

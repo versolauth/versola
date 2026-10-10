@@ -1514,7 +1514,7 @@
     {
       "type": "stat",
       "title": "Tables without cleanup (count)",
-      "description": "Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+      "description": "Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. A service that does not report it counts as one. No data means neither service is reporting it yet.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1557,7 +1557,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == bool 0)",
+          "expr": "sum(max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == bool 0) + (2 - count(count by (app_kubernetes_io_component) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"})))",
           "instant": false
         }
       ],
@@ -2977,7 +2977,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "table"
+              "options": "Table"
             },
             "properties": [
               {
@@ -6886,7 +6886,7 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "table"
+              "options": "Table"
             },
             "properties": [
               {
