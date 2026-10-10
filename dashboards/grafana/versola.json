@@ -1501,7 +1501,7 @@
     {
       "id": 28,
       "type": "row",
-      "title": "Cleanup coverage — every table with an expiry must be cleaned",
+      "title": "Other",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -1513,7 +1513,7 @@
     },
     {
       "type": "stat",
-      "title": "Tables without cleanup",
+      "title": "Tables without cleanup (count)",
       "description": "Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
       "datasource": {
         "type": "prometheus",
@@ -1571,7 +1571,7 @@
     },
     {
       "type": "table",
-      "title": "Tables without cleanup",
+      "title": "Which tables have no cleanup",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"

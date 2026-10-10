@@ -249,20 +249,20 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
              desc="In-flight requests per pod. A pod whose line keeps climbing is stuck on something slow; a flat uneven split means poor load balancing.")
 
 
-def coverage(b: Board) -> None:
-    """A table with an expires_at that nothing cleans only ever grows, and there is no good reason for one to
+def other(b: Board) -> None:
+    """Checks that belong to no one service, below Overview. For now one: a table with an expires_at that nothing cleans only ever grows, and there is no good reason for one to
     exist, so it gets a light of its own rather than a series among the others: red as soon as there is one,
     with the list of them beside it. Both services that run the cleanup manager are covered in one place."""
     sel = 'namespace="$namespace", app_kubernetes_io_component=~"auth|edge"'
     unconfigured = f"max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == 0"
-    b.row("Cleanup coverage — every table with an expiry must be cleaned")
+    b.row("Other")
     # `== bool 0` makes the sum 0 when every table is covered and leaves it empty only when the metric is
     # missing altogether, so a service that does not report it shows No data instead of a false green
-    b.stat("Tables without cleanup", f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)",
+    b.stat("Tables without cleanup (count)", f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)",
            desc="Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
            thresholds=steps((None, GREEN), (1, RED)), w=6)
     b._place({
-        "type": "table", "title": "Tables without cleanup", "datasource": DS,
+        "type": "table", "title": "Which tables have no cleanup", "datasource": DS,
         "description": "Which tables, in which service. Empty when every table with an expiry is cleaned. To fix one, add it to the service's cleanup tables in its config.",
         "fieldConfig": {"defaults": {"custom": {"align": "left"}}, "overrides": []},
         "options": {"showHeader": True, "cellHeight": "sm"},
@@ -509,7 +509,7 @@ def build() -> Board:
     for add in services:
         b.phase = "overview"
         add(b, "overview")
-    coverage(b)
+    other(b)
     for add in services:
         b.phase = "detail"
         add(b, "detail")
