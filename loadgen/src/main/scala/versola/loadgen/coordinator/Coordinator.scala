@@ -1,5 +1,6 @@
 package versola.loadgen.coordinator
 
+import versola.loadgen.environment.{VictoriaMetricsClient, VictoriaMetricsEnvironmentReader}
 import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
@@ -42,6 +43,11 @@ object Coordinator:
           // pooler, and 04-pgbouncer.md's target topology has both.
           poolerStats = config.poolerStats.map: stats =>
             PgBouncerStatsCapture(stats.poolers, PostgresPoolerStatSnapshotRepository(xa), poolerQueue),
+          environment = config.environment.map: environment =>
+            VictoriaMetricsEnvironmentReader(
+              environment,
+              VictoriaMetricsClient.http(environment.victoriaMetricsUrl, environment.timeout),
+            ),
         )
         .mapError(InvalidCoordinatorConfig(_))
       _ <- service.run

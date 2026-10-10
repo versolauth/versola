@@ -1,5 +1,6 @@
 package versola.loadgen.coordinator
 
+import versola.loadgen.environment.{EnvironmentReader, EnvironmentStats}
 import versola.loadgen.config.LoadgenConfig
 import versola.loadgen.metrics.{ErrorTaxonomy, MeasurementId, StepOutcome}
 import versola.loadgen.model.VirtualUserState
@@ -460,6 +461,33 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           stopped.databases.exists(_.forall(delta => delta.afterEpochMillis - delta.beforeEpochMillis == 3_600_000L)),
         )
       },
+      // The environment is read over the span the latency was measured over, taken from the
+      // snapshots themselves, so a restarted coordinator that lost the campaign's start reads
+      // the same window.
+      test("reads the environment over the span of the measured snapshots") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make(
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0, tokenRefresh, 90_000L, 100L),
+            CoordinatorFixture.snapshotRow(campaign, "driver-0", t0.plusSeconds(600), tokenRefresh, 90_000L, 100L),
+          )
+          rebalancer <- FakeRebalancer.make
+          loaded <- CoordinatorFixture.coordinatorConfig
+          asked <- Ref.make(List.empty[(Instant, Instant)])
+          reader = new EnvironmentReader:
+            override def read(from: Instant, to: Instant) =
+              asked.update(_ :+ (from, to)).as(EnvironmentStats(from.toEpochMilli, to.toEpochMilli, 30, "versola", Nil, Nil, Nil, Nil))
+          service <- CoordinatorService
+            .make(loaded, users, snapshots, rebalancer, None, None, Some(reader))
+            .mapError(RuntimeException(_))
+          _ <- TestClock.setTime(t0)
+          report <- service.report(campaign)
+          calls <- asked.get
+        yield assertTrue(
+          calls == List((t0, t0.plusSeconds(600))),
+          report.environment.map(_.namespace) == Some("versola"),
+        )
+      },
       // A coordinator holding no SUT credentials is a supported deployment: every other section
       // of the report is unaffected by the grant it was not given.
       test("omits the database section entirely when no SUT credentials are configured") {
@@ -589,6 +617,58 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
           opening == List(SutStatPhase.Before),
           both == List(SutStatPhase.Before, SutStatPhase.After),
         )
+      },
+      // The latency quantiles are computed over the measured phases only, so the database cost is
+      // bracketed by the same two instants rather than by the operator's start and stop.
+      test("the measured window is bracketed once at its start and once at its end") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.start
+          _ <- harness.service.captureMeasuredWindow
+          _ <- harness.service.captureMeasuredWindow
+          opened <- sutStats.phases
+          _ <- TestClock.adjust(11.hours)
+          _ <- harness.service.captureMeasuredWindow
+          _ <- harness.service.captureMeasuredWindow
+          closed <- sutStats.phases
+          window <- sutStats.windowDeltas(campaign)
+        yield assertTrue(
+          opened == List(SutStatPhase.Before, SutStatPhase.MeasuredStart),
+          closed == List(SutStatPhase.Before, SutStatPhase.MeasuredStart, SutStatPhase.MeasuredEnd),
+          window.size == 1,
+        )
+      },
+      test("a stop inside the measured window closes it where it stopped") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.start
+          _ <- harness.service.captureMeasuredWindow
+          _ <- TestClock.adjust(1.hour)
+          _ <- harness.service.stop
+          phases <- sutStats.phases
+        yield assertTrue(
+          phases == List(SutStatPhase.Before, SutStatPhase.MeasuredStart, SutStatPhase.MeasuredEnd, SutStatPhase.After),
+        )
+      },
+      test("nothing in the window is captured before a run starts or while it is paused") {
+        for
+          users <- FakeVirtualUsers.make()
+          snapshots <- FakeMetricSnapshots.make()
+          sutStats <- FakeSutStats.make
+          harness <- harnessWith(CoordinatorFixture.coordinatorConfig, users, snapshots, Some(sutStats), None)
+          _ <- harness.service.captureMeasuredWindow
+          _ <- harness.service.start
+          _ <- harness.service.pause
+          _ <- TestClock.adjust(20.hours)
+          _ <- harness.service.captureMeasuredWindow
+          phases <- sutStats.phases
+        yield assertTrue(phases == List(SutStatPhase.Before))
       },
       // A resume runs the same `start` command as a start, and re-capturing there would move the
       // opening reading into the middle of the run -- every counter before it lost.

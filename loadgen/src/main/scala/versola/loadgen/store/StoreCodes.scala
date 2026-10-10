@@ -99,4 +99,6 @@ object StoreCodes:
     SutStatPhase.values,
     SutStatPhase.Before -> 0,
     SutStatPhase.After -> 1,
+    SutStatPhase.MeasuredStart -> 2,
+    SutStatPhase.MeasuredEnd -> 3,
   )
