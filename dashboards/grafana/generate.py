@@ -126,6 +126,27 @@ class Board:
             "targets": [{"refId": chr(ord("A") + i), "datasource": DS, "expr": e, "legendFormat": legend} for i, (e, legend) in enumerate(queries)],
         }, w, h)
 
+    def table(self, title: str, columns: list[tuple[str, str, str]], key: str, sort: str, desc: str = "", w: int = 24, h: int = 8) -> None:
+        """One row per value of the label `key`, one column per (name, expr, unit) in `columns`, joined on the
+        label. Newest values only: the columns are instant queries."""
+        letters = [chr(ord("A") + i) for i in range(len(columns))]
+        self._place({
+            "type": "table", "title": title, "description": desc, "datasource": DS,
+            "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": [
+                {"matcher": {"id": "byName", "options": name}, "properties": [{"id": "unit", "value": unit}]}
+                for name, _, unit in columns if unit != "short"
+            ] + [{"matcher": {"id": "byName", "options": key}, "properties": [{"id": "custom.align", "value": "left"}]}]},
+            "options": {"showHeader": True, "cellHeight": "sm", "sortBy": [{"displayName": sort, "desc": True}]},
+            "transformations": [
+                {"id": "joinByField", "options": {"byField": key, "mode": "outer"}},
+                {"id": "organize", "options": {
+                    "excludeByName": {f"Time {i + 1}": True for i in range(len(columns))} | {"Time": True},
+                    "renameByName": {f"Value #{letter}": name for letter, (name, _, _) in zip(letters, columns)} | {key: "Table"},
+                }},
+            ],
+            "targets": [{"refId": letter, "datasource": DS, "expr": expr, "format": "table", "instant": True} for letter, (_, expr, _) in zip(letters, columns)],
+        }, w, h)
+
     # -- query helpers ----------------------------------------------------------------------
 
     def http(self, extra: str = "") -> str:
@@ -228,6 +249,69 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
              desc="In-flight requests per pod. A pod whose line keeps climbing is stuck on something slow; a flat uneven split means poor load balancing.")
 
 
+def other(b: Board) -> None:
+    """Checks that belong to no one service, below Overview. For now one: a table with an expires_at that nothing cleans only ever grows, and there is no good reason for one to
+    exist, so it gets a light of its own rather than a series among the others: red as soon as there is one,
+    with the list of them beside it. Both services that run the cleanup manager are covered in one place."""
+    sel = 'namespace="$namespace", app_kubernetes_io_component=~"auth|edge"'
+    unconfigured = f"max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == 0"
+    b.row("Other")
+    # `== bool 0` makes the sum 0 when every table is covered and leaves it empty only when the metric is
+    # missing altogether, so a service that does not report it shows No data instead of a false green
+    b.stat("Tables without cleanup (count)", f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)",
+           desc="Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+           thresholds=steps((None, GREEN), (1, RED)), w=6)
+    b._place({
+        "type": "table", "title": "Which tables have no cleanup", "datasource": DS,
+        "description": "Which tables, in which service. Empty when every table with an expiry is cleaned. To fix one, add it to the service's cleanup tables in its config.",
+        "fieldConfig": {"defaults": {"custom": {"align": "left"}}, "overrides": []},
+        "options": {"showHeader": True, "cellHeight": "sm"},
+        "transformations": [{"id": "organize", "options": {
+            "excludeByName": {"Time": True, "Value": True},
+            "renameByName": {"app_kubernetes_io_component": "Service", "table": "Table"},
+        }}],
+        "targets": [{"refId": "A", "datasource": DS, "expr": unconfigured, "format": "table", "instant": True}],
+    }, 18, 3)
+
+
+def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
+    """Three questions, three panels: is cleanup keeping up, how fast is the data growing, is any table
+    being forgotten. auth and edge run the cleanup manager (central does not).
+
+    `volume` is (tile title, table) for the tables worth a number of their own; `expiring` is a regex of
+    those that expire, for the live-versus-expired panel. Sizes are the database's row estimate
+    (db_table_rows_estimate); expired counts come from cleanup_expired_rows, which is capped. Every replica
+    reports the same database, hence max by (table) throughout.
+
+    Deliberately not drawn, though the metrics exist: removal rate (the backlog already shows it), time
+    since last cleaned (a stalled table shows as a growing overdue age), batch duration and failures.
+    """
+    b.row(f"{b.component} — Data volume and cleanup of expired rows")
+    s = b.sel
+    est = "approximate: the database's own row estimate, refreshed by autovacuum, not a count"
+    w = 24 // (len(volume) + 1)
+    for title, table in volume:
+        b.stat(f"{title} (approx.)", f'max(db_table_rows_estimate{{{s}, table="{table}"}})', desc=f"Rows in `{table}`, {est}.", w=w)
+    b.stat("Expired rows waiting", f"sum(max by (table) (cleanup_expired_rows{{{s}}}))",
+           desc="Rows past their expiry that are still in the database, across every table with an expires_at. Counted up to a cap per table, so a very large backlog reads as at least that. Near 0 is healthy.",
+           w=w)
+    b.table("Data in each table", [
+        ("Rows (approx.)", f"max by (table) (db_table_rows_estimate{{{s}}})", "short"),
+        ("Size", f"max by (table) (db_table_size_bytes{{{s}}})", "bytes"),
+        ("Expired, still there", f"max by (table) (cleanup_expired_rows{{{s}}})", "short"),
+    ], key="table", sort="Size", h=9,
+        desc="Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.")
+    b.ts("Expired rows waiting to be removed", [(f"max by (table) (cleanup_expired_rows{{{s}}})", "{{table}}")], unit="short", minimum=0, w=8, h=9,
+         desc="Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.")
+    b.ts("Live and expired rows", [
+        (f'clamp_min(max by (table) (db_table_rows_estimate{{{s}, table=~"{expiring}"}}) - on (table) max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}}), 0)', "{{table}} live"),
+        (f'max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}})', "{{table}} expired"),
+    ], unit="short", minimum=0, w=8, h=9,
+         desc="How fast is the data growing? Rows still valid against rows past their expiry and not yet removed. Live is the size estimate minus expired, so it is approximate too.")
+    b.ts("How overdue the oldest expired row is", [(f"max by (table) (cleanup_oldest_expired_age_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0, w=8, h=9,
+         desc="How long ago the oldest row that should already be gone expired. Unlike the count it has no cap. With cleanup keeping up it stays within about one cleanup interval of the table; a line that keeps climbing is a table whose cleanup has stopped.")
+
+
 def dependencies(b: Board) -> None:
     b.row(f"{b.component} — Database and dependencies", collapsed=True)
     sel = b.sel
@@ -311,6 +395,7 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
     b.ts("Edge assertions rejected (DPoP)", [(f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"), (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "exempted")], unit="ops",
          desc="Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.")
+    cleanup(b, volume=[("Users", "users"), ("Sessions", "sso_sessions"), ("Refresh tokens", "refresh_tokens")], expiring="sso_sessions|refresh_tokens")
     dependencies(b)
     runtime(b)
 
@@ -373,6 +458,7 @@ def add_edge(b: Board, phase: str) -> None:
         (f"sum(rate(dpop_shared_ring_fallbacks_total{{{s}}}[$__rate_interval]))", "fell back to shared check"),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
+    cleanup(b, volume=[("Sessions", "edge_sessions"), ("Revocations", "revocations")], expiring="edge_sessions|revocations")
     dependencies(b)
     runtime(b)
 
@@ -423,6 +509,7 @@ def build() -> Board:
     for add in services:
         b.phase = "overview"
         add(b, "overview")
+    other(b)
     for add in services:
         b.phase = "detail"
         add(b, "detail")

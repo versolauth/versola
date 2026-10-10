@@ -1501,7 +1501,7 @@
     {
       "id": 28,
       "type": "row",
-      "title": "auth — Traffic, errors, latency",
+      "title": "Other",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -1509,6 +1509,132 @@
         "w": 24,
         "x": 0,
         "y": 21
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Tables without cleanup (count)",
+      "description": "Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == bool 0)",
+          "instant": false
+        }
+      ],
+      "id": 29,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "table",
+      "title": "Which tables have no cleanup",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Which tables, in which service. Empty when every table with an expiry is cleaned. To fix one, add it to the service's cleanup tables in its config.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "renameByName": {
+              "app_kubernetes_io_component": "Service",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == 0",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 30,
+      "gridPos": {
+        "h": 3,
+        "w": 18,
+        "x": 6,
+        "y": 22
+      }
+    },
+    {
+      "id": 31,
+      "type": "row",
+      "title": "auth — Traffic, errors, latency",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
       }
     },
     {
@@ -1558,12 +1684,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 29,
+      "id": 32,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 26
       }
     },
     {
@@ -1613,12 +1739,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 30,
+      "id": 33,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 26
       }
     },
     {
@@ -1698,12 +1824,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 31,
+      "id": 34,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 34
       }
     },
     {
@@ -1749,12 +1875,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 32,
+      "id": 35,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 34
       }
     },
     {
@@ -1804,12 +1930,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 33,
+      "id": 36,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 38
+        "y": 42
       }
     },
     {
@@ -1855,16 +1981,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 34,
+      "id": 37,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 38
+        "y": 42
       }
     },
     {
-      "id": 35,
+      "id": 38,
       "type": "row",
       "title": "auth — Token refresh",
       "collapsed": false,
@@ -1873,7 +1999,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 50
       }
     },
     {
@@ -1923,12 +2049,12 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 36,
+      "id": 39,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 51
       }
     },
     {
@@ -2008,12 +2134,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 37,
+      "id": 40,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 51
       }
     },
     {
@@ -2063,12 +2189,12 @@
           "legendFormat": "HTTP {{status}}"
         }
       ],
-      "id": 38,
+      "id": 41,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 59
       }
     },
     {
@@ -2114,12 +2240,12 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 39,
+      "id": 42,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 59
       }
     },
     {
@@ -2169,12 +2295,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 40,
+      "id": 43,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 67
       }
     },
     {
@@ -2236,16 +2362,16 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 41,
+      "id": 44,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 67
       }
     },
     {
-      "id": 42,
+      "id": 45,
       "type": "row",
       "title": "auth — Sign-in",
       "collapsed": false,
@@ -2254,7 +2380,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 75
       }
     },
     {
@@ -2304,12 +2430,12 @@
           "legendFormat": "{{outcome}}"
         }
       ],
-      "id": 43,
+      "id": 46,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 76
       }
     },
     {
@@ -2359,12 +2485,12 @@
           "legendFormat": "{{reason}}"
         }
       ],
-      "id": 44,
+      "id": 47,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 76
       }
     },
     {
@@ -2419,12 +2545,12 @@
           "legendFormat": "completed"
         }
       ],
-      "id": 45,
+      "id": 48,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 84
       }
     },
     {
@@ -2472,12 +2598,12 @@
           "legendFormat": "completed / started"
         }
       ],
-      "id": 46,
+      "id": 49,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 84
       }
     },
     {
@@ -2524,12 +2650,12 @@
           "legendFormat": "{{step}}"
         }
       ],
-      "id": 47,
+      "id": 50,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 88
+        "y": 92
       }
     },
     {
@@ -2584,16 +2710,527 @@
           "legendFormat": "exempted"
         }
       ],
-      "id": 48,
+      "id": 51,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 88
+        "y": 92
       }
     },
     {
-      "id": 49,
+      "id": 52,
+      "type": "row",
+      "title": "auth — Data volume and cleanup of expired rows",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Users (approx.)",
+      "description": "Rows in `users`, approximate: the database's own row estimate, refreshed by autovacuum, not a count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=\"users\"})",
+          "instant": false
+        }
+      ],
+      "id": 53,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 101
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Sessions (approx.)",
+      "description": "Rows in `sso_sessions`, approximate: the database's own row estimate, refreshed by autovacuum, not a count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=\"sso_sessions\"})",
+          "instant": false
+        }
+      ],
+      "id": 54,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 6,
+        "y": 101
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Refresh tokens (approx.)",
+      "description": "Rows in `refresh_tokens`, approximate: the database's own row estimate, refreshed by autovacuum, not a count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=\"refresh_tokens\"})",
+          "instant": false
+        }
+      ],
+      "id": 55,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 12,
+        "y": 101
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Expired rows waiting",
+      "description": "Rows past their expiry that are still in the database, across every table with an expires_at. Counted up to a cap per table, so a very large backlog reads as at least that. Near 0 is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}))",
+          "instant": false
+        }
+      ],
+      "id": 56,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 18,
+        "y": 101
+      }
+    },
+    {
+      "type": "table",
+      "title": "Data in each table",
+      "description": "Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Size"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "table"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Size",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "table",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Rows (approx.)",
+              "Value #B": "Size",
+              "Value #C": "Expired, still there",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 57,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 104
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Expired rows waiting to be removed",
+      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 58,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 113
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live and expired rows",
+      "description": "How fast is the data growing? Rows still valid against rows past their expiry and not yet removed. Live is the size estimate minus expired, so it is approximate too.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_min(max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=~\"sso_sessions|refresh_tokens\"}) - on (table) max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=~\"sso_sessions|refresh_tokens\"}), 0)",
+          "legendFormat": "{{table}} live"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", table=~\"sso_sessions|refresh_tokens\"})",
+          "legendFormat": "{{table}} expired"
+        }
+      ],
+      "id": 59,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 113
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "How overdue the oldest expired row is",
+      "description": "How long ago the oldest row that should already be gone expired. Unlike the count it has no cap. With cleanup keeping up it stays within about one cleanup interval of the table; a line that keeps climbing is a table whose cleanup has stopped.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_oldest_expired_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 60,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 113
+      }
+    },
+    {
+      "id": 61,
       "type": "row",
       "title": "auth — Database and dependencies",
       "collapsed": true,
@@ -2659,12 +3296,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 50,
+          "id": 62,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 97
+            "y": 123
           }
         },
         {
@@ -2719,12 +3356,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 51,
+          "id": 63,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 97
+            "y": 123
           }
         },
         {
@@ -2770,12 +3407,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 52,
+          "id": 64,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 105
+            "y": 131
           }
         },
         {
@@ -2821,12 +3458,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 53,
+          "id": 65,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 105
+            "y": 131
           }
         },
         {
@@ -2872,12 +3509,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 54,
+          "id": 66,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 113
+            "y": 139
           }
         },
         {
@@ -2923,12 +3560,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 55,
+          "id": 67,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 113
+            "y": 139
           }
         }
       ],
@@ -2936,11 +3573,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 122
       }
     },
     {
-      "id": 56,
+      "id": 68,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -2988,12 +3625,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 57,
+          "id": 69,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 98
+            "y": 124
           }
         },
         {
@@ -3049,12 +3686,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 58,
+          "id": 70,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 98
+            "y": 124
           }
         },
         {
@@ -3101,12 +3738,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 59,
+          "id": 71,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 106
+            "y": 132
           }
         },
         {
@@ -3152,12 +3789,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 60,
+          "id": 72,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 106
+            "y": 132
           }
         }
       ],
@@ -3165,11 +3802,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 97
+        "y": 123
       }
     },
     {
-      "id": 61,
+      "id": 73,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3178,7 +3815,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 98
+        "y": 124
       }
     },
     {
@@ -3228,12 +3865,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 62,
+      "id": 74,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 99
+        "y": 125
       }
     },
     {
@@ -3283,12 +3920,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 63,
+      "id": 75,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 99
+        "y": 125
       }
     },
     {
@@ -3352,12 +3989,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 64,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 107
+        "y": 133
       }
     },
     {
@@ -3403,12 +4040,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 65,
+      "id": 77,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 107
+        "y": 133
       }
     },
     {
@@ -3458,12 +4095,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 66,
+      "id": 78,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 115
+        "y": 141
       }
     },
     {
@@ -3509,16 +4146,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 67,
+      "id": 79,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 115
+        "y": 141
       }
     },
     {
-      "id": 68,
+      "id": 80,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -3527,7 +4164,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 123
+        "y": 149
       }
     },
     {
@@ -3577,12 +4214,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 69,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 124
+        "y": 150
       }
     },
     {
@@ -3628,12 +4265,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 70,
+      "id": 82,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 124
+        "y": 150
       }
     },
     {
@@ -3683,12 +4320,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 71,
+      "id": 83,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 132
+        "y": 158
       }
     },
     {
@@ -3738,16 +4375,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 72,
+      "id": 84,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 132
+        "y": 158
       }
     },
     {
-      "id": 73,
+      "id": 85,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -3756,7 +4393,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 140
+        "y": 166
       }
     },
     {
@@ -3804,12 +4441,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 74,
+      "id": 86,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 141
+        "y": 167
       }
     },
     {
@@ -3855,12 +4492,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 75,
+      "id": 87,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 141
+        "y": 167
       }
     },
     {
@@ -3924,16 +4561,16 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 76,
+      "id": 88,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 149
+        "y": 175
       }
     },
     {
-      "id": 77,
+      "id": 89,
       "type": "row",
       "title": "central — Database and dependencies",
       "collapsed": true,
@@ -3999,12 +4636,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 78,
+          "id": 90,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 158
+            "y": 184
           }
         },
         {
@@ -4059,12 +4696,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 79,
+          "id": 91,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 158
+            "y": 184
           }
         },
         {
@@ -4110,12 +4747,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 80,
+          "id": 92,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 166
+            "y": 192
           }
         },
         {
@@ -4161,12 +4798,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 81,
+          "id": 93,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 166
+            "y": 192
           }
         },
         {
@@ -4212,12 +4849,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 82,
+          "id": 94,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 174
+            "y": 200
           }
         },
         {
@@ -4263,12 +4900,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 83,
+          "id": 95,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 174
+            "y": 200
           }
         }
       ],
@@ -4276,11 +4913,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 157
+        "y": 183
       }
     },
     {
-      "id": 84,
+      "id": 96,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -4328,12 +4965,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 85,
+          "id": 97,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 159
+            "y": 185
           }
         },
         {
@@ -4389,12 +5026,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 86,
+          "id": 98,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 159
+            "y": 185
           }
         },
         {
@@ -4441,12 +5078,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 87,
+          "id": 99,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 167
+            "y": 193
           }
         },
         {
@@ -4492,12 +5129,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 88,
+          "id": 100,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 167
+            "y": 193
           }
         }
       ],
@@ -4505,11 +5142,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 158
+        "y": 184
       }
     },
     {
-      "id": 89,
+      "id": 101,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -4518,7 +5155,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 159
+        "y": 185
       }
     },
     {
@@ -4568,12 +5205,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 90,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 160
+        "y": 186
       }
     },
     {
@@ -4623,12 +5260,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 91,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 160
+        "y": 186
       }
     },
     {
@@ -4692,12 +5329,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 92,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 168
+        "y": 194
       }
     },
     {
@@ -4743,12 +5380,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 93,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 168
+        "y": 194
       }
     },
     {
@@ -4798,12 +5435,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 94,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 176
+        "y": 202
       }
     },
     {
@@ -4853,12 +5490,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 95,
+      "id": 107,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 176
+        "y": 202
       }
     },
     {
@@ -4927,12 +5564,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 96,
+      "id": 108,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 184
+        "y": 210
       }
     },
     {
@@ -5003,12 +5640,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 97,
+      "id": 109,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 184
+        "y": 210
       }
     },
     {
@@ -5079,16 +5716,16 @@
           "legendFormat": "proxy mean − backend mean"
         }
       ],
-      "id": 98,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 192
+        "y": 218
       }
     },
     {
-      "id": 99,
+      "id": 111,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5097,7 +5734,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 200
+        "y": 226
       }
     },
     {
@@ -5147,12 +5784,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 100,
+      "id": 112,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 201
+        "y": 227
       }
     },
     {
@@ -5202,12 +5839,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 101,
+      "id": 113,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 201
+        "y": 227
       }
     },
     {
@@ -5271,12 +5908,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 102,
+      "id": 114,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 209
+        "y": 235
       }
     },
     {
@@ -5322,12 +5959,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 103,
+      "id": 115,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 209
+        "y": 235
       }
     },
     {
@@ -5377,12 +6014,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 104,
+      "id": 116,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 217
+        "y": 243
       }
     },
     {
@@ -5428,16 +6065,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 105,
+      "id": 117,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 217
+        "y": 243
       }
     },
     {
-      "id": 106,
+      "id": 118,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -5446,7 +6083,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 225
+        "y": 251
       }
     },
     {
@@ -5496,12 +6133,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 107,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 226
+        "y": 252
       }
     },
     {
@@ -5551,12 +6188,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 108,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 226
+        "y": 252
       }
     },
     {
@@ -5620,12 +6257,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 109,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 234
+        "y": 260
       }
     },
     {
@@ -5671,12 +6308,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 110,
+      "id": 122,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 234
+        "y": 260
       }
     },
     {
@@ -5726,12 +6363,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 111,
+      "id": 123,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 242
+        "y": 268
       }
     },
     {
@@ -5777,16 +6414,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 112,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 242
+        "y": 268
       }
     },
     {
-      "id": 113,
+      "id": 125,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -5795,7 +6432,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 250
+        "y": 276
       }
     },
     {
@@ -5841,12 +6478,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 114,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 251
+        "y": 277
       }
     },
     {
@@ -5909,12 +6546,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 115,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 251
+        "y": 277
       }
     },
     {
@@ -5976,12 +6613,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 116,
+      "id": 128,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 259
+        "y": 285
       }
     },
     {
@@ -6036,16 +6673,473 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 117,
+      "id": 129,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 259
+        "y": 285
       }
     },
     {
-      "id": 118,
+      "id": 130,
+      "type": "row",
+      "title": "edge — Data volume and cleanup of expired rows",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 293
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Sessions (approx.)",
+      "description": "Rows in `edge_sessions`, approximate: the database's own row estimate, refreshed by autovacuum, not a count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", table=\"edge_sessions\"})",
+          "instant": false
+        }
+      ],
+      "id": 131,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 0,
+        "y": 294
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Revocations (approx.)",
+      "description": "Rows in `revocations`, approximate: the database's own row estimate, refreshed by autovacuum, not a count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", table=\"revocations\"})",
+          "instant": false
+        }
+      ],
+      "id": 132,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 8,
+        "y": 294
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Expired rows waiting",
+      "description": "Rows past their expiry that are still in the database, across every table with an expires_at. Counted up to a cap per table, so a very large backlog reads as at least that. Near 0 is healthy.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}))",
+          "instant": false
+        }
+      ],
+      "id": 133,
+      "gridPos": {
+        "h": 3,
+        "w": 8,
+        "x": 16,
+        "y": 294
+      }
+    },
+    {
+      "type": "table",
+      "title": "Data in each table",
+      "description": "Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Size"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "table"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Size",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "table",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Rows (approx.)",
+              "Value #B": "Size",
+              "Value #C": "Expired, still there",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 134,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 297
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Expired rows waiting to be removed",
+      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 135,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 0,
+        "y": 306
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Live and expired rows",
+      "description": "How fast is the data growing? Rows still valid against rows past their expiry and not yet removed. Live is the size estimate minus expired, so it is approximate too.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_min(max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", table=~\"edge_sessions|revocations\"}) - on (table) max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", table=~\"edge_sessions|revocations\"}), 0)",
+          "legendFormat": "{{table}} live"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", table=~\"edge_sessions|revocations\"})",
+          "legendFormat": "{{table}} expired"
+        }
+      ],
+      "id": 136,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 8,
+        "y": 306
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "How overdue the oldest expired row is",
+      "description": "How long ago the oldest row that should already be gone expired. Unlike the count it has no cap. With cleanup keeping up it stays within about one cleanup interval of the table; a line that keeps climbing is a table whose cleanup has stopped.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_oldest_expired_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 137,
+      "gridPos": {
+        "h": 9,
+        "w": 8,
+        "x": 16,
+        "y": 306
+      }
+    },
+    {
+      "id": 138,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -6111,12 +7205,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 119,
+          "id": 139,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 268
+            "y": 316
           }
         },
         {
@@ -6171,12 +7265,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 120,
+          "id": 140,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 268
+            "y": 316
           }
         },
         {
@@ -6222,12 +7316,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 121,
+          "id": 141,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 276
+            "y": 324
           }
         },
         {
@@ -6273,12 +7367,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 122,
+          "id": 142,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 276
+            "y": 324
           }
         },
         {
@@ -6324,12 +7418,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 123,
+          "id": 143,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 284
+            "y": 332
           }
         },
         {
@@ -6375,12 +7469,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 124,
+          "id": 144,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 284
+            "y": 332
           }
         }
       ],
@@ -6388,11 +7482,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 267
+        "y": 315
       }
     },
     {
-      "id": 125,
+      "id": 145,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -6440,12 +7534,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 126,
+          "id": 146,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 269
+            "y": 317
           }
         },
         {
@@ -6501,12 +7595,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 127,
+          "id": 147,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 269
+            "y": 317
           }
         },
         {
@@ -6553,12 +7647,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 128,
+          "id": 148,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 277
+            "y": 325
           }
         },
         {
@@ -6604,12 +7698,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 129,
+          "id": 149,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 277
+            "y": 325
           }
         }
       ],
@@ -6617,7 +7711,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 268
+        "y": 316
       }
     }
   ]
