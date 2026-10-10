@@ -45,6 +45,31 @@ object HttpExchangeSpec extends ZIOSpecDefault:
         !HttpExchange.retriable(Method.GET, java.util.concurrent.TimeoutException("slow")),
       )
     },
+    // Everything a warm-up opened goes stale together, so one repeat can meet the next stale
+    // connection of the batch; the bound keeps a far side that closes for another reason visible.
+    test("repeats a closed connection up to the bound, then gives up with the last failure") {
+      val closed = ProtocolError.Transport(io.netty.handler.codec.PrematureChannelClosureException())
+      val onlyClosed: PartialFunction[ProtocolError, Unit] = { case ProtocolError.Transport(_) => () }
+      for
+        calls <- Ref.make(0)
+        failing = calls.updateAndGet(_ + 1).flatMap(n => ZIO.fail(closed))
+        gaveUp <- HttpExchange.retrying(failing, HttpExchange.maxRetries)(onlyClosed).either
+        attempts <- calls.get
+        _ <- calls.set(0)
+        flaky = calls.updateAndGet(_ + 1).flatMap(n => if n <= 2 then ZIO.fail(closed) else ZIO.succeed("ok"))
+        recovered <- HttpExchange.retrying(flaky, HttpExchange.maxRetries)(onlyClosed).either
+        _ <- calls.set(0)
+        other = calls.updateAndGet(_ + 1) *> ZIO.fail(ProtocolError.Transport(RuntimeException("refused")))
+        notRetried <- HttpExchange.retrying(other, HttpExchange.maxRetries) { case ProtocolError.Transport(c) if c.isInstanceOf[io.netty.handler.codec.PrematureChannelClosureException] => () }.either
+        refusedAttempts <- calls.get
+      yield assertTrue(
+        gaveUp == Left(closed),
+        attempts == HttpExchange.maxRetries + 1,
+        recovered == Right("ok"),
+        notRetried.isLeft,
+        refusedAttempts == 1,
+      )
+    },
     test("times out a request whose body stalls, not just one whose headers never arrive") {
       for
         _ <- TestClient.addRoutes(slowBodyRoute)

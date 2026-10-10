@@ -134,7 +134,7 @@ object Driver:
         s"Driver $driverId ready for campaign '${config.campaign.name}' on shard ${shard.index}; " +
           s"polling ${config.coordinator.url} every ${config.coordinator.pollInterval.render}",
       )
-      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef, dpop)
+      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef, dpop, client)
       _ <- supervise(config, planClient, planRef, reporter, engine)
     yield ()
 
@@ -156,6 +156,7 @@ object Driver:
       tally: ArrivalTally,
       plan: Ref[LoadPlan],
       dpop: Option[DpopKeyPool],
+      client: Client,
   )
 
   private final case class ProtocolFlows(mobile: MobileFlows, web: WebFlows)
@@ -228,7 +229,12 @@ object Driver:
             current.fiber.interrupt *>
               ZIO.logInfo(s"Plan moved from ${current.generation} to $generation; restarting the loop") *>
               startGeneration(generation, plan, engine, running, failed).as(false)
-          case None => startGeneration(generation, plan, engine, running, failed).as(false)
+          // No loop is running: the first start, or a start after a pause or a stop. Whatever the pool
+          // holds has been idle since the process booted or the loop stopped, long enough for the
+          // far side to have closed it.
+          case None =>
+            Warmup.refreshConnections(engine.client, engine.config.targets) *>
+              startGeneration(generation, plan, engine, running, failed).as(false)
 
   private def halt(running: Ref[Option[Running]], why: String): UIO[Unit] =
     running.getAndSet(None).flatMap:

@@ -45,6 +45,25 @@ object Warmup:
       _ <- ZIO.logInfo("Warm-up done")
     yield ()
 
+  /** How many calls of a refresh are in flight together. At least as many as the connections a
+    * warm-up leaves in the pool, so that each stale one is met by a call of its own.
+    */
+  val refreshConcurrency: Int = 8
+
+  /** Replaces the pool's stale connections with fresh ones, unmeasured, just before load starts.
+    *
+    * The pool is not told when a connection it holds is closed -- here by the client's own idle
+    * timeout, which closes everything a boot warm-up opened after a minute of silence -- and hands
+    * the dead channel to the next caller, whose request then fails with `PrematureChannelClosure`.
+    * A POST cannot be repeated for that, so the first POST after a pause (a campaign started
+    * minutes after the drivers booted, or resumed after a pause) was exposed. A failed call
+    * invalidates the channel it used, so a burst of idempotent GETs wider than the pool's idle set
+    * clears them all, and costs nothing the measurement sees: it runs before the first arrival.
+    */
+  def refreshConnections(client: Client, targets: TargetsConfig): UIO[Unit] =
+    ZIO.foreachDiscard(1 to 2): _ =>
+      ZIO.foreachParDiscard(1 to refreshConcurrency)(_ => ZIO.foreachDiscard(urls(targets))(get(client, _)))
+
   private def get(client: Client, url: String): UIO[Unit] =
     ZIO
       .scoped(client.request(Request.get(url)).flatMap(_.body.asString))
