@@ -22,6 +22,7 @@ object CleanupMetrics:
   private val expiredRows = Metric.gauge("cleanup_expired_rows")
   private val oldestExpiredAge = Metric.gauge("cleanup_oldest_expired_age_seconds")
   private val tableRows = Metric.gauge("db_table_rows_estimate")
+  private val tableBytes = Metric.gauge("db_table_size_bytes")
   private val configured = Metric.gauge("cleanup_configured")
 
   private def table(name: String): Set[MetricLabel] = Set(MetricLabel("table", name))
@@ -41,11 +42,14 @@ object CleanupMetrics:
     expiredRows.tagged(table(tableName)).set(rows.toDouble) *>
       oldestExpiredAge.tagged(table(tableName)).set(oldestAgeSeconds)
 
-  /** The planner's row estimate, not a count: free to read and right to within the autovacuum's
-    * lag, which is what "how many sessions, tokens, users are there" needs.
+  /** How big the table is. `rows` is the planner's estimate, not a count: free to read and right to within
+    * the autovacuum's lag, which is what "how many sessions, tokens, users are there" needs; it is absent
+    * on a table that has never been analysed. `bytes` is exact and includes the table's indexes and
+    * out-of-line storage, i.e. what the table costs on disk.
     */
-  def estimatedRows(tableName: String, rows: Long): UIO[Unit] =
-    tableRows.tagged(table(tableName)).set(rows.toDouble)
+  def size(tableName: String, rows: Option[Long], bytes: Long): UIO[Unit] =
+    ZIO.foreachDiscard(rows)(n => tableRows.tagged(table(tableName)).set(n.toDouble)) *>
+      tableBytes.tagged(table(tableName)).set(bytes.toDouble)
 
   /** 1 when cleanup is configured for the table, 0 when it has an `expires_at` and nothing removes what
     * expires. A 0 next to a growing `cleanup_expired_rows` is a table that will only ever grow.

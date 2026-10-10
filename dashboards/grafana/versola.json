@@ -2822,6 +2822,123 @@
       }
     },
     {
+      "type": "table",
+      "title": "Data in each table",
+      "description": "Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Size"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "table"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Size",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "table",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Rows (approx.)",
+              "Value #B": "Size",
+              "Value #C": "Expired, still there",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 54,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
       "type": "timeseries",
       "title": "Expired rows waiting to be removed",
       "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. A series marked 'no cleanup configured' has an expires_at but nothing removes it, so it only ever grows. Counted up to a cap per table.",
@@ -2874,12 +2991,12 @@
           "legendFormat": "{{table}} (no cleanup configured)"
         }
       ],
-      "id": 54,
+      "id": 55,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 100
+        "y": 109
       }
     },
     {
@@ -2935,12 +3052,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 55,
+      "id": 56,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 100
+        "y": 109
       }
     },
     {
@@ -2987,16 +3104,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 56,
+      "id": 57,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 100
+        "y": 109
       }
     },
     {
-      "id": 57,
+      "id": 58,
       "type": "row",
       "title": "auth — Database and dependencies",
       "collapsed": true,
@@ -3062,12 +3179,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 58,
+          "id": 59,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 110
+            "y": 119
           }
         },
         {
@@ -3122,12 +3239,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 59,
+          "id": 60,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 110
+            "y": 119
           }
         },
         {
@@ -3173,12 +3290,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 60,
+          "id": 61,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 118
+            "y": 127
           }
         },
         {
@@ -3224,12 +3341,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 61,
+          "id": 62,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 118
+            "y": 127
           }
         },
         {
@@ -3275,12 +3392,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 62,
+          "id": 63,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 126
+            "y": 135
           }
         },
         {
@@ -3326,12 +3443,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 63,
+          "id": 64,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 126
+            "y": 135
           }
         }
       ],
@@ -3339,11 +3456,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 109
+        "y": 118
       }
     },
     {
-      "id": 64,
+      "id": 65,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3391,12 +3508,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 65,
+          "id": 66,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 111
+            "y": 120
           }
         },
         {
@@ -3452,12 +3569,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 66,
+          "id": 67,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 111
+            "y": 120
           }
         },
         {
@@ -3504,12 +3621,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 67,
+          "id": 68,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 119
+            "y": 128
           }
         },
         {
@@ -3555,12 +3672,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 68,
+          "id": 69,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 119
+            "y": 128
           }
         }
       ],
@@ -3568,11 +3685,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 110
+        "y": 119
       }
     },
     {
-      "id": 69,
+      "id": 70,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3581,7 +3698,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 111
+        "y": 120
       }
     },
     {
@@ -3631,12 +3748,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 70,
+      "id": 71,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 112
+        "y": 121
       }
     },
     {
@@ -3686,12 +3803,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 71,
+      "id": 72,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 112
+        "y": 121
       }
     },
     {
@@ -3755,12 +3872,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 72,
+      "id": 73,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 120
+        "y": 129
       }
     },
     {
@@ -3806,12 +3923,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 73,
+      "id": 74,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 120
+        "y": 129
       }
     },
     {
@@ -3861,12 +3978,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 74,
+      "id": 75,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 128
+        "y": 137
       }
     },
     {
@@ -3912,16 +4029,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 75,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 128
+        "y": 137
       }
     },
     {
-      "id": 76,
+      "id": 77,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -3930,7 +4047,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 136
+        "y": 145
       }
     },
     {
@@ -3980,12 +4097,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 77,
+      "id": 78,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 137
+        "y": 146
       }
     },
     {
@@ -4031,12 +4148,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 78,
+      "id": 79,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 137
+        "y": 146
       }
     },
     {
@@ -4086,12 +4203,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 79,
+      "id": 80,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 145
+        "y": 154
       }
     },
     {
@@ -4141,16 +4258,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 80,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 145
+        "y": 154
       }
     },
     {
-      "id": 81,
+      "id": 82,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4159,7 +4276,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 153
+        "y": 162
       }
     },
     {
@@ -4207,12 +4324,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 82,
+      "id": 83,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 154
+        "y": 163
       }
     },
     {
@@ -4258,12 +4375,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 83,
+      "id": 84,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 154
+        "y": 163
       }
     },
     {
@@ -4327,16 +4444,16 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 84,
+      "id": 85,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 162
+        "y": 171
       }
     },
     {
-      "id": 85,
+      "id": 86,
       "type": "row",
       "title": "central — Database and dependencies",
       "collapsed": true,
@@ -4402,12 +4519,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 86,
+          "id": 87,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 171
+            "y": 180
           }
         },
         {
@@ -4462,12 +4579,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 87,
+          "id": 88,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 171
+            "y": 180
           }
         },
         {
@@ -4513,12 +4630,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 88,
+          "id": 89,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 179
+            "y": 188
           }
         },
         {
@@ -4564,12 +4681,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 89,
+          "id": 90,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 179
+            "y": 188
           }
         },
         {
@@ -4615,12 +4732,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 90,
+          "id": 91,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 187
+            "y": 196
           }
         },
         {
@@ -4666,12 +4783,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 91,
+          "id": 92,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 187
+            "y": 196
           }
         }
       ],
@@ -4679,11 +4796,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 170
+        "y": 179
       }
     },
     {
-      "id": 92,
+      "id": 93,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -4731,12 +4848,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 93,
+          "id": 94,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 172
+            "y": 181
           }
         },
         {
@@ -4792,12 +4909,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 94,
+          "id": 95,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 172
+            "y": 181
           }
         },
         {
@@ -4844,12 +4961,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 95,
+          "id": 96,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 180
+            "y": 189
           }
         },
         {
@@ -4895,12 +5012,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 96,
+          "id": 97,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 180
+            "y": 189
           }
         }
       ],
@@ -4908,11 +5025,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 171
+        "y": 180
       }
     },
     {
-      "id": 97,
+      "id": 98,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -4921,7 +5038,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 172
+        "y": 181
       }
     },
     {
@@ -4971,12 +5088,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 98,
+      "id": 99,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 173
+        "y": 182
       }
     },
     {
@@ -5026,12 +5143,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 99,
+      "id": 100,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 173
+        "y": 182
       }
     },
     {
@@ -5095,12 +5212,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 100,
+      "id": 101,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 181
+        "y": 190
       }
     },
     {
@@ -5146,12 +5263,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 101,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 181
+        "y": 190
       }
     },
     {
@@ -5201,12 +5318,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 102,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 189
+        "y": 198
       }
     },
     {
@@ -5256,12 +5373,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 103,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 189
+        "y": 198
       }
     },
     {
@@ -5330,12 +5447,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 104,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 197
+        "y": 206
       }
     },
     {
@@ -5406,12 +5523,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 105,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 197
+        "y": 206
       }
     },
     {
@@ -5482,16 +5599,16 @@
           "legendFormat": "proxy mean − backend mean"
         }
       ],
-      "id": 106,
+      "id": 107,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 205
+        "y": 214
       }
     },
     {
-      "id": 107,
+      "id": 108,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5500,7 +5617,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 213
+        "y": 222
       }
     },
     {
@@ -5550,12 +5667,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 108,
+      "id": 109,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 214
+        "y": 223
       }
     },
     {
@@ -5605,12 +5722,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 109,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 214
+        "y": 223
       }
     },
     {
@@ -5674,12 +5791,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 110,
+      "id": 111,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 222
+        "y": 231
       }
     },
     {
@@ -5725,12 +5842,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 111,
+      "id": 112,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 222
+        "y": 231
       }
     },
     {
@@ -5780,12 +5897,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 112,
+      "id": 113,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 230
+        "y": 239
       }
     },
     {
@@ -5831,16 +5948,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 113,
+      "id": 114,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 230
+        "y": 239
       }
     },
     {
-      "id": 114,
+      "id": 115,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -5849,7 +5966,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 238
+        "y": 247
       }
     },
     {
@@ -5899,12 +6016,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 115,
+      "id": 116,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 239
+        "y": 248
       }
     },
     {
@@ -5954,12 +6071,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 116,
+      "id": 117,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 239
+        "y": 248
       }
     },
     {
@@ -6023,12 +6140,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 117,
+      "id": 118,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 247
+        "y": 256
       }
     },
     {
@@ -6074,12 +6191,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 118,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 247
+        "y": 256
       }
     },
     {
@@ -6129,12 +6246,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 119,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 255
+        "y": 264
       }
     },
     {
@@ -6180,16 +6297,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 120,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 255
+        "y": 264
       }
     },
     {
-      "id": 121,
+      "id": 122,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6198,7 +6315,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 263
+        "y": 272
       }
     },
     {
@@ -6244,12 +6361,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 122,
+      "id": 123,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 264
+        "y": 273
       }
     },
     {
@@ -6312,12 +6429,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 123,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 264
+        "y": 273
       }
     },
     {
@@ -6379,12 +6496,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 124,
+      "id": 125,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 272
+        "y": 281
       }
     },
     {
@@ -6439,16 +6556,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 125,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 272
+        "y": 281
       }
     },
     {
-      "id": 126,
+      "id": 127,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -6457,7 +6574,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 280
+        "y": 289
       }
     },
     {
@@ -6506,12 +6623,12 @@
           "instant": false
         }
       ],
-      "id": 127,
+      "id": 128,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 281
+        "y": 290
       }
     },
     {
@@ -6560,12 +6677,12 @@
           "instant": false
         }
       ],
-      "id": 128,
+      "id": 129,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 281
+        "y": 290
       }
     },
     {
@@ -6614,12 +6731,129 @@
           "instant": false
         }
       ],
-      "id": 129,
+      "id": 130,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 281
+        "y": 290
+      }
+    },
+    {
+      "type": "table",
+      "title": "Data in each table",
+      "description": "Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "right"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Size"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "bytes"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "table"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Size",
+            "desc": true
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "table",
+            "mode": "outer"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "Rows (approx.)",
+              "Value #B": "Size",
+              "Value #C": "Expired, still there",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_rows_estimate{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (db_table_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 131,
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 293
       }
     },
     {
@@ -6675,12 +6909,12 @@
           "legendFormat": "{{table}} (no cleanup configured)"
         }
       ],
-      "id": 130,
+      "id": 132,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 284
+        "y": 302
       }
     },
     {
@@ -6736,12 +6970,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 131,
+      "id": 133,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 284
+        "y": 302
       }
     },
     {
@@ -6788,16 +7022,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 132,
+      "id": 134,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 284
+        "y": 302
       }
     },
     {
-      "id": 133,
+      "id": 135,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -6863,12 +7097,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 134,
+          "id": 136,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 294
+            "y": 312
           }
         },
         {
@@ -6923,12 +7157,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 135,
+          "id": 137,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 294
+            "y": 312
           }
         },
         {
@@ -6974,12 +7208,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 136,
+          "id": 138,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 302
+            "y": 320
           }
         },
         {
@@ -7025,12 +7259,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 137,
+          "id": 139,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 302
+            "y": 320
           }
         },
         {
@@ -7076,12 +7310,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 138,
+          "id": 140,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 310
+            "y": 328
           }
         },
         {
@@ -7127,12 +7361,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 139,
+          "id": 141,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 310
+            "y": 328
           }
         }
       ],
@@ -7140,11 +7374,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 293
+        "y": 311
       }
     },
     {
-      "id": 140,
+      "id": 142,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -7192,12 +7426,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 141,
+          "id": 143,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 295
+            "y": 313
           }
         },
         {
@@ -7253,12 +7487,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 142,
+          "id": 144,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 295
+            "y": 313
           }
         },
         {
@@ -7305,12 +7539,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 143,
+          "id": 145,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 303
+            "y": 321
           }
         },
         {
@@ -7356,12 +7590,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 144,
+          "id": 146,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 303
+            "y": 321
           }
         }
       ],
@@ -7369,7 +7603,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 294
+        "y": 312
       }
     }
   ]

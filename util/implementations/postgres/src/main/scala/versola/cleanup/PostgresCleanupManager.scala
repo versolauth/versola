@@ -72,11 +72,14 @@ class PostgresCleanupManager(
       """.query[(Long, Option[Double])].run().headOption
     }.map(_.map((rows, age) => CleanupManager.ExpiredStats(rows, age.getOrElse(0.0))))
 
-  override protected def estimatedRows(tableName: String): Task[Option[Long]] =
+  override protected def tableSize(tableName: String): Task[Option[CleanupManager.TableSize]] =
     // reltuples is -1 on a table that has never been vacuumed or analysed: no estimate yet, not "empty"
-    xa.connectMeasured(s"cleanup-estimate-$tableName") {
-      sql"SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass($tableName)".query[Long].run().headOption
-    }.map(_.filter(_ >= 0))
+    xa.connectMeasured(s"cleanup-size-$tableName") {
+      sql"""
+        SELECT reltuples::bigint, pg_total_relation_size(oid)
+        FROM pg_class WHERE oid = to_regclass($tableName)
+      """.query[(Long, Long)].run().headOption
+    }.map(_.map((rows, bytes) => CleanupManager.TableSize(Some(rows).filter(_ >= 0), bytes)))
 
 object PostgresCleanupManager:
   /** ZIO Layer that creates, starts, and properly releases the CleanupManager.

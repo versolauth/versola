@@ -67,8 +67,8 @@ object CleanupManagerSpec extends ZIOSpecDefault:
         rows = if tableName == "rep_cleaned" then 7 else 900,
         oldestAgeSeconds = 42.0,
       )))
-    override protected def estimatedRows(tableName: String) =
-      ZIO.succeed(if tableName == "users" then None else Some(1000L))
+    override protected def tableSize(tableName: String) =
+      ZIO.succeed(if tableName == "users" then None else Some(CleanupManager.TableSize(Some(1000L), 5_000_000L)))
 
   def spec = suite("CleanupManager.Base")(
     test("keeps cleaning a table after a batch fails, on the next interval") {
@@ -108,7 +108,7 @@ object CleanupManagerSpec extends ZIOSpecDefault:
         !asked.contains("rep_unindexed"),
       )
     },
-    test("publishes a size estimate for each such table, and for users where the table exists") {
+    test("publishes row estimate and size in bytes for each such table, and for users where the table exists") {
       val config = CleanupConfig(maxThreads = 1, tables = List(tableConfig("rep_cleaned")))
       for
         fibers <- Ref.make(List.empty[Fiber.Runtime[Throwable, Long]])
@@ -116,8 +116,9 @@ object CleanupManagerSpec extends ZIOSpecDefault:
         _ <- ZIO.scoped(Reporting(config, fibers, counted).start() *> TestClock.adjust(0.seconds))
         indexed <- gauge("db_table_rows_estimate", "rep_cleaned")
         unindexed <- gauge("db_table_rows_estimate", "rep_unindexed")
+        bytes <- gauge("db_table_size_bytes", "rep_cleaned")
         users <- gauge("db_table_rows_estimate", "users")
-      yield assertTrue(indexed == 1000.0, unindexed == 1000.0, users == 0.0)
+      yield assertTrue(indexed == 1000.0, unindexed == 1000.0, bytes == 5_000_000.0, users == 0.0)
     },
     test("measures again once the stats interval elapses") {
       val config = CleanupConfig(maxThreads = 1, tables = List(tableConfig("rep_cleaned")), statsInterval = 1.minute)

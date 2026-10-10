@@ -42,6 +42,13 @@ object CleanupManager:
     */
   case class ExpiryTable(name: String, indexed: Boolean)
 
+  /** @param rows
+    *   The database's row estimate; `None` on a table that has never been analysed (not the same as empty).
+    * @param bytes
+    *   Table plus indexes plus out-of-line storage.
+    */
+  case class TableSize(rows: Option[Long], bytes: Long)
+
   case class ExpiredStats(rows: Long, oldestAgeSeconds: Double)
 
   /** Tables that never expire, so are not cleaned, whose size the dashboards show anyway. Measured wherever
@@ -87,10 +94,8 @@ object CleanupManager:
       */
     protected def expiredStats(tableName: String, cap: Int): Task[Option[CleanupManager.ExpiredStats]] = ZIO.none
 
-    /** The database's own row estimate for the table, or `None` when it has none (no such table here, or
-      * never analysed). Read-only and cheap, unlike a count.
-      */
-    protected def estimatedRows(tableName: String): Task[Option[Long]] = ZIO.none
+    /** How big the table is, or `None` when there is no such table here. Read-only and cheap, unlike a count. */
+    protected def tableSize(tableName: String): Task[Option[CleanupManager.TableSize]] = ZIO.none
 
     override def start(): RIO[Scope, Unit] =
       Semaphore.make(config.maxThreads).flatMap { semaphore =>
@@ -145,7 +150,7 @@ object CleanupManager:
                 .unit
         _ <- ZIO.foreachDiscard((expiring.map(_.name) ++ CleanupManager.EstimatedWithoutCleanup).distinct): table =>
           tolerate(table):
-            estimatedRows(table).flatMap(ZIO.foreachDiscard(_)(CleanupMetrics.estimatedRows(table, _)))
+            tableSize(table).flatMap(ZIO.foreachDiscard(_)(size => CleanupMetrics.size(table, size.rows, size.bytes)))
       yield ()
 
     private def drainTable(semaphore: Semaphore, config: TableCleanupConfig): Task[Unit] =

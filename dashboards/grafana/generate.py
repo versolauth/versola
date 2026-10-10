@@ -126,6 +126,27 @@ class Board:
             "targets": [{"refId": chr(ord("A") + i), "datasource": DS, "expr": e, "legendFormat": legend} for i, (e, legend) in enumerate(queries)],
         }, w, h)
 
+    def table(self, title: str, columns: list[tuple[str, str, str]], key: str, sort: str, desc: str = "", w: int = 24, h: int = 8) -> None:
+        """One row per value of the label `key`, one column per (name, expr, unit) in `columns`, joined on the
+        label. Newest values only: the columns are instant queries."""
+        letters = [chr(ord("A") + i) for i in range(len(columns))]
+        self._place({
+            "type": "table", "title": title, "description": desc, "datasource": DS,
+            "fieldConfig": {"defaults": {"custom": {"align": "right"}}, "overrides": [
+                {"matcher": {"id": "byName", "options": name}, "properties": [{"id": "unit", "value": unit}]}
+                for name, _, unit in columns if unit != "short"
+            ] + [{"matcher": {"id": "byName", "options": key}, "properties": [{"id": "custom.align", "value": "left"}]}]},
+            "options": {"showHeader": True, "cellHeight": "sm", "sortBy": [{"displayName": sort, "desc": True}]},
+            "transformations": [
+                {"id": "joinByField", "options": {"byField": key, "mode": "outer"}},
+                {"id": "organize", "options": {
+                    "excludeByName": {f"Time {i + 1}": True for i in range(len(columns))} | {"Time": True},
+                    "renameByName": {f"Value #{letter}": name for letter, (name, _, _) in zip(letters, columns)} | {key: "Table"},
+                }},
+            ],
+            "targets": [{"refId": letter, "datasource": DS, "expr": expr, "format": "table", "instant": True} for letter, (_, expr, _) in zip(letters, columns)],
+        }, w, h)
+
     # -- query helpers ----------------------------------------------------------------------
 
     def http(self, extra: str = "") -> str:
@@ -249,6 +270,12 @@ def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
     b.stat("Expired rows waiting", f"sum(max by (table) (cleanup_expired_rows{{{s}}}))",
            desc="Rows past their expiry that are still in the database, across every table with an expires_at. Counted up to a cap per table, so a very large backlog reads as at least that. Near 0 is healthy.",
            w=w)
+    b.table("Data in each table", [
+        ("Rows (approx.)", f"max by (table) (db_table_rows_estimate{{{s}}})", "short"),
+        ("Size", f"max by (table) (db_table_size_bytes{{{s}}})", "bytes"),
+        ("Expired, still there", f"max by (table) (cleanup_expired_rows{{{s}}})", "short"),
+    ], key="table", sort="Size", h=9,
+        desc="Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.")
     forgotten = f"max by (table) (cleanup_configured{{{s}}}) == 0"
     b.ts("Expired rows waiting to be removed", [
         (f"max by (table) (cleanup_expired_rows{{{s}}}) and on (table) ({forgotten.replace('== 0', '== 1')})", "{{table}}"),

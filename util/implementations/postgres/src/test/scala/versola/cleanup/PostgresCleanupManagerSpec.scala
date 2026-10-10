@@ -17,7 +17,7 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
       cleanupBatch(tableName, batchSize, keyColumn)
     def expiring: Task[List[CleanupManager.ExpiryTable]] = tablesWithExpiry
     def expired(tableName: String, cap: Int): Task[Option[CleanupManager.ExpiredStats]] = expiredStats(tableName, cap)
-    def estimate(tableName: String): Task[Option[Long]] = estimatedRows(tableName)
+    def size(tableName: String): Task[Option[CleanupManager.TableSize]] = tableSize(tableName)
 
   private def makeManager(xa: TransactorZIO): UIO[TestableCleanupManager] =
     Ref.make(List.empty[Fiber.Runtime[Throwable, Long]]).map(TestableCleanupManager(xa, _))
@@ -101,20 +101,24 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
               manager.expired(indexed, 1000)
         yield assertTrue(stats.contains(CleanupManager.ExpiredStats(0L, 0.0)))
       },
-      test("estimates rows only once the table has been analysed, and has none for a table that does not exist") {
+      test("reports size in bytes always, rows only once the table has been analysed, and nothing for a table that does not exist") {
         for
           xa <- ZIO.service[TransactorZIO]
           manager <- makeManager(xa)
           result <- withExpiringTables(xa): (indexed, _) =>
             for
-              fresh <- manager.estimate(indexed)
+              fresh <- manager.size(indexed)
               _ <- xa.connect:
                 sql"INSERT INTO ${SqlLiteral(indexed)} (id, expires_at) SELECT g, NOW() FROM generate_series(1, 500) g".update.run()
                 sql"ANALYZE ${SqlLiteral(indexed)}".update.run()
-              analysed <- manager.estimate(indexed)
+              analysed <- manager.size(indexed)
             yield (fresh, analysed)
-          missing <- manager.estimate("no_such_table_" + java.util.UUID.randomUUID().toString.replace("-", ""))
-        yield assertTrue(result._2.contains(500L), missing.isEmpty)
+          missing <- manager.size("no_such_table_" + java.util.UUID.randomUUID().toString.replace("-", ""))
+        yield assertTrue(
+          result._1.exists(s => s.rows.isEmpty && s.bytes > 0L),
+          result._2.exists(s => s.rows.contains(500L) && s.bytes > result._1.get.bytes),
+          missing.isEmpty,
+        )
       },
       test("deletes expired rows and keeps active ones (keyColumn=id, auth_conversations)") {
         for
