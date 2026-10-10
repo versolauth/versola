@@ -72,6 +72,13 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
   ):
     val source: CacheSource[String] = syncSource(snapshot, up, body, calls, error)
 
+    /** One live sync, then waits for its record: the snapshot is written off the sync's path, on
+      * a fiber the test would otherwise race.
+      */
+    val seed: Task[Unit] =
+      source.getAll *>
+        records.get.repeatUntil(_.nonEmpty).delay(10.millis).withClock(Clock.ClockLive).unit
+
   private val fixture: UIO[Fixture] =
     for
       records <- Ref.make(Map.empty[String, ConfigSnapshot.Record])
@@ -97,7 +104,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     test("is used only after the retry budget, and serves the saved value") {
       for
         f <- fixture
-        _ <- f.source.getAll
+        _ <- f.seed
         _ <- f.up.set(false) *> f.calls.set(0)
         scope <- Scope.make
         exit <- start(f.source, fromSnapshot = true, scope)
@@ -109,7 +116,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     test("a cache started after another has fallen back to it does not wait for the source again") {
       for
         f <- fixture
-        _ <- f.source.getAll
+        _ <- f.seed
         _ <- f.error.set(ConnectException("refused")) *> f.up.set(false)
         scope <- Scope.make
         first <- start(f.source, fromSnapshot = true, scope)
@@ -128,7 +135,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     test("is not used unless asked for") {
       for
         f <- fixture
-        _ <- f.source.getAll
+        _ <- f.seed
         _ <- f.up.set(false)
         scope <- Scope.make
         exit <- start(f.source, fromSnapshot = false, scope)
@@ -147,7 +154,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     test("a record that fails verification fails the start") {
       for
         f <- fixture
-        _ <- f.source.getAll
+        _ <- f.seed
         _ <- f.records.update(_.view.mapValues(r => r.copy(body = "forged".getBytes)).toMap)
         _ <- f.up.set(false)
         scope <- Scope.make
@@ -158,7 +165,7 @@ object ReloadingCacheSpec extends ZIOSpecDefault:
     test("the source is tried in the background and replaces the value once it answers; the age is reported until then") {
       for
         f <- fixture
-        _ <- f.source.getAll
+        _ <- f.seed
         _ <- TestClock.adjust(1.hour)
         _ <- f.up.set(false)
         scope <- Scope.make
