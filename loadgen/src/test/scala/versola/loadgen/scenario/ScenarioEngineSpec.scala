@@ -43,6 +43,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       logout: Double = 0.0,
       fullLogin: Double = 0.0,
       mobileMean: Double = 3.0,
+      refreshMean: Double = 0.0,
   ): SessionConfig =
     SessionConfig(
       fullLoginProbability = FullLoginProbabilityConfig(fullLogin, fullLogin),
@@ -55,6 +56,7 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
       logoutProbability = LogoutProbabilityConfig(logout, logout),
       accessTokenTtl = accessTokenTtl,
       refreshTokenTtl = Duration.fromSeconds(30L * 24 * 3600),
+      refreshCount = RefreshCountConfig(refreshMean, 0.6),
     )
 
   private def user(id: Long, platform: Platform, credential: CredentialKind = CredentialKind.Otp): VirtualUser =
@@ -441,6 +443,30 @@ object ScenarioEngineSpec extends versola.loadgen.store.LoadgenPostgresSpec:
         plan.actionCount >= 3,
         // The login's exchange and exactly one refresh.
         hops.count(_ == "POST /token") == 2,
+        refused == 0,
+        stored.forall(!_.rotationInFlight),
+      )
+    },
+    // The refreshes of the target profile do not wait for the access token to age: they are drawn per
+    // session and happen between its actions, whatever the token's remaining life.
+    test("the planned extra refreshes are all performed on a token that has not expired") {
+      val settings = config(mobileMean = 6.0, refreshMean = 4.0)
+      val plan = planFor(settings, Platform.Mobile, 1313L)
+      val planned = plan.refreshesBefore.sum
+      for
+        _ <- truncate
+        stub <- ScenarioSut.mobile(List("credential", "otp"), paymentPath)
+        (sut, routes) = stub
+        harnessed <- harness(settings, List(accounts, balance), routes, sut)
+        _ <- harnessed.runner.run(user(11L, Platform.Mobile), RandomSource.seeded(1313L)).mapError(failed)
+        hops <- sut.paths
+        refused <- sut.refusedRefreshes
+        stored <- rows
+      yield assertTrue(
+        // So that "the plan's count" and "none" are different numbers.
+        planned >= 1,
+        // The login's exchange plus exactly the planned refreshes.
+        hops.count(_ == "POST /token") == 1 + planned,
         refused == 0,
         stored.forall(!_.rotationInFlight),
       )

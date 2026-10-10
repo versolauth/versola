@@ -18,6 +18,7 @@ object SessionPlanSpec extends ZIOSpecDefault:
       logoutWeb: Double = 0.4,
       fullLoginMobile: Double = 0.033,
       mobileMean: Double = 5.0,
+      refreshMean: Double = 0.0,
   ): SessionConfig =
     SessionConfig(
       fullLoginProbability = FullLoginProbabilityConfig(fullLoginMobile, 0.4),
@@ -28,6 +29,7 @@ object SessionPlanSpec extends ZIOSpecDefault:
       logoutProbability = LogoutProbabilityConfig(logoutMobile, logoutWeb),
       accessTokenTtl = 15.minutes,
       refreshTokenTtl = Duration.fromSeconds(30L * 24 * 3600),
+      refreshCount = RefreshCountConfig(refreshMean, 0.6),
     )
 
   private def plans(settings: SessionConfig, platform: Platform, count: Int): Vector[SessionPlan] =
@@ -35,6 +37,38 @@ object SessionPlanSpec extends ZIOSpecDefault:
     Vector.fill(count)(SessionPlan.draw(settings, platform, random))
 
   def spec = suite("SessionPlan")(
+    // The target profile wants several refreshes per code exchange; they come from a per-session count
+    // that logins do not feed, so the count is the whole knob.
+    test("a campaign that configures no refresh count draws none, as before") {
+      val drawn = plans(config(), Platform.Mobile, 2000)
+      assertTrue(drawn.forall(_.refreshesBefore.forall(_ == 0)))
+    },
+    test("mobile sessions draw the configured mean number of extra refreshes, web none") {
+      val mobile = plans(config(refreshMean = 2.4), Platform.Mobile, 40000)
+      val web = plans(config(refreshMean = 2.4), Platform.Web, 5000)
+      val mean = mobile.map(_.refreshesBefore.sum).sum.toDouble / mobile.size
+      assertTrue(math.abs(mean - 2.4) < 0.08, web.forall(_.refreshesBefore.forall(_ == 0)))
+    },
+    test("every drawn refresh has a slot before an action of that session") {
+      val drawn = plans(config(refreshMean = 6.0), Platform.Mobile, 5000)
+      assertTrue(
+        
+        drawn.forall(plan => plan.refreshesBefore.size == plan.actionCount),
+        drawn.forall(_.refreshesBefore.forall(_ >= 0)),
+        // spread over the session, not all in front of the first action
+        drawn.exists(plan => plan.refreshesBefore.count(_ > 0) > 1),
+      )
+    },
+    test("the refresh draw leaves the other draws of a plan where they were") {
+      val without = plans(config(), Platform.Mobile, 3000)
+      val withCount = plans(config(refreshMean = 3.0), Platform.Mobile, 3000)
+      // Same seed, same order: the count is drawn last, so the earlier draws of the first plan agree.
+      assertTrue(
+        without.head.actionCount == withCount.head.actionCount,
+        without.head.paymentAction == withCount.head.paymentAction,
+        without.head.logout == withCount.head.logout,
+      )
+    },
     test("the payment never lands on the opening call, whatever the session length") {
       val drawn = plans(config(paymentProbability = 1.0), Platform.Mobile, 5000)
       assertTrue(

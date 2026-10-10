@@ -283,6 +283,16 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .load(loadgenConfigDescriptor)
         yield assertTrue(config.sutStats == None)
       },
+      // A campaign written before the refresh count existed must keep drawing none.
+      test("session.refresh-count defaults to no extra refreshes and reads a configured mean") {
+        for
+          absent <- loadConfig(hocon)
+          present <- loadConfig(hocon.replace("refresh-token-ttl = 30d", "refresh-token-ttl = 30d\n  refresh-count { mobile-mean = 2.4 }"))
+        yield assertTrue(
+          absent.session.refreshCount == RefreshCountConfig(0.0, 0.6),
+          present.session.refreshCount == RefreshCountConfig(2.4, 0.6),
+        )
+      },
       test("decodes the environment block with its defaults, and its absence as no section") {
         for
           absent <- decodeSutStats("")
