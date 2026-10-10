@@ -28,6 +28,24 @@ object MeasurementWindow:
             (until, if phase.measured then spans else spans :+ (from, until))
         ._2
 
+  /** From the instant the first measured phase begins to the one the last measured phase ends, or
+    * `None` when the start is unknown or no phase is measured. A measured phase after an unmeasured
+    * one in the middle is spanned over, not skipped: database counters are cumulative, so the
+    * window can only be one interval.
+    */
+  def bounds(phases: List[CampaignPhaseConfig], startedAt: Option[Instant]): Option[(Instant, Instant)] =
+    startedAt.flatMap: start =>
+      val spans = phases
+        .foldLeft((start, List.empty[(Instant, Instant)])):
+          case ((from, acc), phase) =>
+            val until = from.plusMillis(phase.duration.toMillis)
+            (until, if phase.measured then acc :+ (from, until) else acc)
+        ._2
+      for
+        first <- spans.headOption
+        last <- spans.lastOption
+      yield (first._1, last._2)
+
   /** The snapshots outside every excluded span. */
   def measured(
       reports: List[DriverHistogramReport],

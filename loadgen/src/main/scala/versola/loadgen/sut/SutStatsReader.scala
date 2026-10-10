@@ -258,13 +258,20 @@ object SutStatsReader:
     * all: it must not take the rest of this reading down with it.
     */
   private def statements(connection: Connection): Option[(List[SutStatementStats], Option[Instant])] =
-    val installed = one(connection, "SELECT 1 AS present FROM pg_extension WHERE extname = 'pg_stat_statements'")(_ =>
-      true,
-    ).getOrElse(false)
-    if !installed then None
-    else
+    // Qualified by the schema the extension lives in: it is created in `public` on a managed
+    // service, while the campaign's connection runs with `currentSchema=<service schema>` -- an
+    // unqualified `pg_stat_statements` is then "relation does not exist", which the catch below
+    // reads as "not preloaded" and the report silently loses its statements section.
+    val schema = one(
+      connection,
+      """SELECT n.nspname AS schema
+        |FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace
+        |WHERE e.extname = 'pg_stat_statements'""".stripMargin,
+    )(_.getString("schema"))
+    schema.flatMap: schema =>
+      val qualified = "\"" + schema.replace("\"", "\"\"") + "\"."
       try
-        Some((statementRows(connection), statementsResetAt(connection)))
+        Some((statementRows(connection, qualified), statementsResetAt(connection, qualified)))
       catch case _: SQLException => None
 
   /** Every statement `pg_stat_statements` is currently tracking, not the top [[statementLimit]]
@@ -284,7 +291,7 @@ object SutStatsReader:
     * section already does -- not preloaded -- so it shares this method's `SQLException` handling
     * rather than needing its own.
     */
-  private def statementRows(connection: Connection): List[SutStatementStats] =
+  private def statementRows(connection: Connection, qualified: String): List[SutStatementStats] =
     val capacity =
       one(connection, "SELECT current_setting('pg_stat_statements.max')::int AS max")(_.getInt("max"))
         .getOrElse(statementLimit)
@@ -292,7 +299,7 @@ object SutStatsReader:
       connection,
       s"""SELECT queryid, left(query, $queryTextLimit) AS query, calls, total_exec_time, rows,
          |       wal_records, wal_fpi, wal_bytes
-         |FROM pg_stat_statements
+         |FROM ${qualified}pg_stat_statements
          |WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
          |ORDER BY total_exec_time DESC
          |LIMIT $capacity""".stripMargin,
@@ -312,8 +319,8 @@ object SutStatsReader:
     * `pg_stat_statements_reset()`'s last instant the same way `pg_stat_wal.stats_reset` carries
     * `pg_stat_reset_shared('wal')`'s.
     */
-  private def statementsResetAt(connection: Connection): Option[Instant] =
-    one(connection, "SELECT stats_reset FROM pg_stat_statements_info")(row => instant(row, "stats_reset")).flatten
+  private def statementsResetAt(connection: Connection, qualified: String): Option[Instant] =
+    one(connection, s"SELECT stats_reset FROM ${qualified}pg_stat_statements_info")(row => instant(row, "stats_reset")).flatten
 
   private def gauges(connection: Connection): SutGauges =
     one(

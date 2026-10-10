@@ -283,6 +283,18 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .load(loadgenConfigDescriptor)
         yield assertTrue(config.sutStats == None)
       },
+      test("decodes the environment block with its defaults, and its absence as no section") {
+        for
+          absent <- decodeSutStats("")
+          present <- decodeSutStats(
+            """environment { victoria-metrics-url = "http://vm:8428", namespace = versola }""",
+          )
+        yield assertTrue(
+          absent.environment == None,
+          present.environment.map(e => (e.victoriaMetricsUrl, e.namespace, e.step.getSeconds)) ==
+            Some(("http://vm:8428", "versola", 30L)),
+        )
+      },
       // An empty list boots a coordinator that reports no database section and says nothing about
       // why, which is indistinguishable from one configured without the block at all. Duplicate
       // names collide on `(campaign, database, phase)`, and the report then shows one database's

@@ -37,6 +37,14 @@ object MeasurementWindowSpec extends ZIOSpecDefault:
       val kept = MeasurementWindow.measured(reports, MeasurementWindow.excluded(phases, Some(start)))
       assertTrue(kept.map(_.capturedAtEpochMillis) == List(start.plusSeconds(301), start.plusSeconds(900)).map(_.toEpochMilli))
     },
+    test("the window runs from the first measured phase to the end of the last") {
+      assertTrue(
+        MeasurementWindow.bounds(phases, Some(start)) == Some((start.plusSeconds(300), start.plusSeconds(900))),
+        MeasurementWindow.bounds(phases, None).isEmpty,
+        MeasurementWindow.bounds(phases.map(_.copy(measured = false)), Some(start)).isEmpty,
+        MeasurementWindow.bounds(phases.map(_.copy(measured = true)), Some(start)) == Some((start, start.plusSeconds(900))),
+      )
+    },
     // A coordinator restarted mid-campaign has lost the start with the rest of its memory.
     // Dropping intervals on a guess would be wrong in a way nobody sees; keeping them is wrong in a
     // way the header shows.

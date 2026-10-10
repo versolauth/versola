@@ -13,6 +13,7 @@ import versola.loadgen.metrics.{
   RunPhase,
   TokenMode,
 }
+import versola.loadgen.environment.EnvironmentReader
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
 import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
@@ -66,6 +67,9 @@ final class CoordinatorService private (
     sutStats: Option[SutStatsCapture],
     poolerStats: Option[PoolerStatsCapture],
     transitionLock: Semaphore,
+    windowCaptured: Ref[Set[SutStatPhase]],
+    windowSkipped: Ref[Set[SutStatPhase]],
+    environment: Option[EnvironmentReader],
 ):
 
   def plan: Task[LoadPlan] =
@@ -170,6 +174,7 @@ final class CoordinatorService private (
         fleet <- drivers.view(now, state.shards.epoch)
         counts <- population.get
         databases <- sutDeltas(name)
+        measuredDatabases <- ZIO.foreach(sutStats)(_.windowDeltas(name)).map(_.filter(_.nonEmpty))
         poolers <- poolerDeltas(name)
         queue <- poolerPeaks(name)
         report <- ZIO
@@ -184,10 +189,13 @@ final class CoordinatorService private (
               databases,
               poolers,
               queue,
+              measuredDatabases,
             ),
           )
           .mapError(IllegalStateException(_))
-      yield report
+        stats <- ZIO.foreach(environment): reader =>
+          reader.read(Instant.ofEpochMilli(report.startEpochMillis), Instant.ofEpochMilli(report.endEpochMillis))
+      yield report.copy(environment = stats)
 
   /** The run's header: the plan as published, the population as counted, and what the SUT said
     * about the tokens it issued.
@@ -319,6 +327,7 @@ final class CoordinatorService private (
       )
       _ <- settle.repeat(Schedule.spaced(CoordinatorService.settleInterval)).forkScoped
       _ <- controllerTick.repeat(Schedule.spaced(RegistrationController.interval)).forkScoped
+      _ <- captureMeasuredWindow.repeat(Schedule.spaced(1.second)).forkScoped
       _ <- sampleQueues.repeat(Schedule.spaced(PoolerQueueRecorder.sampleInterval)).forkScoped
     yield ()
 
@@ -380,12 +389,65 @@ final class CoordinatorService private (
     */
   private def captureSutStats(previous: CampaignState, current: CampaignState): UIO[Unit] =
     ZIO.foreachDiscard(boundaryOf(previous, current)): phase =>
+      // A new run starts with no window snapshot taken; one stopped inside its measured window
+      // closes the window where it stopped, so the window section is not lost to an early stop.
+      (phase match
+        case SutStatPhase.Before => windowCaptured.set(Set.empty) *> windowSkipped.set(Set.empty)
+        case _ =>
+          windowCaptured.get.flatMap: done =>
+            ZIO.when(done(SutStatPhase.MeasuredStart) && !done(SutStatPhase.MeasuredEnd))(
+              captureWindow(SutStatPhase.MeasuredEnd),
+            ).unit
+      ) *>
       // The pooler is read after the databases rather than in parallel with them. Both readings
       // are of the same instant only approximately, and where they disagree the database's is
       // the one the report leans on -- so the pooler's boundary is the one that should absorb
       // the other's latency, not the one that adds to it.
       ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
         ZIO.foreachDiscard(poolerStats)(_.capture(campaign.name, phase))
+
+  private def captureWindow(phase: SutStatPhase): UIO[Unit] =
+    ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *> windowCaptured.update(_ + phase)
+
+  /** The measured window's two boundaries (see [[MeasurementWindow.bounds]]), taken on a timer
+    * because nothing else happens at those instants: phases are positions on a clock, not
+    * transitions. Serialised with [[transition]] so a stop cannot interleave with the capture
+    * it would otherwise duplicate.
+    *
+    * A boundary is captured only within [[CoordinatorService.windowTolerance]] of its instant. A
+    * coordinator that was stalled or restarted past a boundary would otherwise put a snapshot of
+    * "now" under a report that says it covers the measured window; such a boundary is skipped
+    * instead, which leaves `measuredDatabases` out of the report, and logged. A pause does not
+    * cause this: `CampaignControl.start` shifts the start by the pause, so the window moves with
+    * the schedule.
+    */
+  def captureMeasuredWindow: UIO[Unit] =
+    transitionLock.withPermit:
+      for
+        now <- Clock.instant
+        state <- control.get
+        _ <- ZIO.foreachDiscard(
+          Option.when(state.state == CampaignState.Running)(MeasurementWindow.bounds(campaign.phases, state.startedAt)).flatten,
+        ): (from, until) =>
+          boundary(now, SutStatPhase.MeasuredStart, from, requires = None) *>
+            boundary(now, SutStatPhase.MeasuredEnd, until, requires = Some(SutStatPhase.MeasuredStart))
+      yield ()
+
+  private def boundary(now: Instant, phase: SutStatPhase, at: Instant, requires: Option[SutStatPhase]): UIO[Unit] =
+    for
+      taken <- windowCaptured.get
+      skipped <- windowSkipped.get
+      due = !now.isBefore(at) && !taken(phase) && !skipped(phase) && requires.forall(taken)
+      _ <- ZIO.when(due):
+        if java.time.Duration.between(at, now).compareTo(CoordinatorService.windowTolerance) <= 0 then captureWindow(phase)
+        else
+          windowSkipped.update(_ + phase) *>
+            ZIO.logWarning(
+              s"The measured window's $phase of campaign '${campaign.name}' (at $at) was passed more than " +
+                s"${CoordinatorService.windowTolerance.toSeconds}s before the timer ran (a stalled or restarted coordinator); " +
+                "no snapshot is taken for it and the report omits the window's database figures",
+            )
+    yield ()
 
   /** Which boundary, if either, a transition is. Shared by both captures so that §3 and §4 can
     * never end up bracketing different things.
@@ -466,6 +528,12 @@ final class CoordinatorService private (
 
 object CoordinatorService:
 
+  /** How far past a measured-window boundary a snapshot may still be taken for it. Several ticks of
+    * the one-second timer, so a busy coordinator does not lose a boundary, and nothing like a
+    * pause.
+    */
+  val windowTolerance: java.time.Duration = java.time.Duration.ofSeconds(10)
+
   /** How often the drain deadline is checked. A second, because the deadline is an instant an
     * operator chose and the epoch boundary should not drift visibly past it; the check is one
     * `Ref` read on the ordinary tick.
@@ -503,6 +571,7 @@ object CoordinatorService:
       rebalancer: ShardRebalancer,
       sutStats: Option[SutStatsCapture],
       poolerStats: Option[PoolerStatsCapture],
+      environment: Option[EnvironmentReader] = None,
   ): IO[String, CoordinatorService] =
     for
       plan <- ZIO.fromOption(config.plan).orElseFail("role = coordinator requires a 'plan' configuration block")
@@ -515,6 +584,8 @@ object CoordinatorService:
       population <- Ref.make(Map.empty[VirtualUserState, Long])
       registry <- DriverRegistry.make(config.campaign.name, staleAfter(config.coordinator.pollInterval))
       transitionLock <- Semaphore.make(1L)
+      windowCaptured <- Ref.make(Set.empty[SutStatPhase])
+      windowSkipped <- Ref.make(Set.empty[SutStatPhase])
     yield CoordinatorService(
       campaign = config.campaign,
       // Read off this process's own configuration, which is the only thing that can be read: the
@@ -542,6 +613,9 @@ object CoordinatorService:
       sutStats = sutStats,
       poolerStats = poolerStats,
       transitionLock = transitionLock,
+      windowCaptured = windowCaptured,
+      windowSkipped = windowSkipped,
+      environment = environment,
     )
 
   /** §11's two granularities, as configuration names them: a step belongs to a scenario, a flow

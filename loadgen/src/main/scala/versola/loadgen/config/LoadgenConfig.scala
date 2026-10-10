@@ -5,6 +5,7 @@ import versola.util.postgres.given
 import versola.util.{Dpop, Secret}
 import zio.Config
 import zio.Duration
+import zio.durationInt
 import zio.config.magnolia.DeriveConfig
 
 /** Root configuration tree for `loadgen`, decoded from HOCON via `VersolaApp.parseConfig`
@@ -41,6 +42,27 @@ case class LoadgenConfig(
     sutStats: Option[SutStatsConfig],
     poolerStats: Option[PoolerStatsConfig],
     dpop: Option[DpopConfig],
+    environment: Option[EnvironmentConfig] = None,
+)
+
+/** Where the coordinator reads the SUT's resource use for the report (CPU, memory, network, request
+  * rates, pool connections), as `versola.loadgen.environment.EnvironmentStats`. Optional like
+  * [[SutStatsConfig]]: absent, the report simply has no such section.
+  *
+  * @param victoriaMetricsUrl
+  *   a VictoriaMetrics (or Prometheus-compatible) base URL answering `/api/v1/query_range`
+  * @param namespace
+  *   the Kubernetes namespace the SUT's pods run in
+  * @param step
+  *   the sampling step of the range queries; `rateWindow` is the `rate()` window under them;
+  *   `timeout` bounds each query (they run in parallel, so it also bounds the whole read)
+  */
+case class EnvironmentConfig(
+    victoriaMetricsUrl: String,
+    namespace: String,
+    step: Duration = 30.seconds,
+    rateWindow: Duration = 1.minute,
+    timeout: Duration = 10.seconds,
 )
 
 /** Drives the campaign with RFC 9449 sender-constrained tokens instead of bearer ones.
