@@ -249,6 +249,31 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
              desc="In-flight requests per pod. A pod whose line keeps climbing is stuck on something slow; a flat uneven split means poor load balancing.")
 
 
+def coverage(b: Board) -> None:
+    """A table with an expires_at that nothing cleans only ever grows, and there is no good reason for one to
+    exist, so it gets a light of its own rather than a series among the others: red as soon as there is one,
+    with the list of them beside it. Both services that run the cleanup manager are covered in one place."""
+    sel = 'namespace="$namespace", app_kubernetes_io_component=~"auth|edge"'
+    unconfigured = f"max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == 0"
+    b.row("Cleanup coverage — every table with an expiry must be cleaned")
+    # `== bool 0` makes the sum 0 when every table is covered and leaves it empty only when the metric is
+    # missing altogether, so a service that does not report it shows No data instead of a false green
+    b.stat("Tables without cleanup", f"sum(max by (app_kubernetes_io_component, table) (cleanup_configured{{{sel}}}) == bool 0)",
+           desc="Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+           thresholds=steps((None, GREEN), (1, RED)), w=6)
+    b._place({
+        "type": "table", "title": "Tables without cleanup", "datasource": DS,
+        "description": "Which tables, in which service. Empty when every table with an expiry is cleaned. To fix one, add it to the service's cleanup tables in its config.",
+        "fieldConfig": {"defaults": {"custom": {"align": "left"}}, "overrides": []},
+        "options": {"showHeader": True, "cellHeight": "sm"},
+        "transformations": [{"id": "organize", "options": {
+            "excludeByName": {"Time": True, "Value": True},
+            "renameByName": {"app_kubernetes_io_component": "Service", "table": "Table"},
+        }}],
+        "targets": [{"refId": "A", "datasource": DS, "expr": unconfigured, "format": "table", "instant": True}],
+    }, 18, 3)
+
+
 def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
     """Three questions, three panels: is cleanup keeping up, how fast is the data growing, is any table
     being forgotten. auth and edge run the cleanup manager (central does not).
@@ -276,12 +301,8 @@ def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
         ("Expired, still there", f"max by (table) (cleanup_expired_rows{{{s}}})", "short"),
     ], key="table", sort="Size", h=9,
         desc="Every table with an expires_at, plus users. Rows is the database's estimate (refreshed by autovacuum). Size is exact and includes the table's indexes. Expired counts rows past their expiry that are still there, up to a cap; empty for a table with no index on expires_at.")
-    forgotten = f"max by (table) (cleanup_configured{{{s}}}) == 0"
-    b.ts("Expired rows waiting to be removed", [
-        (f"max by (table) (cleanup_expired_rows{{{s}}}) and on (table) ({forgotten.replace('== 0', '== 1')})", "{{table}}"),
-        (f"max by (table) (cleanup_expired_rows{{{s}}}) and on (table) ({forgotten})", "{{table}} (no cleanup configured)"),
-    ], unit="short", minimum=0, w=8, h=9,
-         desc="Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. A series marked 'no cleanup configured' has an expires_at but nothing removes it, so it only ever grows. Counted up to a cap per table.")
+    b.ts("Expired rows waiting to be removed", [(f"max by (table) (cleanup_expired_rows{{{s}}})", "{{table}}")], unit="short", minimum=0, w=8, h=9,
+         desc="Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.")
     b.ts("Live and expired rows", [
         (f'clamp_min(max by (table) (db_table_rows_estimate{{{s}, table=~"{expiring}"}}) - on (table) max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}}), 0)', "{{table}} live"),
         (f'max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}})', "{{table}} expired"),
@@ -488,6 +509,7 @@ def build() -> Board:
     for add in services:
         b.phase = "overview"
         add(b, "overview")
+    coverage(b)
     for add in services:
         b.phase = "detail"
         add(b, "detail")

@@ -1501,7 +1501,7 @@
     {
       "id": 28,
       "type": "row",
-      "title": "auth — Traffic, errors, latency",
+      "title": "Cleanup coverage — every table with an expiry must be cleaned",
       "collapsed": false,
       "panels": [],
       "gridPos": {
@@ -1509,6 +1509,132 @@
         "w": 24,
         "x": 0,
         "y": 21
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Tables without cleanup",
+      "description": "Tables that have an expires_at column but no cleanup configured: what expires there is never removed. Must be 0. Red as soon as there is one; the list is on the right. No data means the services are not reporting it yet.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == bool 0)",
+          "instant": false
+        }
+      ],
+      "id": 29,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 22
+      }
+    },
+    {
+      "type": "table",
+      "title": "Tables without cleanup",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Which tables, in which service. Empty when every table with an expiry is cleaned. To fix one, add it to the service's cleanup tables in its config.",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Value": true
+            },
+            "renameByName": {
+              "app_kubernetes_io_component": "Service",
+              "table": "Table"
+            }
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (app_kubernetes_io_component, table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=~\"auth|edge\"}) == 0",
+          "format": "table",
+          "instant": true
+        }
+      ],
+      "id": 30,
+      "gridPos": {
+        "h": 3,
+        "w": 18,
+        "x": 6,
+        "y": 22
+      }
+    },
+    {
+      "id": 31,
+      "type": "row",
+      "title": "auth — Traffic, errors, latency",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
       }
     },
     {
@@ -1558,12 +1684,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 29,
+      "id": 32,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 26
       }
     },
     {
@@ -1613,12 +1739,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 30,
+      "id": 33,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 26
       }
     },
     {
@@ -1698,12 +1824,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 31,
+      "id": 34,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 30
+        "y": 34
       }
     },
     {
@@ -1749,12 +1875,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 32,
+      "id": 35,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 30
+        "y": 34
       }
     },
     {
@@ -1804,12 +1930,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 33,
+      "id": 36,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 38
+        "y": 42
       }
     },
     {
@@ -1855,16 +1981,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 34,
+      "id": 37,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 38
+        "y": 42
       }
     },
     {
-      "id": 35,
+      "id": 38,
       "type": "row",
       "title": "auth — Token refresh",
       "collapsed": false,
@@ -1873,7 +1999,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 46
+        "y": 50
       }
     },
     {
@@ -1923,12 +2049,12 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 36,
+      "id": 39,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 51
       }
     },
     {
@@ -2008,12 +2134,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 37,
+      "id": 40,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 51
       }
     },
     {
@@ -2063,12 +2189,12 @@
           "legendFormat": "HTTP {{status}}"
         }
       ],
-      "id": 38,
+      "id": 41,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 55
+        "y": 59
       }
     },
     {
@@ -2114,12 +2240,12 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 39,
+      "id": 42,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 55
+        "y": 59
       }
     },
     {
@@ -2169,12 +2295,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 40,
+      "id": 43,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 63
+        "y": 67
       }
     },
     {
@@ -2236,16 +2362,16 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 41,
+      "id": 44,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 63
+        "y": 67
       }
     },
     {
-      "id": 42,
+      "id": 45,
       "type": "row",
       "title": "auth — Sign-in",
       "collapsed": false,
@@ -2254,7 +2380,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 71
+        "y": 75
       }
     },
     {
@@ -2304,12 +2430,12 @@
           "legendFormat": "{{outcome}}"
         }
       ],
-      "id": 43,
+      "id": 46,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 72
+        "y": 76
       }
     },
     {
@@ -2359,12 +2485,12 @@
           "legendFormat": "{{reason}}"
         }
       ],
-      "id": 44,
+      "id": 47,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 72
+        "y": 76
       }
     },
     {
@@ -2419,12 +2545,12 @@
           "legendFormat": "completed"
         }
       ],
-      "id": 45,
+      "id": 48,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 80
+        "y": 84
       }
     },
     {
@@ -2472,12 +2598,12 @@
           "legendFormat": "completed / started"
         }
       ],
-      "id": 46,
+      "id": 49,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 80
+        "y": 84
       }
     },
     {
@@ -2524,12 +2650,12 @@
           "legendFormat": "{{step}}"
         }
       ],
-      "id": 47,
+      "id": 50,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 88
+        "y": 92
       }
     },
     {
@@ -2584,16 +2710,16 @@
           "legendFormat": "exempted"
         }
       ],
-      "id": 48,
+      "id": 51,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 88
+        "y": 92
       }
     },
     {
-      "id": 49,
+      "id": 52,
       "type": "row",
       "title": "auth — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -2602,7 +2728,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 100
       }
     },
     {
@@ -2651,12 +2777,12 @@
           "instant": false
         }
       ],
-      "id": 50,
+      "id": 53,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 97
+        "y": 101
       }
     },
     {
@@ -2705,12 +2831,12 @@
           "instant": false
         }
       ],
-      "id": 51,
+      "id": 54,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 97
+        "y": 101
       }
     },
     {
@@ -2759,12 +2885,12 @@
           "instant": false
         }
       ],
-      "id": 52,
+      "id": 55,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 97
+        "y": 101
       }
     },
     {
@@ -2813,12 +2939,12 @@
           "instant": false
         }
       ],
-      "id": 53,
+      "id": 56,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 97
+        "y": 101
       }
     },
     {
@@ -2930,18 +3056,18 @@
           "instant": true
         }
       ],
-      "id": 54,
+      "id": 57,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 100
+        "y": 104
       }
     },
     {
       "type": "timeseries",
       "title": "Expired rows waiting to be removed",
-      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. A series marked 'no cleanup configured' has an expires_at but nothing removes it, so it only ever grows. Counted up to a cap per table.",
+      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2978,25 +3104,16 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) and on (table) (max by (table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) == 1)",
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
           "legendFormat": "{{table}}"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) and on (table) (max by (table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) == 0)",
-          "legendFormat": "{{table}} (no cleanup configured)"
         }
       ],
-      "id": 55,
+      "id": 58,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 109
+        "y": 113
       }
     },
     {
@@ -3052,12 +3169,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 56,
+      "id": 59,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 109
+        "y": 113
       }
     },
     {
@@ -3104,16 +3221,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 57,
+      "id": 60,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 109
+        "y": 113
       }
     },
     {
-      "id": 58,
+      "id": 61,
       "type": "row",
       "title": "auth — Database and dependencies",
       "collapsed": true,
@@ -3179,12 +3296,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 59,
+          "id": 62,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 119
+            "y": 123
           }
         },
         {
@@ -3239,12 +3356,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 60,
+          "id": 63,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 119
+            "y": 123
           }
         },
         {
@@ -3290,12 +3407,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 61,
+          "id": 64,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 127
+            "y": 131
           }
         },
         {
@@ -3341,12 +3458,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 62,
+          "id": 65,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 127
+            "y": 131
           }
         },
         {
@@ -3392,12 +3509,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 63,
+          "id": 66,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 135
+            "y": 139
           }
         },
         {
@@ -3443,12 +3560,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 64,
+          "id": 67,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 135
+            "y": 139
           }
         }
       ],
@@ -3456,11 +3573,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 118
+        "y": 122
       }
     },
     {
-      "id": 65,
+      "id": 68,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3508,12 +3625,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 66,
+          "id": 69,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 120
+            "y": 124
           }
         },
         {
@@ -3569,12 +3686,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 67,
+          "id": 70,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 120
+            "y": 124
           }
         },
         {
@@ -3621,12 +3738,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 68,
+          "id": 71,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 128
+            "y": 132
           }
         },
         {
@@ -3672,12 +3789,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 69,
+          "id": 72,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 128
+            "y": 132
           }
         }
       ],
@@ -3685,11 +3802,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 119
+        "y": 123
       }
     },
     {
-      "id": 70,
+      "id": 73,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3698,7 +3815,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 120
+        "y": 124
       }
     },
     {
@@ -3748,12 +3865,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 71,
+      "id": 74,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 121
+        "y": 125
       }
     },
     {
@@ -3803,12 +3920,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 72,
+      "id": 75,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 121
+        "y": 125
       }
     },
     {
@@ -3872,12 +3989,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 73,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 129
+        "y": 133
       }
     },
     {
@@ -3923,12 +4040,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 74,
+      "id": 77,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 129
+        "y": 133
       }
     },
     {
@@ -3978,12 +4095,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 75,
+      "id": 78,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 137
+        "y": 141
       }
     },
     {
@@ -4029,16 +4146,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 76,
+      "id": 79,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 137
+        "y": 141
       }
     },
     {
-      "id": 77,
+      "id": 80,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4047,7 +4164,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 145
+        "y": 149
       }
     },
     {
@@ -4097,12 +4214,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 78,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 146
+        "y": 150
       }
     },
     {
@@ -4148,12 +4265,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 79,
+      "id": 82,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 146
+        "y": 150
       }
     },
     {
@@ -4203,12 +4320,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 80,
+      "id": 83,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 154
+        "y": 158
       }
     },
     {
@@ -4258,16 +4375,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 81,
+      "id": 84,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 154
+        "y": 158
       }
     },
     {
-      "id": 82,
+      "id": 85,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4276,7 +4393,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 162
+        "y": 166
       }
     },
     {
@@ -4324,12 +4441,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 83,
+      "id": 86,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 163
+        "y": 167
       }
     },
     {
@@ -4375,12 +4492,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 84,
+      "id": 87,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 163
+        "y": 167
       }
     },
     {
@@ -4444,16 +4561,16 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 85,
+      "id": 88,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 171
+        "y": 175
       }
     },
     {
-      "id": 86,
+      "id": 89,
       "type": "row",
       "title": "central — Database and dependencies",
       "collapsed": true,
@@ -4519,12 +4636,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 87,
+          "id": 90,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 180
+            "y": 184
           }
         },
         {
@@ -4579,12 +4696,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 88,
+          "id": 91,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 180
+            "y": 184
           }
         },
         {
@@ -4630,12 +4747,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 89,
+          "id": 92,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 188
+            "y": 192
           }
         },
         {
@@ -4681,12 +4798,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 90,
+          "id": 93,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 188
+            "y": 192
           }
         },
         {
@@ -4732,12 +4849,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 91,
+          "id": 94,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 196
+            "y": 200
           }
         },
         {
@@ -4783,12 +4900,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 92,
+          "id": 95,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 196
+            "y": 200
           }
         }
       ],
@@ -4796,11 +4913,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 179
+        "y": 183
       }
     },
     {
-      "id": 93,
+      "id": 96,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -4848,12 +4965,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 94,
+          "id": 97,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 181
+            "y": 185
           }
         },
         {
@@ -4909,12 +5026,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 95,
+          "id": 98,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 181
+            "y": 185
           }
         },
         {
@@ -4961,12 +5078,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 96,
+          "id": 99,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 189
+            "y": 193
           }
         },
         {
@@ -5012,12 +5129,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 97,
+          "id": 100,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 189
+            "y": 193
           }
         }
       ],
@@ -5025,11 +5142,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 180
+        "y": 184
       }
     },
     {
-      "id": 98,
+      "id": 101,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -5038,7 +5155,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 181
+        "y": 185
       }
     },
     {
@@ -5088,12 +5205,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 99,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 182
+        "y": 186
       }
     },
     {
@@ -5143,12 +5260,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 100,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 182
+        "y": 186
       }
     },
     {
@@ -5212,12 +5329,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 101,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 190
+        "y": 194
       }
     },
     {
@@ -5263,12 +5380,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 102,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 190
+        "y": 194
       }
     },
     {
@@ -5318,12 +5435,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 103,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 198
+        "y": 202
       }
     },
     {
@@ -5373,12 +5490,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 104,
+      "id": 107,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 198
+        "y": 202
       }
     },
     {
@@ -5447,12 +5564,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 105,
+      "id": 108,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 206
+        "y": 210
       }
     },
     {
@@ -5523,12 +5640,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 106,
+      "id": 109,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 206
+        "y": 210
       }
     },
     {
@@ -5599,16 +5716,16 @@
           "legendFormat": "proxy mean − backend mean"
         }
       ],
-      "id": 107,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 214
+        "y": 218
       }
     },
     {
-      "id": 108,
+      "id": 111,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5617,7 +5734,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 222
+        "y": 226
       }
     },
     {
@@ -5667,12 +5784,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 109,
+      "id": 112,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 223
+        "y": 227
       }
     },
     {
@@ -5722,12 +5839,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 110,
+      "id": 113,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 223
+        "y": 227
       }
     },
     {
@@ -5791,12 +5908,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 111,
+      "id": 114,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 231
+        "y": 235
       }
     },
     {
@@ -5842,12 +5959,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 112,
+      "id": 115,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 231
+        "y": 235
       }
     },
     {
@@ -5897,12 +6014,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 113,
+      "id": 116,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 239
+        "y": 243
       }
     },
     {
@@ -5948,16 +6065,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 114,
+      "id": 117,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 239
+        "y": 243
       }
     },
     {
-      "id": 115,
+      "id": 118,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -5966,7 +6083,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 247
+        "y": 251
       }
     },
     {
@@ -6016,12 +6133,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 116,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 248
+        "y": 252
       }
     },
     {
@@ -6071,12 +6188,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 117,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 248
+        "y": 252
       }
     },
     {
@@ -6140,12 +6257,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 118,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 256
+        "y": 260
       }
     },
     {
@@ -6191,12 +6308,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 119,
+      "id": 122,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 256
+        "y": 260
       }
     },
     {
@@ -6246,12 +6363,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 120,
+      "id": 123,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 264
+        "y": 268
       }
     },
     {
@@ -6297,16 +6414,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 121,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 264
+        "y": 268
       }
     },
     {
-      "id": 122,
+      "id": 125,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6315,7 +6432,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 272
+        "y": 276
       }
     },
     {
@@ -6361,12 +6478,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 123,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 273
+        "y": 277
       }
     },
     {
@@ -6429,12 +6546,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 124,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 273
+        "y": 277
       }
     },
     {
@@ -6496,12 +6613,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 125,
+      "id": 128,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 281
+        "y": 285
       }
     },
     {
@@ -6556,16 +6673,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 126,
+      "id": 129,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 281
+        "y": 285
       }
     },
     {
-      "id": 127,
+      "id": 130,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -6574,7 +6691,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 289
+        "y": 293
       }
     },
     {
@@ -6623,12 +6740,12 @@
           "instant": false
         }
       ],
-      "id": 128,
+      "id": 131,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 290
+        "y": 294
       }
     },
     {
@@ -6677,12 +6794,12 @@
           "instant": false
         }
       ],
-      "id": 129,
+      "id": 132,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 290
+        "y": 294
       }
     },
     {
@@ -6731,12 +6848,12 @@
           "instant": false
         }
       ],
-      "id": 130,
+      "id": 133,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 290
+        "y": 294
       }
     },
     {
@@ -6848,18 +6965,18 @@
           "instant": true
         }
       ],
-      "id": 131,
+      "id": 134,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 293
+        "y": 297
       }
     },
     {
       "type": "timeseries",
       "title": "Expired rows waiting to be removed",
-      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. A series marked 'no cleanup configured' has an expires_at but nothing removes it, so it only ever grows. Counted up to a cap per table.",
+      "description": "Is cleanup keeping up? Per table, the rows that should already be gone. A healthy table saws back to near 0 after each run; a line that only climbs is a table cleanup is losing to. Counted up to a cap per table.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -6896,25 +7013,16 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) and on (table) (max by (table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) == 1)",
+          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
           "legendFormat": "{{table}}"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max by (table) (cleanup_expired_rows{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) and on (table) (max by (table) (cleanup_configured{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) == 0)",
-          "legendFormat": "{{table}} (no cleanup configured)"
         }
       ],
-      "id": 132,
+      "id": 135,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 302
+        "y": 306
       }
     },
     {
@@ -6970,12 +7078,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 133,
+      "id": 136,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 302
+        "y": 306
       }
     },
     {
@@ -7022,16 +7130,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 134,
+      "id": 137,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 302
+        "y": 306
       }
     },
     {
-      "id": 135,
+      "id": 138,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -7097,12 +7205,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 136,
+          "id": 139,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 312
+            "y": 316
           }
         },
         {
@@ -7157,12 +7265,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 137,
+          "id": 140,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 312
+            "y": 316
           }
         },
         {
@@ -7208,12 +7316,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 138,
+          "id": 141,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 320
+            "y": 324
           }
         },
         {
@@ -7259,12 +7367,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 139,
+          "id": 142,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 320
+            "y": 324
           }
         },
         {
@@ -7310,12 +7418,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 140,
+          "id": 143,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 328
+            "y": 332
           }
         },
         {
@@ -7361,12 +7469,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 141,
+          "id": 144,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 328
+            "y": 332
           }
         }
       ],
@@ -7374,11 +7482,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 311
+        "y": 315
       }
     },
     {
-      "id": 142,
+      "id": 145,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -7426,12 +7534,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 143,
+          "id": 146,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 313
+            "y": 317
           }
         },
         {
@@ -7487,12 +7595,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 144,
+          "id": 147,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 313
+            "y": 317
           }
         },
         {
@@ -7539,12 +7647,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 145,
+          "id": 148,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 321
+            "y": 325
           }
         },
         {
@@ -7590,12 +7698,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 146,
+          "id": 149,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 321
+            "y": 325
           }
         }
       ],
@@ -7603,7 +7711,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 312
+        "y": 316
       }
     }
   ]
