@@ -1,3 +1,94 @@
+# Versola
+
+OAuth 2.0 / OpenID Connect identity platform. Scala 3 + ZIO, PostgreSQL (Flyway), OpenTelemetry.
+Three services share one codebase: `auth` (the OAuth/OIDC provider), `central` (configuration
+store and admin API; reached only through `edge`), `edge` (authenticating reverse proxy and the
+admin console's login). `util` is shared code; each service has a `*-postgres-impl` module that
+is the runnable app. `central-ui` is the admin SPA (Lit/TypeScript) and also builds the login
+forms (Solid.js).
+
+Backward compatibility is the default for every change: HTTP API and error shapes, token and claim
+formats, config keys, database schema, CLI flags, stored data. `readme.md` promises none before
+1.0.0, but a breaking change is made only when explicitly requested. Otherwise keep the old
+behaviour working (add alongside, default to the old value, deprecate before removing) and, if
+compatibility cannot be kept, stop and ask. State any break, and how existing deployments migrate,
+in the PR and in `deploy.md`.
+
+Read before non-trivial work: `readme.md` (architecture), `develop.md` (running locally,
+config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
+
+# Commands
+
+```bash
+sbt compile                              # all services
+sbt Test/compile                         # also compiles e2e
+sbt test                                 # needs Postgres: docker-compose -f services.yml up -d postgres
+sbt "auth/testOnly versola.oauth.revoke.RevocationServiceSpec"   # one spec
+sbt e2e/test                             # needs the staged stack, see develop.md
+cd central-ui && npm run type-check && npm run test:unit   # admin UI; npm run test:ui = Playwright
+cd central-ui && npm run build:forms     # required before central is built or staged
+```
+
+Scala formatting follows `.scalafmt.conf` (Scala 3, maxColumn 150); keep touched files formatted.
+`PostgresTlsConnectionSpec` needs a TLS Postgres: `util/implementations/postgres/tls-fixture/start.sh`.
+Running a service locally needs `RUN_MIGRATIONS=true` against a fresh database; the exact
+commands are in `develop.md`. Do not paste them from memory.
+
+# Definition of Done
+
+A change is done when all of these hold; if one does not, say which and why instead of
+reporting the change as finished.
+
+1. `sbt compile` and `sbt test` pass. `sbt test` is run before every commit.
+2. Tests exist at the right level (see Test Coverage Rules below).
+3. Specs, docs and config that describe the changed behaviour are updated in the same change
+   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change).
+4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
+   say so.
+
+# Working Rules
+
+- Read the code before claiming how it behaves. Never cite an RFC section, config key,
+  endpoint or class from memory: open the source, the spec under `*/open-api/`, or the RFC.
+- Ask before guessing only when the answer changes what you build and cannot be found in the
+  repo. Otherwise pick the conventional option, state it, and proceed.
+- Keep a change to one purpose. Do not refactor, reformat or rename unrelated code in it.
+- Match the surrounding code: naming, comment density, error style. Comments explain why,
+  not what.
+- Fix the cause, not the symptom. Do not weaken, skip or delete a failing test to get green;
+  if a test is wrong, say why.
+
+# Git
+
+- Default branch is `main`. Work on a feature branch named `feat/...`, `fix/...`,
+  `chore/...`; never commit to `main`.
+- You may commit and push to a feature branch without asking. Ask first for anything else:
+  force-push, merging or rebasing shared branches, tags, releases, deleting branches.
+- Commit message: short, imperative, sentence case, says what changes and why it matters
+  (`Refuse a repeated or malformed body access_token`). A `module:` prefix is fine
+  (`migrations: ...`). No Conventional-Commits `feat:` prefixes.
+- Formatting: before every push, `scalafmt --mode diff --diff-branch origin/main` formats the Scala
+  files your branch changes; commit the result. `.claude/hooks/pre-push.sh` blocks a push that fails
+  `--test` once `.claude/scalafmt-enforced` exists. That file is added by the project-wide reformat
+  change, which is a separate pull request: scalafmt works on whole files, so until it lands, do
+  not reformat code you did not otherwise touch, and do not run scalafmt over the whole project.
+- Hooks in `.claude/hooks/` (registered in `.claude/settings.json`) enforce, among other things:
+  no force-push, no push to `main`, no edits of generated forms or of migrations already on
+  `origin/main`, and the measured-DB-access rule. A hook that blocks you is right until the operator
+  says otherwise; do not work around it.
+- Pull request: what changed, which tests were added at which level, any OpenAPI change, and
+  any gap you left (missing test level, skipped spec) with the reason.
+
+# Ask Before
+
+- A breaking change of any kind (see the compatibility paragraph above).
+- Changing migrations that were already released, or anything under `deploy.md`'s production
+  flow.
+- Touching secrets, keys, certificates, `SECURITY.md`, `.github/workflows/`, `CODEOWNERS`.
+- Adding a dependency to `project/Dependencies.scala`.
+- Loosening a security check (redirect URI matching, PKCE, signature or audience validation,
+  client authentication) for any reason, including to make a test pass.
+
 # Test Coverage Rules
 
 Every behaviour change ships with both levels of test. Neither substitutes for the other:
@@ -17,25 +108,6 @@ follow-up — do not let the gap pass silently.
 
 Run `sbt test` before every commit. `sbt e2e/test` needs the staged stack (see develop.md);
 when it cannot run locally, say so explicitly rather than reporting the change as tested.
-
-# OpenAPI Spec Rules
-
-The HTTP surface of `auth`, `central` and `edge` is described by hand-maintained OpenAPI specs:
-`auth/open-api/*.yaml`, `central/open-api/central.yaml`, `edge/open-api/edge.yaml`. They are
-not generated, so they only stay true if every change that touches the surface updates them
-in the same change.
-
-- Update the spec whenever you add, remove or rename a route, path/query/header/cookie
-  parameter, request or response field, status code, error code, auth method, or enum value
-  of a controller -- and whenever behaviour a spec describes changes (validation, defaults,
-  auth requirements, headers).
-- A new public endpoint gets a spec entry; a new internal-only endpoint (sync, registry,
-  `/service/*`, UI flows) is deliberately left out, but state that in the spec's intro if it
-  is not already listed there.
-- Read the controller and its request/response case classes, not the old spec, as the source
-  of truth for what to write. Keep the existing style of the file you are editing.
-- Check that each edited YAML still parses and its `$ref`s resolve before committing.
-- Mention the spec change in the PR; if you skipped one, say why.
 
 # Scala Semantic Rules
 If ScalaSemantic MCP is available.

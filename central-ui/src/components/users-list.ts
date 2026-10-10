@@ -1334,7 +1334,7 @@ export class VersolaUsersList extends LitElement {
       </content-header>
 
       <form class="search-bar" @submit=${this.handleSearchSubmit}>
-        <select .value=${this.searchField}
+        <select aria-label="Search by" .value=${this.searchField}
           @change=${(e: Event) => {
             this.searchField = (e.target as HTMLSelectElement).value as UserSearchField;
           }}>
@@ -1343,7 +1343,7 @@ export class VersolaUsersList extends LitElement {
           <option value="phone">Phone</option>
           <option value="id">ID</option>
         </select>
-        <input type="search" placeholder="Search users…" .value=${this.searchQuery}
+        <input type="search" aria-label="Search users" placeholder="Search users…" .value=${this.searchQuery}
           @input=${(e: Event) => {
             this.searchQuery = (e.target as HTMLInputElement).value;
             this.searchField = this.detectSearchField(this.searchQuery);

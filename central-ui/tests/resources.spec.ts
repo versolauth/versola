@@ -317,7 +317,7 @@ test('updates a resource and saves batched endpoint changes in one request', asy
   expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toEqual({
     resourceId: 'alpha',
     resource: 'https://alpha-v2.example',
-    audience: [],
+    audience: { add: [], remove: [] },
     deleteEndpoints: [101],
     createEndpoints: [
       { id: 102, method: 'POST', path: '/alpha/items', fetchUserInfo: false, allow: 'true', inject: [], stepUpCondition: null, stepUpAcr: null, maxAge: null },
@@ -350,7 +350,7 @@ test('adds and removes clients from a resource audience', async ({ page }) => {
 
   expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toMatchObject({
     resourceId: 'alpha',
-    audience: ['alpha-web'],
+    audience: { add: ['alpha-web'], remove: [] },
   });
 });
 
