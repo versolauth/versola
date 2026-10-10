@@ -1,10 +1,9 @@
 package versola.util.postgres
 
+import PostgresWalMetrics.Cumulative
 import zio.*
 import zio.metrics.Metric
 import zio.test.*
-
-import PostgresWalMetrics.Cumulative
 
 object PostgresWalMetricsUnitsSpec extends ZIOSpecDefault:
 
