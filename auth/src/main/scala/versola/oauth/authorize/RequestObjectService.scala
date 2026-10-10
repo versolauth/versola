@@ -2,10 +2,10 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.Error
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.clientauth.ClientAssertionRepository
 import versola.oauth.client.model.{ClientId, SecurityProfile}
-import versola.util.{CoreConfig, JwtAudience, RequestObject}
+import versola.oauth.clientauth.ClientAssertionRepository
 import versola.util.http.Observability
+import versola.util.{CoreConfig, JwtAudience, RequestObject}
 import zio.{Chunk, Clock, IO, ZIO, ZLayer}
 
 /** RFC 9101 §6: resolves a `request` parameter into the authorization request parameters it

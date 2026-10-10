@@ -47,7 +47,7 @@ object ReloadingCache:
     */
   private def notUpYet(error: Throwable): Boolean =
     Iterator
-      .iterate(Option(error))(_.flatMap(t => Option(t.getCause).filterNot(_ eq t)))
+      .iterate(Option(error))(_.flatMap(t => Option(t.getCause).filterNot(_.eq(t))))
       .take(16)
       .takeWhile(_.isDefined)
       .flatten

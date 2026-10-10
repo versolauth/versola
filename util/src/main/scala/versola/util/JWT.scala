@@ -228,10 +228,10 @@ object JWT:
    * @return Validated and deserialized JWT claims or error
    */
   def deserialize[A: JsonDecoder](
-    token: String,
-    keys: PublicKeys,
-    typ: Type,
-    validateExpiry: Boolean = true,
+      token: String,
+      keys: PublicKeys,
+      typ: Type,
+      validateExpiry: Boolean = true,
   ): IO[Error, A] =
     for
       now <- Clock.instant
@@ -275,7 +275,6 @@ object JWT:
       result <- ZIO.fromEither(claimsToJson(jwt.getJWTClaimsSet).as[A])
         .orElseFail(Error.InvalidClaims)
     yield result
-
 
   private def verifyType(jwt: SignedJWT, expectedTyp: Type): IO[Error, Unit] =
     ZIO.attempt(Option(jwt.getHeader.getType))

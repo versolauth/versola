@@ -149,7 +149,7 @@ object HistogramWire:
       Left(s"unsupported histogram report version ${report.version} (this build reads $version)")
     else
       report.histograms.foldLeft[Either[String, Chunk[HistogramSample]]](Right(Chunk.empty)):
-        case (Left(error), _)          => Left(error)
+        case (Left(error), _) => Left(error)
         case (Right(accumulated), one) => decode(one).map(accumulated :+ _)
 
   /** Lossless merge across drivers and across snapshot intervals.

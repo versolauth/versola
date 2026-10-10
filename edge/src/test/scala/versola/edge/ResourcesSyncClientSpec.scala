@@ -68,10 +68,12 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
           Handler.fromFunctionZIO[Request] { request =>
             seen.set(Some(request)).as(
               Response.json(
-                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(encryptedSecret)}"}]}""",
-              )
+                s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[],"secret":"${Base64.urlEncode(
+                    encryptedSecret,
+                  )}"}]}""",
+              ),
             )
-          }.toRoutes
+          }.toRoutes,
         )
         client <- ZIO.service[Client]
         service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, celEvaluator)
@@ -93,14 +95,14 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
             ZIO.succeed(
               Response.json(
                 s"""{"resources":[{"resourceId":"central","resource":"https://central.example","endpoints":[
-                  |{"id":"$endpointId","method":"GET","path":"/orders","fetchUserInfo":false,
-                  |"allow":"request.body.total <= 50000",
-                  |"inject":[{"target":"header","name":"X-User","expression":"token.sub"}],
-                  |"stepUpCondition":"user.subscription == 'premium'",
-                  |"stepUpAcr":null,"maxAge":null}],"secret":null}]}""".stripMargin,
-              )
+                   |{"id":"$endpointId","method":"GET","path":"/orders","fetchUserInfo":false,
+                   |"allow":"request.body.total <= 50000",
+                   |"inject":[{"target":"header","name":"X-User","expression":"token.sub"}],
+                   |"stepUpCondition":"user.subscription == 'premium'",
+                   |"stepUpAcr":null,"maxAge":null}],"secret":null}]}""".stripMargin,
+              ),
             )
-          }.toRoutes
+          }.toRoutes,
         )
         client <- ZIO.service[Client]
         service = ResourcesSyncClient.Impl(client, config, securityService, centralSyncTokenService, trackingEvaluator(compiled))

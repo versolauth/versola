@@ -5,13 +5,25 @@ import com.nimbusds.jose.jwk.{Curve, ECKey, RSAKey}
 import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.model.DeviceId
+import versola.oauth.client.model.{
+  AuthMethod,
+  ClientId,
+  MtlsCertificateEncoding,
+  MtlsCertificateSource,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.jwks.JwksService
-import versola.oauth.client.model.{AuthMethod, ClientId, MtlsCertificateEncoding, MtlsCertificateSource, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ScopeToken, TenantId}
-import versola.oauth.mtls.ClientCertificate
 import versola.oauth.model.AccessToken
+import versola.oauth.mtls.ClientCertificate
 import versola.user.model.UserId
 import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, Secret}
+import zio.durationInt
+import zio.http.{Method, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.{Task, UIO, ZIO}
@@ -21,8 +33,6 @@ import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
 import java.time.Instant
 import java.util.{Date, UUID}
 import javax.crypto.spec.SecretKeySpec
-import zio.durationInt
-import zio.http.{Method, URL}
 
 object TestEnvConfig:
 
@@ -188,7 +198,6 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
       ZIO.succeed(TestEnvConfig.signingKey)
     override def refresh: Task[Unit] = ZIO.unit
 
-
   val coreConfig = CoreConfig(
     security = CoreConfig.Security(
       accessTokensSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
@@ -198,10 +207,10 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
       sessionsSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
       passwordsSecret = Secret.Bytes16(Array.fill(16)(0.toByte)),
       conversationCookieSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
-      sessionCookieSecret      = Secret.Bytes32(Array.fill(32)(0.toByte)),
-      userAgentCookieSecret    = Secret.Bytes32(Array.fill(32)(0.toByte)),
-      parRequestsSecret        = Secret.Bytes32(Array.fill(32)(0.toByte)),
-      dpopNoncesSecret         = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      sessionCookieSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      userAgentCookieSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      parRequestsSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
+      dpopNoncesSecret = Secret.Bytes32(Array.fill(32)(0.toByte)),
     ),
     jwt = jwtConfig,
     central = CoreConfig.CentralSyncConfig(
@@ -216,7 +225,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
         username = None,
         password = None,
         body = Map.empty,
-      )
+      ),
     ),
     smtp = Some(
       CoreConfig.SmtpConfig(
@@ -227,7 +236,7 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
         from = Email("test@versola.com"),
         subject = "Test OTP",
         startTls = true,
-      )
+      ),
     ),
     configurationCacheRefreshInterval = 5.minutes,
     par = None,

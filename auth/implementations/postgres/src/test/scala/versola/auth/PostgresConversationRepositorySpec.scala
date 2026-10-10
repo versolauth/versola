@@ -19,4 +19,3 @@ object PostgresConversationRepositorySpec extends PostgresSpec, ConversationRepo
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE auth_conversations".update.run())
     yield ()
-

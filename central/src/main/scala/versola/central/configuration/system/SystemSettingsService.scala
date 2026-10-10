@@ -31,7 +31,7 @@ object SystemSettingsService:
 
     override def upsertSettings(record: SystemSettingsRecord): Task[Either[SystemSettingsValidationError, Unit]] =
       normalize(record) match
-        case Left(error)       => ZIO.left(error)
+        case Left(error) => ZIO.left(error)
         case Right(normalized) => repository.upsert(normalized).as(Right(()))
 
     override def sync(): Task[Unit] =

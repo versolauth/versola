@@ -5,8 +5,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.PasswordRecord
 import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.user.model.UserId
-import versola.util.{Salt, Secret}
 import versola.util.postgres.BasicCodecs
+import versola.util.{Salt, Secret}
 import zio.prelude.EqualOps
 import zio.{Clock, IO, Task, ZLayer}
 

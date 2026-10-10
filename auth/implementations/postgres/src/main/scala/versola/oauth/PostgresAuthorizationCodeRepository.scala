@@ -154,7 +154,6 @@ class PostgresAuthorizationCodeRepository(
           .query[RefreshTokenFamilyId].run().headOption
           .toLeft(())
 
-
 object PostgresAuthorizationCodeRepository:
   def live: ZLayer[TransactorZIO, Throwable, AuthorizationCodeRepository] =
     ZLayer.fromFunction(PostgresAuthorizationCodeRepository(_))

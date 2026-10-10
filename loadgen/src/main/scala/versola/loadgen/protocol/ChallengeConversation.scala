@@ -100,7 +100,12 @@ private[protocol] final class ChallengeConversation(
     HttpExchange.redirectParam(location, "code") match
       case Some(code) =>
         ZIO.succeed(
-          ConversationOutcome.Completed(ConversationCompleted(AuthCode(code), HttpExchange.redirectParam(location, stateParam), HttpExchange.redirectParam(location, "iss"), ssoSession)),
+          ConversationOutcome.Completed(ConversationCompleted(
+            AuthCode(code),
+            HttpExchange.redirectParam(location, stateParam),
+            HttpExchange.redirectParam(location, "iss"),
+            ssoSession,
+          )),
         )
       case None =>
         HttpExchange.redirectParam(location, "error") match

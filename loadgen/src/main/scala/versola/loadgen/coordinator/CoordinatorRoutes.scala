@@ -1,7 +1,7 @@
 package versola.loadgen.coordinator
 
 import zio.http.*
-import zio.json.{JsonEncoder, EncoderOps, DecoderOps}
+import zio.json.{DecoderOps, EncoderOps, JsonEncoder}
 import zio.{IO, ZIO}
 
 /** The coordinator's HTTP surface (dev spec §12). Small on purpose: no UI, no pagination, no

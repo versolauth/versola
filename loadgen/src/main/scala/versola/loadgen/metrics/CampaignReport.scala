@@ -1,7 +1,7 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.environment.EnvironmentStats
 import versola.loadgen.config.SecurityProfile
+import versola.loadgen.environment.EnvironmentStats
 import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
 import zio.{Chunk, Duration}

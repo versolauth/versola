@@ -10,5 +10,5 @@ type UserId = UserId.Type
 object UserId extends UUIDv7:
   given JsonCodec[UserId] = JsonCodec.string.transform(
     s => UserId(UUID.fromString(s)),
-    uuid => uuid.toString
+    uuid => uuid.toString,
   )

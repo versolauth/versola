@@ -3,7 +3,21 @@ package versola.central.configuration.clients
 import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers
 import org.bouncycastle.asn1.x500.style.BCStyle
 import org.bouncycastle.asn1.x500.{X500Name, X500NameBuilder}
-import org.bouncycastle.asn1.x509.{AlgorithmIdentifier, AuthorityKeyIdentifier, BasicConstraints, Certificate, ExtendedKeyUsage, Extension, ExtensionsGenerator, KeyPurposeId, KeyUsage, SubjectKeyIdentifier, SubjectPublicKeyInfo, Time, V3TBSCertificateGenerator}
+import org.bouncycastle.asn1.x509.{
+  AlgorithmIdentifier,
+  AuthorityKeyIdentifier,
+  BasicConstraints,
+  Certificate,
+  ExtendedKeyUsage,
+  Extension,
+  ExtensionsGenerator,
+  KeyPurposeId,
+  KeyUsage,
+  SubjectKeyIdentifier,
+  SubjectPublicKeyInfo,
+  Time,
+  V3TBSCertificateGenerator,
+}
 import org.bouncycastle.asn1.x9.X9ObjectIdentifiers
 import org.bouncycastle.asn1.{ASN1Encodable, ASN1Encoding, ASN1Integer, ASN1OctetString, DERBitString, DERNull, DERSequence}
 import versola.central.CentralConfig

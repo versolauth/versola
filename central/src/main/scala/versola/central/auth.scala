@@ -2,8 +2,8 @@ package versola.central
 
 import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.resources.ResourceService
-import versola.util.{JWT, Secret}
 import versola.util.http.Unauthorized
+import versola.util.{JWT, Secret}
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.{JsonCodec, jsonField}
@@ -16,7 +16,7 @@ def authorizeBasic(request: Request): ZIO[ResourceService, Unauthorized.type, Un
         provided <- ZIO.fromEither(Secret.fromBase64Url(password.stringValue)).orElseFail(Unauthorized)
         resourceService <- ZIO.service[ResourceService]
         valid <- resourceService.verifySecret(provided).orElseFail(Unauthorized)
-        _        <- ZIO.unless(valid)(ZIO.fail(Unauthorized))
+        _ <- ZIO.unless(valid)(ZIO.fail(Unauthorized))
       yield ()
 
     case _ =>

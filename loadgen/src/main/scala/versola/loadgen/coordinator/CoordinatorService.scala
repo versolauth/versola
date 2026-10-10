@@ -1,6 +1,7 @@
 package versola.loadgen.coordinator
 
 import versola.loadgen.config.{CampaignConfig, LoadgenConfig, MeasurementRefConfig, PlanConfig}
+import versola.loadgen.environment.EnvironmentReader
 import versola.loadgen.metrics.{
   AcceptanceThresholds,
   CampaignReport,
@@ -13,7 +14,6 @@ import versola.loadgen.metrics.{
   RunPhase,
   TokenMode,
 }
-import versola.loadgen.environment.EnvironmentReader
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.scheduler.{CampaignSchedule, DiurnalEnvelope}
 import versola.loadgen.store.{MetricSnapshotRepository, SutStatPhase, VirtualUserRepository}
@@ -399,11 +399,11 @@ final class CoordinatorService private (
               captureWindow(SutStatPhase.MeasuredEnd),
             ).unit
       ) *>
-      // The pooler is read after the databases rather than in parallel with them. Both readings
-      // are of the same instant only approximately, and where they disagree the database's is
-      // the one the report leans on -- so the pooler's boundary is the one that should absorb
-      // the other's latency, not the one that adds to it.
-      ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
+        // The pooler is read after the databases rather than in parallel with them. Both readings
+        // are of the same instant only approximately, and where they disagree the database's is
+        // the one the report leans on -- so the pooler's boundary is the one that should absorb
+        // the other's latency, not the one that adds to it.
+        ZIO.foreachDiscard(sutStats)(_.capture(campaign.name, phase)) *>
         ZIO.foreachDiscard(poolerStats)(_.capture(campaign.name, phase))
 
   private def captureWindow(phase: SutStatPhase): UIO[Unit] =

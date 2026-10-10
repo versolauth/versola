@@ -1,8 +1,8 @@
 package versola.central.configuration.permissions
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.PatchDescription
+import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
 import zio.prelude.EqualOps
@@ -63,8 +63,8 @@ trait PermissionRepositorySpec extends DatabaseSpecBase[PermissionRepositorySpec
               id = permissionId,
               description = Map("en" -> "Read users", "ru" -> "Чтение пользователей"),
               endpointIds = Set(listEndpointId, detailEndpointId),
-            )
-          )
+            ),
+          ),
         )
       },
       test("delete permission") {

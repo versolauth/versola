@@ -51,9 +51,9 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[JwksService](jwksService) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment(TestEnvConfig.coreConfig) ++
-                tracing
-            )
-          )
+                tracing,
+            ),
+          ),
         )
         _ <- setup(stubs)
         authHeader <- if authenticate then internalAuthHeader.map(Some(_)) else ZIO.succeed(None)
@@ -74,20 +74,22 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         // The JWKS is reloaded by the same call: a tenant's selected key is only signable
         // here once it has been synced, so a sync that skipped it would leave a freshly
         // generated key unusable until the next scheduled refresh.
-        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
-          configuration.syncConfiguration.calls.length == 1,
-          jwksService.refresh.calls.length == 1,
-        )),
+        verify = (configuration, _, jwksService) =>
+          ZIO.succeed(assertTrue(
+            configuration.syncConfiguration.calls.length == 1,
+            jwksService.refresh.calls.length == 1,
+          )),
       ),
       controllerTestCase(
         description = "rejects a request without a valid internal auth token",
         request = Request(method = Method.POST, url = URL.empty / "service" / "configuration" / "sync"),
         expectedStatus = Status.Unauthorized,
         authenticate = false,
-        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
-          configuration.syncConfiguration.calls.isEmpty,
-          jwksService.refresh.calls.isEmpty,
-        )),
+        verify = (configuration, _, jwksService) =>
+          ZIO.succeed(assertTrue(
+            configuration.syncConfiguration.calls.isEmpty,
+            jwksService.refresh.calls.isEmpty,
+          )),
       ),
       controllerTestCase(
         description = "returns 404 Not Found in prod, without even checking auth",
@@ -95,10 +97,11 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         expectedStatus = Status.NotFound,
         env = EnvName.Prod,
         authenticate = false,
-        verify = (configuration, _, jwksService) => ZIO.succeed(assertTrue(
-          configuration.syncConfiguration.calls.isEmpty,
-          jwksService.refresh.calls.isEmpty,
-        )),
+        verify = (configuration, _, jwksService) =>
+          ZIO.succeed(assertTrue(
+            configuration.syncConfiguration.calls.isEmpty,
+            jwksService.refresh.calls.isEmpty,
+          )),
       ),
     ),
     suite("DELETE /service/users")(

@@ -1,7 +1,7 @@
 package versola.configuration.sync
 
-import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
+import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
 import versola.central.configuration.permissions.Permission
@@ -155,7 +155,13 @@ object PostgresCacheSyncRepositorySpec extends ZIOSpecDefault:
         val payload = """{"tenantId":"t1","id":"otp1","purpose":"otp","channel":"sms","op":"UPDATE"}"""
         assertTrue(
           parseNotification("otp_template_change", payload) ==
-            SyncEvent.OtpTemplatesUpdated(tenantId = TenantId("t1"), id = "otp1", purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms, op = SyncEvent.Op.UPDATE),
+            SyncEvent.OtpTemplatesUpdated(
+              tenantId = TenantId("t1"),
+              id = "otp1",
+              purpose = OtpTemplatePurpose.otp,
+              channel = OtpTemplateChannel.sms,
+              op = SyncEvent.Op.UPDATE,
+            ),
         )
       },
       test("otp_template_change falls back to Unknown when tenantId is missing") {

@@ -6,5 +6,5 @@ import zio.schema.*
 case class Scope(
     id: ScopeToken,
     description: Json.Obj,
-    claims: List[ClaimRecord]
+    claims: List[ClaimRecord],
 ) derives Schema

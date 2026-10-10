@@ -6,11 +6,12 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, 
+import versola.oauth.client.model.{
   Acr,
   AuthFactor,
   AuthFactorType,
   AuthFlow,
+  AuthMethod,
   AuthMethodRef,
   ClientId,
   OAuthClientRecord,
@@ -645,7 +646,11 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
         _ <- env.conversationRepository.create.succeedsWith(())
-        result <- env.service.authorize(baseRequest.copy(sessionId = Some(rawSessionId), maxAge = Some(0), loginHint = Some(Right(versola.util.Phone("+12025551234")))))
+        result <- env.service.authorize(baseRequest.copy(
+          sessionId = Some(rawSessionId),
+          maxAge = Some(0),
+          loginHint = Some(Right(versola.util.Phone("+12025551234"))),
+        ))
         createCalls = env.conversationRepository.create.calls
       yield assertTrue(
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),

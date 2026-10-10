@@ -11,9 +11,17 @@ trait OtpChallengeRepositorySpec extends DatabaseSpecBase[OtpChallengeRepository
   private val tenantA = TenantId("tenant-a")
   private val tenantB = TenantId("tenant-b")
 
-  private val rec1 = OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
-  private val rec2 = OtpTemplateRecord("tmpl-2", tenantA, Map("en" -> "Your code: {{code}}", "ru" -> "Ваш код: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
-  private val rec3 = OtpTemplateRecord("tmpl-3", tenantB, Map("en" -> "Login code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
+  private val rec1 =
+    OtpTemplateRecord("tmpl-1", tenantA, Map("en" -> "Code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
+  private val rec2 = OtpTemplateRecord(
+    "tmpl-2",
+    tenantA,
+    Map("en" -> "Your code: {{code}}", "ru" -> "Ваш код: {{code}}"),
+    purpose = OtpTemplatePurpose.otp,
+    channel = OtpTemplateChannel.sms,
+  )
+  private val rec3 =
+    OtpTemplateRecord("tmpl-3", tenantB, Map("en" -> "Login code: {{code}}"), purpose = OtpTemplatePurpose.otp, channel = OtpTemplateChannel.sms)
 
   override def testCases(env: OtpChallengeRepositorySpec.Env) =
     List(

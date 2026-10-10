@@ -93,7 +93,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(issuer == auth.authBaseUrl)
           .label(s"discovery 'issuer' must be ${auth.authBaseUrl}, got $issuer")
     },
-
     test("advertises endpoints that are served on the live issuer") {
       // Each endpoint is probed with the method it is registered under, because zio-http
       // answers 404 — not 405 — for a path that exists only under a different method.
@@ -137,7 +136,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(absent.status == Status.NotFound)
           .label(s"an unserved path must answer 404 for the check above to mean anything, got ${absent.status}")
     },
-
     test("every advertised grant_types_supported value is one the token endpoint accepts") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -168,7 +166,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(!advertised.contains("urn:ietf:params:oauth:grant-type:device_code"))
           .label("the control grant must not itself be advertised")
     },
-
     test("advertises code_challenge_methods_supported that match what /authorize enforces") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -185,7 +182,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(!methods.contains("plain"))
           .label(s"plain is rejected by /authorize, so it must not be advertised; got $methods")
     },
-
     test("jwks_uri resolves to a well-formed JWK Set") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -214,7 +210,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
           ),
         ).label(s"every RSA JWK must expose 'n' and 'e': ${jwkSet.toJson}")
     },
-
     test("the published JWK Set carries no private key material") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -228,7 +223,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(leaked.isEmpty)
           .label(s"the public JWK Set leaks private parameters ${leaked.mkString(", ")}: ${jwkSet.toJson}")
     },
-
     test("verifies a real id_token's signature against the published JWKS") {
       for
         (s, auth, idToken) <- loginForIdToken
@@ -258,7 +252,6 @@ object DiscoveryAndJwksSpec extends E2ESpec:
         assertTrue(payload.exp > payload.iat)
           .label(s"id_token 'exp' must be after 'iat', got exp=${payload.exp} iat=${payload.iat}")
     },
-
     test("rejects an id_token whose payload was altered under an intact signature") {
       for
         (_, auth, idToken) <- loginForIdToken

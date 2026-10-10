@@ -139,7 +139,6 @@ object JarFlowSpec extends E2ESpec:
     defaults.filterNot((name, _) => overridden.contains(name)) ++ overrides
 
   def spec = suite("Request Objects (RFC 9101, JAR)")(
-
     test("GET /authorize accepts a signed request object and completes the login flow") {
       val (verifier, codeChallenge) = PkceHelper.generate()
       for
@@ -219,7 +218,6 @@ object JarFlowSpec extends E2ESpec:
         assertTrue(claims.nonce.isEmpty)
           .label(s"an unsigned nonce must not reach the request, yet the id_token carries ${claims.nonce}")
     },
-
     test("an object naming a different client than the request around it is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -237,7 +235,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status.isClientError)
         .label(s"expected a 4xx for a client_id mismatch, got ${result.response.status}")
     },
-
     test("FAPI 2.0 §5.3.2.1-8: an object addressed to the authorization endpoint URL is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -258,7 +255,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status == Status.BadRequest)
         .label(s"under the fapi2 profile only the issuer names this server, got ${result.response.status}")
     },
-
     test("FAPI 2.0 §5.3.2.1-13: an object from a clock a few seconds fast is accepted") {
       val (_, codeChallenge) = PkceHelper.generate()
       val ahead = java.time.Instant.now.plusSeconds(10).getEpochSecond
@@ -276,7 +272,6 @@ object JarFlowSpec extends E2ESpec:
         ).assertChallengeRedirect
       yield assertCompletes
     },
-
     test("FAPI 2.0 §5.3.2.1-13: an object not valid for more than another minute is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       val now = java.time.Instant.now
@@ -300,7 +295,6 @@ object JarFlowSpec extends E2ESpec:
         )
       yield assertTrue(result.response.status == Status.BadRequest)
     },
-
     test("FAPI 2.0 Message Signing: an object without nbf is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -321,7 +315,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status == Status.BadRequest)
         .label("the fapi2 profile requires nbf on a request object")
     },
-
     test("the same request object sent straight to /authorize twice is refused the second time (#358)") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -342,7 +335,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(replay.response.status == Status.BadRequest)
         .label("a by-value object has no one-time request_uri, so its jti is what makes it single-use")
     },
-
     test("FAPI 2.0: an object without a jti is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -362,7 +354,6 @@ object JarFlowSpec extends E2ESpec:
           yield result
       yield assertTrue(result.response.status == Status.BadRequest)
     },
-
     test("an object signed by a key the client never registered is refused") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -379,7 +370,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status.isClientError)
         .label(s"expected a 4xx for an unregistered signing key, got ${result.response.status}")
     },
-
     test("a client that registered no key cannot push a request object") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -404,7 +394,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status.isClientError)
         .label(s"expected a 4xx for a client with no registered key, got ${result.response.status}")
     },
-
     test("/par authenticates the pusher by assertion and stores what the pushed object stated") {
       val (verifier, codeChallenge) = PkceHelper.generate()
       for
@@ -440,7 +429,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("redeeming the request_uri must not need to re-verify the object's own exp")
     },
-
     test("a client registered as require_signed_request_object is refused a plain request") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -452,7 +440,6 @@ object JarFlowSpec extends E2ESpec:
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
     test("a client registered as require_signed_request_object still completes with an object") {
       val (_, codeChallenge) = PkceHelper.generate()
       for
@@ -468,7 +455,6 @@ object JarFlowSpec extends E2ESpec:
       yield assertTrue(authorize.conversationCookie.isDefined)
         .label("the requirement must not stand in the way of a request that meets it")
     },
-
     test("a client registered as require_signed_request_object cannot push a plain parameter set") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -489,5 +475,4 @@ object JarFlowSpec extends E2ESpec:
         error.contains("invalid_request"),
       ).label(s"expected /par to refuse an unsigned push, got ${pushed.response.status}")
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

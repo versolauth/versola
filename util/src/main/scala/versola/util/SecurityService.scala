@@ -5,9 +5,9 @@ import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
 import zio.{Clock, Semaphore, Task, UIO, URLayer, ZIO, ZLayer}
 
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.security.spec.ECGenParameterSpec
 import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
-import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}

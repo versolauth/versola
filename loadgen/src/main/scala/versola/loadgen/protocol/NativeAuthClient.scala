@@ -78,19 +78,18 @@ final class NativeAuthClient(
     nativeBase: URL,
 ) extends AuthClient:
   import NativeAuthClient.*
-
   export auth.{
     challenge,
-    submitPhone,
-    submitOtp,
-    submitPassword,
-    submitSetPassword,
-    submitLoginPassword,
-    passkeyOptions,
-    submitPasskeyAssertion,
+    confirmLogout,
     logout,
     logoutConfirmation,
-    confirmLogout,
+    passkeyOptions,
+    submitLoginPassword,
+    submitOtp,
+    submitPasskeyAssertion,
+    submitPassword,
+    submitPhone,
+    submitSetPassword,
   }
 
   override def authorize(
@@ -202,8 +201,8 @@ final class NativeAuthClient(
                 yield NativeEndpoints(token, aliases.revocation_endpoint.getOrElse(token))) match
                   case Some(found) => endpoints.set(Some(found)).as(found.token)
                   case None => ZIO.fail(ProtocolError.Misconfigured(
-                    "auth's metadata publishes no mtls_endpoint_aliases, which edge's native endpoints sign proofs for",
-                  ))
+                      "auth's metadata publishes no mtls_endpoint_aliases, which edge's native endpoints sign proofs for",
+                    ))
 
   /** One signed call, with RFC 9449 §9's nonce handshake around it; see
     * `HttpAuthClient.sendToken`, whose shape this has, down to the single retry.

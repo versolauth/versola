@@ -29,7 +29,9 @@ object CentralAdminBootstrapSpec extends ZIOSpec[CentralApi & EdgeApi]:
         read = central.get("/configuration/clients", "tenantId" -> Fixtures.defaultTenant).flatMap(_.items("clients"))
           .map(_.find(_.str("id").contains("central-admin")))
         admin <- read
-          .repeat(Schedule.spaced(200.millis) *> Schedule.recurUntil[Option[zio.json.ast.Json.Obj]](_.exists(_.str("authMethod").contains("tls_client_auth"))))
+          .repeat(Schedule.spaced(
+            200.millis,
+          ) *> Schedule.recurUntil[Option[zio.json.ast.Json.Obj]](_.exists(_.str("authMethod").contains("tls_client_auth"))))
           .timeout(10.seconds)
           .someOrElseZIO(read)
       yield assertTrue(

@@ -1,10 +1,8 @@
 package versola.oauth.authorize.model
 
-private[authorize]
-type ErrorCode = ErrorCode.Type
+private[authorize] type ErrorCode = ErrorCode.Type
 
-private[authorize]
-object ErrorCode:
+private[authorize] object ErrorCode:
   opaque type Type <: String = String
 
   val InvalidRequest: ErrorCode = "invalid_request"
@@ -20,4 +18,3 @@ object ErrorCode:
   val InvalidTarget: ErrorCode = "invalid_target"
   val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
   val InvalidRequestObject: ErrorCode = "invalid_request_object"
-

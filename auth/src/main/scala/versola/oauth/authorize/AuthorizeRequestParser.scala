@@ -1,8 +1,8 @@
 package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
-import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken, SecurityProfile}
+import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
@@ -179,7 +179,13 @@ object AuthorizeRequestParser:
               ZIO.fail(Error.UnsupportedResponseType(clientId, redirectUri, stateForErrors, other, responseMode = responseModeForErrors))
 
         responseMode <- getParam(params, ResponseMode.Parameter)
-          .orElseFail[Error](Error.MultipleValuesProvided(clientId, redirectUri, stateForErrors, ResponseMode.Parameter, responseMode = responseModeForErrors))
+          .orElseFail[Error](Error.MultipleValuesProvided(
+            clientId,
+            redirectUri,
+            stateForErrors,
+            ResponseMode.Parameter,
+            responseMode = responseModeForErrors,
+          ))
           .flatMap:
             case None => ZIO.succeed(ResponseMode.default(responseTypeEntries))
             case Some(raw) =>
@@ -380,7 +386,13 @@ object AuthorizeRequestParser:
               .flatMap: details =>
                 AuthorizationDetailResolver.resolve(oauthClientService, schemaValidator, client, details)
                   .mapError(rejected =>
-                    Error.InvalidAuthorizationDetails(client.id, redirectUri, state, s"${rejected.`type`} - ${rejected.reason}", responseMode = responseMode),
+                    Error.InvalidAuthorizationDetails(
+                      client.id,
+                      redirectUri,
+                      state,
+                      s"${rejected.`type`} - ${rejected.reason}",
+                      responseMode = responseMode,
+                    ),
                   )
                   .asSome
 

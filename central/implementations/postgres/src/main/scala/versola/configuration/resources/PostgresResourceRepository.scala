@@ -4,16 +4,10 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
-import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
-import versola.central.configuration.resources.{
-  ResourceEndpointId,
-  ResourceEndpointRecord,
-  ResourceId,
-  ResourceRecord,
-  ResourceRepository,
-}
+import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRecord, ResourceRepository}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.util.Secret
 import versola.util.postgres.BasicCodecs
 import zio.json.JsonCodec

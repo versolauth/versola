@@ -27,12 +27,12 @@ object MeasurementWindowSpec extends ZIOSpecDefault:
     },
     test("an interval is judged by the phase it ended in, and the end of a phase belongs to it") {
       val reports = List(
-        report(start.plusSeconds(60)),   // warm-up
-        report(start.plusSeconds(120)),  // the instant warm-up ends: still warm-up
-        report(start.plusSeconds(150)),  // ramp
-        report(start.plusSeconds(300)),  // the instant the ramp ends: still ramp
-        report(start.plusSeconds(301)),  // steady
-        report(start.plusSeconds(900)),  // steady
+        report(start.plusSeconds(60)),  // warm-up
+        report(start.plusSeconds(120)), // the instant warm-up ends: still warm-up
+        report(start.plusSeconds(150)), // ramp
+        report(start.plusSeconds(300)), // the instant the ramp ends: still ramp
+        report(start.plusSeconds(301)), // steady
+        report(start.plusSeconds(900)), // steady
       )
       val kept = MeasurementWindow.measured(reports, MeasurementWindow.excluded(phases, Some(start)))
       assertTrue(kept.map(_.capturedAtEpochMillis) == List(start.plusSeconds(301), start.plusSeconds(900)).map(_.toEpochMilli))

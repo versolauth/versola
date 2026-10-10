@@ -3,9 +3,20 @@ package versola.oauth.revoke
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.logout.BackChannelDispatcher
+import versola.oauth.client.model.{
+  AuthMethod,
+  AuthMethodRef,
+  ClientId,
+  ClientIdWithSecret,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  ResourceUri,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.oauth.client.model.{AuthMethod, AuthMethodRef, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
+import versola.oauth.logout.BackChannelDispatcher
 import versola.oauth.model.{AccessToken, AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.RevocationError
 import versola.oauth.session.SessionRepository
@@ -29,14 +40,14 @@ object RevocationServiceSpec extends UnitSpecBase:
   val publicSessionId1 = PublicSessionId("public-session-1")
   val familyId1 = RefreshTokenFamilyId("family-1")
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
-  
+
   val refreshToken1 = RefreshToken(Array.fill(32)(10.toByte))
   val refreshTokenMac1 = MAC(Array.fill(32)(11.toByte))
-  
+
   val accessToken1 = AccessToken(Array.fill(32)(20.toByte))
-  
+
   val clientSecret1 = Secret(Array.fill(32)(30.toByte))
-  
+
   val testClient = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),

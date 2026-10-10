@@ -1,17 +1,26 @@
 package versola.oauth.token
 
+import versola.oauth.client.model.{
+  AuthorizationDetail,
+  ClientCredentials,
+  ClientId,
+  ClientIdWithSecret,
+  OAuthClientRecord,
+  ResourceUri,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, OAuthClientRecord, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.model.{AccessToken, AuthorizationCodeRecord, Cnf, RefreshToken}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
-import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.session.SessionRepository
+import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord, WithTtl}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import versola.util.http.Observability
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
@@ -72,6 +81,7 @@ object OAuthTokenService:
       record: RefreshTokenRecord,
       retried: Boolean,
   )
+
   /** Admin-console client; admin roles are only embedded in tokens issued for it. */
   val centralAdminClientId: ClientId = ClientId("central-admin")
 
@@ -277,8 +287,16 @@ object OAuthTokenService:
             resolveRetry(client, refreshTokenMac, idempotencyKeyMac)
 
         issuedTokens <- continueRefresh(
-          client, refreshToken, dpopJkt, certificate, scope, resources, authorizationDetails,
-          refreshTokenMac, idempotencyKeyMac, resolved,
+          client,
+          refreshToken,
+          dpopJkt,
+          certificate,
+          scope,
+          resources,
+          authorizationDetails,
+          refreshTokenMac,
+          idempotencyKeyMac,
+          resolved,
         )
       yield issuedTokens
 
@@ -401,8 +419,17 @@ object OAuthTokenService:
               .flatMap:
                 case Some((tip, record)) =>
                   continueRefresh(
-                    client, refreshToken, dpopJkt, certificate, scope, resources, authorizationDetails,
-                    refreshTokenMac, idempotencyKeyMac, Resolved(tip, record, retried = true), recoveryHops + 1,
+                    client,
+                    refreshToken,
+                    dpopJkt,
+                    certificate,
+                    scope,
+                    resources,
+                    authorizationDetails,
+                    refreshTokenMac,
+                    idempotencyKeyMac,
+                    Resolved(tip, record, retried = true),
+                    recoveryHops + 1,
                   )
                 case None =>
                   detectReplay(client, refreshTokenMac).flatMap: replayed =>

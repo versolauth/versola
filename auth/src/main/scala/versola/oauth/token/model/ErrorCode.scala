@@ -4,40 +4,37 @@ package versola.oauth.token.model
  * OAuth 2.0 Token Endpoint Error Codes
  * RFC 6749 Section 5.2: https://datatracker.ietf.org/doc/html/rfc6749#section-5.2
  */
-private[token]
-type ErrorCode = ErrorCode.Type
+private[token] type ErrorCode = ErrorCode.Type
 
-private[token]
-object ErrorCode:
+private[token] object ErrorCode:
   opaque type Type <: String = String
 
   /** The request is missing a required parameter, includes an unsupported parameter value */
   val InvalidRequest: ErrorCode = "invalid_request"
-  
+
   /** Client authentication failed */
   val InvalidClient: ErrorCode = "invalid_client"
-  
+
   /** The provided authorization grant is invalid, expired, revoked, or does not match the redirect URI */
   val InvalidGrant: ErrorCode = "invalid_grant"
-  
+
   /** The authenticated client is not authorized to use this authorization grant type */
   val UnauthorizedClient: ErrorCode = "unauthorized_client"
-  
+
   /** The authorization grant type is not supported by the authorization server */
   val UnsupportedGrantType: ErrorCode = "unsupported_grant_type"
-  
+
   /** The requested scope is invalid, unknown, or malformed */
   val InvalidScope: ErrorCode = "invalid_scope"
 
-    /** The requested RFC 8707 resource target is invalid or unknown */
-    val InvalidTarget: ErrorCode = "invalid_target"
+  /** The requested RFC 8707 resource target is invalid or unknown */
+  val InvalidTarget: ErrorCode = "invalid_target"
 
-    /** The requested RFC 9396 authorization details are invalid, unknown, or exceed the grant */
-    val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
+  /** The requested RFC 9396 authorization details are invalid, unknown, or exceed the grant */
+  val InvalidAuthorizationDetails: ErrorCode = "invalid_authorization_details"
 
   /** The RFC 9449 DPoP proof accompanying the request is missing, malformed, or replayed */
   val InvalidDpopProof: ErrorCode = "invalid_dpop_proof"
 
   /** The request needs to be retried carrying the server-supplied RFC 9449 DPoP nonce */
   val UseDpopNonce: ErrorCode = "use_dpop_nonce"
-

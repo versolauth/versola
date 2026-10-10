@@ -1,9 +1,22 @@
 package versola.central.configuration.resources
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.{EdgeId, EdgeService}
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreateResourceRequest, CreateResourceResponse, GetAllResourcesResponse, GetResourcesRegistryResponse, GetResourcesSyncResponse, ResourceEndpointResponse, ResourceEndpointSyncResponse, ResourceRegistryEntry, ResourceResponse, ResourceSyncResponse, RotateResourceSecretResponse, UpdateResourceRequest}
+import versola.central.configuration.{
+  CreateResourceRequest,
+  CreateResourceResponse,
+  GetAllResourcesResponse,
+  GetResourcesRegistryResponse,
+  GetResourcesSyncResponse,
+  ResourceEndpointResponse,
+  ResourceEndpointSyncResponse,
+  ResourceRegistryEntry,
+  ResourceResponse,
+  ResourceSyncResponse,
+  RotateResourceSecretResponse,
+  UpdateResourceRequest,
+}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Secret, SecurityService}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -176,7 +189,7 @@ object ResourceController extends Controller:
 
   private def toResourceSyncResponse(
       record: ResourceRecord,
-      edgeId: Option[EdgeId]
+      edgeId: Option[EdgeId],
   ) =
     // Keep Edge on the old secret until the previous secret is explicitly removed.
     val effectiveSecret = record.previousSecret.orElse(record.secret)

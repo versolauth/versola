@@ -1,7 +1,7 @@
 package versola.util
 
-import zio.http.{Method, URL}
 import zio.Duration
+import zio.http.{Method, URL}
 
 import java.security.PrivateKey
 import javax.crypto.SecretKey
@@ -82,18 +82,18 @@ object CoreConfig:
   )
 
   case class Security(
-    accessTokensSecret: Secret.Bytes32,
-    clientSecretsSecret: Secret.Bytes16,
-    refreshTokensSecret: Secret.Bytes32,
-    authCodesSecret: Secret.Bytes32,
-    sessionsSecret: Secret.Bytes32,
-    passwordsSecret: Secret.Bytes16,
-    conversationCookieSecret: Secret.Bytes32,
-    sessionCookieSecret: Secret.Bytes32,
-    userAgentCookieSecret: Secret.Bytes32,
-    parRequestsSecret: Secret.Bytes32,
-    dpopNoncesSecret: Secret.Bytes32,
-)
+      accessTokensSecret: Secret.Bytes32,
+      clientSecretsSecret: Secret.Bytes16,
+      refreshTokensSecret: Secret.Bytes32,
+      authCodesSecret: Secret.Bytes32,
+      sessionsSecret: Secret.Bytes32,
+      passwordsSecret: Secret.Bytes16,
+      conversationCookieSecret: Secret.Bytes32,
+      sessionCookieSecret: Secret.Bytes32,
+      userAgentCookieSecret: Secret.Bytes32,
+      parRequestsSecret: Secret.Bytes32,
+      dpopNoncesSecret: Secret.Bytes32,
+  )
 
   /** RFC 9126 pushed authorization request endpoint settings. */
   case class ParConfig(

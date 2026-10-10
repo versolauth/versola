@@ -1,7 +1,16 @@
 package versola.central.configuration.clients
 
+import com.nimbusds.jose.JWSAlgorithm
+import com.nimbusds.jose.jwk.{Curve, ECKey}
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, MtlsCertificateEncoding, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  MtlsCertificateEncoding,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.roles.{RoleRecord, RoleRepository}
@@ -17,9 +26,22 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
-import com.nimbusds.jose.JWSAlgorithm
-import com.nimbusds.jose.jwk.{Curve, ECKey}
-import versola.util.{ClientAssertion, EcKeyPair, EnvName, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{
+  ClientAssertion,
+  Dpop,
+  EcKeyPair,
+  EnvName,
+  JsonWebKeySet,
+  Patch,
+  PrivateClientCertificate,
+  PrivateJsonWebKey,
+  RedirectUri,
+  ReloadingCache,
+  Secret,
+  SecureRandom,
+  SecurityService,
+  TestCertificates,
+}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -30,8 +52,8 @@ import zio.test.*
 import java.security.KeyPairGenerator
 import java.security.interfaces.{ECPrivateKey, ECPublicKey}
 import java.security.spec.ECGenParameterSpec
-import javax.crypto.spec.SecretKeySpec
 import java.time.Instant
+import javax.crypto.spec.SecretKeySpec
 
 object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -368,7 +390,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     val secureRandom = stub[SecureRandom]
     val securityService = stub[SecurityService]
     val config = TestCentralConfig.config
-    val service = OAuthClientService.Impl(cache, repository, tenantRepository, roleRepository, challengeSettingsService, secureRandom, securityService, certificateAuthority, config, envName)
+    val service = OAuthClientService.Impl(
+      cache,
+      repository,
+      tenantRepository,
+      roleRepository,
+      challengeSettingsService,
+      secureRandom,
+      securityService,
+      certificateAuthority,
+      config,
+      envName,
+    )
 
     // Every test not about the security profile registers under a `standard` tenant, so what
     // it asserts is not decided by a profile it never mentions.
@@ -1513,7 +1546,11 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // The complement, so the rule above cannot become "a client with a signing key can no
     // longer be patched at all".
     test("updateClient leaves a stored edge signing key alone when the patch does not touch jwks") {
-      val env = new Env(Vector(cachedClient.copy(authMethod = AuthMethod.private_key_jwt, jwks = Some(edgeKeySet), edgeSigningKey = Some(storedEdgeSigningKey))))
+      val env = new Env(Vector(cachedClient.copy(
+        authMethod = AuthMethod.private_key_jwt,
+        jwks = Some(edgeKeySet),
+        edgeSigningKey = Some(storedEdgeSigningKey),
+      )))
 
       for
         _ <- env.repository.updateClient.succeedsWith(())
@@ -1947,8 +1984,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration =>
             error.reason.contains("not client_secret") &&
-              error.reason.contains("sender-constrained") &&
-              error.reason.contains("pushed authorization")
+            error.reason.contains("sender-constrained") &&
+            error.reason.contains("pushed authorization")
           case _ => false,
         createdTimes == 0,
       )
@@ -1968,7 +2005,12 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
       for
         _ <- env.onFapi2
-        result <- env.service.registerClient(fapi2Request.copy(authMethod = AuthMethod.none, mtlsAuth = None, dpopBoundAccessTokens = true, accessTokenTtl = 3600)).either
+        result <- env.service.registerClient(fapi2Request.copy(
+          authMethod = AuthMethod.none,
+          mtlsAuth = None,
+          dpopBoundAccessTokens = true,
+          accessTokenTtl = 3600,
+        )).either
       yield assertTrue(
         result.left.toOption.exists:
           case error: InvalidRegistrationConfiguration => error.reason.contains("not none")

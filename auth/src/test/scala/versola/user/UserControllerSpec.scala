@@ -1,19 +1,18 @@
 package versola.user
 
+import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.model.TenantId
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
-import org.scalamock.stubs.ZIOStubs
 import versola.oauth.logout.LogoutService
 import versola.oauth.session.SessionService
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
 import versola.util.{Base64, JWT, Patch}
-import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -30,12 +29,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val secretKey = config.central.secretKey
   private val wrongKey = SecretKeySpec(Array.fill(32)(99.toByte), "AES")
 
-  private val userRepo             = stub[UserRepository]
-  private val logoutService        = stub[LogoutService]
-  private val sessionService       = stub[SessionService]
-  private val noopThrottle         = stub[ChallengeThrottleRepository]
-  private val noopPasskeyRepo      = stub[PasskeyRepository]
-  private val noopPasswordSvc      = stub[PasswordService]
+  private val userRepo = stub[UserRepository]
+  private val logoutService = stub[LogoutService]
+  private val sessionService = stub[SessionService]
+  private val noopThrottle = stub[ChallengeThrottleRepository]
+  private val noopPasskeyRepo = stub[PasskeyRepository]
+  private val noopPasswordSvc = stub[PasswordService]
 
   private def validToken(key: javax.crypto.SecretKey): Task[String] =
     JWT.serialize(
@@ -45,7 +44,7 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private val passkeyUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
-  private val credentialId  = CredentialId(Array.fill(32)(7.toByte))
+  private val credentialId = CredentialId(Array.fill(32)(7.toByte))
 
   private val passkeyRecord = PasskeyRecord(
     id = credentialId,
@@ -64,8 +63,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     createdAt = Instant.parse("2024-01-01T00:00:00Z"),
     updatedAt = Instant.parse("2024-01-01T00:00:00Z"),
   )
-
-
 
   private def routes(
       tracing: ZEnvironment[zio.telemetry.opentelemetry.tracing.Tracing],
@@ -146,28 +143,28 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("PATCH /users/claims without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "claims", body = Body.fromString("{}")))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "claims", body = Body.fromString("{}")))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("PATCH /users/claims with valid Bearer token patches claims and returns 204") {
       val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.patchClaims.succeedsWith(())
-        _       <- TestClient.addRoutes(routes(tracing, users = repo))
-        body     = """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}"""
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.patchClaims.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        body = """{"id":"00000000-0000-0000-0000-000000000001","claims":{"name":"John"}}"""
+        resp <- client.batched(
           Request(method = Method.PATCH, url = URL.empty / "users" / "claims", body = Body.fromString(body))
             .addHeader(Header.Authorization.Bearer(token))
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
-        calls    = repo.patchClaims.calls
+        calls = repo.patchClaims.calls
       yield assertTrue(
         resp.status == Status.NoContent,
         calls.size == 1,
@@ -177,10 +174,10 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("GET /users/claims without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request.get(URL.empty / "users" / "claims"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request.get(URL.empty / "users" / "claims"))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/claims with valid token returns the user's claims") {
@@ -188,16 +185,16 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
       val record = UserRecord.empty(userId).copy(claims = Json.Obj("name" -> Json.Str("John")))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.find.succeedsWith(Some(record))
-        _       <- TestClient.addRoutes(routes(tracing, users = repo))
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(Some(record))
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(
           Request.get((URL.empty / "users" / "claims").addQueryParam("id", userId.toString))
             .addHeader(Header.Authorization.Bearer(token)),
         )
-        body    <- resp.body.asString
+        body <- resp.body.asString
         decoded <- ZIO.fromEither(body.fromJson[UserClaimsResponse]).mapError(new RuntimeException(_))
       yield assertTrue(
         resp.status == Status.Ok,
@@ -207,12 +204,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("GET /users/claims returns 204 when the user is not found") {
       val repo = stub[UserRepository]
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.find.succeedsWith(None)
-        _       <- TestClient.addRoutes(routes(tracing, users = repo))
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.find.succeedsWith(None)
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(
           Request.get((URL.empty / "users" / "claims").addQueryParam("id", "00000000-0000-0000-0000-000000000009"))
             .addHeader(Header.Authorization.Bearer(token)),
         )
@@ -220,31 +217,31 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("GET /users/roles without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request.get(URL.empty / "users" / "roles"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request.get(URL.empty / "users" / "roles"))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/roles with valid token returns the user's roles for the tenant") {
       val repo = stub[UserRepository]
       val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin"), RoleId("viewer")))
-        _       <- TestClient.addRoutes(routes(tracing, users = repo))
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.findRolesByUserAndTenant.succeedsWith(List(RoleId("admin"), RoleId("viewer")))
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(
           Request.get(
             (URL.empty / "users" / "roles")
               .addQueryParam("id", userId.toString)
               .addQueryParam("tenantId", "t1"),
           ).addHeader(Header.Authorization.Bearer(token)),
         )
-        body    <- resp.body.asString
+        body <- resp.body.asString
         decoded <- ZIO.fromEither(body.fromJson[UserRolesResponse]).mapError(new RuntimeException(_))
-        calls    = repo.findRolesByUserAndTenant.calls
+        calls = repo.findRolesByUserAndTenant.calls
       yield assertTrue(
         resp.status == Status.Ok,
         decoded.roles == List(RoleId("admin"), RoleId("viewer")),
@@ -253,7 +250,6 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         calls.head._2 == TenantId("t1"),
       )
     },
-
     test("GET /users/sessions without Authorization returns 401") {
       for
         client <- ZIO.service[Client]
@@ -281,13 +277,12 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("DELETE /users/sessions without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "sessions"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "sessions"))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
-
     test("DELETE /users/sessions with valid token returns 204 and invalidates all of the user's sessions") {
       for
         client <- ZIO.service[Client]
@@ -338,25 +333,25 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("GET /users/passkeys without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request.get(URL.empty / "users" / "passkeys"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request.get(URL.empty / "users" / "passkeys"))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("GET /users/passkeys with valid Bearer token returns the user's passkeys") {
       val repo = stub[PasskeyRepository]
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.listByUser.succeedsWith(Vector(passkeyRecord))
-        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.listByUser.succeedsWith(Vector(passkeyRecord))
+        _ <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        resp <- client.batched(
           Request.get((URL.empty / "users" / "passkeys").addQueryParam("id", passkeyUserId.toString))
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
-        body    <- resp.body.asString
+        body <- resp.body.asString
         decoded <- ZIO.fromEither(body.fromJson[ListPasskeysResponse]).mapError(new RuntimeException(_))
       yield assertTrue(
         resp.status == Status.Ok,
@@ -367,27 +362,27 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("PATCH /users/passkeys without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString("{}")))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString("{}")))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("PATCH /users/passkeys with valid Bearer token renames the passkey") {
       val repo = stub[PasskeyRepository]
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.rename.succeedsWith(())
-        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
-        payload  = RenamePasskeyPayload(passkeyUserId, credentialId, Some(PasskeyName("New Name"))).toJson
-        resp    <- client.batched(
+        token <- validToken(secretKey)
+        _ <- repo.rename.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        payload = RenamePasskeyPayload(passkeyUserId, credentialId, Some(PasskeyName("New Name"))).toJson
+        resp <- client.batched(
           Request(method = Method.PATCH, url = URL.empty / "users" / "passkeys", body = Body.fromString(payload))
             .addHeader(Header.Authorization.Bearer(token))
-            .addHeader(Header.ContentType(MediaType.application.json))
+            .addHeader(Header.ContentType(MediaType.application.json)),
         )
-        calls    = repo.rename.calls
+        calls = repo.rename.calls
       yield assertTrue(
         resp.status == Status.NoContent,
         calls.size == 1,
@@ -398,27 +393,27 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("DELETE /users/passkeys without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "passkeys"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "passkeys"))
       yield assertTrue(resp.status == Status.Unauthorized)
     },
     test("DELETE /users/passkeys with valid Bearer token deletes the passkey") {
       val repo = stub[PasskeyRepository]
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- repo.deleteByUser.succeedsWith(())
-        _       <- TestClient.addRoutes(routes(tracing, passkey = repo))
-        url      = (URL.empty / "users" / "passkeys")
+        token <- validToken(secretKey)
+        _ <- repo.deleteByUser.succeedsWith(())
+        _ <- TestClient.addRoutes(routes(tracing, passkey = repo))
+        url = (URL.empty / "users" / "passkeys")
           .addQueryParam("id", passkeyUserId.toString)
           .addQueryParam("credentialId", Base64.urlEncode(credentialId))
-        resp    <- client.batched(
-          Request(method = Method.DELETE, url = url).addHeader(Header.Authorization.Bearer(token))
+        resp <- client.batched(
+          Request(method = Method.DELETE, url = url).addHeader(Header.Authorization.Bearer(token)),
         )
-        calls    = repo.deleteByUser.calls
+        calls = repo.deleteByUser.calls
       yield assertTrue(
         resp.status == Status.NoContent,
         calls.size == 1,
@@ -428,11 +423,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("POST /users/password/reset without Authorization returns 401") {
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        _       <- TestClient.addRoutes(routes(tracing))
-        resp    <- client.batched(
-          Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString("{}"))
+        _ <- TestClient.addRoutes(routes(tracing))
+        resp <- client.batched(
+          Request(method = Method.POST, url = URL.empty / "users" / "password" / "reset", body = Body.fromString("{}")),
         )
       yield assertTrue(resp.status == Status.Unauthorized)
     },
@@ -440,11 +435,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val passwordSvc = stub[PasswordService]
       val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000002"))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(None)
-        _       <- TestClient.addRoutes(
+        token <- validToken(secretKey)
+        _ <- passwordSvc.resetPassword.succeedsWith(None)
+        _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
@@ -475,11 +470,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val passwordSvc = stub[PasswordService]
       val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000003"))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(None)
-        _       <- TestClient.addRoutes(
+        token <- validToken(secretKey)
+        _ <- passwordSvc.resetPassword.succeedsWith(None)
+        _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
@@ -509,11 +504,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       val passwordSvc = stub[PasswordService]
       val targetUserId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000004"))
       for
-        client  <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         tracing <- NoopTracing.layer.build
-        token   <- validToken(secretKey)
-        _       <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
-        _       <- TestClient.addRoutes(
+        token <- validToken(secretKey)
+        _ <- passwordSvc.resetPassword.succeedsWith(Some(Password("Temp1234!")))
+        _ <- TestClient.addRoutes(
           Observability.handleErrors(
             UserController.routes
               .provideEnvironment(
@@ -540,4 +535,3 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
     },
   ).provideSome[Scope](TestClient.layer) @@ TestAspect.silentLogging
-

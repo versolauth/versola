@@ -19,14 +19,14 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
   val baseInstant = Instant.parse("2024-01-01T00:00:00Z")
 
   def pass(n: Int): Secret = Secret(Array.fill(16)(n.toByte))
-  def salt(n: Int): Salt   = Salt(Array.fill(16)(n.toByte))
+  def salt(n: Int): Salt = Salt(Array.fill(16)(n.toByte))
 
   def testCases(env: PasswordRepositorySpec.Env): List[Spec[PasswordRepositorySpec.Env & Scope, Any]] =
     List(
       test("create then list returns the record for the correct user") {
         for
-          _    <- TestClock.setTime(baseInstant)
-          _    <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3)
+          _ <- TestClock.setTime(baseInstant)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3)
           rows <- env.repository.list(userId1)
         yield assertTrue(
           rows.size == 1,
@@ -35,7 +35,6 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows.head.expiresAt == None,
         )
       },
-
       test("list is ordered newest first by created_at DESC, id DESC") {
         for
           _ <- TestClock.setTime(baseInstant)
@@ -52,19 +51,17 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows(2).createdAt == baseInstant,
         )
       },
-
       test("list uses id DESC as tiebreaker when created_at timestamps are equal") {
         for
-          _    <- TestClock.setTime(baseInstant)
-          _    <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 1)
-          _    <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 1)
+          _ <- TestClock.setTime(baseInstant)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 1)
           rows <- env.repository.list(userId1)
         yield assertTrue(
           rows.size == 2,
           rows(0).id > rows(1).id,
         )
       },
-
       test("prune keeps exactly historySize rows after insert") {
         for
           _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 3, numDifferent = 1)
@@ -74,43 +71,39 @@ trait PasswordRepositorySpec extends DatabaseSpecBase[PasswordRepositorySpec.Env
           rows <- env.repository.list(userId1)
         yield assertTrue(rows.size == 3)
       },
-
       test("prune removes multiple excess entries when historySize is reduced") {
         for
-          _    <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 1)
-          _    <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 1)
-          _    <- env.repository.create(userId1, pass(3), salt(3), historySize = 5, numDifferent = 1)
-          _    <- env.repository.create(userId1, pass(4), salt(4), historySize = 2, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(3), salt(3), historySize = 5, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(4), salt(4), historySize = 2, numDifferent = 1)
           rows <- env.repository.list(userId1)
         yield assertTrue(rows.size == 2)
       },
-
       test("prune is deterministic: keeps highest id when created_at timestamps are equal") {
         for
-          _          <- TestClock.setTime(baseInstant)
-          _          <- env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1)
+          _ <- TestClock.setTime(baseInstant)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1)
           afterFirst <- env.repository.list(userId1)
-          idOfFirst   = afterFirst.head.id
-          _          <- env.repository.create(userId1, pass(2), salt(2), historySize = 1, numDifferent = 1)
-          remaining  <- env.repository.list(userId1)
+          idOfFirst = afterFirst.head.id
+          _ <- env.repository.create(userId1, pass(2), salt(2), historySize = 1, numDifferent = 1)
+          remaining <- env.repository.list(userId1)
         yield assertTrue(
           remaining.size == 1,
           remaining.head.id > idOfFirst,
         )
       },
-
       test("create returns PasswordReuseError when password is in recent history") {
         for
-          _      <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3)
-          _      <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 3)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3)
+          _ <- env.repository.create(userId1, pass(2), salt(2), historySize = 5, numDifferent = 3)
           result <- env.repository.create(userId1, pass(1), salt(1), historySize = 5, numDifferent = 3).either
         yield assertTrue(result == Left(PasswordReuseError(3)))
       },
-
       test("histories are isolated between users") {
         for
-          _     <- env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1)
-          _     <- env.repository.create(userId2, pass(2), salt(2), historySize = 1, numDifferent = 1)
+          _ <- env.repository.create(userId1, pass(1), salt(1), historySize = 1, numDifferent = 1)
+          _ <- env.repository.create(userId2, pass(2), salt(2), historySize = 1, numDifferent = 1)
           rows1 <- env.repository.list(userId1)
           rows2 <- env.repository.list(userId2)
         yield assertTrue(rows1.size == 1, rows2.size == 1)

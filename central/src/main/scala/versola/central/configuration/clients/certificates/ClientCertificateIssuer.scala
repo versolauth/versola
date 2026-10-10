@@ -38,8 +38,8 @@ object ClientCertificateIssuer:
   /** Raised when something asks for a certificate on a central with no `client-certificates`
     * configuration. */
   case object NotConfigured extends RuntimeException(
-    "central has no `client-certificates` configuration, so it cannot issue client certificates",
-  )
+      "central has no `client-certificates` configuration, so it cannot issue client certificates",
+    )
 
   val notConfigured: ClientCertificateIssuer =
     (_: CertificateSigningRequest) => ZIO.fail(NotConfigured)

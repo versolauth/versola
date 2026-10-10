@@ -1,7 +1,7 @@
 package versola.util
 
-import zio.test.*
 import zio.ZIO
+import zio.test.*
 
 import java.security.Signature
 
@@ -66,8 +66,10 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         inFlight <- gauge(queueMetrics.inFlight)
         max <- gauge(queueMetrics.maxConcurrent)
       yield assertTrue(sawQueue, heldWhileQueued <= 1.0, waiting == 0.0, inFlight == 0.0, max == 1.0)
-    }.provide(SecurityService.live(Argon2Config(maxConcurrent = 1), queueMetrics), SecureRandom.live) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
-
+    }.provide(
+      SecurityService.live(Argon2Config(maxConcurrent = 1), queueMetrics),
+      SecureRandom.live,
+    ) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
     test("admission metrics: a hash interrupted while queued does not stay counted") {
       for
         service <- ZIO.service[SecurityService]
@@ -79,8 +81,10 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         drained <- eventually(gauge(interruptMetrics.waiting).map(_ == 0.0))
         inFlight <- gauge(interruptMetrics.inFlight)
       yield assertTrue(drained, inFlight == 0.0)
-    }.provide(SecurityService.live(Argon2Config(maxConcurrent = 1), interruptMetrics), SecureRandom.live) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
-
+    }.provide(
+      SecurityService.live(Argon2Config(maxConcurrent = 1), interruptMetrics),
+      SecureRandom.live,
+    ) @@ zio.test.TestAspect.sequential @@ zio.test.TestAspect.withLiveClock,
     test("generated RSA keys can sign and verify data") {
       val originalData = "Hello, World! This is a test message.".getBytes("UTF-8")
 
@@ -114,13 +118,12 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         wrongVerified == false,
       )
     }.provide(SecurityService.live, SecureRandom.live),
-
     test("encryptRsa with public key round-trips via decryptRsa with private key") {
       val secret = "client-secret-payload".getBytes("UTF-8")
 
       for
-        service   <- ZIO.service[SecurityService]
-        keyPair   <- service.generateRsaKeyPair
+        service <- ZIO.service[SecurityService]
+        keyPair <- service.generateRsaKeyPair
         encrypted <- service.encryptRsa(secret, keyPair.publicKey)
         decrypted <- service.decryptRsa(encrypted, keyPair.privateKey)
       yield assertTrue(
@@ -141,13 +144,12 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         result <- service.encryptRsa(tooLong, keyPair.publicKey).exit
       yield assertTrue(result.isFailure)
     }.provide(SecurityService.live, SecureRandom.live),
-
     test("encryptRsaHybrid round-trips data past the plain encryptRsa bound via decryptRsaHybrid") {
       val tooLong = Array.tabulate(191)(_.toByte)
 
       for
-        service   <- ZIO.service[SecurityService]
-        keyPair   <- service.generateRsaKeyPair
+        service <- ZIO.service[SecurityService]
+        keyPair <- service.generateRsaKeyPair
         encrypted <- service.encryptRsaHybrid(tooLong, keyPair.publicKey)
         decrypted <- service.decryptRsaHybrid(encrypted, keyPair.privateKey)
       yield assertTrue(
@@ -155,18 +157,16 @@ object SecurityServiceSpec extends ZIOSpecDefault:
         decrypted.sameElements(tooLong),
       )
     }.provide(SecurityService.live, SecureRandom.live),
-
     test("encryptRsaHybrid also round-trips data well within the plain encryptRsa bound") {
       val secret = "short session secret".getBytes("UTF-8")
 
       for
-        service   <- ZIO.service[SecurityService]
-        keyPair   <- service.generateRsaKeyPair
+        service <- ZIO.service[SecurityService]
+        keyPair <- service.generateRsaKeyPair
         encrypted <- service.encryptRsaHybrid(secret, keyPair.publicKey)
         decrypted <- service.decryptRsaHybrid(encrypted, keyPair.privateKey)
       yield assertTrue(decrypted.sameElements(secret))
     }.provide(SecurityService.live, SecureRandom.live),
-
     test("generateEcKeyPair produces a P-256 key pair published as ES256") {
       for
         service <- ZIO.service[SecurityService]
@@ -192,7 +192,6 @@ object SecurityServiceSpec extends ZIOSpecDefault:
           !fieldsMap.contains("d"),
         )
     }.provide(SecurityService.live, SecureRandom.live),
-
     test("generated EC keys can sign and verify data") {
       val originalData = "Hello, World! This is a test message.".getBytes("UTF-8")
 

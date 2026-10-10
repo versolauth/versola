@@ -1,11 +1,11 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.AuthMetrics
+import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.model.ConversationCookie
-import versola.util.{Base64Url, CoreConfig}
 import versola.util.http.{Controller, Observability}
+import versola.util.{Base64Url, CoreConfig}
 import zio.*
 import zio.http.*
 import zio.json.*

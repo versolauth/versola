@@ -4,7 +4,6 @@ import zio.*
 import zio.http.{Handler, Request, Response, TestServer}
 import zio.test.{Spec, TestAspect, TestResult, ZIOSpec}
 
-
 abstract class HttpClientSpec extends ZIOSpec[Any]:
   override val bootstrap: ULayer[Any] = ZLayer.empty
 

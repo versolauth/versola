@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationRecord, PushedAuthorizationResponse}
 import versola.oauth.client.model.ClientCredentials
-import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
+import versola.oauth.model.{RequestUri, RequestUriReference}
 import versola.oauth.mtls.ClientCertificate
 import versola.util.{CoreConfig, RequestObject, Secret, SecureRandom, SecurityService}
 import zio.http.Request

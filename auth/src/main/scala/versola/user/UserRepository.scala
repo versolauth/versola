@@ -1,8 +1,8 @@
 package versola.user
 
-import versola.user.model.*
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
+import versola.user.model.*
 import versola.util.{Email, Patch, Phone}
 import zio.Task
 import zio.json.ast.Json
@@ -48,4 +48,3 @@ trait UserRepository:
       add: Set[RoleId],
       remove: Set[RoleId],
   ): Task[Unit]
-

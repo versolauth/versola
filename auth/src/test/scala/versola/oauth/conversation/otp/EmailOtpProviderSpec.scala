@@ -10,8 +10,8 @@ import zio.test.TestAspect.silentLogging
 
 object EmailOtpProviderSpec extends ZIOSpecDefault:
 
-  private val email    = Email("user@example.com")
-  private val code     = OtpCode("123456")
+  private val email = Email("user@example.com")
+  private val code = OtpCode("123456")
   private val template = OtpTemplate("Your code is {{code}}")
 
   def spec = suite("EmailOtpProvider")(
@@ -20,20 +20,17 @@ object EmailOtpProviderSpec extends ZIOSpecDefault:
         _ <- NoOpEmailOtpProvider.sendOtp(email, code, template)
       yield assertCompletes
     },
-
     test("NoOpEmailOtpProvider.send succeeds without sending") {
       for
         _ <- NoOpEmailOtpProvider.send(email, "hello")
       yield assertCompletes
     },
-
     test("EmailOtpProvider.live returns NoOpEmailOtpProvider when smtp is not configured") {
       val config = TestEnvConfig.coreConfig.copy(smtp = None)
       for
         provider <- ZIO.service[EmailOtpProvider]
       yield assertTrue(provider == NoOpEmailOtpProvider)
     }.provide(ZLayer.succeed(TestEnvConfig.coreConfig.copy(smtp = None)), EmailOtpProvider.live),
-
     test("EmailOtpProvider.live returns SMTPOtpProvider when smtp is configured") {
       for
         provider <- ZIO.service[EmailOtpProvider]

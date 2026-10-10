@@ -35,7 +35,7 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         "scope" -> "openid",
         "code_challenge" -> "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
         "code_challenge_method" -> "S256",
-      ) ++ extra*
+      ) ++ extra*,
     )
 
   private def matchesCredentials(credentials: ClientCredentials): Boolean =
@@ -75,8 +75,8 @@ object PushedAuthorizationControllerSpec extends UnitSpecBase:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             PushedAuthorizationController.routes
-              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ tracing)
-          )
+              .provideEnvironment(ZEnvironment(service) ++ ZEnvironment(clientAuthentication) ++ ZEnvironment(config) ++ tracing),
+          ),
         )
         _ <- setup(service)
         _ <- configureClient(clientService)

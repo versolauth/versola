@@ -1,8 +1,8 @@
 package versola.util
 
-import zio.metrics.{Metric, MetricLabel}
 import zio.metrics.Metric.{Gauge, Histogram}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
+import zio.metrics.{Metric, MetricLabel}
 import zio.{Chunk, Clock, UIO, ZIO}
 
 /** What the Argon2id admission control (`Argon2Config.maxConcurrent`) is doing, as `/metrics`.

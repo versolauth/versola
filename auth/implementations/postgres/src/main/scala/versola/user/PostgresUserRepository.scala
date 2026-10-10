@@ -6,12 +6,12 @@ import com.augustnagro.magnum.pg.PgCodec
 import com.augustnagro.magnum.pg.PgCodec.given
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
-import versola.util.postgres.BasicCodecs
 import versola.user.model.*
+import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Phone}
-import zio.{Task, ZIO, ZLayer}
 import zio.json.*
 import zio.json.ast.Json
+import zio.{Task, ZIO, ZLayer}
 
 import java.time.LocalDate
 import java.util.UUID
@@ -144,7 +144,6 @@ class PostgresUserRepository(
 
   private def findByEmailQuery(email: Email) =
     sql"select id, email, phone, login, claims, ui_locales from users where email = $email".query[UserRecord]
-
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])

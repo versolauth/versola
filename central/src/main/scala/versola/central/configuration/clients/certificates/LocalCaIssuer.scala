@@ -39,7 +39,10 @@ object LocalCaIssuer:
       // The checks the CA has always been held to at startup: a CA, unexpired, able to sign, and
       // the key its own.
       _ <- ZIO.fromEither(ClientCertificateAuthority.fromPem(
-        certificatePem, privateKeyPem, config.validityDays.getOrElse(ClientCertificateAuthority.DefaultValidityDays), now,
+        certificatePem,
+        privateKeyPem,
+        config.validityDays.getOrElse(ClientCertificateAuthority.DefaultValidityDays),
+        now,
       )).mapError(reason => IllegalArgumentException(s"client-certificate-authority: $reason"))
       certificate <- ZIO.fromEither(ClientCertificateAuthority.readCertificate(certificatePem)).mapError(IllegalArgumentException(_))
       key <- ZIO.fromEither(ClientCertificateAuthority.readPrivateKey(privateKeyPem)).mapError(IllegalArgumentException(_))

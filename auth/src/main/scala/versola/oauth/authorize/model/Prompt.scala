@@ -6,10 +6,13 @@ package versola.oauth.authorize.model
 enum Prompt:
   /** Do not display any authentication or consent UI. */
   case none
+
   /** Force re-authentication even if the user has an active session. */
   case login
+
   /** Request consent even if previously granted. */
   case consent
+
   /** Prompt the user to select a user account. */
   case select_account
 

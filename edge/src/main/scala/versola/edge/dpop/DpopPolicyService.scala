@@ -34,13 +34,12 @@ object DpopPolicyService:
           ReloadingCache.make[Set[Dpop.Algorithm]](config.configurationCacheRefreshInterval),
         )
       ) ++
-      (ZLayer.fromZIO:
-        ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[DpopPolicy](config.configurationCacheRefreshInterval),
-        )
-      ) ++
-      ZLayer.service[DpopAlgorithmsSyncClient] ++
-      ZLayer.service[DpopPolicySyncClient]
+        (ZLayer.fromZIO:
+          ZIO.serviceWithZIO[EdgeConfig](config =>
+            ReloadingCache.make[DpopPolicy](config.configurationCacheRefreshInterval),
+          )) ++
+        ZLayer.service[DpopAlgorithmsSyncClient] ++
+        ZLayer.service[DpopPolicySyncClient]
     ) >>> ZLayer.fromFunction(Impl(_, _, _, _))
 
   class Impl(

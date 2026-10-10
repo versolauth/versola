@@ -25,10 +25,10 @@ class PostgresCleanupManager(
 ) extends CleanupManager.Base(config, fibers), BasicCodecs:
 
   override protected def cleanupBatch(tableName: String, batchSize: Int, keyColumn: String): Task[Int] =
-    val table    = SqlLiteral(tableName)
-    val key      = SqlLiteral(keyColumn)
+    val table = SqlLiteral(tableName)
+    val key = SqlLiteral(keyColumn)
     val tableKey = SqlLiteral(s"$tableName.$keyColumn")
-    val subqKey  = SqlLiteral(s"subq.$keyColumn")
+    val subqKey = SqlLiteral(s"subq.$keyColumn")
     xa.connectMeasured(s"cleanup-batch-$tableName") {
       sql"""
         DELETE FROM $table
@@ -51,12 +51,13 @@ object PostgresCleanupManager:
   val live: ZLayer[TransactorZIO & ConfigProvider & Scope, Throwable, CleanupManager] =
     cleanupConfig >>> ZLayer:
       ZIO.acquireRelease(
-        acquire = for
-          xa <- ZIO.service[TransactorZIO]
-          config <- ZIO.service[CleanupConfig]
-          fibers <- Ref.make(List.empty[Fiber.Runtime[Throwable, Long]])
-          cleanupManager = PostgresCleanupManager(xa, config, fibers)
-        yield cleanupManager
+        acquire =
+          for
+            xa <- ZIO.service[TransactorZIO]
+            config <- ZIO.service[CleanupConfig]
+            fibers <- Ref.make(List.empty[Fiber.Runtime[Throwable, Long]])
+            cleanupManager = PostgresCleanupManager(xa, config, fibers)
+          yield cleanupManager,
       )(_.stop())
         // Outside `acquire` on purpose: acquire runs uninterruptibly, and fibers forked there
         // inherit that, so `stop()`'s `fiber.interrupt` would wait for them forever (every
@@ -66,5 +67,4 @@ object PostgresCleanupManager:
   private def cleanupConfig: ZLayer[ConfigProvider, Config.Error, CleanupConfig] =
     ZLayer.fromZIO:
       ZIO.serviceWithZIO[ConfigProvider](_
-        .load(Config.Nested("cleanup", deriveConfig[CleanupConfig]))
-      )
+        .load(Config.Nested("cleanup", deriveConfig[CleanupConfig])))

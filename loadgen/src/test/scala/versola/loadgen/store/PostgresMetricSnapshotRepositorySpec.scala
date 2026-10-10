@@ -54,42 +54,42 @@ object PostgresMetricSnapshotRepositorySpec extends LoadgenPostgresSpec, Databas
     test("appendAll then loadCampaign round-trips a snapshot, histogram payload included") {
       val snapshot = step("driver-0", now)
       for
-        _     <- env.repository.appendAll(Chunk(snapshot))
+        _ <- env.repository.appendAll(Chunk(snapshot))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found == Vector(snapshot))
     },
     test("a flow snapshot round-trips with no scenario, which means not applicable and not unknown") {
       val snapshot = flow("driver-0", now)
       for
-        _     <- env.repository.appendAll(Chunk(snapshot))
+        _ <- env.repository.appendAll(Chunk(snapshot))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found == Vector(snapshot), found.head.scenario.isEmpty)
     },
     test("re-writing a snapshot that already landed adds nothing, so a retry cannot double-count") {
       val snapshot = step("driver-0", now)
       for
-        _     <- env.repository.appendAll(Chunk(snapshot))
-        _     <- env.repository.appendAll(Chunk(snapshot.copy(sampleCount = 2048, histogram = "HISTFAAAAB5")))
+        _ <- env.repository.appendAll(Chunk(snapshot))
+        _ <- env.repository.appendAll(Chunk(snapshot.copy(sampleCount = 2048, histogram = "HISTFAAAAB5")))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.size == 1, found.head.sampleCount == 1024L)
     },
     test("a retried flow snapshot is deduplicated too, though its scenario is NULL") {
       val snapshot = flow("driver-0", now)
       for
-        _     <- env.repository.appendAll(Chunk(snapshot))
-        _     <- env.repository.appendAll(Chunk(snapshot))
+        _ <- env.repository.appendAll(Chunk(snapshot))
+        _ <- env.repository.appendAll(Chunk(snapshot))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.size == 1)
     },
     test("a step and a flow of the same interval are different snapshots, not a conflict") {
       for
-        _     <- env.repository.appendAll(Chunk(step("driver-0", now), flow("driver-0", now)))
+        _ <- env.repository.appendAll(Chunk(step("driver-0", now), flow("driver-0", now)))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.size == 2)
     },
     test("two drivers' snapshots of the same interval both land") {
       for
-        _     <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-1", now)))
+        _ <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-1", now)))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.map(_.driverId) == Vector("driver-0", "driver-1"))
     },
@@ -100,25 +100,25 @@ object PostgresMetricSnapshotRepositorySpec extends LoadgenPostgresSpec, Databas
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(
         found.map(row => (row.driverId, row.capturedAt)) ==
-          Vector(("driver-0", now), ("driver-1", now), ("driver-1", later))
+          Vector(("driver-0", now), ("driver-1", now), ("driver-1", later)),
       )
     },
     test("loadCampaign reads one campaign, not the run before it") {
       for
-        _     <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-0", now).copy(campaign = "smoke")))
+        _ <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-0", now).copy(campaign = "smoke")))
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.map(_.campaign) == Vector("nightly"))
     },
     test("loadCampaign starts at `since`, so a merge can be incremental") {
       val later = now.plusSeconds(60)
       for
-        _     <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-0", later)))
+        _ <- env.repository.appendAll(Chunk(step("driver-0", now), step("driver-0", later)))
         found <- env.repository.loadCampaign("nightly", later)
       yield assertTrue(found.map(_.capturedAt) == Vector(later))
     },
     test("appendAll on an empty chunk is a no-op, not an empty round trip") {
       for
-        _     <- env.repository.appendAll(Chunk.empty)
+        _ <- env.repository.appendAll(Chunk.empty)
         found <- env.repository.loadCampaign("nightly", now.minusSeconds(60))
       yield assertTrue(found.isEmpty)
     },

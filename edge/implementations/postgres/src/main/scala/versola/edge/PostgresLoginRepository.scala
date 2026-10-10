@@ -51,4 +51,3 @@ class PostgresLoginRepository(xa: TransactorZIO) extends LoginRepository, BasicC
         DELETE FROM pending_logins WHERE state = $state
       """.update.run()
     }.unit
-

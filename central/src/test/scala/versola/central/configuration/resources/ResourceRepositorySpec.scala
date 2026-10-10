@@ -1,9 +1,9 @@
 package versola.central.configuration.resources
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.configuration.{InjectRule, InjectTarget, PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{InjectRule, InjectTarget, PatchAudience, ResourceUri}
 import versola.util.DatabaseSpecBase
 import zio.test.*
 
@@ -66,7 +66,14 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
     List(
       test("create and find resource") {
         for
-          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)), None)
+          _ <- env.resourceRepository.createResource(
+            tenantId,
+            resourceId,
+            resourceUri,
+            audience,
+            Vector(endpointRecord(usersListEndpointId, allow = allow, inject = inject)),
+            None,
+          )
           found <- env.resourceRepository.findResource(resourceId)
           all <- env.resourceRepository.getAll
         yield assertTrue(
@@ -81,21 +88,21 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
           found <- env.resourceRepository.findResource(resourceId)
         yield assertTrue(found.map(_.secret.map(_.toVector)) == Some(Some(secret.toVector)))
       },
-        test("initializes a public resource secret exactly once") {
-          val initial = Array.fill(32)(3.toByte)
-          val replacement = Array.fill(32)(4.toByte)
-          for
-            _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
-            initialized <- env.resourceRepository.initializeSecret(resourceId, initial)
-            initializedAgain <- env.resourceRepository.initializeSecret(resourceId, replacement)
-            found <- env.resourceRepository.findResource(resourceId)
-          yield assertTrue(
-            initialized,
-            !initializedAgain,
-            found.flatMap(_.secret).map(_.toVector).contains(initial.toVector),
-            found.flatMap(_.previousSecret).isEmpty,
-          )
-        },
+      test("initializes a public resource secret exactly once") {
+        val initial = Array.fill(32)(3.toByte)
+        val replacement = Array.fill(32)(4.toByte)
+        for
+          _ <- env.resourceRepository.createResource(tenantId, resourceId, resourceUri, audience, Vector.empty, None)
+          initialized <- env.resourceRepository.initializeSecret(resourceId, initial)
+          initializedAgain <- env.resourceRepository.initializeSecret(resourceId, replacement)
+          found <- env.resourceRepository.findResource(resourceId)
+        yield assertTrue(
+          initialized,
+          !initializedAgain,
+          found.flatMap(_.secret).map(_.toVector).contains(initial.toVector),
+          found.flatMap(_.previousSecret).isEmpty,
+        )
+      },
       test("rotate and delete previous secret") {
         val secret1 = Array.fill(32)(1.toByte)
         val secret2 = Array.fill(32)(2.toByte)
@@ -126,7 +133,12 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
             resourcePatch = Some(ResourceUri("https://api.internal.example.com")),
             audiencePatch = PatchAudience(add = Set(ClientId("updated-client")), remove = audience.toSet),
             addEndpoints = Vector(
-              endpointRecord(usersMeEndpointId, path = "/users/me", fetchUserInfo = true, inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'"))),
+              endpointRecord(
+                usersMeEndpointId,
+                path = "/users/me",
+                fetchUserInfo = true,
+                inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'")),
+              ),
               endpointRecord(usersCreateEndpointId, method = "POST"),
             ),
             deleteEndpoints = Set(usersListEndpointId, usersDeleteEndpointId),
@@ -139,10 +151,15 @@ trait ResourceRepositorySpec extends DatabaseSpecBase[ResourceRepositorySpec.Env
               resource = ResourceUri("https://api.internal.example.com"),
               resourceAudience = List(ClientId("updated-client")),
               endpoints = Vector(
-                endpointRecord(usersMeEndpointId, path = "/users/me", fetchUserInfo = true, inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'"))),
+                endpointRecord(
+                  usersMeEndpointId,
+                  path = "/users/me",
+                  fetchUserInfo = true,
+                  inject = Vector(InjectRule(InjectTarget.header, "X-Trace", "'enabled'")),
+                ),
                 endpointRecord(usersCreateEndpointId, method = "POST"),
               ),
-            )
+            ),
           ),
         )
       },

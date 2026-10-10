@@ -1,5 +1,6 @@
 package versola.user
 
+import versola.auth.model.CredentialId
 import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
@@ -13,7 +14,6 @@ import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
 import versola.util.http.Controller
-import versola.auth.model.CredentialId
 import versola.util.{Email, Phone}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -22,7 +22,8 @@ import zio.json.JsonCodec
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 object UserController extends Controller:
-  type Env = Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
+  type Env =
+    Tracing & UserRepository & CoreConfig & LogoutService & SessionService & ChallengeThrottleRepository & PasskeyRepository & PasswordService
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
@@ -116,14 +117,14 @@ object UserController extends Controller:
     }
 
   val invalidateSessionEndpoint =
-      Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
-        for
-          _ <- authorizeInternal(request)
-          logoutService <- ZIO.service[LogoutService]
-          userId <- request.queryZIO[UserId]("userId")
-          _ <- logoutService.invalidateAllSessions(userId)
-        yield Response.status(Status.NoContent)
-      }
+    Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        logoutService <- ZIO.service[LogoutService]
+        userId <- request.queryZIO[UserId]("userId")
+        _ <- logoutService.invalidateAllSessions(userId)
+      yield Response.status(Status.NoContent)
+    }
 
   /** Independent of findSessionsEndpoint: a refresh token's expiry slides forward on every
     * use while a session's does not, so a token routinely outlives the session it was issued
@@ -187,7 +188,7 @@ object UserController extends Controller:
       for
         _ <- authorizeInternal(request)
         repo <- ZIO.service[PasskeyRepository]
-        userId       <- request.queryZIO[UserId]("id")
+        userId <- request.queryZIO[UserId]("id")
         credentialId <- request.queryZIO[CredentialId]("credentialId")
         _ <- repo.deleteByUser(credentialId, userId)
       yield Response.status(Status.NoContent)
@@ -202,7 +203,7 @@ object UserController extends Controller:
         password <- passwordService.resetPassword(body.userId, body.expiresInSeconds, body.channel)
       yield password match
         case Some(plaintext) => Response.json(ResetPasswordResponse(plaintext).toJson)
-        case None            => Response.status(Status.NoContent)
+        case None => Response.status(Status.NoContent)
     }
 
   val setPasswordEndpoint =

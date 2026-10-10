@@ -1,14 +1,25 @@
 package versola.central.configuration
 
 import versola.central.configuration.challenges.SecurityProfile
-import versola.util.CertificateSubject
-import versola.central.configuration.clients.{ApplicationType, AuthFlow, AuthMethod, ClientId, ClientTemplate, ConsentFlow, MutualTlsAuth, PresetId, RegistrationFlow, ResponseType}
+import versola.central.configuration.clients.{
+  ApplicationType,
+  AuthFlow,
+  AuthMethod,
+  ClientId,
+  ClientTemplate,
+  ConsentFlow,
+  MutualTlsAuth,
+  PresetId,
+  RegistrationFlow,
+  ResponseType,
+}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceId}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
+import versola.util.CertificateSubject
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
@@ -18,7 +29,6 @@ import zio.schema.*
 import zio.{Duration, NonEmptyChunk}
 
 import java.time.Instant
-
 import scala.util.Try
 
 case class CreateClaim(

@@ -136,7 +136,11 @@ object NativeAuthClientSpec extends ZIOSpecDefault:
         tokens.accessToken == AccessToken("at-1"),
         tokens.refreshToken.contains(RefreshToken("rt-2")),
       ) &&
-        assertTrue(startCalls.size == 2, startCalls.head.form("scope") == "openid offline_access", startCalls.head.form("acr_values") == "urn:acr:otp")
+        assertTrue(
+          startCalls.size == 2,
+          startCalls.head.form("scope") == "openid offline_access",
+          startCalls.head.form("acr_values") == "urn:acr:otp",
+        )
           .label("edge's nonce challenge is answered once, with a proof carrying it") &&
         assertTrue(startProof.jkt == signing.jkt, completeProof.jkt == signing.jkt) &&
         assertTrue(authorize.exists(_.query == Map("client_id" -> clientId, "request_uri" -> "urn:ietf:params:oauth:request_uri:r1")))

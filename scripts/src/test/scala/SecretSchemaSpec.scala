@@ -12,18 +12,37 @@ import scala.util.Try
 object SecretSchemaSpec extends ZIOSpecDefault:
 
   private val authKeys = Set(
-    "ACCESS_TOKENS_SECRET", "CLIENT_SECRETS_SECRET", "REFRESH_TOKENS_SECRET", "AUTH_CODES_SECRET",
-    "SESSIONS_SECRET", "PASSWORDS_SECRET", "CONVERSATION_COOKIE_SECRET", "SESSION_COOKIE_SECRET",
-    "USER_AGENT_COOKIE_SECRET", "PAR_REQUESTS_SECRET", "DPOP_NONCES_SECRET", "JWT_PRIVATE_KEY",
+    "ACCESS_TOKENS_SECRET",
+    "CLIENT_SECRETS_SECRET",
+    "REFRESH_TOKENS_SECRET",
+    "AUTH_CODES_SECRET",
+    "SESSIONS_SECRET",
+    "PASSWORDS_SECRET",
+    "CONVERSATION_COOKIE_SECRET",
+    "SESSION_COOKIE_SECRET",
+    "USER_AGENT_COOKIE_SECRET",
+    "PAR_REQUESTS_SECRET",
+    "DPOP_NONCES_SECRET",
+    "JWT_PRIVATE_KEY",
     "CENTRAL_SECRET_KEY",
   )
   private val centralKeys = Set(
-    "CENTRAL_SECRET_KEY", "CLIENT_SECRETS_SECRET", "ACCOUNT_RESOURCE_SECRET", "CENTRAL_RESOURCE_SECRET",
-    "UTILITY_CLIENT_PUBLIC_JWK", "JWKS_JSON", "EDGE_PUBLIC_JWK",
+    "CENTRAL_SECRET_KEY",
+    "CLIENT_SECRETS_SECRET",
+    "ACCOUNT_RESOURCE_SECRET",
+    "CENTRAL_RESOURCE_SECRET",
+    "UTILITY_CLIENT_PUBLIC_JWK",
+    "JWKS_JSON",
+    "EDGE_PUBLIC_JWK",
   )
   private val edgeKeys = Set(
-    "EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_TOKEN_ENC_KEY", "EDGE_SESSIONS_SECRET", "EDGE_INTERNAL_SECRET",
-    "EDGE_DPOP_NONCE_SALT", "EDGE_NATIVE_BLOB_KEY",
+    "EDGE_PRIVATE_KEY",
+    "EDGE_KEY_ID",
+    "EDGE_TOKEN_ENC_KEY",
+    "EDGE_SESSIONS_SECRET",
+    "EDGE_INTERNAL_SECRET",
+    "EDGE_DPOP_NONCE_SALT",
+    "EDGE_NATIVE_BLOB_KEY",
   )
 
   /** target -> service -> the keys that service's *.generated-secrets.env holds there. */
@@ -197,17 +216,36 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         val firstInstallOnly = notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).map(_.name).toSet
         assertTrue(
           firstInstallOnly == Set(
-            "POSTGRES_PASSWORD", "PASSWORDS_SECRET", "REFRESH_TOKENS_SECRET", "CLIENT_SECRETS_SECRET",
-            "CENTRAL_RESOURCE_SECRET", "EDGE_TOKEN_ENC_KEY",
-            "JWT_PRIVATE_KEY", "JWKS_JSON", "EDGE_PRIVATE_KEY", "EDGE_KEY_ID", "EDGE_PUBLIC_JWK",
-            "UTILITY_CLIENT_PUBLIC_JWK", "UTILS_PRIVATE_KEY_JWK",
+            "POSTGRES_PASSWORD",
+            "PASSWORDS_SECRET",
+            "REFRESH_TOKENS_SECRET",
+            "CLIENT_SECRETS_SECRET",
+            "CENTRAL_RESOURCE_SECRET",
+            "EDGE_TOKEN_ENC_KEY",
+            "JWT_PRIVATE_KEY",
+            "JWKS_JSON",
+            "EDGE_PRIVATE_KEY",
+            "EDGE_KEY_ID",
+            "EDGE_PUBLIC_JWK",
+            "UTILITY_CLIENT_PUBLIC_JWK",
+            "UTILS_PRIVATE_KEY_JWK",
           ),
           // the ones whose loss only signs users out, fails in-flight codes, or that nothing stored depends on
           Set(
-            "AUTH_CODES_SECRET", "SESSIONS_SECRET", "PAR_REQUESTS_SECRET", "ACCOUNT_RESOURCE_SECRET",
-            "CONVERSATION_COOKIE_SECRET", "SESSION_COOKIE_SECRET", "USER_AGENT_COOKIE_SECRET", "DPOP_NONCES_SECRET",
-            "EDGE_SESSIONS_SECRET", "EDGE_INTERNAL_SECRET", "EDGE_DPOP_NONCE_SALT", "EDGE_NATIVE_BLOB_KEY",
-            "ACCESS_TOKENS_SECRET", "CENTRAL_SECRET_KEY",
+            "AUTH_CODES_SECRET",
+            "SESSIONS_SECRET",
+            "PAR_REQUESTS_SECRET",
+            "ACCOUNT_RESOURCE_SECRET",
+            "CONVERSATION_COOKIE_SECRET",
+            "SESSION_COOKIE_SECRET",
+            "USER_AGENT_COOKIE_SECRET",
+            "DPOP_NONCES_SECRET",
+            "EDGE_SESSIONS_SECRET",
+            "EDGE_INTERNAL_SECRET",
+            "EDGE_DPOP_NONCE_SALT",
+            "EDGE_NATIVE_BLOB_KEY",
+            "ACCESS_TOKENS_SECRET",
+            "CENTRAL_SECRET_KEY",
           ).forall(specNamed(_).onMissing == OnMissing.Generate),
           notGenerated.filter(_.onMissing == OnMissing.GenerateOnFirstInstallOnly).filter(_.name == "POSTGRES_PASSWORD")
             .map(_.targets) == List(Set(SecretTarget.Vps)),
@@ -247,9 +285,9 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         assertTrue(SecretSchema.problems(List(sound, sound)).exists(_.contains("duplicate name A_SECRET")))
       },
       test("the same name for different services is fine; for the same service on the same target it is not") {
-        val forAuth    = sound.copy(targets = Set(SecretTarget.K8s))
+        val forAuth = sound.copy(targets = Set(SecretTarget.K8s))
         val forCentral = forAuth.copy(services = List("central"))
-        val overlap    = forAuth.copy(services = List("auth", "central"))
+        val overlap = forAuth.copy(services = List("auth", "central"))
         assertTrue(
           SecretSchema.problems(List(forAuth, forCentral)) == Nil,
           SecretSchema.problems(List(forAuth, overlap)).exists(_.contains("duplicate name A_SECRET")),
@@ -298,7 +336,7 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         assertTrue(SecretSchema.problems(List(sound), revision = 0).exists(_.contains("revision must be at least 1")))
       },
       test("a group whose members differ in since") {
-        val first  = sound.copy(name = "A_ONE", group = Some("pair"), since = 1)
+        val first = sound.copy(name = "A_ONE", group = Some("pair"), since = 1)
         val second = sound.copy(name = "A_TWO", group = Some("pair"), since = 2)
         assertTrue(SecretSchema.problems(List(first, second), revision = 2).exists(_.contains("group pair: members have different since")))
       },
@@ -306,12 +344,12 @@ object SecretSchemaSpec extends ZIOSpecDefault:
         assertTrue(SecretSchema.problems(List(sound.copy(group = Some("lonely")))).exists(_.contains("group lonely: fewer than two")))
       },
       test("a group whose members differ in onMissing") {
-        val first  = sound.copy(name = "A_ONE", group = Some("pair"))
+        val first = sound.copy(name = "A_ONE", group = Some("pair"))
         val second = sound.copy(name = "A_TWO", group = Some("pair"), onMissing = OnMissing.GenerateOnFirstInstallOnly)
         assertTrue(SecretSchema.problems(List(first, second)).exists(_.contains("group pair: members have different onMissing")))
       },
       test("a group whose members are on different targets") {
-        val first  = sound.copy(name = "A_ONE", group = Some("pair"), targets = Set(SecretTarget.Vps))
+        val first = sound.copy(name = "A_ONE", group = Some("pair"), targets = Set(SecretTarget.Vps))
         val second = sound.copy(name = "A_TWO", group = Some("pair"), targets = Set(SecretTarget.K8s))
         assertTrue(SecretSchema.problems(List(first, second)).exists(_.contains("group pair: members are not on the same targets")))
       },

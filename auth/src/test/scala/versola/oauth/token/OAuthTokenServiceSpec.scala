@@ -3,15 +3,42 @@ package versola.oauth.token
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ApplicationType, AuthMethod, AuthMethodRef, AuthorizationDetail, AuthorizationDetailType, AuthorizationDetailTypeRecord, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, SecurityProfile, TenantId}
-import versola.oauth.model.{AccessToken, AuthorizationCode, AuthorizationCodeRecord, Cnf, CodeChallenge, CodeChallengeMethod, CodeVerifier, RefreshToken}
+import versola.oauth.client.model.Claim
+import versola.oauth.client.model.{
+  ApplicationType,
+  AuthMethod,
+  AuthMethodRef,
+  AuthorizationDetail,
+  AuthorizationDetailType,
+  AuthorizationDetailTypeRecord,
+  ClientId,
+  ClientIdWithSecret,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  ResourceId,
+  ResourceRecord,
+  ResourceUri,
+  ScopeToken,
+  SecurityProfile,
+  TenantId,
+}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.model.{
+  AccessToken,
+  AuthorizationCode,
+  AuthorizationCodeRecord,
+  Cnf,
+  CodeChallenge,
+  CodeChallengeMethod,
+  CodeVerifier,
+  RefreshToken,
+}
 import versola.oauth.mtls.ClientCertificate
 import versola.oauth.revoke.AccessTokenRevocationService
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId}
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
-import versola.oauth.client.model.Claim
 import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.role.model.RoleId
 import versola.user.UserRepository
@@ -871,7 +898,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnf = None,
+            cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -959,7 +986,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnf = None,
+            cnf = None,
           )
 
           _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
@@ -1101,7 +1128,7 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
             amr = amr1,
             authTime = authTime1,
             acr = None,
-                        cnf = None,
+            cnf = None,
           )
 
           newRefreshToken = RefreshToken(Array.fill(32)(7.toByte))
@@ -1404,111 +1431,117 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           result.scope == scope2,
         )
       },
-        test("uses every resource available to the client when resources are omitted") {
-          val env = new Env
-          val publicResource = ResourceUri("https://api.example.com")
-          val internalResource = ResourceUri("https://internal.example.com")
-          val resources = List(
-            ResourceRecord(ResourceId("api"), testClient.tenantId, publicResource, List(testClient.id), internal = false),
-            ResourceRecord(ResourceId("internal"), testClient.tenantId, internalResource, List(testClient.id), internal = true),
+      test("uses every resource available to the client when resources are omitted") {
+        val env = new Env
+        val publicResource = ResourceUri("https://api.example.com")
+        val internalResource = ResourceUri("https://internal.example.com")
+        val resources = List(
+          ResourceRecord(ResourceId("api"), testClient.tenantId, publicResource, List(testClient.id), internal = false),
+          ResourceRecord(ResourceId("internal"), testClient.tenantId, internalResource, List(testClient.id), internal = true),
+        )
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.clientService.getResourcesForClient.succeedsWith(resources)
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          result <- env.service.clientCredentials(
+            ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
           )
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            _ <- env.clientService.getResourcesForClient.succeedsWith(resources)
-            _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-            result <- env.service.clientCredentials(
-              ClientCredentialsRequest(scope = None, resources = None, authorizationDetails = None),
-              ClientIdWithSecret(clientId1, Some(clientSecret1)),
-              None,
-              None,
-            )
-          yield assertTrue(result.audience == List(publicResource, ResourceUri("resource://edge")))
-        },
-        test("fails with InvalidRequest when the resource list is explicitly empty") {
-          val env = new Env
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            result <- env.service.clientCredentials(
-              ClientCredentialsRequest(scope = None, resources = Some(Nil), authorizationDetails = None),
-              ClientIdWithSecret(clientId1, Some(clientSecret1)),
-              None,
-              None,
-            ).either
-          yield assertTrue(result == Left(TokenEndpointError.InvalidRequest))
-        },
-        test("validates and includes requested public and edge resources") {
-          val env = new Env
-          val publicResource = ResourceUri("https://api.example.com")
-          val edgeResource = ResourceUri("resource://edge")
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            _ <- env.clientService.findResource.succeedsWith(Some(ResourceRecord(ResourceId("api"), testClient.tenantId, publicResource, List(testClient.id), internal = false)))
-            _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-
-            request = ClientCredentialsRequest(scope = None, resources = Some(List(publicResource, edgeResource)), authorizationDetails = None)
-            credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
-            result <- env.service.clientCredentials(request, credentials, None, None)
-          yield assertTrue(
-            result.audience == List(publicResource, edgeResource),
-            env.clientService.findResource.calls == List((testClient.tenantId, publicResource)),
-            env.clientService.getResourcesForClient.calls.isEmpty,
-          )
-        },
-        test("resolves an exact internal resource indicator by resource ID") {
-          val env = new Env
-          val internalResource = ResourceUri("resource://internal-api")
-          val resource = ResourceRecord(
-            ResourceId("internal-api"),
+        yield assertTrue(result.audience == List(publicResource, ResourceUri("resource://edge")))
+      },
+      test("fails with InvalidRequest when the resource list is explicitly empty") {
+        val env = new Env
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          result <- env.service.clientCredentials(
+            ClientCredentialsRequest(scope = None, resources = Some(Nil), authorizationDetails = None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+          ).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidRequest))
+      },
+      test("validates and includes requested public and edge resources") {
+        val env = new Env
+        val publicResource = ResourceUri("https://api.example.com")
+        val edgeResource = ResourceUri("resource://edge")
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.clientService.findResource.succeedsWith(Some(ResourceRecord(
+            ResourceId("api"),
             testClient.tenantId,
-            ResourceUri("https://internal.example.com"),
+            publicResource,
             List(testClient.id),
-            internal = true,
+            internal = false,
+          )))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+
+          request = ClientCredentialsRequest(scope = None, resources = Some(List(publicResource, edgeResource)), authorizationDetails = None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+          result <- env.service.clientCredentials(request, credentials, None, None)
+        yield assertTrue(
+          result.audience == List(publicResource, edgeResource),
+          env.clientService.findResource.calls == List((testClient.tenantId, publicResource)),
+          env.clientService.getResourcesForClient.calls.isEmpty,
+        )
+      },
+      test("resolves an exact internal resource indicator by resource ID") {
+        val env = new Env
+        val internalResource = ResourceUri("resource://internal-api")
+        val resource = ResourceRecord(
+          ResourceId("internal-api"),
+          testClient.tenantId,
+          ResourceUri("https://internal.example.com"),
+          List(testClient.id),
+          internal = true,
+        )
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.clientService.findResourceById.succeedsWith(Some(resource))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          result <- env.service.clientCredentials(
+            ClientCredentialsRequest(scope = None, resources = Some(List(internalResource)), authorizationDetails = None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
           )
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            _ <- env.clientService.findResourceById.succeedsWith(Some(resource))
-            _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
-            result <- env.service.clientCredentials(
-              ClientCredentialsRequest(scope = None, resources = Some(List(internalResource)), authorizationDetails = None),
-              ClientIdWithSecret(clientId1, Some(clientSecret1)),
-              None,
-              None,
-            )
-          yield assertTrue(
-            result.audience == List(internalResource),
-            env.clientService.findResourceById.calls == List((testClient.tenantId, ResourceId("internal-api"))),
-            env.clientService.findResource.calls.isEmpty,
-            env.clientService.getResourcesForClient.calls.isEmpty,
-          )
-        },
-        test("fails with InvalidTarget when edge is combined with an internal resource") {
-          val env = new Env
-          val edgeResource = ResourceUri("resource://edge")
-          val internalResource = ResourceUri("resource://internal-api")
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            result <- env.service.clientCredentials(
-              ClientCredentialsRequest(scope = None, resources = Some(List(edgeResource, internalResource)), authorizationDetails = None),
-              ClientIdWithSecret(clientId1, Some(clientSecret1)),
-              None,
-              None,
-            ).either
-          yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(edgeResource)))
-        },
-        test("fails with InvalidTarget when a requested resource is not registered for the tenant") {
-          val env = new Env
-          val resource = ResourceUri("https://unknown.example.com")
-          for
-            _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
-            _ <- env.clientService.findResource.succeedsWith(None)
-            result <- env.service.clientCredentials(
-              ClientCredentialsRequest(scope = None, resources = Some(List(resource)), authorizationDetails = None),
-              ClientIdWithSecret(clientId1, Some(clientSecret1)),
-              None,
-              None,
-            ).either
-          yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(resource)))
-        },
+        yield assertTrue(
+          result.audience == List(internalResource),
+          env.clientService.findResourceById.calls == List((testClient.tenantId, ResourceId("internal-api"))),
+          env.clientService.findResource.calls.isEmpty,
+          env.clientService.getResourcesForClient.calls.isEmpty,
+        )
+      },
+      test("fails with InvalidTarget when edge is combined with an internal resource") {
+        val env = new Env
+        val edgeResource = ResourceUri("resource://edge")
+        val internalResource = ResourceUri("resource://internal-api")
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          result <- env.service.clientCredentials(
+            ClientCredentialsRequest(scope = None, resources = Some(List(edgeResource, internalResource)), authorizationDetails = None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+          ).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(edgeResource)))
+      },
+      test("fails with InvalidTarget when a requested resource is not registered for the tenant") {
+        val env = new Env
+        val resource = ResourceUri("https://unknown.example.com")
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.clientService.findResource.succeedsWith(None)
+          result <- env.service.clientCredentials(
+            ClientCredentialsRequest(scope = None, resources = Some(List(resource)), authorizationDetails = None),
+            ClientIdWithSecret(clientId1, Some(clientSecret1)),
+            None,
+            None,
+          ).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidTarget(resource)))
+      },
       test("fail with InvalidClient when client verification fails") {
         val env = new Env
         for
@@ -2162,4 +2195,4 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(result.cnf.flatMap(_.x5tS256).contains(certificateThumbprint1))
       },
     ),
-  ) 
+  )

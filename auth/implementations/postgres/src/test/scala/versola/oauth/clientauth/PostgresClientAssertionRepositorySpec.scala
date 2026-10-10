@@ -10,8 +10,8 @@ import zio.{Scope, ZIO, ZLayer}
 import java.time.Instant
 
 object PostgresClientAssertionRepositorySpec
-    extends PostgresSpec,
-      DatabaseSpecBase[PostgresClientAssertionRepositorySpec.Env]:
+  extends PostgresSpec,
+    DatabaseSpecBase[PostgresClientAssertionRepositorySpec.Env]:
 
   import PostgresClientAssertionRepository.{MaxClockSkew, MaxLifetime, SlotWidth}
 

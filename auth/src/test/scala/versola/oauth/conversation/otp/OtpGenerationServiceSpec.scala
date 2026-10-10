@@ -4,8 +4,8 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.OtpCode
 import versola.util.{CoreConfig, EnvName, Secret, SecureRandom, UnitSpecBase}
 import zio.*
-import zio.test.*
 import zio.json.ast
+import zio.test.*
 
 object OtpGenerationServiceSpec extends UnitSpecBase:
 
@@ -43,4 +43,3 @@ object OtpGenerationServiceSpec extends UnitSpecBase:
       },
     ),
   )
-

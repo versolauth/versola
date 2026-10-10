@@ -18,4 +18,3 @@ object IntrospectionErrorResponse:
       error = error.error,
       errorDescription = error.errorDescription,
     )
-

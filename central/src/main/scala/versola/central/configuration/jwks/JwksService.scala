@@ -70,8 +70,7 @@ object JwksService:
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[JwksRecord]](config.configurationCacheRefreshInterval),
-        )
-      ) >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
+        )) >>> ZLayer.fromFunction(Impl(_, _, _, _, _))
 
   /** A [[CacheSource]] that reads the JWKS records from the repository and decrypts their
     * private halves, so the in-memory cache holds plaintext PKCS#8 and no decryption is

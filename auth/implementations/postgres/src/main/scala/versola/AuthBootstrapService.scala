@@ -3,8 +3,8 @@ package versola
 import versola.oauth.challenge.password.PasswordRepository
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
-import versola.user.model.{Login, UserId}
 import versola.user.UserRepository
+import versola.user.model.{Login, UserId}
 import versola.util.{CoreConfig, EnvName, Phone, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Clock, Task, ZIO, ZLayer}
 

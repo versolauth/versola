@@ -1,9 +1,9 @@
 package versola.central.configuration.challenges
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
 import versola.util.http.{BadRequest, Controller}
 import zio.ZIO
@@ -26,9 +26,9 @@ object OtpChallengeController extends Controller:
   val getTemplatesEndpoint =
     Method.GET / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
-        _         <- authorizeBasic(request)
-        tenantId  <- request.url.queryZIO[TenantId]("tenantId")
-        service   <- ZIO.service[OtpChallengeService]
+        _ <- authorizeBasic(request)
+        tenantId <- request.url.queryZIO[TenantId]("tenantId")
+        service <- ZIO.service[OtpChallengeService]
         templates <- service.getTemplates(tenantId)
       yield Response.json(GetOtpTemplatesResponse(templates).toJson)
     }
@@ -36,8 +36,8 @@ object OtpChallengeController extends Controller:
   val syncTemplatesEndpoint =
     Method.GET / "configuration" / "challenges" / "otp-templates" / "sync" -> handler { (request: Request) =>
       for
-        _         <- authorizeInternal(request)
-        service   <- ZIO.service[OtpChallengeService]
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[OtpChallengeService]
         templates <- service.getSyncTemplates
       yield Response.json(GetOtpTemplatesResponse(templates).toJson)
     }
@@ -45,29 +45,29 @@ object OtpChallengeController extends Controller:
   val upsertTemplateEndpoint =
     Method.PUT / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
-        _       <- authorizeBasic(request)
+        _ <- authorizeBasic(request)
         service <- ZIO.service[OtpChallengeService]
-        body    <- request.bodyAs[UpsertOtpTemplateRequest]
-        _       <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
+        body <- request.bodyAs[UpsertOtpTemplateRequest]
+        _ <- service.upsertTemplate(OtpTemplateRecord(body.id, body.tenantId, body.localizations, body.purpose, body.channel))
       yield Response.status(Status.NoContent)
     }
 
   val deleteTemplateEndpoint =
     Method.DELETE / "configuration" / "challenges" / "otp-templates" -> handler { (request: Request) =>
       for
-        _        <- authorizeBasic(request)
-        service  <- ZIO.service[OtpChallengeService]
-        body     <- request.bodyAs[DeleteOtpTemplateRequest]
-        _        <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[OtpChallengeService]
+        body <- request.bodyAs[DeleteOtpTemplateRequest]
+        _ <- service.deleteTemplate(body.id, body.tenantId, body.purpose, body.channel)
       yield Response.status(Status.NoContent)
     }
 
   val getChallengeSettingsEndpoint =
     Method.GET / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
-        _        <- authorizeBasic(request)
+        _ <- authorizeBasic(request)
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
-        service  <- ZIO.service[ChallengeSettingsService]
+        service <- ZIO.service[ChallengeSettingsService]
         settings <- service.getSettings(tenantId)
       yield Response.json(GetChallengeSettingsResponse(settings).toJson)
     }
@@ -75,8 +75,8 @@ object OtpChallengeController extends Controller:
   val syncChallengeSettingsEndpoint =
     Method.GET / "configuration" / "challenges" / "challenge-settings" / "sync" -> handler { (request: Request) =>
       for
-        _        <- authorizeInternal(request)
-        service  <- ZIO.service[ChallengeSettingsService]
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[ChallengeSettingsService]
         settings <- service.getAllSettings
       yield Response.json(GetAllChallengeSettingsResponse(settings).toJson)
     }
@@ -84,11 +84,11 @@ object OtpChallengeController extends Controller:
   val upsertChallengeSettingsEndpoint =
     Method.PUT / "configuration" / "challenges" / "challenge-settings" -> handler { (request: Request) =>
       for
-        _        <- authorizeBasic(request)
-        service  <- ZIO.service[ChallengeSettingsService]
-        body     <- request.bodyAs[UpsertChallengeSettingsRequest]
+        _ <- authorizeBasic(request)
+        service <- ZIO.service[ChallengeSettingsService]
+        body <- request.bodyAs[UpsertChallengeSettingsRequest]
         existing <- service.getSettings(body.tenantId)
-        mtlsCertificateHeader   = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
+        mtlsCertificateHeader = body.mtlsCertificateHeader.applyTo(existing.flatMap(_.mtlsCertificateHeader))
         mtlsCertificateEncoding = body.mtlsCertificateEncoding.applyTo(existing.flatMap(_.mtlsCertificateEncoding))
         clientAssertionMaxLifetimeSeconds = body.clientAssertionMaxLifetimeSeconds
           .orElse(existing.map(_.clientAssertionMaxLifetimeSeconds))
@@ -145,7 +145,7 @@ object OtpChallengeController extends Controller:
           // message says which of the reasons it is.
           .mapError {
             case error: ChallengeSettingsService.ValidationError => BadRequest(error.message)
-            case other                                          => other
+            case other => other
           }
       yield Response.status(Status.NoContent)
     }

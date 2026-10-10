@@ -87,12 +87,11 @@ object ConversationController extends Controller:
   val getPasskeyOptionsRoute =
     Method.GET / "challenge" / "passkey" / "options" -> handler { (request: Request) =>
       (for
-        router  <- ZIO.service[ConversationRouter]
-        cookie  <- extractCookie(request)
-        _       <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
+        router <- ZIO.service[ConversationRouter]
+        cookie <- extractCookie(request)
+        _ <- Observability.setAuth(cookie.authId.toString, cookie.clientId)
         options <- router.startPasskeyOptions(cookie.authId).someOrFail(Error.BadRequest)
-      yield Response.json(options),
-      ).catchAll {
+      yield Response.json(options)).catchAll {
         case Error.ConversationExpired => ZIO.succeed(Response.status(Status.Gone))
         case Error.ServiceUnavailable => ZIO.succeed(Response.status(Status.InternalServerError))
         case _: Error => ZIO.succeed(Response.badRequest)
@@ -215,13 +214,13 @@ object ConversationController extends Controller:
   given FormDecoder[PhoneSubmission] = (form: Form) =>
     for
       phone <- FormDecoder.single[Phone](form, "phone", Phone.parse)
-      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PhoneSubmission(phone, csrf)
 
   given FormDecoder[EmailSubmission] = (form: Form) =>
     for
       email <- FormDecoder.single[Email](form, "email", Email.from)
-      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield EmailSubmission(email, csrf)
 
   given FormDecoder[OtpResendSubmission] = (form: Form) =>
@@ -236,27 +235,27 @@ object ConversationController extends Controller:
   given FormDecoder[PasswordSubmission] = (form: Form) =>
     for
       password <- FormDecoder.single[String](form, "password", Right(_))
-      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PasswordSubmission(Password(password), csrf)
 
   given FormDecoder[LoginPasswordSubmission] = (form: Form) =>
     for
-      login    <- FormDecoder.single[String](form, "login", Right(_))
+      login <- FormDecoder.single[String](form, "login", Right(_))
       password <- FormDecoder.single[String](form, "password", Right(_))
-      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield LoginPasswordSubmission(Login(login), Password(password), csrf)
 
   given FormDecoder[PasskeyAssertionSubmission] = (form: Form) =>
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
-      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PasskeyAssertionSubmission(response, csrf)
 
   given FormDecoder[PasskeyEnrollSubmission] = (form: Form) =>
     for
       response <- FormDecoder.single[String](form, "response", Right(_))
-      name     <- FormDecoder.single[PasskeyName](form, "name", PasskeyName.from)
-      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+      name <- FormDecoder.single[PasskeyName](form, "name", PasskeyName.from)
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield PasskeyEnrollSubmission(response, name, csrf)
 
   given FormDecoder[PasskeySkipSubmission] = (form: Form) =>
@@ -265,7 +264,7 @@ object ConversationController extends Controller:
   given FormDecoder[SetPasswordSubmission] = (form: Form) =>
     for
       password <- FormDecoder.single[String](form, "password", Right(_))
-      csrf     <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield SetPasswordSubmission(Password(password), csrf)
 
   given FormDecoder[ConsentAllowSubmission] = (form: Form) =>
@@ -274,7 +273,7 @@ object ConversationController extends Controller:
       // legitimate: the client may have requested only optional scopes and the user deselected
       // all of them.
       scope <- FormDecoder.optional[Set[ScopeToken]](form, "scope", value => Right(ScopeToken.parseTokens(value).filter(_.nonEmpty)))
-      csrf  <- FormDecoder.single[String](form, "csrf", Right(_))
+      csrf <- FormDecoder.single[String](form, "csrf", Right(_))
     yield ConsentAllowSubmission(scope.getOrElse(Set.empty), csrf)
 
   given FormDecoder[ConsentDenySubmission] = (form: Form) =>

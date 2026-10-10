@@ -69,7 +69,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
       client <- ZIO.service[Client]
-      token  <- JWT.serialize(
+      token <- JWT.serialize(
         JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         10.minutes,
         JWT.Signature.Symmetric(secretKey),
@@ -77,7 +77,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
-        client.request(request.addHeader(Header.Authorization.Bearer(token)))
+        client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
 
   private val securityLayer = ZLayer.succeed(new SecurityService:
@@ -88,8 +88,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     override def mac(secret: Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
     override def hashPassword(password: Secret, salt: versola.util.Salt, pepper: Secret.Bytes16) = ZIO.dieMessage("Unused in test")
     override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-    override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
-  )
+    override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
 
   def spec = suite("OAuthClientsClient")(
     // The payload carries every client in one document, `serviceClient` among them: a
@@ -130,10 +129,10 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                     ),
                     serviceClient,
                   ),
-                ).toJson
-              )
+                ).toJson,
+              ),
             )
-          }.toRoutes
+          }.toRoutes,
         )
         service <- ZIO.service[OAuthClientSyncClient]
         result <- service.getAll

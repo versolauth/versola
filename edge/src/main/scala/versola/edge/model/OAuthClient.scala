@@ -26,5 +26,4 @@ case class OAuthClient(
   def isEdgeFrontedNative: Boolean =
     applicationType == ApplicationType.native && (credential match
       case _: ClientCredential.MutualTls => true
-      case _ => false
-    )
+      case _ => false)

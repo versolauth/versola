@@ -2,8 +2,8 @@ package versola.util.http
 
 import versola.oauth.client.model.{ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret}
 import versola.util.{ClientAssertion, Secret}
-import zio.{IO, ZIO}
 import zio.http.{Form, Header, Request}
+import zio.{IO, ZIO}
 
 extension (request: Request)
   /**

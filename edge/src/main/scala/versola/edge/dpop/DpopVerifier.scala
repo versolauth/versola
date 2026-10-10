@@ -40,16 +40,20 @@ object DpopVerifier:
   enum Error:
     /** §7.1: `error="invalid_dpop_proof"`. */
     case InvalidProof(reason: Dpop.Error)
+
     /** The `DPoP` scheme was used without a `DPoP` header to go with it. */
     case ProofMissing
+
     /** §4.3(1): "the request contains at most one DPoP header field value". */
     case MultipleProofs
     case AthMismatch
     case AthMissing
     case KeyMismatch
     case Replayed
+
     /** §9: `error="use_dpop_nonce"`, carrying one for the client to echo back. */
     case NonceRequired(nonce: String)
+
     /** No `dpop` block in the edge's configuration, so a proof cannot be checked at all. A
       * `DPoP`-scheme request is refused rather than waved through. */
     case NotConfigured
@@ -134,12 +138,13 @@ object DpopVerifier:
     ): IO[Error, Unit] =
       policy.requireNonce.flatMap: requireNonce =>
         if !requireNonce then ZIO.unit
-        else proof.nonce match
-          case Some(nonce) =>
-            DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
-              case Right(_) => ZIO.unit
-              case Left(_) => freshNonceRequired(dpop, now)
-          case None => freshNonceRequired(dpop, now)
+        else
+          proof.nonce match
+            case Some(nonce) =>
+              DpopNonce.verify(dpop.nonceSalt, nonce, now, dpop.nonceTtl) match
+                case Right(_) => ZIO.unit
+                case Left(_) => freshNonceRequired(dpop, now)
+            case None => freshNonceRequired(dpop, now)
 
     private def freshNonceRequired(dpop: EdgeConfig.Dpop, now: Instant): IO[Error, Nothing] =
       ZIO.fail(Error.NonceRequired(DpopNonce.issue(dpop.nonceSalt, now)))

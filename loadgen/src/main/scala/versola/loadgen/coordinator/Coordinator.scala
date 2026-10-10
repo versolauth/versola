@@ -1,9 +1,8 @@
 package versola.loadgen.coordinator
 
-import versola.loadgen.environment.{VictoriaMetricsClient, VictoriaMetricsEnvironmentReader}
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, SutStatsConfig}
+import versola.loadgen.environment.{VictoriaMetricsClient, VictoriaMetricsEnvironmentReader}
 import versola.loadgen.store.{
   LoadgenMigrations,
   PostgresMetricSnapshotRepository,
@@ -12,6 +11,7 @@ import versola.loadgen.store.{
   PostgresVirtualUserRepository,
 }
 import versola.loadgen.sut.{PgBouncerStatsCapture, PoolerQueueRecorder, PostgresSutStatsCapture}
+import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
 import zio.{ConfigProvider, Scope, ZIO, duration2DurationOps}
 
@@ -71,13 +71,12 @@ object Coordinator:
           case None =>
             "No 'pooler-stats' block; the campaign report will carry no pooler section",
       )
-      _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))):
-        group =>
-          ZIO.logWarning(
-            s"sut-stats.databases [${group.mkString(", ")}] share one Postgres cluster: their " +
-              "pg_stat_wal/pg_stat_checkpointer/pg_stat_io figures will be identical and reported " +
-              "under every name in the group, so summing that section across databases double-counts it",
-          )
+      _ <- ZIO.foreachDiscard(config.sutStats.toList.flatMap(stats => SutStatsConfig.clusterGroups(stats.databases))): group =>
+        ZIO.logWarning(
+          s"sut-stats.databases [${group.mkString(", ")}] share one Postgres cluster: their " +
+            "pg_stat_wal/pg_stat_checkpointer/pg_stat_io figures will be identical and reported " +
+            "under every name in the group, so summing that section across databases double-counts it",
+        )
     yield service
 
   /** Migrated, not merely validated, for the one campaign that has no seed step: the registration

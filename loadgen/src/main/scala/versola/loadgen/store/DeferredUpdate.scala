@@ -3,7 +3,6 @@ package versola.loadgen.store
 import zio.Chunk
 
 import java.time.Instant
-
 import scala.collection.mutable
 
 /** The deferred half of dev spec §7.5: bookkeeping that describes what already happened, as

@@ -54,7 +54,10 @@ object BasicAuthFlowSpec extends E2ESpec:
         ).assertChallengeRedirect
         challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
         csrf = challenge.csrf
-        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, csrf).assertRedirect(auth, authorize.conversationCookie.get)
+        code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, csrf).assertRedirect(
+          auth,
+          authorize.conversationCookie.get,
+        )
         token <- auth.token(
           code,
           authorize.verifier,
@@ -94,7 +97,7 @@ object BasicAuthFlowSpec extends E2ESpec:
         )
       yield assertTrue(idTokenClaims.fields.exists(_._1 == "email"))
         .label(s"claims.id_token asked for email, so the ID Token must carry it, got ${idTokenClaims.toJson}")
-    },    // The conformance suite estimates a code's entropy from its encoded form and fails a 22-character
+    }, // The conformance suite estimates a code's entropy from its encoded form and fails a 22-character
     // (16-byte) one at random, so the length that reaches the client over HTTP is what matters -- the
     // generator's unit test only proves what it asked the random source for.
     test("the authorization code issued over HTTP is 32 bytes, 43 base64url characters") {

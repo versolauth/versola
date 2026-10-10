@@ -23,7 +23,6 @@ object SyncEvent:
 
     def sort(records: Vector[Record]): Vector[Record]
 
-
   case object Unknown extends SyncEvent
   case object TenantsUpdated extends SyncEvent
   case object EdgesUpdated extends SyncEvent
@@ -40,7 +39,6 @@ object SyncEvent:
 
     def sort(records: Vector[OAuthClientRecord]): Vector[OAuthClientRecord] =
       records.sortBy(_.id)
-
 
   case class ScopesUpdated(
       tenantId: TenantId,
@@ -83,7 +81,6 @@ object SyncEvent:
 
     def sort(records: Vector[RoleRecord]): Vector[RoleRecord] =
       records.sortBy(x => (x.tenantId, x.id))
-
 
   case class PermissionsUpdated(
       tenantId: TenantId,
@@ -139,7 +136,6 @@ object SyncEvent:
 
     def sort(records: Vector[FormRecord]): Vector[FormRecord] =
       records.sortBy(r => (r.id, -r.version))
-
 
   case class OtpTemplatesUpdated(
       tenantId: TenantId,

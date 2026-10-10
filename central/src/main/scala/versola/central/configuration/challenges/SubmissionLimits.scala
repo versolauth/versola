@@ -52,7 +52,7 @@ object SubmissionLimits:
       tiers.nonEmpty && tiers.forall(tier => tier.maxAttempts > 0 && tier.windowSeconds > 0)
 
     tiersConfigured(limits.otpRequest) &&
-      tiersConfigured(limits.otpSubmit) &&
-      tiersConfigured(limits.passwordSubmit) &&
-      tiersConfigured(limits.passkeyAssertion) &&
-      limits.banDurationSeconds > 0
+    tiersConfigured(limits.otpSubmit) &&
+    tiersConfigured(limits.passwordSubmit) &&
+    tiersConfigured(limits.passkeyAssertion) &&
+    limits.banDurationSeconds > 0

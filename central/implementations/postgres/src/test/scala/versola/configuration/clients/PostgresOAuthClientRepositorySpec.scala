@@ -1,7 +1,7 @@
 package versola.configuration.clients
 
-import com.augustnagro.magnum.sql
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.sql
 import versola.central.configuration.clients.OAuthClientRepositorySpec
 import versola.util.postgres.PostgresSpec
 import zio.*

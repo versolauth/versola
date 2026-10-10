@@ -62,8 +62,14 @@ object SeedRowsSpec extends ZIOSpecDefault:
       )
       def row(jkt: Option[String]) =
         SeedRows.refreshTokens(
-          seeded(1L), material(jkt), clientId = "mobile-otp", audience = List("https://core.example"),
-          scope = List("openid"), amr = List("otp"), now = now, expiresAt = now.plusSeconds(60),
+          seeded(1L),
+          material(jkt),
+          clientId = "mobile-otp",
+          audience = List("https://core.example"),
+          scope = List("openid"),
+          amr = List("otp"),
+          now = now,
+          expiresAt = now.plusSeconds(60),
         )
       assertTrue(
         row(Some("thumb-1")).contains("{\"\"jkt\"\":\"\"thumb-1\"\"}"),
@@ -246,8 +252,7 @@ object SeedRowsSpec extends ZIOSpecDefault:
             exit.isFailure,
             exit.causeOption.exists(_.failures.exists:
               case ShortCopy("users", 2L, 1L) => true
-              case _ => false,
-            ),
+              case _ => false),
           )
     },
     suite("batch ranges")(

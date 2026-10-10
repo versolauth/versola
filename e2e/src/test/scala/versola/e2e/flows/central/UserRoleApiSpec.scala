@@ -363,6 +363,6 @@ object UserRoleApiSpec extends CentralApiSpec:
         }
         (rejected, held) = outcome
       yield assertTrue(rejected.status == Status.Unauthorized) && assertTrue(held.isEmpty)
-          .label("self-granting a role is the shortest path from a leaked console to full access")
+        .label("self-granting a role is the shortest path from a leaked console to full access")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)

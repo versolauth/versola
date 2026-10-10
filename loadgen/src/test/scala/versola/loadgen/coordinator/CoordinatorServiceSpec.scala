@@ -1,7 +1,7 @@
 package versola.loadgen.coordinator
 
-import versola.loadgen.environment.{EnvironmentReader, EnvironmentStats}
 import versola.loadgen.config.LoadgenConfig
+import versola.loadgen.environment.{EnvironmentReader, EnvironmentStats}
 import versola.loadgen.metrics.{ErrorTaxonomy, MeasurementId, StepOutcome}
 import versola.loadgen.model.VirtualUserState
 import versola.loadgen.store.SutStatPhase
@@ -420,9 +420,11 @@ object CoordinatorServiceSpec extends ZIOSpecDefault:
       test("leaves the latency snapshots of an unmeasured phase out of the quantiles") {
         for
           config <- CoordinatorFixture.coordinatorConfig
-          unmeasured = config.copy(campaign = config.campaign.copy(
-            phases = config.campaign.phases.map(phase => if phase.name == "warmup" then phase.copy(measured = false) else phase),
-          ))
+          unmeasured = config.copy(campaign =
+            config.campaign.copy(
+              phases = config.campaign.phases.map(phase => if phase.name == "warmup" then phase.copy(measured = false) else phase),
+            ),
+          )
           users <- FakeVirtualUsers.make()
           snapshots <- FakeMetricSnapshots.make(
             // Five minutes in: inside the 15-minute warm-up. Twenty: inside the ramp.

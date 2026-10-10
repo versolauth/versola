@@ -1,8 +1,8 @@
 package versola.util
 
 import com.networknt.schema.{InputFormat, Schema, SchemaLocation, SchemaRegistry, SpecificationVersion}
-import zio.json.ast.Json
 import zio.json.EncoderOps
+import zio.json.ast.Json
 import zio.{UIO, ULayer, ZIO, ZLayer}
 
 import java.util.concurrent.ConcurrentHashMap

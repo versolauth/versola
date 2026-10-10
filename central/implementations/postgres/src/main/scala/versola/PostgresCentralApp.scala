@@ -3,41 +3,65 @@ package versola
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeController, OtpChallengeRepository, OtpChallengeService}
-import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
-import versola.central.configuration.clients.{AuthorizationPresetController, AuthorizationPresetRepository, AuthorizationPresetService, ClientCertificateAuthority, ClientController, OAuthClientRepository, OAuthClientService}
-import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuer, ClientCertificateService, EdgeCertificateEnrollmentRepository}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRepository,
+  ChallengeSettingsService,
+  OtpChallengeController,
+  OtpChallengeRepository,
+  OtpChallengeService,
+}
+import versola.central.configuration.clients.certificates.{
+  ClientCertificateIssuanceRepository,
+  ClientCertificateIssuer,
+  ClientCertificateService,
+  EdgeCertificateEnrollmentRepository,
+}
+import versola.central.configuration.clients.{
+  AuthorizationPresetController,
+  AuthorizationPresetRepository,
+  AuthorizationPresetService,
+  ClientCertificateAuthority,
+  ClientController,
+  OAuthClientRepository,
+  OAuthClientService,
+}
 import versola.central.configuration.details.{AuthorizationDetailTypeController, AuthorizationDetailTypeRepository, AuthorizationDetailTypeService}
 import versola.central.configuration.edges.{EdgeController, EdgeRepository, EdgeService}
 import versola.central.configuration.forms.{FormController, FormRepository, FormService}
 import versola.central.configuration.jwks.{JwksController, JwksService}
-import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
-import versola.configuration.metadata.PostgresServerMetadataRepository
 import versola.central.configuration.locales.{LocaleCompletenessValidator, LocaleController, LocaleRepository, LocaleService}
-import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
+import versola.central.configuration.metadata.{ServerMetadataController, ServerMetadataRepository, ServerMetadataService}
 import versola.central.configuration.permissions.{PermissionController, PermissionRepository, PermissionService}
 import versola.central.configuration.resources.{ResourceController, ResourceRepository, ResourceService}
 import versola.central.configuration.roles.{RoleController, RoleRecord, RoleRepository, RoleService}
 import versola.central.configuration.scopes.{OAuthScopeRepository, OAuthScopeService, ScopeController}
 import versola.central.configuration.sync.{CacheSyncRepository, CacheSyncService}
+import versola.central.configuration.system.{SystemSettingsController, SystemSettingsRepository, SystemSettingsService}
 import versola.central.configuration.tenants.{TenantController, TenantRepository, TenantService}
-import versola.central.users.{AuthClient, ServiceController, UserOutboxProcessor, UserController, UserRepository, UserService}
-import versola.configuration.clients.{PostgresAuthorizationPresetRepository, PostgresClientCertificateIssuanceRepository, PostgresEdgeCertificateEnrollmentRepository, PostgresOAuthClientRepository}
-import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
+import versola.central.configuration.themes.{ThemeController, ThemeRepository, ThemeService}
+import versola.central.users.{AuthClient, ServiceController, UserController, UserOutboxProcessor, UserRepository, UserService}
 import versola.configuration.challenges.{PostgresChallengeSettingsRepository, PostgresOtpChallengeRepository}
-import versola.configuration.system.PostgresSystemSettingsRepository
+import versola.configuration.clients.{
+  PostgresAuthorizationPresetRepository,
+  PostgresClientCertificateIssuanceRepository,
+  PostgresEdgeCertificateEnrollmentRepository,
+  PostgresOAuthClientRepository,
+}
+import versola.configuration.details.PostgresAuthorizationDetailTypeRepository
+import versola.configuration.edges.PostgresEdgeRepository
 import versola.configuration.forms.PostgresFormRepository
 import versola.configuration.jwks.PostgresJwksRepository
 import versola.configuration.locales.PostgresLocaleRepository
-import versola.configuration.themes.PostgresThemeRepository
-import versola.users.PostgresUserRepository
-import versola.configuration.edges.PostgresEdgeRepository
+import versola.configuration.metadata.PostgresServerMetadataRepository
 import versola.configuration.permissions.PostgresPermissionRepository
 import versola.configuration.resources.PostgresResourceRepository
 import versola.configuration.roles.PostgresRoleRepository
 import versola.configuration.scopes.PostgresOAuthScopeRepository
 import versola.configuration.sync.PostgresCacheSyncRepository
+import versola.configuration.system.PostgresSystemSettingsRepository
 import versola.configuration.tenants.PostgresTenantRepository
+import versola.configuration.themes.PostgresThemeRepository
+import versola.users.PostgresUserRepository
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp

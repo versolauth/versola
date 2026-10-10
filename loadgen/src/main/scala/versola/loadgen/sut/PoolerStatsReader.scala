@@ -122,7 +122,8 @@ object PoolerStatsReader:
     * [[PoolerStatsCapture]], where it would cost the whole reading.
     */
   private def setting(connection: Connection, key: String): Option[String] =
-    try all(connection, "SHOW CONFIG")(row => (string(row, "key"), string(row, "value"))).collectFirst:
+    try
+      all(connection, "SHOW CONFIG")(row => (string(row, "key"), string(row, "value"))).collectFirst:
         case (name, value) if name == key => value
     catch case _: SQLException => None
 

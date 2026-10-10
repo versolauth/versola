@@ -1,10 +1,10 @@
 package versola.central.configuration.permissions
 
 import versola.central.CentralConfig
-import versola.central.configuration.{CreatePermissionRequest, UpdatePermissionRequest}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
+import versola.central.configuration.{CreatePermissionRequest, UpdatePermissionRequest}
 import versola.util.ReloadingCache
 import zio.stream.ZStream
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}

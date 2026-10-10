@@ -2,7 +2,6 @@ package versola.util
 
 import java.nio.charset.StandardCharsets
 
-
 type Base64Url = Base64Url.Type
 
 object Base64Url extends StringNewType:

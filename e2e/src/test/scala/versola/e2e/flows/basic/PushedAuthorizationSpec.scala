@@ -11,7 +11,6 @@ import zio.test.*
 object PushedAuthorizationSpec extends E2ESpec:
 
   def spec = suite("Pushed Authorization Requests")(
-
     test("push + redeem: request_uri carries the pushed parameters through to /authorize") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -32,7 +31,6 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(pushed.expiresIn > 0).label("expires_in must be positive") &&
         assertTrue(code.nonEmpty).label("code must not be empty")
     },
-
     test("push + redeem via client_secret_post authentication") {
       // client_secret must be accepted as an authentication credential (RFC 6749 §2.3.1)
       // and stripped from the persisted authorization parameters afterward.
@@ -51,7 +49,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         ).assertChallengeRedirect
       yield assertTrue(authorize.conversationCookie.isDefined)
     },
-
     test("request_uri is single-use: second redemption fails") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -73,7 +70,6 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(second.response.status == Status.BadRequest)
         .label(s"expected 400 on reuse, got ${second.response.status}")
     },
-
     test("redemption fails when client_id does not match the client that pushed the request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -91,7 +87,6 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(result.response.status == Status.BadRequest)
         .label(s"expected 400 for mismatched client_id, got ${result.response.status}")
     },
-
     test("redemption fails when client_id is omitted") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -109,7 +104,6 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(result.response.status == Status.BadRequest)
         .label(s"expected 400 for missing client_id, got ${result.response.status}")
     },
-
     test("unknown request_uri returns 400 at /authorize") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -120,7 +114,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         )
       yield assertTrue(result.response.status == Status.BadRequest)
     },
-
     test("PAR endpoint rejects invalid client credentials with 401 and a WWW-Authenticate challenge") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -133,7 +126,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         assertTrue(pushed.response.header(zio.http.Header.WWWAuthenticate).isDefined)
           .label("401 from /par must include a WWW-Authenticate challenge")
     },
-
     test("PAR endpoint rejects a request_uri parameter in the pushed body") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -145,7 +137,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         )
       yield assertTrue(pushed.response.status == Status.BadRequest)
     },
-
     test("PAR endpoint rejects code_challenge_method=plain") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -163,7 +154,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         error.contains("invalid_request"),
       )
     },
-
     test("a client registered as require_pushed_authorization_requests is refused an unpushed request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -183,7 +173,6 @@ object PushedAuthorizationSpec extends E2ESpec:
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
     test("a client registered as require_pushed_authorization_requests completes once pushed") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -210,7 +199,6 @@ object PushedAuthorizationSpec extends E2ESpec:
       yield assertTrue(authorize.conversationCookie.isDefined)
         .label("the requirement must not stand in the way of a request that meets it")
     },
-
     test("non-POST /par returns 405 with an Allow header") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -219,5 +207,4 @@ object PushedAuthorizationSpec extends E2ESpec:
         assertTrue(response.header(zio.http.Header.Allow).isDefined)
           .label("405 from /par must include an Allow header")
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

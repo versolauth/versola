@@ -18,4 +18,3 @@ object PostgresRefreshTokenRepositorySpec extends PostgresSpec, RefreshTokenRepo
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE refresh_tokens".update.run())
     yield ()
-

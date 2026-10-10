@@ -59,6 +59,7 @@ object JwksServiceSpec extends UnitSpecBase:
   class Env(snapshot: JwksService.Snapshot, synced: JwksService.Snapshot = JwksService.Snapshot(publicKeysOf(), Map.empty, None)):
     val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(snapshot)))
     val configurationService = stub[OAuthConfigurationService]
+
     /** What central would answer the next sync with, i.e. what `refresh` must pull in. */
     val source: CacheSource[JwksService.Snapshot] = new CacheSource[JwksService.Snapshot]:
       override def getAll: Task[JwksService.Snapshot] = ZIO.succeed(synced)

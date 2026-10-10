@@ -6,10 +6,20 @@ import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.auth.model.OtpCode
 import versola.oauth.authorize.model.{ResponseMode, ResponseTypeEntry}
-import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, ResourceUri, ScopeToken}
+import versola.oauth.client.model.{
+  Acr,
+  AuthFlow,
+  AuthorizationDetail,
+  ClientId,
+  PassedAuthFactor,
+  PassedFactorRecord,
+  RegistrationFlow,
+  ResourceUri,
+  ScopeToken,
+}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId}
 import versola.util.postgres.BasicCodecs

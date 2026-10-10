@@ -1,9 +1,9 @@
 package versola.central.configuration.clients
 
+import zio.Duration
 import zio.json.JsonCodec
 import zio.prelude.Equal
 import zio.schema.*
-import zio.Duration
 
 /** Governs whether and how a client's users are shown an OAuth/OIDC consent screen
   * before an authorization code or token is issued.

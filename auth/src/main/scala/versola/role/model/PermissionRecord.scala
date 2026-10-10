@@ -6,4 +6,3 @@ case class PermissionRecord(
     permission: Permission,
     description: Json.Obj,
 )
-

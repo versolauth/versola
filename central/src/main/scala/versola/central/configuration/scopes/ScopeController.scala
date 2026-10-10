@@ -1,15 +1,15 @@
 package versola.central.configuration.scopes
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.central.configuration.{ClaimResponse, CreateScopeRequest, GetAllScopesResponse, ScopeWithClaimsResponse, UpdateScopeRequest}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{ClaimResponse, CreateScopeRequest, GetAllScopesResponse, ScopeWithClaimsResponse, UpdateScopeRequest}
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
+import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
 import zio.schema.*
-import zio.ZIO
 
 object ScopeController extends Controller:
   type Env = Tracing & OAuthScopeService & ResourceService & CentralConfig & EdgeService
@@ -90,4 +90,3 @@ object ScopeController extends Controller:
         _ <- service.deleteScope(tenantId, scopeId)
       yield Response.status(Status.NoContent)
     }
-

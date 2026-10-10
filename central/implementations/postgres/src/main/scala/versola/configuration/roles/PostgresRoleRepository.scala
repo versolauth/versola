@@ -30,7 +30,6 @@ class PostgresRoleRepository(
     xa.connectMeasured("find-role"):
       getRole(id, tenantId).run().headOption
 
-
   override def createRole(
       tenantId: TenantId,
       id: RoleId,

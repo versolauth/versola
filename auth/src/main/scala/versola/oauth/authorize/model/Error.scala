@@ -62,18 +62,19 @@ private[authorize] object Error:
     def redirectUriWithErrorParams(iss: String): URL =
       AuthorizeRedirect.responseUrl(uri, errorParams(iss), responseMode)
 
-
-  case class MultipleValuesProvided(clientId: ClientId, uri: URL, state: Option[State], queryParamName: String, responseMode: ResponseMode) extends RedirectError(
+  case class MultipleValuesProvided(clientId: ClientId, uri: URL, state: Option[State], queryParamName: String, responseMode: ResponseMode)
+    extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Parameter is included more than once - $queryParamName",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
     )
 
-  case class NoValuesProvided(clientId: ClientId, uri: URL, state: Option[State], queryParamName: String, responseMode: ResponseMode) extends RedirectError(
-    error = ErrorCode.InvalidRequest,
-    errorDescription = s"At least one value should be provided - $queryParamName",
-    errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
-  )
+  case class NoValuesProvided(clientId: ClientId, uri: URL, state: Option[State], queryParamName: String, responseMode: ResponseMode)
+    extends RedirectError(
+      error = ErrorCode.InvalidRequest,
+      errorDescription = s"At least one value should be provided - $queryParamName",
+      errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
+    )
 
   /** The `state` value itself is deliberately not echoed back here: it is invalid because it
     * is too long, and echoing it would grow the redirect URI further (and could push a
@@ -104,19 +105,22 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
-  case class CodeChallengeInvalid(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
+  case class CodeChallengeInvalid(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode)
+    extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Invalid code challenge alphabet or size - $value",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc7636#section-4.3"),
     )
 
-  case class CodeChallengeMethodInvalid(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
+  case class CodeChallengeMethodInvalid(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode)
+    extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = s"Code challenge method is not supported - $value",
       errorUri = Some("https://datatracker.ietf.org/doc/html/draft-ietf-oauth-v2-1#name-authorization-request"),
     )
 
-  case class UnsupportedResponseType(clientId: ClientId, uri: URL, state: Option[State], responseType: String, responseMode: ResponseMode) extends RedirectError(
+  case class UnsupportedResponseType(clientId: ClientId, uri: URL, state: Option[State], responseType: String, responseMode: ResponseMode)
+    extends RedirectError(
       error = ErrorCode.UnsupportedResponseType,
       errorDescription = s"Unsupported response type - $responseType",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2.1"),
@@ -148,7 +152,6 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc6749#section-3.3"),
     )
 
-
   case class InvalidClaims(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidRequest,
       errorDescription = "Invalid claims parameter - must be valid JSON",
@@ -160,7 +163,6 @@ private[authorize] object Error:
       errorDescription = "Missing required parameter - nonce (required when response_type includes id_token)",
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#HybridAuthRequest"),
     )
-
 
   case class AuthFlowMissing(clientId: ClientId, uri: URL, state: Option[State], responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidRequest,
@@ -215,7 +217,6 @@ private[authorize] object Error:
       errorUri = Some("https://openid.net/specs/openid-connect-core-1_0.html#AuthRequest"),
     )
 
-
   case class InvalidTarget(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
       error = ErrorCode.InvalidTarget,
       errorDescription = s"The requested resource is invalid, malformed, or unknown - $value",
@@ -231,7 +232,8 @@ private[authorize] object Error:
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9449#section-10"),
     )
 
-  case class InvalidAuthorizationDetails(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode) extends RedirectError(
+  case class InvalidAuthorizationDetails(clientId: ClientId, uri: URL, state: Option[State], value: String, responseMode: ResponseMode)
+    extends RedirectError(
       error = ErrorCode.InvalidAuthorizationDetails,
       errorDescription = s"The authorization_details parameter is invalid, malformed, or unknown - $value",
       errorUri = Some("https://datatracker.ietf.org/doc/html/rfc9396#section-5"),

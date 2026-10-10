@@ -1,16 +1,16 @@
 package versola.central.configuration.resources
 
+import dev.cel.common.types.{CelType, SimpleType}
 import versola.central.CentralConfig
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{CreateResourceEndpointRequest, CreateResourceRequest, UpdateResourceRequest}
-import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import versola.util.cel.CelEvaluator
-import dev.cel.common.types.{CelType, SimpleType}
+import versola.util.{CacheSource, ReloadingCache, Secret, SecureRandom, SecurityService}
 import zio.{Schedule, Scope, Task, URLayer, ZIO, ZLayer}
-import java.security.MessageDigest
 
+import java.security.MessageDigest
 import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 
@@ -49,8 +49,7 @@ object ResourceService:
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[ResourceRecord]](config.configurationCacheRefreshInterval),
-        )
-      ) >>>
+        )) >>>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the resource records from the repository and decrypts
@@ -74,7 +73,7 @@ object ResourceService:
       key: SecretKey,
   ): Task[ResourceRecord] =
     for
-      secret         <- ZIO.foreach(record.secret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
+      secret <- ZIO.foreach(record.secret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
       previousSecret <- ZIO.foreach(record.previousSecret)(c => securityService.decryptAes256(c, key).map(Secret(_)))
     yield record.copy(secret = secret, previousSecret = previousSecret)
 
@@ -249,8 +248,8 @@ object ResourceService:
       val segments = pathSegments(path)
       val params = segments.collect { case pathParamRegex(name) => name }
       path.startsWith("/") &&
-        segments.forall(segment => staticSegmentRegex.matches(segment) || pathParamRegex.matches(segment)) &&
-        params.distinct.size == params.size
+      segments.forall(segment => staticSegmentRegex.matches(segment) || pathParamRegex.matches(segment)) &&
+      params.distinct.size == params.size
 
     private def validateEndpoint(
         endpoint: CreateResourceEndpointRequest,

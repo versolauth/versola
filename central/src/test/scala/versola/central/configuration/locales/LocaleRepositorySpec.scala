@@ -89,7 +89,7 @@ trait LocaleRepositorySpec extends DatabaseSpecBase[LocaleRepositorySpec.Env]:
           _ <- env.repository.update(add = Vector(en.copy(name = "English (updated)")), delete = Vector.empty)
           all <- env.repository.getAll
         yield assertTrue(
-          all.find(_.code == "en").exists(rec => rec.isDefault && rec.name == "English (updated)")
+          all.find(_.code == "en").exists(rec => rec.isDefault && rec.name == "English (updated)"),
         )
       },
       test("update persists active = false and getAll returns it") {

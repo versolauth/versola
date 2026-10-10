@@ -479,7 +479,10 @@ final class SessionRunner(
       case CredentialKind.OtpPassword =>
         ZIO
           .fromOption(user.password)
-          .mapBoth(_ => ProtocolError.Misconfigured(s"user ${user.id} is an otp-password user with no password"), Credentials.PhoneOtpPassword(user.phone, _))
+          .mapBoth(
+            _ => ProtocolError.Misconfigured(s"user ${user.id} is an otp-password user with no password"),
+            Credentials.PhoneOtpPassword(user.phone, _),
+          )
       case CredentialKind.Passkey =>
         for
           credentialId <- required(user.passkeyCredId, s"user ${user.id} is a passkey user with no credential id")

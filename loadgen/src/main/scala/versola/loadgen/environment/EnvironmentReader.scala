@@ -110,8 +110,7 @@ final class VictoriaMetricsEnvironmentReader private (
             for
               state <- one.labels.get("state")
               stat <- SampleStat.of(one.samples.map(_._2))
-            yield PoolConnections(state, stat)
-          ,
+            yield PoolConnections(state, stat),
           unavailable = results.collect { case (name, None) => name }.sorted,
         )
 

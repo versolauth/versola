@@ -41,30 +41,30 @@ def render(pct: Double): String =
   val message = s"${pct.round}%"
   ujson.Obj(
     "schemaVersion" -> 1,
-    "label"         -> "coverage",
-    "message"       -> message,
-    "color"         -> colorFor(pct)
+    "label" -> "coverage",
+    "message" -> message,
+    "color" -> colorFor(pct),
   ).toString()
 
 def publishToGist(content: String): Unit =
-  val gistId   = sys.env("GIST_ID")
-  val token    = sys.env("GIST_TOKEN")
+  val gistId = sys.env("GIST_ID")
+  val token = sys.env("GIST_TOKEN")
   val filename = sys.env.getOrElse("GIST_FILENAME", Output)
-  val body     = ujson.Obj("files" -> ujson.Obj(filename -> ujson.Obj("content" -> content)))
+  val body = ujson.Obj("files" -> ujson.Obj(filename -> ujson.Obj("content" -> content)))
   val response = requests.patch(
     s"https://api.github.com/gists/$gistId",
     headers = Map(
       "Authorization" -> s"Bearer $token",
-      "Accept"        -> "application/vnd.github+json",
-      "User-Agent"    -> "coverage-badge"
+      "Accept" -> "application/vnd.github+json",
+      "User-Agent" -> "coverage-badge",
     ),
-    data = body.toString()
+    data = body.toString(),
   )
   println(s"Updated gist $gistId file $filename (${response.statusCode})")
 
 @main def run(): Unit =
-  val report  = findReport()
-  val pct     = statementRate(report)
+  val report = findReport()
+  val pct = statementRate(report)
   val content = render(pct)
   if sys.env.contains("GIST_ID") && sys.env.contains("GIST_TOKEN") then publishToGist(content)
   else

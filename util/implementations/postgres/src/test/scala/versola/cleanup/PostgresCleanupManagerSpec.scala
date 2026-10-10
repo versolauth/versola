@@ -23,7 +23,7 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
       run: (String, SqlLiteral) => ZIO[R, Throwable, A],
   ): ZIO[R, Throwable, A] =
     val tableName = s"cleanup_ct_${java.util.UUID.randomUUID().toString.replace("-", "")}"
-    val table     = SqlLiteral(tableName)
+    val table = SqlLiteral(tableName)
     val create = xa.connect:
       sql"""
         CREATE TABLE $table (
@@ -42,11 +42,11 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
     suite("PostgresCleanupManagerSpec")(
       test("deletes expired rows and keeps active ones (keyColumn=id, auth_conversations)") {
         for
-          xa      <- ZIO.service[TransactorZIO]
-          _       <- xa.connect(sql"TRUNCATE TABLE auth_conversations".update.run())
+          xa <- ZIO.service[TransactorZIO]
+          _ <- xa.connect(sql"TRUNCATE TABLE auth_conversations".update.run())
           manager <- makeManager(xa)
-          id1      = java.util.UUID.randomUUID()
-          id2      = java.util.UUID.randomUUID()
+          id1 = java.util.UUID.randomUUID()
+          id2 = java.util.UUID.randomUUID()
           _ <- xa.connect:
             sql"""
               INSERT INTO auth_conversations
@@ -60,18 +60,18 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
                 '{"type":"start"}'::json, 'code', 'query', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
                 false, '', NOW() + INTERVAL '5 minutes', false)
             """.update.run()
-          _             <- manager.runBatch("auth_conversations", 1000, "id")
+          _ <- manager.runBatch("auth_conversations", 1000, "id")
           expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id1".query[Long].run().head)
-          activeExists  <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id2".query[Long].run().head)
+          activeExists <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id2".query[Long].run().head)
         yield assertTrue(expiredExists == 0L, activeExists == 1L)
       },
       test("deletes expired authorization_codes (keyColumn=code)") {
         for
-          xa      <- ZIO.service[TransactorZIO]
-          _       <- xa.connect(sql"TRUNCATE TABLE authorization_codes".update.run())
+          xa <- ZIO.service[TransactorZIO]
+          _ <- xa.connect(sql"TRUNCATE TABLE authorization_codes".update.run())
           manager <- makeManager(xa)
-          userId1  = java.util.UUID.randomUUID()
-          userId2  = java.util.UUID.randomUUID()
+          userId1 = java.util.UUID.randomUUID()
+          userId2 = java.util.UUID.randomUUID()
           _ <- xa.connect:
             sql"""
               INSERT INTO authorization_codes
@@ -86,14 +86,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
                  ARRAY[]::text[], 'ch', 'S256', NOW() + INTERVAL '5 minutes',
                  false, decode('04', 'hex'), '[]'::jsonb, NOW(), 'fam2')
             """.update.run()
-          _             <- manager.runBatch("authorization_codes", 1000, "code")
+          _ <- manager.runBatch("authorization_codes", 1000, "code")
           expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0101', 'hex')".query[Long].run().head)
-          activeExists  <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0202', 'hex')".query[Long].run().head)
+          activeExists <- xa.connect(sql"SELECT COUNT(*) FROM authorization_codes WHERE code = decode('0202', 'hex')".query[Long].run().head)
         yield assertTrue(expiredExists == 0L, activeExists == 1L)
       },
       test("deletes expired challenge_throttle rows (keyColumn=ctid, composite PK)") {
         for
-          xa      <- ZIO.service[TransactorZIO]
+          xa <- ZIO.service[TransactorZIO]
           manager <- makeManager(xa)
           result <- withChallengeThrottleTable(xa): (tableName, table) =>
             for
@@ -105,14 +105,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
                     ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
                     ('u3', 't1', 'otp', '[]'::jsonb, NOW() + INTERVAL '5 minutes')
                 """.update.run()
-              deleted   <- manager.runBatch(tableName, 1000, "ctid")
+              deleted <- manager.runBatch(tableName, 1000, "ctid")
               remaining <- xa.connect(sql"SELECT COUNT(*) FROM $table".query[Long].run().head)
             yield assertTrue(deleted == 2, remaining == 1L)
         yield result
       },
       test("respects batch size limit") {
         for
-          xa      <- ZIO.service[TransactorZIO]
+          xa <- ZIO.service[TransactorZIO]
           manager <- makeManager(xa)
           result <- withChallengeThrottleTable(xa): (tableName, table) =>
             for
@@ -124,7 +124,7 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
                     ('u2', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '2 minutes'),
                     ('u3', 't1', 'otp', '[]'::jsonb, NOW() - INTERVAL '1 minute')
                 """.update.run()
-              deleted   <- manager.runBatch(tableName, 2, "ctid")
+              deleted <- manager.runBatch(tableName, 2, "ctid")
               remaining <- xa.connect(sql"SELECT COUNT(*) FROM $table".query[Long].run().head)
             yield assertTrue(deleted == 2, remaining == 1L)
         yield result

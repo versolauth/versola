@@ -6,8 +6,8 @@ import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.JWT
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
-import zio.json.{EncoderOps, JsonCodec}
 import zio.json.ast.Json
+import zio.json.{EncoderOps, JsonCodec}
 import zio.{Task, ZIO}
 
 /** Endpoints for the central-owned JWKS.

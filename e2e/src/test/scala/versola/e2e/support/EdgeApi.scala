@@ -13,6 +13,7 @@ import zio.json.ast.Json
   */
 enum EdgeAuth:
   case Bearer(accessToken: String)
+
   /** RFC 9449 §7.1: the token under the `DPoP` scheme, with the proof that goes with it. */
   case Dpop(accessToken: String, proof: String)
   case Session(content: String)

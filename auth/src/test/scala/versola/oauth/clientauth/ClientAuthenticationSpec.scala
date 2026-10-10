@@ -7,7 +7,17 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ApplicationType, SecurityProfile, AuthMethod, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MtlsCertificateSource, MutualTlsAuth, OAuthClientRecord}
+import versola.oauth.client.model.{
+  ApplicationType,
+  AuthMethod,
+  ClientId,
+  ClientIdWithAssertion,
+  ClientIdWithSecret,
+  MtlsCertificateSource,
+  MutualTlsAuth,
+  OAuthClientRecord,
+  SecurityProfile,
+}
 import versola.util.{ClientAssertion, JsonWebKeySet, Secret, TestCertificates}
 import zio.*
 import zio.http.{Request, URL}

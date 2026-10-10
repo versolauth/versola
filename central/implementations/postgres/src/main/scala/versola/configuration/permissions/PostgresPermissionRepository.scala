@@ -3,9 +3,9 @@ package versola.configuration.permissions
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.SqlArrayCodec
-import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.PatchDescription
 import versola.central.configuration.permissions.{Permission, PermissionRecord, PermissionRepository}
+import versola.central.configuration.resources.ResourceEndpointId
 import versola.central.configuration.tenants.TenantId
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
@@ -26,8 +26,8 @@ class PostgresPermissionRepository(xa: TransactorZIO) extends PermissionReposito
       """.query[PermissionRecord].run()
 
   override def findPermission(
-    tenantId: TenantId,
-    permission: Permission
+      tenantId: TenantId,
+      permission: Permission,
   ): Task[Option[PermissionRecord]] =
     xa.connectMeasured("find-permission"):
       sql"""

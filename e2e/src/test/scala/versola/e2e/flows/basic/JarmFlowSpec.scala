@@ -23,7 +23,6 @@ object JarmFlowSpec extends E2ESpec:
       .flatMap(json => ZIO.fromEither(json.fromJson[Json.Obj]).mapError(RuntimeException(_)))
 
   def spec = suite("JARM (response_mode=jwt)")(
-
     test("a completed code-flow login returns the whole response as a signed JWT") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -58,7 +57,6 @@ object JarmFlowSpec extends E2ESpec:
         assertTrue(userinfo.sub == s.userId)
           .label("the JARM-carried code must exchange for a token resolving to the same 'sub'")
     },
-
     test("a protocol error is still delivered as a signed JWT, not as bare query parameters") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -80,5 +78,4 @@ object JarmFlowSpec extends E2ESpec:
         assertTrue(result.response.header(zio.http.Header.Location).exists(!_.url.encode.contains("error=invalid_request")))
           .label("the error must not additionally appear as a bare, unsigned query parameter")
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

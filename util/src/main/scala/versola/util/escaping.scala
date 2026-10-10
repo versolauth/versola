@@ -3,12 +3,12 @@ package versola.util
 /** Escapes text interpolated into HTML character data or a quoted attribute value. */
 def escapeHtml(value: String): String =
   value.flatMap:
-    case '&'  => "&amp;"
-    case '<'  => "&lt;"
-    case '>'  => "&gt;"
-    case '"'  => "&quot;"
+    case '&' => "&amp;"
+    case '<' => "&lt;"
+    case '>' => "&gt;"
+    case '"' => "&quot;"
     case '\'' => "&#x27;"
-    case c    => c.toString
+    case c => c.toString
 
 /** Escapes JSON inlined into an HTML `<script>` block.
   *
@@ -22,7 +22,7 @@ def escapeJsonForScript(json: String): String =
     case '<' => "\\u003c"
     case '>' => "\\u003e"
     case '&' => "\\u0026"
-    case c   => c.toString
+    case c => c.toString
 
 /** Escapes CSS inlined into an HTML `<style>` block.
   *

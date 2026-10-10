@@ -103,7 +103,9 @@ final class HttpEdgeClient(exchange: HttpExchange, endpoints: EdgeEndpoints, act
           case None =>
             ZIO.fail(ProtocolError.MalformedResponse(
               authorizeEndpoint,
-              "no " + HttpAuthClient.conversationCookie + " cookie, and no code or error on the redirect: " + location.getOrElse("status " + received.status.code),
+              "no " + HttpAuthClient.conversationCookie + " cookie, and no code or error on the redirect: " + location.getOrElse(
+                "status " + received.status.code,
+              ),
             ))
 
   override def complete(state: String, code: AuthCode): IO[ProtocolError, EdgeCookie] =

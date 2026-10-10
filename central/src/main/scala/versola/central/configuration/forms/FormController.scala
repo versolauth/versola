@@ -30,9 +30,9 @@ object FormController extends Controller:
   val syncFormsEndpoint =
     Method.GET / "configuration" / "forms" / "sync" -> handler { (request: Request) =>
       for
-        _       <- authorizeInternal(request)
+        _ <- authorizeInternal(request)
         service <- ZIO.service[FormService]
-        forms   <- service.getSyncForms
+        forms <- service.getSyncForms
       yield Response.json(GetAllFormsResponse(forms).toJson)
     }
 

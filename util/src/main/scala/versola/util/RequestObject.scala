@@ -282,7 +282,13 @@ object RequestObject:
       maxLifetime: Duration,
   ): IO[Error, Json.Obj] =
     verify(
-      token, keys, allowedAlgorithms, clientId, JwtAudience.AnyOf(acceptedAudiences), now, maxLifetime,
+      token,
+      keys,
+      allowedAlgorithms,
+      clientId,
+      JwtAudience.AnyOf(acceptedAudiences),
+      now,
+      maxLifetime,
       requireNotBefore = false,
     )
 

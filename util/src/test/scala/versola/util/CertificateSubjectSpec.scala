@@ -65,7 +65,8 @@ object CertificateSubjectSpec extends ZIOSpecDefault:
       for generated <- CertificateSubject.generate(subject)
       yield
         val extra = org.bouncycastle.asn1.x509.GeneralName(
-          org.bouncycastle.asn1.x509.GeneralName.directoryName, org.bouncycastle.asn1.x500.X500Name("CN=admin"),
+          org.bouncycastle.asn1.x509.GeneralName.directoryName,
+          org.bouncycastle.asn1.x500.X500Name("CN=admin"),
         )
         val csr = withExtraName(subject, extra)
         assertTrue(CertificateSubject.matches(csr, subject).isLeft)

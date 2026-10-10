@@ -71,7 +71,7 @@ enum StepOutcome derives JsonCodec:
 
   def label: String = this match
     case Planned(outcome) => outcome.label
-    case Failed(outcome)  => outcome.label
+    case Failed(outcome) => outcome.label
 
   /** The label this outcome may be tagged onto `loadgen_outcomes_total` and the duration
     * histograms with, or `None` for the one outcome dev spec §11 keeps out of their label set.
@@ -117,18 +117,18 @@ object StepOutcome:
     * the compiler saying so.
     */
   def of(error: ProtocolError): Either[CampaignAbort, StepOutcome] = error match
-    case _: ProtocolError.Transport          => Right(Failed(FailedOutcome.Transport))
-    case _: ProtocolError.UnexpectedStatus   => Right(Failed(FailedOutcome.UnexpectedStatus))
-    case _: ProtocolError.MalformedResponse  => Right(Failed(FailedOutcome.Malformed))
-    case _: ProtocolError.StepUpRequired     => Right(Planned(PlannedOutcome.StepUp))
-    case _: ProtocolError.Forbidden          => Right(Planned(PlannedOutcome.Forbidden))
-    case _: ProtocolError.Unauthorized       => Right(Planned(PlannedOutcome.Unauthorized))
-    case _: ProtocolError.RefreshRejected    => Right(Failed(FailedOutcome.RefreshRejected))
+    case _: ProtocolError.Transport => Right(Failed(FailedOutcome.Transport))
+    case _: ProtocolError.UnexpectedStatus => Right(Failed(FailedOutcome.UnexpectedStatus))
+    case _: ProtocolError.MalformedResponse => Right(Failed(FailedOutcome.Malformed))
+    case _: ProtocolError.StepUpRequired => Right(Planned(PlannedOutcome.StepUp))
+    case _: ProtocolError.Forbidden => Right(Planned(PlannedOutcome.Forbidden))
+    case _: ProtocolError.Unauthorized => Right(Planned(PlannedOutcome.Unauthorized))
+    case _: ProtocolError.RefreshRejected => Right(Failed(FailedOutcome.RefreshRejected))
     case ProtocolError.Misconfigured(detail) => Left(CampaignAbort(detail))
 
   def of[A](result: Either[ProtocolError, A]): Either[CampaignAbort, StepOutcome] = result match
     case Left(error) => of(error)
-    case Right(_)    => Right(ok)
+    case Right(_) => Right(ok)
 
 /** The campaign's error taxonomy: two disjoint tallies, and the arithmetic the verdict is drawn
   * from.

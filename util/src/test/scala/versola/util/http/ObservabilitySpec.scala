@@ -227,41 +227,41 @@ object ObservabilitySpec extends ZIOSpecDefault:
         ),
       )
     }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
-      test("logs cookie names without their values") {
-        for
-          env <- tracingLayer.build
-          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
-          client <- ZIO.service[Client]
-          _ <- client.batched(
-            Request.get(URL.empty / "ok")
-              .addCookie(Cookie.Request("session", "secret-value")),
-          )
-          logs <- ZTestLogger.logOutput
-          rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
-            .orElseFail(new RuntimeException("Missing receive-http log"))
-          rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
-            .mapError(new RuntimeException(_))
-        yield assertTrue(
-          rendered.http.request.cookies == List("session"),
-          !rawLog.call(renderedLogFormat.toJsonLogger).contains("secret-value"),
+    test("logs cookie names without their values") {
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        _ <- client.batched(
+          Request.get(URL.empty / "ok")
+            .addCookie(Cookie.Request("session", "secret-value")),
         )
-      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
-      test("renders request error details in the receive log") {
-        for
-          env <- tracingLayer.build
-          _ <- TestClient.addRoutes(routes.provideEnvironment(env))
-          client <- ZIO.service[Client]
-          response <- client.batched(Request.get(URL.empty / "error"))
-          logs <- ZTestLogger.logOutput
-          rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
-            .orElseFail(new RuntimeException("Missing receive-http log"))
-          rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
-            .mapError(new RuntimeException(_))
-        yield assertTrue(
-          response.status == Status.BadRequest,
-          rendered.error.contains(LoggedError("invalid_request", Some("Invalid request"))),
-        )
-      }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+        logs <- ZTestLogger.logOutput
+        rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+          .orElseFail(new RuntimeException("Missing receive-http log"))
+        rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
+          .mapError(new RuntimeException(_))
+      yield assertTrue(
+        rendered.http.request.cookies == List("session"),
+        !rawLog.call(renderedLogFormat.toJsonLogger).contains("secret-value"),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
+    test("renders request error details in the receive log") {
+      for
+        env <- tracingLayer.build
+        _ <- TestClient.addRoutes(routes.provideEnvironment(env))
+        client <- ZIO.service[Client]
+        response <- client.batched(Request.get(URL.empty / "error"))
+        logs <- ZTestLogger.logOutput
+        rawLog <- ZIO.fromOption(logs.find(_.message() == "receive-http"))
+          .orElseFail(new RuntimeException("Missing receive-http log"))
+        rendered <- ZIO.fromEither(rawLog.call(renderedLogFormat.toJsonLogger).fromJson[LoggedEntry])
+          .mapError(new RuntimeException(_))
+      yield assertTrue(
+        response.status == Status.BadRequest,
+        rendered.error.contains(LoggedError("invalid_request", Some("Invalid request"))),
+      )
+    }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging,
     test("returns 500 and logs a single error entry for failed requests") {
       for
         env <- tracingLayer.build
@@ -533,7 +533,8 @@ object ObservabilitySpec extends ZIOSpecDefault:
           _ <- ZIO.foreachDiscard(Chunk("1", "2", "3")): itemId =>
             client.batched(Request.get(URL.empty / "resources" / "myalias" / "items" / itemId))
           requests <- counterCount(tags)
-          concrete <- counterCount(tags - MetricLabel("route", "/resources/myalias/items/{itemId}") + MetricLabel("route", "/resources/myalias/items/1"))
+          concrete <-
+            counterCount(tags - MetricLabel("route", "/resources/myalias/items/{itemId}") + MetricLabel("route", "/resources/myalias/items/1"))
           active <- Metric.gauge("http_server_active_requests").tagged(activeTags).value.map(_.value)
         yield assertTrue(
           requests >= 3.0,

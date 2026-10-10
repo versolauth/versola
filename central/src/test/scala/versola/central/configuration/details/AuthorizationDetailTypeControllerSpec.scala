@@ -2,7 +2,6 @@ package versola.central.configuration.details
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
@@ -14,6 +13,7 @@ import versola.central.configuration.{
   GetAuthorizationDetailTypesSyncResponse,
   UpdateAuthorizationDetailTypeRequest,
 }
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
 import versola.util.http.Observability
 import zio.*
@@ -77,15 +77,15 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[EdgeService](edgeService) ++
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[CentralConfig](config) ++
-                tracing
-            )
-          )
+                tracing,
+            ),
+          ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
-          case _    => request
+          case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -96,7 +96,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "GET authorization-detail-types returns the tenant's types",
       request = Request.get(
         (URL.empty / "configuration" / "authorization-detail-types")
-          .addQueryParam("tenantId", tenantId.toString)
+          .addQueryParam("tenantId", tenantId.toString),
       ),
       expectedStatus = Status.Ok,
       setup = service => service.getTenantTypes.succeedsWith(Vector(record)),
@@ -110,7 +110,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           service.getTenantTypes.calls == List((tenantId, 0, None)),
           body == GetAllAuthorizationDetailTypesResponse(
-            Vector(AuthorizationDetailTypeResponse(detailType, typeDescription, schema))
+            Vector(AuthorizationDetailTypeResponse(detailType, typeDescription, schema)),
           ),
         ),
     ),
@@ -120,7 +120,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         (URL.empty / "configuration" / "authorization-detail-types")
           .addQueryParam("tenantId", tenantId.toString)
           .addQueryParam("offset", "10")
-          .addQueryParam("limit", "5")
+          .addQueryParam("limit", "5"),
       ),
       expectedStatus = Status.Ok,
       setup = service => service.getTenantTypes.succeedsWith(Vector.empty),
@@ -141,7 +141,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         yield assertTrue(
           service.getAllTypes.calls.length == 1,
           body == GetAuthorizationDetailTypesSyncResponse(
-            Vector(AuthorizationDetailTypeSyncResponse(tenantId, detailType, schema))
+            Vector(AuthorizationDetailTypeSyncResponse(tenantId, detailType, schema)),
           ),
         ),
     ),
@@ -162,7 +162,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.createType.succeedsWith(Right(())),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(
-          service.createType.calls == List(CreateAuthorizationDetailTypeRequest(tenantId, detailType, typeDescription, schema))
+          service.createType.calls == List(CreateAuthorizationDetailTypeRequest(tenantId, detailType, typeDescription, schema)),
         )),
     ),
     controllerTestCase(
@@ -186,7 +186,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.updateType.succeedsWith(Right(())),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(
-          service.updateType.calls == List(UpdateAuthorizationDetailTypeRequest(tenantId, detailType, typeDescription, schema))
+          service.updateType.calls == List(UpdateAuthorizationDetailTypeRequest(tenantId, detailType, typeDescription, schema)),
         )),
     ),
     controllerTestCase(
@@ -204,7 +204,7 @@ object AuthorizationDetailTypeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request.delete(
         (URL.empty / "configuration" / "authorization-detail-types")
           .addQueryParam("tenantId", tenantId.toString)
-          .addQueryParam("type", detailType.toString)
+          .addQueryParam("type", detailType.toString),
       ),
       expectedStatus = Status.NoContent,
       setup = service => service.deleteType.succeedsWith(()),

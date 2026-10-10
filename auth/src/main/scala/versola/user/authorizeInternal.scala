@@ -1,7 +1,7 @@
 package versola.user
 
-import versola.util.{CoreConfig, JWT}
 import versola.util.http.Unauthorized
+import versola.util.{CoreConfig, JWT}
 import zio.ZIO
 import zio.http.{Header, Request}
 import zio.json.JsonCodec
@@ -50,6 +50,6 @@ object InternalAuthClaims:
           "sub" -> Json.Str(claims.sub),
           "aud" -> (if claims.aud.length == 1 then Json.Str(claims.aud.head)
                     else Json.Arr(zio.Chunk.fromIterable(claims.aud.map(Json.Str(_))))),
-        )
-      )
+        ),
+      ),
   )

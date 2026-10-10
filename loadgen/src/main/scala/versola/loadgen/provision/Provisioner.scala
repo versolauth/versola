@@ -94,13 +94,13 @@ object Provisioner:
 /** A resource id is prefixed with the namespace and central holds it to `^[a-z][a-z0-9-]*$`;
   * refused here, before a tenant is created, rather than by the first resource write. */
 case class InvalidNamespace(namespace: String)
-    extends RuntimeException(s"provision.namespace '$namespace' must match ^[a-z][a-z0-9-]*$$ (it prefixes resource ids)")
+  extends RuntimeException(s"provision.namespace '$namespace' must match ^[a-z][a-z0-9-]*$$ (it prefixes resource ids)")
 
 case class ProvisionProfileConflict(provisionSays: Boolean, campaignSays: String)
-    extends RuntimeException(
-      s"provision.fapi2 = $provisionSays contradicts campaign.security-profile = $campaignSays; " +
-        "state the profile once, as campaign.security-profile",
-    )
+  extends RuntimeException(
+    s"provision.fapi2 = $provisionSays contradicts campaign.security-profile = $campaignSays; " +
+      "state the profile once, as campaign.security-profile",
+  )
 
 case object MissingProvisionConfig
-    extends RuntimeException("role = provision requires a 'provision' configuration block")
+  extends RuntimeException("role = provision requires a 'provision' configuration block")

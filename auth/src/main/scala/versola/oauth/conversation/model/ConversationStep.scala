@@ -15,8 +15,8 @@ object ConversationStep:
       /** Whether the card offers a register button alongside sign-in. */
       registration: Boolean = false,
       passkeyRequest: Option[String] = None, // serialized assertion ceremony state, set by GET options
-      passkeyFailed: Boolean = false, // set when a submitted assertion fails verification
-      loginFailed: Boolean = false, // set when login+password submission fails authentication
+      passkeyFailed: Boolean = false,        // set when a submitted assertion fails verification
+      loginFailed: Boolean = false,          // set when login+password submission fails authentication
   ) extends ConversationStep(StepId.Credential)
 
   case class Otp(
@@ -38,7 +38,7 @@ object ConversationStep:
       oldPasswordChangedAt: Option[Instant], // Set when user enters old password
       factorIndex: Int,
       rateLimitExceeded: Boolean,
-      temporaryExpired: Boolean = false,   // Set when the temporary password has expired
+      temporaryExpired: Boolean = false, // Set when the temporary password has expired
   ) extends ConversationStep(StepId.Password)
 
   /** Rendered after a user successfully authenticates with a temporary password.
@@ -52,8 +52,8 @@ object ConversationStep:
   ) extends ConversationStep(StepId.SetPassword)
 
   case class PasskeyEnroll(
-      request: String, // serialized registration ceremony state
-      publicKeyOptions: String, // JSON for navigator.credentials.create()
+      request: String,              // serialized registration ceremony state
+      publicKeyOptions: String,     // JSON for navigator.credentials.create()
       enrollFailed: Boolean = false, // set when a submitted registration fails server-side verification
   ) extends ConversationStep(StepId.PasskeyEnroll)
 

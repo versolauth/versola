@@ -21,7 +21,7 @@ object SyncOps:
           case Some(record) =>
             cache.update { records =>
               event.sort(
-                records.filterNot(event.matches).appended(record)
+                records.filterNot(event.matches).appended(record),
               )
             }
 

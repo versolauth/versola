@@ -1,8 +1,8 @@
 package versola.central.configuration.forms
 
 import zio.json.{JsonCodec, jsonDiscriminator}
-import zio.schema.{Schema, derived}
 import zio.schema.annotation.discriminatorName
+import zio.schema.{Schema, derived}
 
 @jsonDiscriminator("type")
 @discriminatorName("type")

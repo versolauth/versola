@@ -1,7 +1,7 @@
 package versola.users
 
-import com.augustnagro.magnum.sql
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.sql
 import versola.central.users.UserRepositorySpec
 import versola.util.SecureRandom
 import versola.util.postgres.PostgresSpec

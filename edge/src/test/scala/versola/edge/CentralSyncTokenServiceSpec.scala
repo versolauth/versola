@@ -41,8 +41,8 @@ object CentralSyncTokenServiceSpec extends ZIOSpecDefault:
         .keyID(keyId)
         .algorithm(com.nimbusds.jose.JWSAlgorithm.RS256)
         .keyUse(com.nimbusds.jose.jwk.KeyUse.SIGNATURE)
-        .build()
-    )
+        .build(),
+    ),
   )
 
   private val service =

@@ -2,12 +2,12 @@ package versola.central.configuration.roles
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.edges.EdgeService
-import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.permissions.Permission
+import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -15,7 +15,6 @@ import zio.json.*
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-
 
 object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val config = TestCentralConfig.config
@@ -80,25 +79,25 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client      <- ZIO.service[Client]
-        service     =  stub[RoleService]
-        edgeService =  stub[EdgeService]
+        client <- ZIO.service[Client]
+        service = stub[RoleService]
+        edgeService = stub[EdgeService]
         resourceService = stub[ResourceService]
-        tracing     <- tracingLayer.build
+        tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             RoleController.routes.provideEnvironment(
               ZEnvironment[RoleService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+            ),
+          ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         response <- client.batched(
           request
             .addHeader(Header.Accept(MediaType.application.json))
-            .addHeader(TestAdminAuth.basicAuthHeader)
+            .addHeader(TestAdminAuth.basicAuthHeader),
         )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -109,7 +108,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return tenant roles with pagination params",
       request = Request.get(
         (URL.empty / "configuration" / "roles")
-          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "4", "limit" -> "6"))
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "4", "limit" -> "6")),
       ),
       expectedStatus = Status.Ok,
       setup = service =>
@@ -123,7 +122,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
             Vector(
               RoleResponse(adminRole, Map("en" -> "Admin role"), Set(usersRead, usersWrite), active = true),
               RoleResponse(operatorRole, Map("en" -> "Operator role"), Set(sessionsRead), active = false),
-            )
+            ),
           ),
         ),
     ),
@@ -131,7 +130,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
         (URL.empty / "configuration" / "roles")
-          .addQueryParam("tenantId", tenantId.toString)
+          .addQueryParam("tenantId", tenantId.toString),
       ),
       expectedStatus = Status.Ok,
       setup = service =>

@@ -85,7 +85,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         assertTrue(token.scope.map(_.split(' ').toSet).contains(Set("openid", "email", "offline_access")))
           .label(s"an unrequested scope must default to the client's own, got ${token.scope}")
     },
-
     test("the granted scope narrows to the requested subset") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -96,7 +95,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         assertTrue(claim(payload, "scope").contains("email"))
           .label(s"the access token must carry the narrowed scope, got ${claim(payload, "scope")}")
     },
-
     test("the issued token introspects as active and carries the requested audience") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -119,7 +117,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
           .label("the resource server must see the token as active") &&
         assertTrue(claim(payload, "scope").contains("email"))
     },
-
     test("a scope outside the client's registered scope is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -128,7 +125,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
       yield assertTrue(errorCode(result).contains("invalid_scope"))
         .label(s"expected invalid_scope, got $result")
     },
-
     test("a wrong client secret is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -138,7 +134,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         .label(s"expected invalid_client, got $result") &&
         assertTrue(result.response.status == Status.Unauthorized)
     },
-
     test("a client that presents no secret at all is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -149,7 +144,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
       yield assertTrue(errorCode(result).contains("invalid_client"))
         .label(s"expected invalid_client, got $result")
     },
-
     test("a native (public) client is refused the grant even though it names itself") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -170,7 +164,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
         assertTrue(errorCode(result).contains("invalid_client"))
           .label(s"expected invalid_client, got $result")
     },
-
     test("an empty resource parameter is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -181,7 +174,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
       yield assertTrue(errorCode(result).contains("invalid_request"))
         .label(s"expected invalid_request, got $result")
     },
-
     test("an empty authorization_details parameter is rejected") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -190,7 +182,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
       yield assertTrue(errorCode(result).contains("invalid_request"))
         .label(s"expected invalid_request, got $result")
     },
-
     test("a resource the client cannot reach is rejected with invalid_target") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -203,7 +194,6 @@ object ClientCredentialsFlowSpec extends E2ESpec:
       yield assertTrue(errorCode(result).contains("invalid_target"))
         .label(s"expected invalid_target, got $result")
     },
-
     test("a revoked token stops being accepted by the edge") {
       // The bootstrap fixture is used here rather than a client of this spec's own: the edge
       // only accepts security events for a client it already knows about, and `Flows.layer`
