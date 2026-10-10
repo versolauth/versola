@@ -147,16 +147,18 @@ object PostgresWalMetrics:
         xa.connectMeasured("wal-replication-slots") {
           sql"""
             SELECT slot_name::text, active,
-                   COALESCE(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn), 0)::float8
+                   COALESCE(pg_wal_lsn_diff(
+                     CASE WHEN pg_is_in_recovery() THEN pg_last_wal_replay_lsn() ELSE pg_current_wal_lsn() END,
+                     restart_lsn), 0)::float8
             FROM pg_replication_slots
           """.query[(String, Boolean, Double)].run().toList
         }.flatMap: rows =>
           val found = rows.map(Slot.apply.tupled)
           for
             before <- seenSlots.getAndSet(found.map(_.name).toSet)
-            // a gauge cannot be removed, so a slot that was dropped is zeroed rather than left reading its last value
+            // a gauge cannot be removed, so a slot that was dropped is set to NaN: neither the graph nor the idle-slot count (== 0) picks it up
             _ <- ZIO.foreachDiscard(before -- found.map(_.name))(name =>
-              slotRetained.tagged(MetricLabel("slot", name)).set(0) *> slotActive.tagged(MetricLabel("slot", name)).set(0),
+              slotRetained.tagged(MetricLabel("slot", name)).set(Double.NaN) *> slotActive.tagged(MetricLabel("slot", name)).set(Double.NaN),
             )
             _ <- ZIO.foreachDiscard(found)(slot =>
               slotRetained.tagged(MetricLabel("slot", slot.name)).set(slot.retainedBytes) *>
