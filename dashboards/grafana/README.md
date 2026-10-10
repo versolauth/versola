@@ -24,6 +24,11 @@ Series are selected by `namespace` and `app_kubernetes_io_component` (the pod la
 so `job` cannot tell them apart; the scrape configuration must copy pod labels onto the series
 (`labelmap`, as in [`k8s/monitoring/vmagent-values.yaml`](../../k8s/monitoring/vmagent-values.yaml)).
 
+The WAL section of each service is read from that service's own database (`pg_stat_wal`, `pg_stat_checkpointer`,
+`pg_settings`, `pg_replication_slots`) by the service itself, once a minute, so no `postgres_exporter` is needed. The
+database role the service uses needs no extra privilege for it; a view it cannot read is logged once and left out. Where
+the three services share one database, the three sections show the same numbers.
+
 Some panels are empty by design until their source exists: the database pool panels need
 `postgres.pool-metrics-interval`, the "Edge overhead (measured)" panel needs `edge_proxy_overhead_seconds`,
 and the panels that count failures are empty while nothing fails.
