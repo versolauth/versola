@@ -228,24 +228,43 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
              desc="In-flight requests per pod. A pod whose line keeps climbing is stuck on something slow; a flat uneven split means poor load balancing.")
 
 
-def cleanup(b: Board) -> None:
-    """Expired-row cleanup, which auth and edge run (central does not). The batch duration and failures come
-    from the per-operation database histogram, which already has them; what a batch removed, whether tables
-    keep up and when each was last cleaned come from cleanup_* metrics."""
-    b.row(f"{b.component} — Cleanup of expired data")
+def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
+    """How much data there is and how much of it has expired, then how cleanup is doing. auth and edge run the
+    cleanup manager (central does not).
+
+    `volume` is (tile title, table) for the tables worth a number of their own; `expiring` is a regex of
+    those among them that expire, for the live-versus-expired panel. Sizes are the database's row estimate
+    (db_table_rows_estimate), the expired counts come from cleanup_expired_rows, which is capped; every
+    replica reports the same database, hence max by (table) throughout.
+    """
+    b.row(f"{b.component} — Data volume and cleanup of expired rows")
     s = b.sel
-    batches = f'{{{s}, operation=~"cleanup-batch-.*"}}'
+    est = "approximate: the database's own row estimate, refreshed by autovacuum, not a count"
+    for title, table in volume:
+        b.stat(f"{title} (approx.)", f'max(db_table_rows_estimate{{{s}, table="{table}"}})', desc=f"Rows in `{table}`, {est}.", w=6 if len(volume) < 4 else 4)
+    b.stat("Expired rows waiting", f"sum(max by (table) (cleanup_expired_rows{{{s}}}))",
+           desc="Rows past their expiry that are still in the database, across every table with an expires_at. Counted up to a cap per table, so a very large backlog reads as at least that. Falling or flat near 0 is healthy.",
+           w=6 if len(volume) < 4 else 4)
+    b.ts("Live and expired rows", [
+        (f'clamp_min(max by (table) (db_table_rows_estimate{{{s}, table=~"{expiring}"}}) - on (table) max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}}), 0)', "{{table}} live"),
+        (f'max by (table) (cleanup_expired_rows{{{s}, table=~"{expiring}"}})', "{{table}} expired"),
+    ], unit="short", minimum=0,
+         desc=f"Rows still valid and rows past their expiry that are not yet removed, per table. Live is the size estimate minus expired, so it is {est.split(':')[0]}. Expired should fall back towards 0 after each cleanup run.")
+    b.ts("Expired rows still in the database, by table", [(f"max by (table) (cleanup_expired_rows{{{s}}})", "{{table}}")], unit="short", minimum=0,
+         desc="Per table, counted up to a cap. This is the backlog: it should shrink after each cleanup run. A line that only climbs is a table cleanup is losing to.")
+    b.ts("How overdue the oldest expired row is", [(f"max by (table) (cleanup_oldest_expired_age_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0,
+         desc="How long ago the oldest row that should already be gone expired. Cannot exceed roughly the table's cleanup interval plus the time one run takes if cleanup keeps up.")
     b.ts("Expired rows removed / s", [(f"sum by (table) (rate(cleanup_rows_deleted_total{{{s}}}[$__rate_interval]))", "{{table}}")], unit="ops", stack=True,
-         desc="Rows the cleanup job deleted, per table. Should follow the rate rows are created at (sessions, tokens, codes, …); flat zero on a table that is being written to means it is not being cleaned.")
+         desc="Rows the cleanup job deleted, per table. Should follow the rate rows are created at; flat zero on a table that is being written to means it is not being cleaned.")
+    b.ts("Expired rows in tables with no cleanup", [(f"max by (table) (cleanup_expired_rows{{{s}}}) and on (table) (max by (table) (cleanup_configured{{{s}}}) == 0)", "{{table}}")], unit="short", minimum=0,
+         desc="Tables that have an expires_at column, but no cleanup is configured for them, so what expires stays. Empty is good; anything here only ever grows.")
     b.ts("Time since each table was last cleaned", [(f"time() - max by (table) (cleanup_last_success_timestamp_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0,
          desc="Per table. Compare with the table's cleanup interval in the service config: a line that keeps climbing past it means cleanup of that table has stopped.")
-    b.ts("Tables falling behind (full batches / s)", [(f"sum by (table) (rate(cleanup_full_batches_total{{{s}}}[$__rate_interval]))", "{{table}}")], unit="ops",
-         desc="A batch that deleted as many rows as it is allowed to; more expired rows were probably waiting. Occasional is fine. Sustained means rows expire faster than they are removed, and the table grows.")
-    b.ts("Cleanup batch duration (p99)", [(f"histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{batches}[$__rate_interval])))", "{{operation}}")], unit="s",
+    b.ts("Cleanup batch duration (p99)", [(f'histogram_quantile(0.99, sum by (le, operation) (rate(db_client_operation_duration_seconds_bucket{{{s}, operation=~"cleanup-batch-.*"}}[$__rate_interval])))', "{{operation}}")], unit="s",
          desc="How long one delete batch takes, per table. Growing duration with a stable batch size means the table is bloating or the index is not keeping up.")
     b.ts("Failed cleanup batches / s", [(f'sum by (operation) (rate(db_client_operation_duration_seconds_count{{{s}, operation=~"cleanup-batch-.*", outcome="failure"}}[$__rate_interval]))', "{{operation}}")], unit="ops",
          line=steps((None, GREEN), (0.0001, RED)),
-         desc="Empty is healthy. A failed batch ends that table's cleanup job until the service restarts (the job's schedule stops on the first failure), so one failure here means the table stops being cleaned.")
+         desc="Empty is healthy. A failed batch is logged and that table is tried again at its next interval.")
 
 
 def dependencies(b: Board) -> None:
@@ -331,7 +350,7 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
     b.ts("Edge assertions rejected (DPoP)", [(f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"), (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "exempted")], unit="ops",
          desc="Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.")
-    cleanup(b)
+    cleanup(b, volume=[("Users", "users"), ("Sessions", "sso_sessions"), ("Refresh tokens", "refresh_tokens")], expiring="sso_sessions|refresh_tokens")
     dependencies(b)
     runtime(b)
 
@@ -394,7 +413,7 @@ def add_edge(b: Board, phase: str) -> None:
         (f"sum(rate(dpop_shared_ring_fallbacks_total{{{s}}}[$__rate_interval]))", "fell back to shared check"),
         (f"sum(rate(dpop_local_ring_capacity_hits_total{{{s}}}[$__rate_interval]))", "local ring full"),
     ], unit="ops", desc="How often the in-memory replay-proof store overflowed. Empty is healthy; sustained values mean it is undersized for the traffic.")
-    cleanup(b)
+    cleanup(b, volume=[("Sessions", "edge_sessions"), ("Pending logins", "pending_logins"), ("Revocations", "revocations")], expiring="edge_sessions|pending_logins|revocations")
     dependencies(b)
     runtime(b)
 

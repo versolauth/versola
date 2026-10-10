@@ -43,6 +43,41 @@ class PostgresCleanupManager(
       """.update.run()
     }
 
+  override protected def tablesWithExpiry: Task[List[CleanupManager.ExpiryTable]] =
+    xa.connectMeasured("cleanup-list-expiring-tables") {
+      sql"""
+        SELECT c.relname,
+               EXISTS (
+                 SELECT 1 FROM pg_index i
+                 JOIN pg_attribute ia ON ia.attrelid = i.indrelid AND ia.attnum = i.indkey[0]
+                 WHERE i.indrelid = c.oid AND ia.attname = 'expires_at'
+               )
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attname = 'expires_at' AND NOT a.attisdropped
+        WHERE c.relkind IN ('r', 'p') AND n.nspname = current_schema()
+        ORDER BY c.relname
+      """.query[(String, Boolean)].run().toList
+    }.map(_.map((name, indexed) => CleanupManager.ExpiryTable(name, indexed)))
+
+  override protected def expiredStats(tableName: String, cap: Int): Task[Option[CleanupManager.ExpiredStats]] =
+    val table = SqlLiteral(tableName)
+    // `expires_at` is indexed on every table cleaned, so both reads are index range scans; the cap bounds the
+    // count however far behind the table is, and MIN() is the first entry of the range.
+    xa.connectMeasured(s"cleanup-stats-$tableName") {
+      sql"""
+        SELECT
+          (SELECT COUNT(*) FROM (SELECT 1 FROM $table WHERE expires_at < NOW() LIMIT $cap) expired),
+          (SELECT EXTRACT(EPOCH FROM NOW() - MIN(expires_at))::float8 FROM $table WHERE expires_at < NOW())
+      """.query[(Long, Option[Double])].run().headOption
+    }.map(_.map((rows, age) => CleanupManager.ExpiredStats(rows, age.getOrElse(0.0))))
+
+  override protected def estimatedRows(tableName: String): Task[Option[Long]] =
+    // reltuples is -1 on a table that has never been vacuumed or analysed: no estimate yet, not "empty"
+    xa.connectMeasured(s"cleanup-estimate-$tableName") {
+      sql"SELECT reltuples::bigint FROM pg_class WHERE oid = to_regclass($tableName)".query[Long].run().headOption
+    }.map(_.filter(_ >= 0))
+
 object PostgresCleanupManager:
   /** ZIO Layer that creates, starts, and properly releases the CleanupManager.
     *
