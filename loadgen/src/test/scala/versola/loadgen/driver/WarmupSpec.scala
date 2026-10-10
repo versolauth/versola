@@ -30,6 +30,22 @@ object WarmupSpec extends ZIOSpecDefault:
         calls.count(_ == "resources") == Warmup.rounds,
       )
     },
+    // A pool entry the far side closed fails the call that meets it and is discarded by it, so the
+    // burst has to be wider than the set of connections a boot warm-up left behind.
+    test("a refresh is a burst of GETs wider than the connections a warm-up leaves, and never fails") {
+      for
+        seen <- Ref.make(Vector.empty[String])
+        _ <- TestClient.addRoutes(recording(seen))
+        client <- ZIO.service[Client]
+        _ <- Warmup.refreshConnections(client, targets)
+        calls <- seen.get
+        none <- Warmup.refreshConnections(client, targets.copy(authUrl = "http://nowhere.test")).exit
+      yield assertTrue(
+        calls.size == 2 * Warmup.refreshConcurrency * 2,
+        Warmup.refreshConcurrency >= Warmup.rounds * 2,
+        none.isSuccess,
+      )
+    },
     // The point of it is to have warmed what could be warmed, not to gate the campaign on the SUT.
     test("a SUT that answers nothing does not fail the driver") {
       for
