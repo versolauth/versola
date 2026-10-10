@@ -84,6 +84,9 @@ object SecurityService:
         secureRandom <- ZIO.service[SecureRandom]
         hashingSemaphore <- Semaphore.make(argon2Config.maxConcurrent.toLong)
         _ <- metrics.maxConcurrent.set(argon2Config.maxConcurrent.toDouble)
+        // Registered at zero now: a gauge nobody has touched is not in /metrics, and an autoscaler or an
+        // alert on `argon2_hashes_waiting` would see no series at all until the first login.
+        _ <- metrics.waiting.set(0.0) *> metrics.inFlight.set(0.0)
       yield Impl(secureRandom, hashingSemaphore, metrics)
     }
 
