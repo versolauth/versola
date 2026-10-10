@@ -75,7 +75,7 @@ test('sets a non-active version as active', async ({ page }) => {
   await page.getByRole('button', { name: 'Set Active', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/forms/active').body).toEqual({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/forms/active')).body).toEqual({
     id: 'credential',
     version: 2,
   });
@@ -90,7 +90,7 @@ test('creates a new form', async ({ page }) => {
   await page.getByRole('button', { name: 'Save as new version', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/forms').body).toMatchObject({ id: 'signup' });
+  expect((await findRequest(api.requests, 'PUT', '/configuration/forms')).body).toMatchObject({ id: 'signup' });
 });
 
 test('creates a new version of an existing form', async ({ page }) => {
@@ -102,7 +102,7 @@ test('creates a new version of an existing form', async ({ page }) => {
   await page.getByRole('button', { name: 'Save as new version', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/forms').body).toMatchObject({ id: 'credential' });
+  expect((await findRequest(api.requests, 'PUT', '/configuration/forms')).body).toMatchObject({ id: 'credential' });
 });
 
 test('edits locales: adds a new locale', async ({ page }) => {
@@ -116,7 +116,7 @@ test('edits locales: adds a new locale', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
     add: Array<{ code: string; name: string }>;
     delete: string[];
   };
@@ -132,7 +132,7 @@ test('edits locales: removes an existing locale', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as { delete: string[] };
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as { delete: string[] };
   expect(body.delete).toEqual(['ru']);
 });
 
@@ -152,7 +152,7 @@ test('activates a locale through the locales update endpoint', async ({ page }) 
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
     add: Array<{ code: string; active: boolean }>;
   };
   expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
@@ -178,7 +178,7 @@ test('shows missing localized fields when locale activation is rejected', async 
 
   await expect(page.getByRole('heading', { name: 'Edit Locales', exact: true })).toBeVisible();
   await expect(page.getByText("Missing: client 'web' name, scope 'profile' description", { exact: false })).toBeVisible();
-  const body = findRequest(api.requests, 'PUT', '/configuration/locales').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/locales')).body as {
     add: Array<{ code: string; active: boolean }>;
   };
   expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
@@ -194,7 +194,7 @@ test('creates a global theme', async ({ page }) => {
   await page.getByRole('button', { name: 'Create', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'POST', '/configuration/themes').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/configuration/themes')).body).toMatchObject({
     id: 'brand',
     tenantId: null,
   });
@@ -209,7 +209,7 @@ test('edits a theme', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/themes').body).toMatchObject({ id: 'dark' });
+  expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ id: 'dark' });
 });
 
 test('deletes a non-default theme', async ({ page }) => {
@@ -220,7 +220,7 @@ test('deletes a non-default theme', async ({ page }) => {
   await page.getByRole('button', { name: 'Delete', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const req = findRequest(api.requests, 'DELETE', '/configuration/themes');
+  const req = await findRequest(api.requests, 'DELETE', '/configuration/themes');
   expect(req.searchParams['id']).toBe('dark');
 });
 

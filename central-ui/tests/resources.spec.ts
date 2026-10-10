@@ -121,7 +121,7 @@ test('creates a resource with endpoints', async ({ page }) => {
   await expect(created).toContainText('/service/items');
   await expect(created).toContainText('POST');
 
-  const createRequest = findRequest(api.requests, 'POST', '/configuration/resources').body as {
+  const createRequest = (await findRequest(api.requests, 'POST', '/configuration/resources')).body as {
     tenantId: string;
     resourceId: string;
     resource: string;
@@ -165,7 +165,7 @@ test('creates an internal resource and shows the generated secret banner', async
   const created = resourceCard(page, 'service.example');
   await expect(created).toContainText('Internal');
 
-  expect(findRequest(api.requests, 'POST', '/configuration/resources').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/configuration/resources')).body).toMatchObject({
     resourceId: 'service',
     resource: 'https://service.example',
     internal: true,
@@ -199,7 +199,7 @@ test('rotates a resource secret and activates the new secret', async ({ page }) 
 
   await expect(page.getByRole('heading', { name: 'Edit Resource', exact: true })).not.toBeVisible();
 
-  expect(findRequest(api.requests, 'POST', '/configuration/resources/rotate-secret').searchParams).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/resources/rotate-secret')).searchParams).toEqual({
     resourceId: 'alpha',
   });
 
@@ -210,7 +210,7 @@ test('rotates a resource secret and activates the new secret', async ({ page }) 
   await page.getByRole('button', { name: 'Activate new secret', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Activate', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/configuration/resources/previous-secret').searchParams).toEqual({
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/resources/previous-secret')).searchParams).toEqual({
     resourceId: 'alpha',
   });
 
@@ -314,7 +314,7 @@ test('updates a resource and saves batched endpoint changes in one request', asy
   await expect(updated).toContainText('/alpha/items/archive');
   await expect(updated).toContainText('DELETE');
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toEqual({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toEqual({
     resourceId: 'alpha',
     resource: 'https://alpha-v2.example',
     audience: { add: [], remove: [] },
@@ -348,7 +348,7 @@ test('adds and removes clients from a resource audience', async ({ page }) => {
   await page.getByRole('button', { name: 'Add audience', exact: true }).click();
   await page.getByRole('button', { name: 'Save Resource', exact: true }).click();
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toMatchObject({
     resourceId: 'alpha',
     audience: { add: ['alpha-web'], remove: [] },
   });
@@ -378,7 +378,7 @@ test('blocks save when allow expression is invalid CEL and clears error after fi
   await expect(allowEditor.getByRole('alert')).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Save Resource', exact: true }).click();
-  expect(findRequest(api.requests, 'PUT', '/configuration/resources').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/resources')).body).toMatchObject({
     createEndpoints: expect.arrayContaining([
       expect.objectContaining({ id: 101, allow: "token.role == 'admin'" }),
     ]),
@@ -452,7 +452,7 @@ test('deletes a resource through the shared confirm dialog', async ({ page }) =>
   await resourceCard(page, 'alpha.example').getByRole('button', { name: 'Delete resource alpha' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
-  expect(findRequest(api.requests, 'DELETE', '/configuration/resources').searchParams).toEqual({ resourceId: 'alpha' });
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/resources')).searchParams).toEqual({ resourceId: 'alpha' });
   await expect(page.locator('.resource-shell')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No resources yet', exact: true })).toBeVisible();
 });

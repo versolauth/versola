@@ -14,7 +14,7 @@ paths: [".github/**", "docker/**", "k8s/**", "services.yml", "scripts/**", "migr
     `test_tag` run, which never pushes `:latest`); merging to `main` publishes nothing. Tags carry no
     `v` prefix.
   - `helm-*`: chart checks (images, secret vars, placement, ingress).
-  - `ui`: `central-ui` type-check, Vitest and Playwright (incl. the axe accessibility scan) against
+  - `central-ui`: type-check, Vitest and Playwright (incl. the axe accessibility scan) against
     mocked API responses; runs beside `build`, no backend needed, skipped on releases.
 - `.github/workflows/security.yml`: scanners (see `security.md`).
 - `.github/scripts/check-*.sh` are the CI checks as scripts. When you touch what one guards (secret

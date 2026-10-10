@@ -1285,8 +1285,8 @@ jobs:
       - name: Check chart ingress class contract
         run: .github/scripts/check-chart-ingress.sh
 
-  # central-ui's own checks: type-check, Vitest, and Playwright (which also runs the axe
-  # accessibility scan, tests/accessibility.spec.ts). Nothing here needs the Scala build or a
+  # central-ui's own checks: type-check, Vitest (unit tests), and Playwright (the admin console's
+  # UI tests, which also include the axe accessibility scan, tests/accessibility.spec.ts). Nothing here needs the Scala build or a
   # backend -- the admin console is tested against mocked API responses (tests/mocks.ts) -- so it
   # runs beside `build` instead of inside it and adds nothing to the critical path.
   #
@@ -1296,7 +1296,7 @@ jobs:
   #
   # Chromium only, which is the one browser playwright.config.ts uses. The browser is installed
   # on every run (about a minute); npm's cache is keyed on package-lock.json.
-  ui:
+  central-ui:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     timeout-minutes: 20

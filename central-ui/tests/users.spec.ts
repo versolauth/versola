@@ -111,7 +111,7 @@ test('creates a new user via the create form', async ({ page }) => {
   await page.getByRole('button', { name: 'Create User', exact: true }).click();
 
   await expect(page.getByPlaceholder('Search users…')).toBeVisible();
-  expect(findRequest(api.requests, 'POST', '/users').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/users')).body).toEqual({
     email: 'new@example.com',
     phone: undefined,
     login: 'newbie',
@@ -142,7 +142,7 @@ test('edits user basic fields and sends PATCH', async ({ page }) => {
   await page.getByRole('button', { name: 'Update User', exact: true }).click();
   await page.waitForTimeout(500);
 
-  expect(findRequest(api.requests, 'PATCH', '/users').body).toEqual({
+  expect((await findRequest(api.requests, 'PATCH', '/users')).body).toEqual({
     id: alice.id,
     login: 'alice-updated',
   });
@@ -173,7 +173,7 @@ test('Get Roles fetches and displays user roles for the selected tenant', async 
   await card.getByRole('button', { name: 'Get Roles', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const req = findRequest(api.requests, 'GET', '/users/roles');
+  const req = await findRequest(api.requests, 'GET', '/users/roles');
   expect(req.searchParams['id']).toBe(alice.id);
   expect(req.searchParams['tenantId']).toBe('tenant-alpha');
   await expect(card.locator('.role-tag', { hasText: 'alpha_admin' })).toBeVisible();
@@ -187,7 +187,7 @@ test('Reset Limits sends POST and updates button label', async ({ page }) => {
   await card.getByRole('button', { name: 'Reset Limits', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'POST', '/users/limits/reset').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/users/limits/reset')).body).toMatchObject({
     userId: alice.id,
   });
   await expect(card.getByRole('button', { name: 'Limits Reset ✓', exact: true })).toBeVisible();
@@ -203,7 +203,7 @@ test('Reset Password offers the show channel outside production', async ({ page 
   await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'POST', '/users/password/reset').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/users/password/reset')).body).toMatchObject({
     userId: alice.id,
     channel: 'show',
     expiresInSeconds: 12 * 60 * 60,
@@ -224,7 +224,7 @@ test('Reset Password sends the selected temporary password lifetime in seconds',
   await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'POST', '/users/password/reset').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/users/password/reset')).body).toMatchObject({
     userId: alice.id,
     channel: 'email',
     expiresInSeconds: 6 * 60 * 60,
@@ -248,7 +248,7 @@ test('Reset Password hides the show channel in production', async ({ page }) => 
   await page.getByRole('button', { name: 'Confirm', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'POST', '/users/password/reset').body).toMatchObject({
+  expect((await findRequest(api.requests, 'POST', '/users/password/reset')).body).toMatchObject({
     userId: alice.id,
     channel: 'email',
   });
@@ -263,7 +263,7 @@ test('Get Passkeys fetches and lists passkeys for the user', async ({ page }) =>
   await card.getByRole('button', { name: 'Get Passkeys', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const req = findRequest(api.requests, 'GET', '/users/passkeys');
+  const req = await findRequest(api.requests, 'GET', '/users/passkeys');
   expect(req.searchParams['id']).toBe(alice.id);
 
   await expect(card.locator('.passkey-card-name', { hasText: 'Alice MacBook' })).toBeVisible();
@@ -286,7 +286,7 @@ test('renames a passkey via the prompt and sends PATCH', async ({ page }) => {
   await card.locator('.passkey-card-actions button[title="Rename"]').click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PATCH', '/users/passkeys').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PATCH', '/users/passkeys')).body).toMatchObject({
     userId: alice.id,
     credentialId: alicePasskey.id,
     name: 'My Renamed Key',
@@ -306,7 +306,7 @@ test('deletes a passkey via the confirm dialog and removes it from the list', as
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const req = findRequest(api.requests, 'DELETE', '/users/passkeys');
+  const req = await findRequest(api.requests, 'DELETE', '/users/passkeys');
   expect(req.searchParams['id']).toBe(alice.id);
   expect(req.searchParams['credentialId']).toBe(alicePasskey.id);
   await expect(card.locator('.passkey-card-name', { hasText: 'Alice MacBook' })).toHaveCount(0);
