@@ -46,6 +46,12 @@ reporting the change as finished.
 4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
    say so.
 
+# Skills
+
+Procedures that are easy to get half right live in `.claude/skills/`: `add-endpoint`,
+`add-login-screen`, `add-migration`, and `pre-pr-check` (run it before every push or PR). Use the
+matching one instead of working from memory; several registration points they list fail silently.
+
 # Working Rules
 
 - Read the code before claiming how it behaves. Never cite an RFC section, config key,
