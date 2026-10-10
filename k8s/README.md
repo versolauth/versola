@@ -333,6 +333,10 @@ fixed replica count.
 
 Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
 
+### Outbound connections: `HTTP_CLIENT_POOL_SIZE`
+
+auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool keeps `HTTP_CLIENT_POOL_SIZE` connections **per target** (default 128; zio-http's own default is 10). An HTTP/1.1 connection serves one request at a time, so the pool bounds a pod's throughput towards one backend at `size / backend latency`: with 10 connections and a 13 ms backend, ~780 requests/s however idle the CPU, and past that the requests queue (seen in the step-load test as a ~1 s p99 on one edge pod). Size it for `peak requests/s per pod x backend p99 latency`, with headroom; set it through `services.<name>.extraEnv`. `http_client_active_requests{peer}` is the number of outbound requests in flight, queued ones included: it climbs first where a pool is too small.
+
 ---
 
 ## 7. Ingress
