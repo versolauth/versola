@@ -1,5 +1,6 @@
 package versola.loadgen.metrics
 
+import versola.loadgen.environment.EnvironmentStats
 import versola.loadgen.config.SecurityProfile
 import versola.loadgen.sut.{PoolerQueuePeak, PoolerStatsDelta, SutStatsDelta}
 import zio.json.JsonCodec
@@ -217,6 +218,15 @@ case class CampaignReport(
       * fail a run and never clear one is not a threshold.
       */
     poolerQueue: Option[List[PoolerQueuePeak]],
+    /** [[databases]] over the measured window only, the span [[latency]] is computed over. `None`
+      * until the window has closed (or if its snapshots could not be taken).
+      */
+    measuredDatabases: Option[List[SutStatsDelta]] = None,
+    /** What the monitoring stack saw of the SUT's pods over the same window the quantiles cover
+      * (CPU, memory, network, request rates, pool connections). `None` without an `environment`
+      * block, or when the monitoring stack could not be reached at all.
+      */
+    environment: Option[EnvironmentStats] = None,
 ) derives JsonCodec
 
 object CampaignReport:
@@ -231,6 +241,7 @@ object CampaignReport:
       databases: Option[List[SutStatsDelta]],
       poolers: Option[List[PoolerStatsDelta]],
       poolerQueue: Option[List[PoolerQueuePeak]],
+      measuredDatabases: Option[List[SutStatsDelta]] = None,
   ): Either[String, CampaignReport] =
     for
       _ <- Either.cond(reports.nonEmpty, (), s"no driver reports to build a time window from for campaign '$campaign'")
@@ -262,6 +273,7 @@ object CampaignReport:
         databases = databases,
         poolers = poolers,
         poolerQueue = poolerQueue,
+        measuredDatabases = measuredDatabases,
       )
 
   private def evaluate(

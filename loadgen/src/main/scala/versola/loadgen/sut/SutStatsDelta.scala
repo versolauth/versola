@@ -42,15 +42,19 @@ object SutStatsDelta:
     * reading says how much work the server has done since somebody last reset it, which is not a
     * statement about this campaign and would be read as one.
     */
-  def from(rows: Iterable[SutStatSnapshotRow]): List[SutStatsDelta] =
+  def from(
+      rows: Iterable[SutStatSnapshotRow],
+      opening: SutStatPhase = SutStatPhase.Before,
+      closing: SutStatPhase = SutStatPhase.After,
+  ): List[SutStatsDelta] =
     rows
       .groupBy(_.database)
       .toList
       .sortBy((database, _) => database)
       .flatMap: (_, ofDatabase) =>
         for
-          before <- ofDatabase.find(_.phase == SutStatPhase.Before)
-          after <- ofDatabase.find(_.phase == SutStatPhase.After)
+          before <- ofDatabase.find(_.phase == opening)
+          after <- ofDatabase.find(_.phase == closing)
         yield between(before, after)
 
   def between(before: SutStatSnapshotRow, after: SutStatSnapshotRow): SutStatsDelta =
