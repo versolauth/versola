@@ -46,6 +46,11 @@ final case class E2EConfig(
       * specs that start a second central to see what its bootstrap does. */
     centralLauncher: String,
     centralEnvConf: String,
+    /** The same for auth and edge, for the specs that start a second one without central. */
+    authLauncher: String,
+    authEnvConf: String,
+    edgeLauncher: String,
+    edgeEnvConf: String,
 )
 
 object E2EConfig:
@@ -82,6 +87,10 @@ object E2EConfig:
       authMutualTlsTrustedCertificates <- env("AUTH_MTLS_CA", "../auth/dev/mtls/ca.crt")
       centralLauncher <- env("CENTRAL_LAUNCHER", "../central/implementations/postgres/target/universal/stage/bin/central-postgres-impl")
       centralEnvConf <- env("CENTRAL_ENV_CONF", "../central/dev/env.conf")
+      authLauncher <- env("AUTH_LAUNCHER", "../auth/implementations/postgres/target/universal/stage/bin/auth-postgres-impl")
+      authEnvConf <- env("AUTH_ENV_CONF", "../auth/dev/env.conf")
+      edgeLauncher <- env("EDGE_LAUNCHER", "../edge/implementations/postgres/target/universal/stage/bin/edge-postgres-impl")
+      edgeEnvConf <- env("EDGE_ENV_CONF", "../edge/dev/env.conf")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -104,6 +113,10 @@ object E2EConfig:
       authMutualTlsTrustedCertificates,
       centralLauncher,
       centralEnvConf,
+      authLauncher,
+      authEnvConf,
+      edgeLauncher,
+      edgeEnvConf,
     )
 
   private def env(name: String, default: String): Task[String] =

@@ -13,7 +13,7 @@ import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, Cl
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
+import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource}
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
 import zio.http.*
@@ -81,6 +81,7 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       PostgresRevocationNotifications.live >+>
       SecureRandom.live >+>
       SecurityService.live >+>
+      configSnapshot >+>
       CentralSyncTokenService.live >+>
       AuthorizationPresetsSyncClient.live >+>
       ClientCertificateEnrollment.live >+>
@@ -107,6 +108,16 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       NativeAuthClient.live >+>
       NativeService.live
 
+
+  /** Keyed off this edge's private key, see [[ConfigSnapshot]]. */
+  private val configSnapshot: ZLayer[TransactorZIO & EdgeConfig, Nothing, ConfigSnapshot] =
+    (PostgresConfigSnapshotRepository.live("edge_config_snapshots") ++ ZLayer.service[EdgeConfig]) >>>
+      ZLayer.fromZIO:
+        for
+          repository <- ZIO.service[ConfigSnapshot.Repository]
+          config <- ZIO.service[EdgeConfig]
+          snapshot <- ConfigSnapshot.make(repository, config.privateKey.getEncoded)
+        yield snapshot
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
 

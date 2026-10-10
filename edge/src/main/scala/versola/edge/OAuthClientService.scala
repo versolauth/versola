@@ -29,12 +29,12 @@ object OAuthClientService:
     (
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[PresetId, AuthorizationPreset]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[PresetId, AuthorizationPreset]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval),
+          ReloadingCache.make[Map[ClientId, OAuthClient]](config.configurationCacheRefreshInterval, fromSnapshot = true),
         )
       ) ++
       ZLayer.service[AuthorizationPresetsSyncClient] ++

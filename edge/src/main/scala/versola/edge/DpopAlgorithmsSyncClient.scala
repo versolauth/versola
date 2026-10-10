@@ -30,5 +30,5 @@ object DpopAlgorithmsSyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(MetadataURL).addHeader(Header.Authorization.Bearer(token))
-        document <- ZIO.scoped(httpClient.request(request).flatMap(_.body.asJsonFromCodec[Json.Obj]))
+        document <- ZIO.scoped(centralSyncTokenService.syncRequest(httpClient, request).flatMap(_.body.asJsonFromCodec[Json.Obj]))
       yield Dpop.Algorithm.fromMetadata(document)

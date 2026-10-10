@@ -1,20 +1,27 @@
 package versola.edge
 
-import versola.util.{CacheSource, JWT, ReloadingCache}
+import versola.util.{CacheSource, ConfigSnapshot, JWT, ReloadingCache}
+import zio.http.{Client, Request, Response}
 import zio.json.ast.Json
 import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
 
 trait CentralSyncTokenService:
   def getToken: UIO[String]
 
+  /** Sends a configuration sync request, already carrying the token, to central. Goes through
+    * the [[ConfigSnapshot]] in [[CentralSyncTokenService.live]].
+    */
+  def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
+    client.request(request)
+
 object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
   private val ReloadInterval = 9.minutes
 
-  def live: ZLayer[Scope & EdgeConfig, Throwable, CentralSyncTokenService] = {
+  def live: ZLayer[Scope & EdgeConfig & ConfigSnapshot, Throwable, CentralSyncTokenService] = {
     TokenSource >>>
       ZLayer(ReloadingCache.make[String](ReloadInterval)) >>>
-      ZLayer.fromFunction(Impl(_, _))
+      ZLayer.fromFunction(Impl(_, _, _))
   }
 
   private val TokenSource: ZLayer[EdgeConfig, Throwable, CacheSource[String]] = ZLayer:
@@ -41,5 +48,9 @@ object CentralSyncTokenService:
   class Impl(
       cache: ReloadingCache[String],
       config: EdgeConfig,
+      snapshot: ConfigSnapshot,
   ) extends CentralSyncTokenService:
     override def getToken: UIO[String] = cache.get
+
+    override def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
+      snapshot.through(request)(client.request(request))
