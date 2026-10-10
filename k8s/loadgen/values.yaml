@@ -7,9 +7,10 @@
 #     at.
 #   - No bundled secret backend. This chart consumes a Secret, it never
 #     generates or mandates one.
-#   - No bundled Prometheus or Grafana. The dashboards of D9 are checked in
-#     under dashboards/ and imported by the observability stack the campaign
-#     already runs (design doc §5.4's VictoriaMetrics + Grafana host).
+#   - No bundled Prometheus or Grafana. The system's dashboard lives in
+#     dashboards/grafana/ at the repository root, outside this chart, and is
+#     imported by the observability stack the campaign already runs (design
+#     doc §5.4's VictoriaMetrics + Grafana host).
 #   - HPA/PDB/topology spread are out of scope here, as they are there
 #     (#211). A driver fleet must not autoscale mid-campaign in any case:
 #     the shard count is what the population was seeded against.
@@ -388,8 +389,8 @@ mockapi:
       limits:
         memory: 32Mi
 
-# Where the dashboards of dashboards/ get their data from, and how the pods
-# are found.
+# Where the system's dashboard (dashboards/grafana/) gets its data from, and
+# how the pods are found.
 metrics:
   # prometheus.io/scrape + /port + /path pod annotations on every component.
   #
@@ -407,7 +408,7 @@ metrics:
   # board's own description panel.
   prometheusAnnotations: true
   # One series family the pods do NOT publish by default, and cannot be made
-  # to from here: the HikariCP pool readings of the Dependencies row on every board in dashboards/
+  # to from here: the HikariCP pool readings of the database rows of dashboards/grafana/versola.json
   # (`db_client_connection_*`). They come from `util`, which every service
   # shares, so they are opt-in per pool via `postgres.pool-metrics-interval`
   # -- an absent interval means no MetricsTrackerFactory and no publishing
@@ -433,17 +434,3 @@ metrics:
   # application's own view -- what it asked for and how long it waited --
   # and they say nothing about the pooler in front of the database or the
   # server behind it.
-
-# The Grafana boards of dashboards/, as a ConfigMap for a Grafana dashboard
-# sidecar to pick up.
-#
-# Off by default: the JSON files are the deliverable and are importable by
-# hand or by whatever provisioning the observability host already has. This
-# only helps if Grafana is running in the same cluster with the sidecar
-# watching for a label, which is exactly what `labels` below is for
-# (kube-prometheus-stack's default is `grafana_dashboard: "1"`).
-dashboards:
-  configMap:
-    enabled: false
-    labels: {}
-    #  grafana_dashboard: "1"

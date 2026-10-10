@@ -519,9 +519,7 @@ All of these have open issues; none of them has a fix in the chart yet.
 | [#380](https://github.com/versolauth/versola/issues/380) | central's admin API secret cannot be obtained or rotated once bootstrap has generated it — set `bootstrap.resource-secret` **before** the first start |
 | [#209](https://github.com/versolauth/versola/issues/209) | no migration Job — see [§5](#5-applying-migrations) |
 
-Observability is external by design. The dashboards in `loadgen/dashboards/` are checked in but
-not installed: `dashboards.configMap.enabled` is off by default, and turning it on only helps if
-Grafana's sidecar watches that label. Nothing here deploys Prometheus, and neither chart creates
+Observability is external by design. The Grafana dashboard is checked in under `dashboards/grafana/` at the repository root, outside both charts, and is not installed by either. Nothing here deploys Prometheus, and neither chart creates
 `ServiceMonitor` or `PodMonitor` objects — both `loadgen` and `versola` carry `prometheus.io/scrape`
 annotations on every pod (`versola`'s via `metrics.prometheusAnnotations`, default `true`), so how
 scraping happens is still the cluster's business, but a `kubernetes_sd_configs`/annotation-based
@@ -543,13 +541,4 @@ distortion during the 1M-run loadgen campaign) — see
 fix, checked in there because it previously existed only as a live Helm release nobody had a copy
 of.
 
-There is one board, `loadgen/dashboards/versola.json`, covering auth, central and edge, and nothing about
-the load generator. It opens with an Overview matrix (two lines of four tiles per service: pods up,
-requests, 5xx share, p99, two service-specific tiles, DB pool and heap saturation), then one section per
-service: traffic/errors/latency per endpoint, the service's own signals (auth: sign-in funnel and token
-refresh; edge: proxying and the revocation cache; central: config syncs and admin writes), and two
-collapsed rows for database/outbound calls and JVM runtime. Series are selected by `namespace` and the
-`app_kubernetes_io_component` label (the pod label `app.kubernetes.io/component`, copied onto every
-series by the vmagent job above) — `job` is the same for all three services. The board is generated:
-edit `loadgen/dashboards/generate.py`, re-run it and commit the JSON. It only draws a threshold where
-one is defensible without a written SLA.
+The dashboard and how to load it are described in [`dashboards/grafana/README.md`](../dashboards/grafana/README.md). It selects series by `namespace` and the `app_kubernetes_io_component` label, which the vmagent job above copies from the pod label onto every series.

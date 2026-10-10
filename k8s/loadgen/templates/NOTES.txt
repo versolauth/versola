@@ -64,17 +64,11 @@ does not create.
 
 {{ if .Values.metrics.prometheusAnnotations -}}
 Every pod carries prometheus.io/scrape annotations on its diagnostics port. The
-board in k8s/loadgen/dashboards/ selects on `namespace` and `app_kubernetes_io_component`
+dashboard in dashboards/grafana/ selects on `namespace` and `app_kubernetes_io_component`
 (the pod label, copied onto each series by pod-level service discovery) -- if your
-scrape configuration drops them, the board comes up empty.
+scrape configuration drops them, the dashboard comes up empty.
 {{- else -}}
 metrics.prometheusAnnotations is false, so nothing here is discoverable by an
-annotation-based Prometheus. The board in k8s/loadgen/dashboards/ will be
+annotation-based Prometheus. The dashboard in dashboards/grafana/ will be
 empty until something scrapes /metrics on each component's diagnostics port.
-{{- end }}
-{{- if not .Values.dashboards.configMap.enabled }}
-
-No dashboard ConfigMap was created (dashboards.configMap.enabled=false). Import
-k8s/loadgen/dashboards/*.json into Grafana by hand, or set that flag together
-with the label your Grafana sidecar watches for.
 {{- end }}

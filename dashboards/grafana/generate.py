@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generates the single Grafana board in this directory: versola.json, covering auth, central and edge.
 
-    python3 k8s/loadgen/dashboards/generate.py
+    python3 dashboards/grafana/generate.py
 
 One board, so nobody switches between dashboards to follow a request across services. Top to bottom:
 
