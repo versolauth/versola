@@ -61,6 +61,7 @@ type AccountSettingsStep = {
   type: 'auth-settings';
   sessions: AccountSession[];
   passkeys: AccountPasskey[];
+  hasPassword: boolean;
 };
 
 interface FormConfig {
@@ -129,6 +130,13 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [enrollNameError, setEnrollNameError] = createSignal(false);
   const [enrollError, setEnrollError] = createSignal(false);
   const [deletionRequest, setDeletionRequest] = createSignal<DeletionRequest | null>(null);
+  const [passwordBusy, setPasswordBusy] = createSignal(false);
+  const [currentPassword, setCurrentPassword] = createSignal('');
+  const [newPassword, setNewPassword] = createSignal('');
+  const [confirmPassword, setConfirmPassword] = createSignal('');
+  const [confirmPasswordError, setConfirmPasswordError] = createSignal(false);
+  const [passwordError, setPasswordError] = createSignal<string | null>(null);
+  const [passwordSuccess, setPasswordSuccess] = createSignal(false);
 
   const revokeSession = async (session: AccountSession) => {
     if (busySessionId()) return;
@@ -238,6 +246,38 @@ function AccountSettingsForm(props: { config: FormConfig }) {
       if (!isPasskeyCancellation(error)) setEnrollError(true);
     } finally {
       setEnrolling(false);
+    }
+  };
+  
+  const changePassword = async () => {
+    if (passwordBusy()) return;
+    setPasswordBusy(true);
+    setPasswordError(null);
+    setPasswordSuccess(false);
+    if (newPassword() !== confirmPassword()) {
+      setConfirmPasswordError(true);
+      setPasswordBusy(false);
+      return;
+    }
+    setConfirmPasswordError(false);
+    try {
+      const res = await fetch(`${base}password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword: currentPassword(), newPassword: newPassword() }),
+      });
+      if (res.ok) {
+        setCurrentPassword('');
+        setNewPassword('');
+        setPasswordSuccess(true);
+      } else {
+        const text = await res.text();
+        setPasswordError(text || t().password_change_failed);
+      }
+    } catch {
+      setPasswordError(t().password_change_failed);
+    } finally {
+      setPasswordBusy(false);
     }
   };
 
@@ -374,6 +414,53 @@ function AccountSettingsForm(props: { config: FormConfig }) {
           </div>
         </Show>
       </section>
+
+      <Show when={step.hasPassword}>
+        <section class="account-section">
+          <h2>{t().password_title}</h2>
+          <div class="account-password-form">
+            <input
+              class="input-field"
+              type="password"
+              placeholder={t().current_password_placeholder}
+              value={currentPassword()}
+              onInput={(e) => setCurrentPassword(e.currentTarget.value)}
+              disabled={passwordBusy()}
+              autocomplete="current-password"
+            />
+            <input
+              class="input-field"
+              type="password"
+              placeholder={t().new_password_placeholder}
+              value={newPassword()}
+              onInput={(e) => setNewPassword(e.currentTarget.value)}
+              disabled={passwordBusy()}
+              autocomplete="new-password"
+            />
+            <input
+              class={`input-field${confirmPasswordError() ? ' input-error' : ''}`}
+              type="password"
+              placeholder={t().confirm_password_placeholder}
+              value={confirmPassword()}
+              onInput={(e) => { setConfirmPassword(e.currentTarget.value); setConfirmPasswordError(false); }}
+              disabled={passwordBusy()}
+              autocomplete="new-password"
+            />
+            <Show when={confirmPasswordError()}>
+              <div class="error-text">{t().confirm_password_mismatch}</div>
+            </Show>
+            <Show when={passwordError()}>
+              <div class="error-text">{passwordError()}</div>
+            </Show>
+            <Show when={passwordSuccess()}>
+              <div class="success-text">{t().password_changed_success}</div>
+            </Show>
+            <button type="button" class="btn btn-primary" disabled={passwordBusy()} onClick={changePassword}>
+              {t().change_password_button}
+            </button>
+          </div>
+        </section>
+      </Show>
 
       <button type="button" class="btn btn-secondary account-go-back" onClick={() => history.back()}>
         {t().go_back_button}

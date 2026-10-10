@@ -146,6 +146,7 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.succeedsWith(())
           _ <- env.service.setPassword(userId, password)
@@ -163,10 +164,33 @@ object PasswordServiceSpec extends ZIOSpecDefault, ZIOStubs:
           secureRandom <- ZIO.service[SecureRandom]
           env = Env(secureRandom)
           _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector.empty)
           _ <- env.securityService.hashPassword.succeedsWith(testHash)
           _ <- env.passwordRepo.create.failsWith(PasswordReuseError(3))
           result <- env.service.setPassword(userId, password).exit
         yield assert(result)(fails(equalTo(PasswordReuseError(3))))
+      },
+      test("rejects password reuse when new password matches a recent permanent record") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(testHash)))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          result <- env.service.setPassword(userId, password).exit
+        yield assert(result)(fails(equalTo(PasswordReuseError(3))))
+      },
+      test("allows password change when new password does not match any recent permanent record") {
+        for
+          secureRandom <- ZIO.service[SecureRandom]
+          env = Env(secureRandom)
+          _ <- env.configuration.getPasswordHistorySettings.succeedsWith(PasswordHistorySettings(historySize = 5, numDifferent = 3))
+          _ <- env.passwordRepo.list.succeedsWith(Vector(permRecord(differentHash)))
+          _ <- env.securityService.hashPassword.succeedsWith(testHash)
+          _ <- env.passwordRepo.create.succeedsWith(())
+          _ <- env.service.setPassword(userId, password)
+          createCalls = env.passwordRepo.create.calls
+        yield assertTrue(createCalls.length == 1)
       },
     ),
     suite("resetPassword")(

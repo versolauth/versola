@@ -1574,6 +1574,25 @@ final class OAuthClient(client: Client, config: E2EConfig):
       credentials,
     )
 
+  def changeAccountPassword(
+      caller: AccountCaller,
+      currentPassword: String,
+      newPassword: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.PATCH,
+      "/settings/password",
+      caller.query,
+      Some(
+        Json.Obj(
+          "currentPassword" -> Json.Str(currentPassword),
+          "newPassword"     -> Json.Str(newPassword),
+        ),
+      ),
+      credentials,
+    )
+
   private def accountRequest(
       method: Method,
       path: String,
@@ -1659,6 +1678,24 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "ticket" -> Json.Str(ticket),
           "response" -> response,
           "name" -> Json.Str(name),
+        ),
+      ),
+      accessToken,
+    )
+
+    /** PATCH /resources/auth/settings/password — changes the caller's own password. */
+  def edgeChangeAccountPassword(
+      accessToken: Option[String],
+      currentPassword: String,
+      newPassword: String,
+  ): Task[AccountResult] =
+    edgeAccountRequest(
+      Method.PATCH,
+      "/settings/password",
+      Some(
+        Json.Obj(
+          "currentPassword" -> Json.Str(currentPassword),
+          "newPassword"     -> Json.Str(newPassword),
         ),
       ),
       accessToken,

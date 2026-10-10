@@ -191,6 +191,7 @@ object BootstrapService:
     "GET"    -> "/settings",
     "DELETE" -> "/settings/sessions",
     "PATCH"  -> "/settings/passkeys",
+    "PATCH"  -> "/settings/password",
     "DELETE" -> "/settings/passkeys",
     "POST"   -> "/settings/passkeys/register/start",
     "POST"   -> "/settings/passkeys/register/finish",
@@ -218,6 +219,7 @@ object BootstrapService:
 
   private[versola] def accountCallerInjects(method: String, path: String) =
     if method == "GET" then accountCallerQueryInjects
+    else if method == "PATCH" && path == "/settings/password" then accountCallerQueryInjects
     else accountCallerBodyInjects
 
   /** The caller may not revoke the session the page is being viewed from: edge compares the

@@ -108,6 +108,34 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         assertTrue(!afterDelete.exists(passkey => str(passkey, "id").contains(credential.id)))
           .label("the deleted passkey must be gone from the page")
     },
+    test("changes the caller's password with correct current password") {
+      val newPassword = "NewSecurePass1!"
+      for
+        (_, auth) <- setup(Flows.Id.LoginPassword)
+        s         <- Flows.setupLoginPassword().provide(ZLayer.succeed(auth))
+        _         <- auth.syncConfiguration()
+        _         <- auth.assignUserRoles(s.userId, Set(accountRole))
+        _         <- auth.flushUserOutbox()
+        caller    <- login(s, auth)
+        result    <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, newPassword)
+        _         <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+                       .assertChallengeRedirect
+                       .flatMap { authorize =>
+                         val cookie = authorize.conversationCookie.get
+                         auth.getChallenge(cookie).assertStep(ConversationStep.Credential).flatMap { challenge =>
+                           auth.submitLoginPassword(cookie, s.login.get, newPassword, challenge.csrf)
+                             .assertRedirect(auth, cookie)
+                         }
+                       }
+      yield assertTrue(result.status == Status.NoContent)
+    },
+    test("rejects a password change when current password is wrong") {
+      for
+        (s, auth) <- setup(Flows.Id.LoginPassword)
+        caller <- login(s, auth)
+        result <- auth.edgeChangeAccountPassword(Some(caller.accessToken), "wrongPassword", "NewSecurePass1!")
+      yield assertTrue(result.status == Status.BadRequest)
+    },
   ) @@ TestAspect.beforeAll(grantAccountRole) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)
 
   /** Edge authorizes against the roles baked into the access token, and the shared e2e user

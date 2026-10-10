@@ -87,7 +87,16 @@ object PasswordService:
 
     override def setPassword(userId: UserId, password: Password): IO[Throwable | PasswordReuseError, Unit] =
       for
-        settings <- configuration.getPasswordHistorySettings
+        settings   <- configuration.getPasswordHistorySettings
+        permanents <- passwordRepository.list(userId).map(_.filter(_.expiresAt.isEmpty))
+        _ <- ZIO.foreachDiscard(permanents.take(settings.numDifferent)) { record =>
+              securityService
+                .hashPassword(Secret.fromString(password), record.salt, config.security.passwordsSecret)
+                .flatMap { rehashed =>
+                  ZIO.fail(PasswordReuseError(settings.numDifferent))
+                    .when(MAC(rehashed) === MAC(record.password))
+                }
+            }.mapError(identity[Throwable | PasswordReuseError])
         salt <- secureRandom.nextBytes(16).map(Salt(_))
         hash <- securityService.hashPassword(Secret.fromString(password), salt, config.security.passwordsSecret)
         _ <- passwordRepository.create(userId, Secret(hash), salt, settings.historySize, settings.numDifferent)

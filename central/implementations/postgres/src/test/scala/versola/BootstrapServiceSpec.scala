@@ -188,6 +188,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
           endpointId("GET", "/settings"),
           endpointId("DELETE", "/settings/sessions"),
           endpointId("PATCH", "/settings/passkeys"),
+          endpointId("PATCH", "/settings/password"),
           endpointId("DELETE", "/settings/passkeys"),
           endpointId("POST", "/settings/passkeys/register/start"),
           endpointId("POST", "/settings/passkeys/register/finish"),

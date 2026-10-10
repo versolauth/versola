@@ -2,11 +2,16 @@ package versola.oauth.account
 
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
+import versola.auth.model.Password
 import versola.auth.model.{CredentialId, PasskeyName, PasskeyRecord}
+import versola.oauth.account.AccountSettingsService
 import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebAuthnError, WebAuthnService}
+import versola.oauth.challenge.password.model.PasswordReuseError
+import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.conversation.limit.{LimitStatus, SubmissionLimiter}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
@@ -93,24 +98,25 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       callerSecret: Secret,
   ): Task[Request] =
     val authenticated = request.removeHeader(Header.Authorization).addHeader(basic(secret = callerSecret))
+    val withQuery = authenticated.copy(url = authenticated.url
+      .removeQueryParam("userId")
+      .removeQueryParam("clientId")
+      .removeQueryParam("sessionId")
+      .addQueryParam("userId", callerUserId.toString)
+      .addQueryParam("clientId", clientId.toString)
+      .addQueryParam("sessionId", callerSessionId.toString))
     if authenticated.method == Method.GET then
-      ZIO.succeed(authenticated.copy(url = authenticated.url
-        .removeQueryParam("userId")
-        .removeQueryParam("clientId")
-        .removeQueryParam("sessionId")
-        .addQueryParam("userId", callerUserId.toString)
-        .addQueryParam("clientId", clientId.toString)
-        .addQueryParam("sessionId", callerSessionId.toString)))
+      ZIO.succeed(withQuery)
     else
       for
-        bodyString <- authenticated.body.asString
+        bodyString <- withQuery.body.asString
         base = bodyString.fromJson[Json.Obj].getOrElse(Json.Obj(Chunk.empty))
         callerFields = Chunk(
-          "userId" -> Json.Str(callerUserId.toString),
-          "clientId" -> Json.Str(clientId.toString),
+          "userId"    -> Json.Str(callerUserId.toString),
+          "clientId"  -> Json.Str(clientId.toString),
           "sessionId" -> Json.Str(callerSessionId.toString),
         )
-      yield authenticated.copy(body = Body.fromString(Json.Obj(base.fields ++ callerFields).toJson))
+      yield withQuery.copy(body = Body.fromString(Json.Obj(base.fields ++ callerFields).toJson))
 
   /** Expiry is relative to the test clock, which starts at the epoch. */
   private def ticketFor(user: UserId, expiresAt: Instant = Instant.EPOCH.plusSeconds(300)): String =
@@ -126,6 +132,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       Stub[WebAuthnService],
       Stub[UserRepository],
       Stub[ConversationRenderService],
+      Stub[PasswordService],
+      Stub[AccountSettingsService],
   )
 
   private def controllerTestCase(
@@ -137,7 +145,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       authenticate: Boolean = true,
       callerSessionId: PublicSessionId = ownSessionId,
       resourceSecrets: List[Secret] = List(accountResourceSecret),
-      callerSecret: Secret = accountResourceSecret,
+      callerSecret: Secret = accountResourceSecret,      
+      isBannedStatus: LimitStatus = LimitStatus.Allowed,
   ) =
     test(description) {
       for
@@ -147,10 +156,15 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         passkeyRepository = stub[PasskeyRepository]
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
+        submissionLimiter = stub[SubmissionLimiter]
+        _ <- submissionLimiter.isBanned.succeedsWith(isBannedStatus)
+        _ <- submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+        _ <- configuration.getPasswordRegex.succeedsWith(".*")
         renderService = stub[ConversationRenderService]
-        stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService)
+        passwordService = stub[PasswordService]
+        accountSettingsService = stub[AccountSettingsService]
         tracing <- NoopTracing.layer.build
-
+        stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService, passwordService, accountSettingsService)
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AccountSettingsController.routes
@@ -161,6 +175,9 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(webAuthnService) ++
                   ZEnvironment(userRepository) ++
                   ZEnvironment(renderService) ++
+                  ZEnvironment(passwordService) ++
+                  ZEnvironment(submissionLimiter) ++
+                  ZEnvironment(accountSettingsService) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
                   tracing,
               ),
@@ -197,9 +214,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Ok,
         resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
         callerSecret = previousAccountResourceSecret,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
+            passwordService.hasPassword.succeedsWith(false) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
       ),
       controllerTestCase(
@@ -232,12 +250,13 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "renders the page with the caller's own sessions and passkeys",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
+            passwordService.hasPassword.succeedsWith(false) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
-          val (_, sessionService, passkeyRepository, _, _, renderService) = stubs
+          val (_, sessionService, passkeyRepository, _, _, renderService, _, _) = stubs
           ZIO.succeed(assertTrue(
             sessionService.listByUser.calls == List(userId),
             passkeyRepository.listByUser.calls == List(userId),
@@ -248,14 +267,29 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "marks the session the page is viewed from using edge's injected sid",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(false) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._6.renderAccount.calls.map(_._2.sessions.map(session => (session.id, session.current))) ==
               List(List((ownSessionId, true), (otherDeviceSession.publicId, false))),
+          )),
+      ),
+      controllerTestCase(
+        description = "passes hasPassword=true to the renderer when the user has a password set",
+        request = Request.get(URL.empty / "settings"),
+        expectedStatus = Status.Ok,
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, passwordService, _) =>
+          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+            passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
+            passwordService.hasPassword.succeedsWith(true) *>
+            renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(
+            stubs._6.renderAccount.calls.map(_._2.hasPassword) == List(true),
           )),
       ),
     ),
@@ -268,7 +302,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"${otherDeviceSession.publicId}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -286,7 +320,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"$foreignSessionId"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -303,7 +337,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (configuration, _, _, webAuthnService, userRepository, _) =>
+        setup = (configuration, _, _, webAuthnService, userRepository, _, _, _) =>
           configuration.getPasskeySettings.succeedsWith(Some(passkeySettings)) *>
             userRepository.find.succeedsWith(None) *>
             webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("req-state", """{"publicKey":{}}""")),
@@ -325,7 +359,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (configuration, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
+        setup = (configuration, _, _, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.startRegistration.calls.isEmpty)),
       ),
@@ -338,7 +372,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}","name":"Renamed"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.rename.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _, _) => passkeyRepository.rename.succeedsWith(()),
         // CredentialId is a byte array, so the calls are compared by encoded value.
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -354,7 +388,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._3.deleteByUser.calls.map((id, user) => (Base64.urlEncode(id), user)) ==
@@ -368,7 +402,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (_, _, _, webAuthnService, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
+        setup = (_, _, _, webAuthnService, _, _, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
         verify = (response, stubs) =>
           for
             body <- response.body.asString
@@ -386,7 +420,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (_, _, _, webAuthnService, _, _) =>
+        setup = (_, _, _, webAuthnService, _, _, _, _) =>
           webAuthnService.finishRegistration.failsWith(WebAuthnError.CeremonyFailed("verification failed")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.finishRegistration.calls.nonEmpty)),
@@ -472,5 +506,82 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         val spliced = s"${forged.takeWhile(_ != '.')}.${serialized.dropWhile(_ != '.').drop(1)}"
         assertTrue(PasskeyEnrollmentTicket.parse(spliced, secret, Instant.EPOCH) == Left("invalid signature"))
       },
+    ),
+    suite("PATCH /settings/password")(
+    controllerTestCase(
+      description = "changes password when current password is correct",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+        accountSettingsService.changePassword.succeedsWith(()),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(
+          stubs._8.changePassword.calls == List((userId, clientId, "OldPass1!", "NewPass1!")),
+        )),
+    ),
+    controllerTestCase(
+      description = "rejects change when current password is wrong",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+        accountSettingsService.changePassword.failsWith(versola.util.http.BadRequest("current password is incorrect")),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._8.changePassword.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "rejects a reused password",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"OldPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+        accountSettingsService.changePassword.failsWith(PasswordReuseError(5)),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._8.changePassword.calls.nonEmpty)),
+      ),
+    ),
+    controllerTestCase(
+      description = "rejects a banned caller without verifying the password",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      isBannedStatus = LimitStatus.Banned,
+      setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+        accountSettingsService.changePassword.failsWith(versola.util.http.BadRequest("too many failed attempts")),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._8.changePassword.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "records a failed attempt when the current password is wrong",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (_, _, _, _, _, _, _, accountSettingsService) =>
+        accountSettingsService.changePassword.failsWith(versola.util.http.BadRequest("current password is incorrect")),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._8.changePassword.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "rejects a new password that does not meet the password policy",
+      request = Request.patch(
+        URL.empty / "settings" / "password",
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"weak"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = (configuration, _, _, _, _, _, _, _) =>
+        configuration.getPasswordRegex.succeedsWith("^(?=.*[A-Z])(?=.*[0-9])(?=.*[!@#$%]).{8,}$"),
+      verify = (_, stubs) =>
+        ZIO.succeed(assertTrue(stubs._8.changePassword.calls.isEmpty)),
     ),
   )
