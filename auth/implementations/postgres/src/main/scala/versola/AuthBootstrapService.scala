@@ -1,5 +1,6 @@
 package versola
 
+import versola.util.SequentialLayers.*
 import versola.oauth.challenge.password.PasswordRepository
 import versola.oauth.client.model.TenantId
 import versola.role.model.RoleId
@@ -29,7 +30,7 @@ object AuthBootstrapService:
     Throwable,
     AuthBootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _)) >+>
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[AuthBootstrapService](_.bootstrap))
 
   private class Impl(

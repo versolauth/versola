@@ -1,5 +1,6 @@
 package versola
 
+import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
@@ -170,17 +171,17 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       ),
     )
 
-  val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >+> (
-    PostgresUserRepository.live >+>
-      PostgresConversationRepository.live >+>
-      PostgresConsentRepository.live >+>
-      PostgresAuthorizationCodeRepository.live >+>
-      PostgresPushedAuthorizationRepository.live >+>
-      PostgresSessionRepository.live >+>
-      PostgresUserAgentRepository.live >+>
-      PostgresPasswordRepository.live >+>
-      PostgresPasskeyRepository.live >+>
-      PostgresChallengeThrottleRepository.live >+>
+  val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >++> (
+    PostgresUserRepository.live >++>
+      PostgresConversationRepository.live >++>
+      PostgresConsentRepository.live >++>
+      PostgresAuthorizationCodeRepository.live >++>
+      PostgresPushedAuthorizationRepository.live >++>
+      PostgresSessionRepository.live >++>
+      PostgresUserAgentRepository.live >++>
+      PostgresPasswordRepository.live >++>
+      PostgresPasskeyRepository.live >++>
+      PostgresChallengeThrottleRepository.live >++>
       PostgresCleanupManager.live
   )
 
@@ -193,56 +194,56 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     }
 
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
-    repositories >+>
-      parseConfig[CoreConfig] >+>
-      SecureRandom.live >+>
-      securityService >+>
+    repositories >++>
+      parseConfig[CoreConfig] >++>
+      SecureRandom.live >++>
+      securityService >++>
       // Sizes its own expiry ring from `dpop.iat-leeway`, so it has to follow the config.
-      PostgresDpopProofRepository.live >+>
-      PostgresClientAssertionRepository.live >+>
-      DpopNonceService.live >+>
-      EdgeAssertionService.live >+>
-      JsonSchemaValidator.live >+>
-      OAuthConfigurationService.live >+>
-      DpopService.live >+>
+      PostgresDpopProofRepository.live >++>
+      PostgresClientAssertionRepository.live >++>
+      DpopNonceService.live >++>
+      EdgeAssertionService.live >++>
+      JsonSchemaValidator.live >++>
+      OAuthConfigurationService.live >++>
+      DpopService.live >++>
       // Reads the algorithms an assertion may be signed with off the same document.
-      ClientAssertionService.live >+>
+      ClientAssertionService.live >++>
       // And the algorithms a JAR request object may be signed with, likewise.
-      RequestObjectService.live >+>
-      ClientAuthentication.live >+>
-      CentralSyncTokenService.live >+>
-      JwksSyncClient.live >+>
-      MetadataSyncClient.live >+>
-      JwksService.live >+>
-      AuthPropertyGenerator.live >+>
-      SessionService.live >+>
-      BackChannelDispatcher.live >+>
-      BackChannelOutbox.live >+>
-      AccessTokenRevocationService.live >+>
-      OAuthTokenService.live >+>
-      IntrospectionService.live >+>
-      RevocationService.live >+>
-      AuthorizeRequestParser.live >+>
-      PushedAuthorizationService.live >+>
-      OtpGenerationService.live >+>
-      ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >+>
-      EmailOtpProvider.live >+>
-      SmsOtpProvider.live >+>
-      OtpService.live >+>
-      PasswordService.live >+>
-      AuthBootstrapService.live >+>
-      WebAuthnService.live >+>
-      UserInfoService.live >+>
-      SubmissionLimiter.live >+>
-      AcrResolutionService.live >+>
-      UserRegistrationSyncClient.live >+>
-      UserService.live >+>
-      ConsentService.live >+>
-      ConversationService.live >+>
-      ConversationRouter.live >+>
-      AuthorizationResponseService.live >+>
-      AuthorizeEndpointService.live >+>
-      ConversationRenderService.live >+>
+      RequestObjectService.live >++>
+      ClientAuthentication.live >++>
+      CentralSyncTokenService.live >++>
+      JwksSyncClient.live >++>
+      MetadataSyncClient.live >++>
+      JwksService.live >++>
+      AuthPropertyGenerator.live >++>
+      SessionService.live >++>
+      BackChannelDispatcher.live >++>
+      BackChannelOutbox.live >++>
+      AccessTokenRevocationService.live >++>
+      OAuthTokenService.live >++>
+      IntrospectionService.live >++>
+      RevocationService.live >++>
+      AuthorizeRequestParser.live >++>
+      PushedAuthorizationService.live >++>
+      OtpGenerationService.live >++>
+      ZLayer.succeed(versola.oauth.conversation.otp.OtpDecisionService.Impl()) >++>
+      EmailOtpProvider.live >++>
+      SmsOtpProvider.live >++>
+      OtpService.live >++>
+      PasswordService.live >++>
+      AuthBootstrapService.live >++>
+      WebAuthnService.live >++>
+      UserInfoService.live >++>
+      SubmissionLimiter.live >++>
+      AcrResolutionService.live >++>
+      UserRegistrationSyncClient.live >++>
+      UserService.live >++>
+      ConsentService.live >++>
+      ConversationService.live >++>
+      ConversationRouter.live >++>
+      AuthorizationResponseService.live >++>
+      AuthorizeEndpointService.live >++>
+      ConversationRenderService.live >++>
       LogoutService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
