@@ -3,8 +3,9 @@ package versola.central.users
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone}
-import java.util.UUID
 import zio.json.JsonCodec
+
+import java.util.UUID
 
 /** Events queued in `user_outbox` and dispatched to auth by [[UserOutboxProcessor]]. */
 enum OutboxEvent(val eventType: String) derives JsonCodec:
@@ -26,4 +27,3 @@ enum OutboxEvent(val eventType: String) derives JsonCodec:
   case DeleteUser(
       userId: UserId,
   ) extends OutboxEvent("DeleteUser")
-

@@ -31,7 +31,7 @@ trait UserAgentRepositorySpec extends DatabaseSpecBase[UserAgentRepositorySpec.E
     List(
       test("create and find a user agent") {
         for
-          _     <- env.repository.create(userAgentId1, data1, ttl)
+          _ <- env.repository.create(userAgentId1, data1, ttl)
           found <- env.repository.find(userAgentId1)
         yield assertTrue(found.contains(details1))
       },
@@ -41,23 +41,23 @@ trait UserAgentRepositorySpec extends DatabaseSpecBase[UserAgentRepositorySpec.E
       },
       test("find returns None for an expired user agent") {
         for
-          _     <- env.repository.create(userAgentId1, data1, 0.seconds)
-          _     <- TestClock.adjust(1.second)
+          _ <- env.repository.create(userAgentId1, data1, 0.seconds)
+          _ <- TestClock.adjust(1.second)
           found <- env.repository.find(userAgentId1)
         yield assertTrue(found.isEmpty)
       },
       test("create is idempotent when the id already exists") {
         for
-          _     <- env.repository.create(userAgentId1, data1, ttl)
-          _     <- env.repository.create(userAgentId1, data2, ttl)
+          _ <- env.repository.create(userAgentId1, data1, ttl)
+          _ <- env.repository.create(userAgentId1, data2, ttl)
           found <- env.repository.find(userAgentId1)
         yield assertTrue(found.contains(details1))
       },
       test("findMany returns details for known, non-expired ids only") {
         for
-          _     <- env.repository.create(userAgentId1, data1, ttl)
-          _     <- env.repository.create(userAgentId2, data2, 0.seconds)
-          _     <- TestClock.adjust(1.second)
+          _ <- env.repository.create(userAgentId1, data1, ttl)
+          _ <- env.repository.create(userAgentId2, data2, 0.seconds)
+          _ <- TestClock.adjust(1.second)
           found <- env.repository.findMany(List(userAgentId1, userAgentId2))
         yield assertTrue(found == Map(userAgentId1 -> details1))
       },
@@ -71,17 +71,17 @@ trait UserAgentRepositorySpec extends DatabaseSpecBase[UserAgentRepositorySpec.E
       },
       test("touch slides the expiry forward and refreshes the details") {
         for
-          _       <- env.repository.create(userAgentId1, data1, 1.hour)
-          _       <- TestClock.adjust(30.minutes)
+          _ <- env.repository.create(userAgentId1, data1, 1.hour)
+          _ <- TestClock.adjust(30.minutes)
           updated <- env.repository.touch(userAgentId1, data1.copy(details = details2), 1.hour)
-          _       <- TestClock.adjust(45.minutes)
-          found   <- env.repository.find(userAgentId1)
+          _ <- TestClock.adjust(45.minutes)
+          found <- env.repository.find(userAgentId1)
         yield assertTrue(updated, found.contains(details2))
       },
       test("touch returns false and is a no-op for a non-existent id") {
         for
           updated <- env.repository.touch(userAgentId1, data1, ttl)
-          found   <- env.repository.find(userAgentId1)
+          found <- env.repository.find(userAgentId1)
         yield assertTrue(!updated, found.isEmpty)
       },
       test("touch still finds and refreshes a row that expired but was not yet cleaned up") {
@@ -89,10 +89,10 @@ trait UserAgentRepositorySpec extends DatabaseSpecBase[UserAgentRepositorySpec.E
         // deletes stale rows; touch has no expiry filter, so a row that's merely past its
         // expires_at (but not yet physically removed) is still touchable.
         for
-          _       <- env.repository.create(userAgentId1, data1, 0.seconds)
-          _       <- TestClock.adjust(1.second)
+          _ <- env.repository.create(userAgentId1, data1, 0.seconds)
+          _ <- TestClock.adjust(1.second)
           updated <- env.repository.touch(userAgentId1, data1.copy(details = details2), ttl)
-          found   <- env.repository.find(userAgentId1)
+          found <- env.repository.find(userAgentId1)
         yield assertTrue(updated, found.contains(details2))
       },
     )

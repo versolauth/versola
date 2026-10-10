@@ -80,11 +80,11 @@ final class HttpAdminClient(
         if response.status == Status.NotFound then ZIO.none
         else
           expectSuccess("readChallengeSettings", response)
-            *> ZIO
-              .fromEither(response.body.fromJson[Json.Obj])
-              .mapError(error => AdminCallFailed("readChallengeSettings", response.status, s"unreadable response: $error"))
-              .map: document =>
-                document.get("settings").flatMap(_.asObject).flatMap(_.get("securityProfile")).collect { case Json.Str(value) => value }
+          *> ZIO
+            .fromEither(response.body.fromJson[Json.Obj])
+            .mapError(error => AdminCallFailed("readChallengeSettings", response.status, s"unreadable response: $error"))
+            .map: document =>
+              document.get("settings").flatMap(_.asObject).flatMap(_.get("securityProfile")).collect { case Json.Str(value) => value }
     read
       .flatMap:
         case Some(actual) if actual != spec.securityProfile =>
@@ -926,7 +926,7 @@ object HttpAdminClient:
   ) derives JsonEncoder
 
   private case class CreateTenantBody(id: String, description: String, edgeId: Option[String], securityProfile: String)
-      derives JsonEncoder
+    derives JsonEncoder
 
   private case class UpdateTenantBody(id: String, description: String, edgeId: Option[String]) derives JsonEncoder
 
@@ -938,19 +938,20 @@ object HttpAdminClient:
 
 /** The tenant already exists on another security profile, which cannot be changed. */
 final case class TenantProfileMismatch(tenantId: String, actual: String, wanted: String)
-    extends RuntimeException(
-      s"tenant '$tenantId' is on the $actual profile and the campaign needs $wanted; a profile is fixed when a tenant " +
-        "is created, so give this campaign a tenant of its own (provision.tenant-id)",
-    )
+  extends RuntimeException(
+    s"tenant '$tenantId' is on the $actual profile and the campaign needs $wanted; a profile is fixed when a tenant " +
+      "is created, so give this campaign a tenant of its own (provision.tenant-id)",
+  )
 
 final case class InvalidAdminUrl(setting: String, url: String, cause: Throwable)
-    extends RuntimeException(s"targets.$setting is not a valid URL: $url", cause)
+  extends RuntimeException(s"targets.$setting is not a valid URL: $url", cause)
 
 final case class InvalidProvisionerCredential(reason: String) extends RuntimeException(reason)
 
 /** How the provisioner authenticates at auth's `/token`, and how it then presents the token. */
 enum ProvisionerCredential:
   case ClientSecret(secret: String)
+
   /** RFC 7523 `private_key_jwt`, with the token DPoP-bound (RFC 9449) to `key`. */
   case PrivateKeyJwt(signing: PrivateJsonWebKey.Signing, key: DpopKey)
 
@@ -958,10 +959,10 @@ enum ProvisionerCredential:
   * that a `provision` failure names the step to re-run.
   */
 final case class AdminCallFailed(operation: String, status: Status, body: String)
-    extends RuntimeException(s"$operation failed: status=$status body=$body")
+  extends RuntimeException(s"$operation failed: status=$status body=$body")
 
 final case class EdgeConfigurationStale(resourceId: String, waited: Duration)
-    extends RuntimeException(
-      s"edge still does not serve resource '$resourceId' after $waited -- its " +
-        s"configuration-cache-refresh-interval is longer than provision waits",
-    )
+  extends RuntimeException(
+    s"edge still does not serve resource '$resourceId' after $waited -- its " +
+      s"configuration-cache-refresh-interval is longer than provision waits",
+  )

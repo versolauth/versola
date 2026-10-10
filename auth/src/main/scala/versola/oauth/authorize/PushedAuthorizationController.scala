@@ -2,8 +2,8 @@ package versola.oauth.authorize
 
 import versola.oauth.authorize.model.{PushedAuthorizationError, PushedAuthorizationErrorResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
-import versola.util.http.{Controller, Observability, extractCredentials}
 import versola.util.CoreConfig
+import versola.util.http.{Controller, Observability, extractCredentials}
 import zio.*
 import zio.http.*
 import zio.json.*

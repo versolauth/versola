@@ -9,15 +9,24 @@ import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
-import versola.util.{CacheSource, EnvName, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, ReloadingCache, Secret, SecureRandom, SecurityService}
+import versola.util.{
+  CacheSource,
+  EnvName,
+  Patch,
+  PrivateClientCertificate,
+  PrivateJsonWebKey,
+  RedirectUri,
+  ReloadingCache,
+  Secret,
+  SecureRandom,
+  SecurityService,
+}
 import zio.*
 import zio.http.{Scheme, URL}
-
-import zio.json.{DecoderOps, EncoderOps}
 import zio.json.ast.Json
+import zio.json.{DecoderOps, EncoderOps}
 
 import java.nio.charset.StandardCharsets
-
 import java.security.MessageDigest
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -96,13 +105,16 @@ trait OAuthClientService:
   def verifySecret(provided: Secret): Task[Boolean]
 
 object OAuthClientService:
-  def live: ZLayer[Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName, Throwable, OAuthClientService] =
+  def live: ZLayer[
+    Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName,
+    Throwable,
+    OAuthClientService,
+  ] =
     decryptingCacheSource >>>
       (ZLayer.fromZIO:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
-        )
-      ) >>>
+        )) >>>
       ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
@@ -127,7 +139,7 @@ object OAuthClientService:
       key: SecretKey,
   ): Task[OAuthClientRecord] =
     for
-      secret         <- ZIO.foreach(record.secret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
+      secret <- ZIO.foreach(record.secret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
       previousSecret <- ZIO.foreach(record.previousSecret)(s => securityService.decryptAes256(s, key).map(Secret(_)))
       edgeSigningKey <- ZIO.foreach(record.edgeSigningKey)(s => securityService.decryptAes256(s, key).map(Secret(_)))
       edgeCertificate <- ZIO.foreach(record.edgeClientCertificate)(s =>
@@ -306,7 +318,7 @@ object OAuthClientService:
         )
         secret <- request.authMethod match
           case AuthMethod.client_secret => presetSecret.fold(generateSecret)(ZIO.succeed(_)).asSome
-          case _                        => ZIO.none
+          case _ => ZIO.none
         encryptedSecret <- ZIO.foreach(secret)(encryptRawSecret)
         encryptedEdgeSigningKey <- ZIO.foreach(request.edgeSigningKey)(encryptEdgeSigningKey)
         encryptedEdgeCertificate <- ZIO.foreach(request.edgeClientCertificate)(encryptEdgeClientCertificate)
@@ -377,8 +389,7 @@ object OAuthClientService:
         // Before anything reads the patch against the stored method, so that an attempt to move
         // it is refused as that, rather than as whichever credential check it would also fail.
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
-          InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod),
-        )(ZIO.fail(_))
+          InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
         // Only what the patch adds: a URI registered before this rule existed stays removable.
         _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
@@ -594,7 +605,7 @@ object OAuthClientService:
       * storing the validated URI.
       */
     private def decodeUrlPatch(patch: Patch[String]): Patch[URL] = patch match
-      case Patch.Deleted     => Patch.Deleted
+      case Patch.Deleted => Patch.Deleted
       case Patch.Modified(v) => URL.decode(v.trim).toOption.fold(Patch.Deleted)(Patch.Modified(_))
 
     /** RFC 8705 §2.1.2 compares the registered value against the certificate literally, so
@@ -610,15 +621,15 @@ object OAuthClientService:
           auth
 
     private def toMtlsAuthPatch(patch: Patch[MutualTlsAuth]): Patch[MutualTlsAuth] = patch match
-      case Patch.Deleted        => Patch.Deleted
+      case Patch.Deleted => Patch.Deleted
       case Patch.Modified(auth) => Patch.Modified(normaliseMtlsAuth(auth))
 
     private def toConsentFlowPatch(patch: Patch[ConsentFlowDto]): Patch[ConsentFlow] = patch match
-      case Patch.Deleted        => Patch.Deleted
+      case Patch.Deleted => Patch.Deleted
       case Patch.Modified(flow) => Patch.Modified(flow.toDomain)
 
     private def patchValue(patch: Patch[String]): Option[String] = patch match
-      case Patch.Deleted     => None
+      case Patch.Deleted => None
       case Patch.Modified(v) => Some(v)
 
     private def validateConsentUris(

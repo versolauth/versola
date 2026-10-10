@@ -45,7 +45,7 @@ object OtpChallengeService:
     override def upsertTemplate(record: OtpTemplateRecord): Task[Unit] =
       validate(record) match
         case Left(error) => ZIO.fail(IllegalArgumentException(error))
-        case Right(_)    => repository.upsertTemplate(record)
+        case Right(_) => repository.upsertTemplate(record)
 
     override def deleteTemplate(id: String, tenantId: TenantId, purpose: OtpTemplatePurpose, channel: OtpTemplateChannel): Task[Unit] =
       repository.deleteTemplate(id, tenantId, purpose, channel)
@@ -59,9 +59,10 @@ object OtpChallengeService:
     private def validate(record: OtpTemplateRecord): Either[String, Unit] =
       val placeholders = record.purpose match
         case OtpTemplatePurpose.password => List("{{password}}", "{{expiresHours}}")
-        case OtpTemplatePurpose.otp      => List("{{code}}")
-      record.localizations.toList.collectFirst { case (locale, template) if placeholders.exists(placeholder => !template.contains(placeholder)) =>
-        s"Localization $locale is missing a required template placeholder"
+        case OtpTemplatePurpose.otp => List("{{code}}")
+      record.localizations.toList.collectFirst {
+        case (locale, template) if placeholders.exists(placeholder => !template.contains(placeholder)) =>
+          s"Localization $locale is missing a required template placeholder"
       } match
         case Some(error) => Left(error)
         case None if record.channel == OtpTemplateChannel.email && record.localizations.values.exists(template => !containsHtml(template)) =>

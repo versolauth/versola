@@ -21,7 +21,7 @@ object MetadataControllerSpec extends UnitSpecBase:
         client <- ZIO.service[Client]
         configuration = stub[OAuthConfigurationService]
         _ <- TestClient.addRoutes(
-          Observability.handleErrors(MetadataController.routes.provideEnvironment(ZEnvironment(configuration)))
+          Observability.handleErrors(MetadataController.routes.provideEnvironment(ZEnvironment(configuration))),
         )
         _ <- configuration.getMetadata.succeedsWith(metadata)
 

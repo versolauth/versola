@@ -5,7 +5,7 @@ import com.augustnagro.magnum.sql
 import versola.loadgen.config.*
 import versola.loadgen.model.*
 import versola.loadgen.store.{LoadgenPostgresSpec, PostgresVirtualUserRepository}
-import versola.util.{Argon2Config, MAC, Salt, SecureRandom, SecurityService, Secret}
+import versola.util.{Argon2Config, MAC, Salt, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.EqualOps
 import zio.test.*
@@ -394,7 +394,11 @@ object SeederSmokeSpec extends ZIOSpecDefault:
             // issues five against auth (users, user_passwords, user_roles, passkeys,
             // refresh_tokens), so this lands inside batch two with batch one committed.
             crashing = harness.services.copy(
-              sut = SutWriter(Flaky(CopySink.OfConnection(harness.auth), 7, calls), CopySink.OfConnection(harness.central), PopulationConfig.DefaultPhonePrefix),
+              sut = SutWriter(
+                Flaky(CopySink.OfConnection(harness.auth), 7, calls),
+                CopySink.OfConnection(harness.central),
+                PopulationConfig.DefaultPhonePrefix,
+              ),
             )
             crashed <- Seeder.run(crashing, population, seedConfig, None).exit
             resumed <- Seeder.run(harness.services, population, seedConfig, None).exit

@@ -50,7 +50,6 @@ object HybridFlowSpec extends E2ESpec:
   ) derives JsonDecoder
 
   def spec = suite("Hybrid Flow (response_type=code id_token)")(
-
     test("full interactive login carries code and id_token in the fragment, with a matching nonce and c_hash") {
       val nonce = s"e2e-nonce-${UUID.randomUUID()}"
       for
@@ -89,7 +88,6 @@ object HybridFlowSpec extends E2ESpec:
         assertTrue(userinfo.sub == s.userId)
           .label("the code exchanged at /token must resolve to the same 'sub' as the fragment id_token")
     },
-
     test("hybrid without nonce is rejected with invalid_request in the fragment") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -100,7 +98,6 @@ object HybridFlowSpec extends E2ESpec:
         ).assertFragmentErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
     test("a protocol error during a hybrid request is returned in the fragment, never the query") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -113,5 +110,4 @@ object HybridFlowSpec extends E2ESpec:
         ).assertFragmentErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

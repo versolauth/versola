@@ -391,8 +391,8 @@ object EdgeService:
           // edge deny tokens it was never shown.
           revoked = (sid, cookieSid) match
             case (Some(claimed), Some(held)) if claimed == held => Some(held)
-            case (None, held)                                   => held
-            case _                                              => None
+            case (None, held) => held
+            case _ => None
           // The lookup here is for the cookies, not the revocation: this is the browser-facing
           // half of a logout and it has to name the exact domain and path to clear.
           records <- ZIO.foreach(sid.orElse(cookieSid))(sessionRepository.findBySessionId).map(_.getOrElse(Nil))

@@ -2,21 +2,65 @@ package versola
 
 import versola.util.SequentialLayers.*
 import versola.central.CentralConfig
-import versola.central.configuration.challenges.{MtlsCertificateEncoding, ChallengeSettingsRecord, ChallengeSettingsRepository, ChallengeSettingsService, OtpChallengeRepository, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, PasskeySettings, SubmissionLimits}
-import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
-import versola.central.configuration.clients.{MutualTlsAuth, MutualTlsSubjectType, AuthFactor, AuthFactorType, AuthFlow, AuthMethod, AuthorizationPreset, AuthorizationPresetRepository, ClientAlreadyExists, ClientId, InvalidRegistrationConfiguration, OAuthClientRecord, OAuthClientRepository, OAuthClientService, OtpType, PasskeyAuthFlow, PresetId, PrimaryAuthFlow, PrimaryCredential, RegistrationFlow, ResponseType}
-import versola.central.configuration.edges.{EdgeId, EdgeRepository, EdgeRecord}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsRepository,
+  ChallengeSettingsService,
+  MtlsCertificateEncoding,
+  OtpChallengeRepository,
+  OtpTemplateChannel,
+  OtpTemplatePurpose,
+  OtpTemplateRecord,
+  PasskeySettings,
+  SubmissionLimits,
+}
+import versola.central.configuration.clients.{
+  AuthFactor,
+  AuthFactorType,
+  AuthFlow,
+  AuthMethod,
+  AuthorizationPreset,
+  AuthorizationPresetRepository,
+  ClientAlreadyExists,
+  ClientId,
+  InvalidRegistrationConfiguration,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  OAuthClientRepository,
+  OAuthClientService,
+  OtpType,
+  PasskeyAuthFlow,
+  PresetId,
+  PrimaryAuthFlow,
+  PrimaryCredential,
+  RegistrationFlow,
+  ResponseType,
+}
+import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
 import versola.central.configuration.forms.{BackendProperty, BooleanProperty, FormId, FormRepository, NumberProperty, StringArrayProperty}
 import versola.central.configuration.jwks.{JwksKeyGeneration, JwksRecord, JwksRepository}
 import versola.central.configuration.locales.{LocaleRecord, LocaleRepository}
+import versola.central.configuration.metadata.ServerMetadataRepository
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
 import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRepository}
 import versola.central.configuration.roles.{RoleId, RoleRepository}
 import versola.central.configuration.scopes.{Claim, OAuthScopeRepository, ScopeToken}
+import versola.central.configuration.system.{SystemSettingsRecord, SystemSettingsRepository}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
 import versola.central.configuration.themes.{ThemeRecord, ThemeRepository}
-import versola.central.configuration.{CreateClaim, CreateClientRequest, InjectRule, InjectTarget, PatchAudience, PatchClientRedirectUris, PatchClientScope, PatchPermissions, ResourceUri, UpdateClientRequest}
-import versola.central.configuration.metadata.ServerMetadataRepository
+import versola.central.configuration.{
+  CreateClaim,
+  CreateClientRequest,
+  InjectRule,
+  InjectTarget,
+  PatchAudience,
+  PatchClientRedirectUris,
+  PatchClientScope,
+  PatchPermissions,
+  ResourceUri,
+  UpdateClientRequest,
+}
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
@@ -25,9 +69,8 @@ import zio.{Task, UIO, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 import java.util.UUID
-import scala.io.Source
-
 import javax.crypto.spec.SecretKeySpec
+import scala.io.Source
 
 trait BootstrapService:
   def bootstrap: Task[Unit]
@@ -189,12 +232,12 @@ object BootstrapService:
 
   /** The self-service account surface exposed through edge and backed by auth's additional port. */
   private val authEndpointCatalog: List[(String, String)] = List(
-    "GET"    -> "/settings",
+    "GET" -> "/settings",
     "DELETE" -> "/settings/sessions",
-    "PATCH"  -> "/settings/passkeys",
+    "PATCH" -> "/settings/passkeys",
     "DELETE" -> "/settings/passkeys",
-    "POST"   -> "/settings/passkeys/register/start",
-    "POST"   -> "/settings/passkeys/register/finish",
+    "POST" -> "/settings/passkeys/register/start",
+    "POST" -> "/settings/passkeys/register/finish",
   )
 
   /** Endpoints of the account page. Granted to every seeded role - each of them belongs to
@@ -241,128 +284,212 @@ object BootstrapService:
     )
 
   private val permissionCatalog: List[(Permission, Map[String, String], Set[ResourceEndpointId])] = List(
-    (Permission("oauth:read"), localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"), Set(
-      endpointId("GET", "/configuration/clients"),
-      endpointId("GET", "/configuration/scopes"),
-      endpointId("GET", "/configuration/auth-request-presets"),
-    )),
-    (Permission("oauth:manage"), localized("Manage OAuth clients and scopes", "Управление OAuth клиентами и скоупами"), Set(
-      endpointId("POST", "/configuration/clients"),
-      endpointId("PUT", "/configuration/clients"),
-      endpointId("DELETE", "/configuration/clients"),
-      endpointId("POST", "/configuration/clients/edge-certificate/renew"),
-      endpointId("POST", "/configuration/scopes"),
-      endpointId("PUT", "/configuration/scopes"),
-      endpointId("DELETE", "/configuration/scopes"),
-      endpointId("POST", "/configuration/auth-request-presets"),
-      endpointId("DELETE", "/configuration/auth-request-presets"),
-    )),
-    (Permission("oauth:secrets"), localized("View OAuth client secrets", "Просмотр секретов OAuth клиентов"), Set(
-      endpointId("POST", "/configuration/clients/rotate-secret"),
-      endpointId("DELETE", "/configuration/clients/previous-secret"),
-    )),
-    (Permission("access:read"), localized("View roles and permissions", "Просмотр ролей и прав"), Set(
-      endpointId("GET", "/configuration/permissions"),
-      endpointId("GET", "/configuration/roles"),
-    )),
-    (Permission("access:manage"), localized("Manage roles and permissions", "Управление ролями и правами"), Set(
-      endpointId("POST", "/configuration/permissions"),
-      endpointId("PUT", "/configuration/permissions"),
-      endpointId("DELETE", "/configuration/permissions"),
-      endpointId("POST", "/configuration/roles"),
-      endpointId("PUT", "/configuration/roles"),
-      endpointId("DELETE", "/configuration/roles"),
-    )),
-    (Permission("security:read"), localized("View security policies and challenges", "Просмотр политик безопасности"), Set(
-      endpointId("GET", "/configuration/challenges/challenge-settings"),
-      endpointId("GET", "/configuration/challenges/otp-templates"),
-      endpointId("GET", "/configuration/authorization-detail-types"),
-      endpointId("GET", "/configuration/jwks"),
-      endpointId("GET", "/configuration/jwks/keys"),
-      endpointId("GET", "/configuration/system-settings"),
-    )),
-    (Permission("security:manage"), localized("Manage security policies and challenges", "Управление политиками безопасности"), Set(
-      endpointId("PUT", "/configuration/challenges/challenge-settings"),
-      endpointId("POST", "/configuration/jwks/generate"),
-      endpointId("PUT", "/configuration/challenges/otp-templates"),
-      endpointId("DELETE", "/configuration/challenges/otp-templates"),
-      endpointId("POST", "/configuration/authorization-detail-types"),
-      endpointId("PUT", "/configuration/authorization-detail-types"),
-      endpointId("DELETE", "/configuration/authorization-detail-types"),
-      endpointId("POST", "/configuration/jwks"),
-      endpointId("PUT", "/configuration/jwks"),
-      endpointId("DELETE", "/configuration/jwks"),
-      endpointId("PUT", "/configuration/system-settings"),
-    )),
-    (Permission("users:read"), localized("View users", "Просмотр пользователей"), Set(
-      endpointId("GET", "/users"),
-      endpointId("GET", "/users/passkeys"),
-      endpointId("GET", "/users/roles"),
-      endpointId("GET", "/users/sessions"),
-    )),
-    (Permission("users:manage"), localized("Manage users", "Управление пользователями"), Set(
-      endpointId("POST", "/users"),
-      endpointId("PATCH", "/users"),
-      endpointId("PATCH", "/users/claims"),
-      endpointId("PATCH", "/users/passkeys"),
-      endpointId("DELETE", "/users/passkeys"),
-      endpointId("PATCH", "/users/roles"),
-      endpointId("DELETE", "/users/sessions"),
-      endpointId("POST", "/users/limits/reset"),
-      endpointId("POST", "/users/password/reset"),
-    )),
-    (Permission("resources:read"), localized("View protected resources", "Просмотр защищенных ресурсов"), Set(
-      endpointId("GET", "/configuration/resources"),
-    )),
+    (
+      Permission("oauth:read"),
+      localized("View OAuth clients and scopes", "Просмотр OAuth клиентов и скоупов"),
+      Set(
+        endpointId("GET", "/configuration/clients"),
+        endpointId("GET", "/configuration/scopes"),
+        endpointId("GET", "/configuration/auth-request-presets"),
+      ),
+    ),
+    (
+      Permission("oauth:manage"),
+      localized("Manage OAuth clients and scopes", "Управление OAuth клиентами и скоупами"),
+      Set(
+        endpointId("POST", "/configuration/clients"),
+        endpointId("PUT", "/configuration/clients"),
+        endpointId("DELETE", "/configuration/clients"),
+        endpointId("POST", "/configuration/clients/edge-certificate/renew"),
+        endpointId("POST", "/configuration/scopes"),
+        endpointId("PUT", "/configuration/scopes"),
+        endpointId("DELETE", "/configuration/scopes"),
+        endpointId("POST", "/configuration/auth-request-presets"),
+        endpointId("DELETE", "/configuration/auth-request-presets"),
+      ),
+    ),
+    (
+      Permission("oauth:secrets"),
+      localized("View OAuth client secrets", "Просмотр секретов OAuth клиентов"),
+      Set(
+        endpointId("POST", "/configuration/clients/rotate-secret"),
+        endpointId("DELETE", "/configuration/clients/previous-secret"),
+      ),
+    ),
+    (
+      Permission("access:read"),
+      localized("View roles and permissions", "Просмотр ролей и прав"),
+      Set(
+        endpointId("GET", "/configuration/permissions"),
+        endpointId("GET", "/configuration/roles"),
+      ),
+    ),
+    (
+      Permission("access:manage"),
+      localized("Manage roles and permissions", "Управление ролями и правами"),
+      Set(
+        endpointId("POST", "/configuration/permissions"),
+        endpointId("PUT", "/configuration/permissions"),
+        endpointId("DELETE", "/configuration/permissions"),
+        endpointId("POST", "/configuration/roles"),
+        endpointId("PUT", "/configuration/roles"),
+        endpointId("DELETE", "/configuration/roles"),
+      ),
+    ),
+    (
+      Permission("security:read"),
+      localized("View security policies and challenges", "Просмотр политик безопасности"),
+      Set(
+        endpointId("GET", "/configuration/challenges/challenge-settings"),
+        endpointId("GET", "/configuration/challenges/otp-templates"),
+        endpointId("GET", "/configuration/authorization-detail-types"),
+        endpointId("GET", "/configuration/jwks"),
+        endpointId("GET", "/configuration/jwks/keys"),
+        endpointId("GET", "/configuration/system-settings"),
+      ),
+    ),
+    (
+      Permission("security:manage"),
+      localized("Manage security policies and challenges", "Управление политиками безопасности"),
+      Set(
+        endpointId("PUT", "/configuration/challenges/challenge-settings"),
+        endpointId("POST", "/configuration/jwks/generate"),
+        endpointId("PUT", "/configuration/challenges/otp-templates"),
+        endpointId("DELETE", "/configuration/challenges/otp-templates"),
+        endpointId("POST", "/configuration/authorization-detail-types"),
+        endpointId("PUT", "/configuration/authorization-detail-types"),
+        endpointId("DELETE", "/configuration/authorization-detail-types"),
+        endpointId("POST", "/configuration/jwks"),
+        endpointId("PUT", "/configuration/jwks"),
+        endpointId("DELETE", "/configuration/jwks"),
+        endpointId("PUT", "/configuration/system-settings"),
+      ),
+    ),
+    (
+      Permission("users:read"),
+      localized("View users", "Просмотр пользователей"),
+      Set(
+        endpointId("GET", "/users"),
+        endpointId("GET", "/users/passkeys"),
+        endpointId("GET", "/users/roles"),
+        endpointId("GET", "/users/sessions"),
+      ),
+    ),
+    (
+      Permission("users:manage"),
+      localized("Manage users", "Управление пользователями"),
+      Set(
+        endpointId("POST", "/users"),
+        endpointId("PATCH", "/users"),
+        endpointId("PATCH", "/users/claims"),
+        endpointId("PATCH", "/users/passkeys"),
+        endpointId("DELETE", "/users/passkeys"),
+        endpointId("PATCH", "/users/roles"),
+        endpointId("DELETE", "/users/sessions"),
+        endpointId("POST", "/users/limits/reset"),
+        endpointId("POST", "/users/password/reset"),
+      ),
+    ),
+    (
+      Permission("resources:read"),
+      localized("View protected resources", "Просмотр защищенных ресурсов"),
+      Set(
+        endpointId("GET", "/configuration/resources"),
+      ),
+    ),
     (Permission("resources:manage"), localized("Manage protected resources", "Управление защищенными ресурсами"), resourceManagementEndpointIds),
-    (Permission("forms:read"), localized("View forms", "Просмотр форм"), Set(
-      endpointId("GET", "/configuration/forms"),
-    )),
-    (Permission("forms:manage"), localized("Manage forms", "Управление формами"), Set(
-      endpointId("PUT", "/configuration/forms"),
-      endpointId("PUT", "/configuration/forms/active"),
-    )),
-    (Permission("locales:read"), localized("View locales", "Просмотр локалей"), Set(
-      endpointId("GET", "/configuration/locales"),
-    )),
-    (Permission("locales:manage"), localized("Manage locales", "Управление локалями"), Set(
-      endpointId("PUT", "/configuration/locales"),
-      endpointId("PUT", "/configuration/locales/default"),
-    )),
-    (Permission("tenants:read"), localized("View tenants", "Просмотр тенантов"), Set(
-      endpointId("GET", "/configuration/tenants"),
-      endpointId("GET", "/configuration/themes"),
-    )),
-    (Permission("tenants:manage"), localized("Manage tenants", "Управление тенантами"), Set(
-      endpointId("POST", "/configuration/tenants"),
-      endpointId("PUT", "/configuration/tenants"),
-      endpointId("DELETE", "/configuration/tenants"),
-      endpointId("POST", "/configuration/themes"),
-      endpointId("PUT", "/configuration/themes"),
-      endpointId("DELETE", "/configuration/themes"),
-    )),
-    (Permission("edges:read"), localized("View edges", "Просмотр эджей"), Set(
-      endpointId("GET", "/configuration/edges"),
-    )),
-    (Permission("edges:manage"), localized("Manage edges", "Управление эджами"), Set(
-      endpointId("POST", "/configuration/edges"),
-      endpointId("DELETE", "/configuration/edges"),
-      endpointId("POST", "/configuration/edges/rotate-key"),
-      endpointId("DELETE", "/configuration/edges/old-key"),
-    )),
-    (Permission("jwks:read"), localized("View JWKS and Server Metadata", "Просмотр JWKS и серверных метаданных"), Set(
-      endpointId("GET", "/configuration/jwks"),
-      endpointId("GET", "/configuration/jwks/keys"),
-      endpointId("GET", "/configuration/server-metadata"),
-    )),
-    (Permission("jwks:manage"), localized("Manage JWKS and Server Metadata", "Управление JWKS и серверными метаданными"), Set(
-      endpointId("POST", "/configuration/jwks"),
-      endpointId("POST", "/configuration/jwks/generate"),
-      endpointId("PUT", "/configuration/jwks"),
-      endpointId("DELETE", "/configuration/jwks"),
-      endpointId("POST", "/configuration/server-metadata"),
-    )),
-    (Permission("service:operate"), localized("Run configuration sync and outbox flush", "Запуск синхронизации конфигурации и сброса очереди"), serviceEndpointIds),
+    (
+      Permission("forms:read"),
+      localized("View forms", "Просмотр форм"),
+      Set(
+        endpointId("GET", "/configuration/forms"),
+      ),
+    ),
+    (
+      Permission("forms:manage"),
+      localized("Manage forms", "Управление формами"),
+      Set(
+        endpointId("PUT", "/configuration/forms"),
+        endpointId("PUT", "/configuration/forms/active"),
+      ),
+    ),
+    (
+      Permission("locales:read"),
+      localized("View locales", "Просмотр локалей"),
+      Set(
+        endpointId("GET", "/configuration/locales"),
+      ),
+    ),
+    (
+      Permission("locales:manage"),
+      localized("Manage locales", "Управление локалями"),
+      Set(
+        endpointId("PUT", "/configuration/locales"),
+        endpointId("PUT", "/configuration/locales/default"),
+      ),
+    ),
+    (
+      Permission("tenants:read"),
+      localized("View tenants", "Просмотр тенантов"),
+      Set(
+        endpointId("GET", "/configuration/tenants"),
+        endpointId("GET", "/configuration/themes"),
+      ),
+    ),
+    (
+      Permission("tenants:manage"),
+      localized("Manage tenants", "Управление тенантами"),
+      Set(
+        endpointId("POST", "/configuration/tenants"),
+        endpointId("PUT", "/configuration/tenants"),
+        endpointId("DELETE", "/configuration/tenants"),
+        endpointId("POST", "/configuration/themes"),
+        endpointId("PUT", "/configuration/themes"),
+        endpointId("DELETE", "/configuration/themes"),
+      ),
+    ),
+    (
+      Permission("edges:read"),
+      localized("View edges", "Просмотр эджей"),
+      Set(
+        endpointId("GET", "/configuration/edges"),
+      ),
+    ),
+    (
+      Permission("edges:manage"),
+      localized("Manage edges", "Управление эджами"),
+      Set(
+        endpointId("POST", "/configuration/edges"),
+        endpointId("DELETE", "/configuration/edges"),
+        endpointId("POST", "/configuration/edges/rotate-key"),
+        endpointId("DELETE", "/configuration/edges/old-key"),
+      ),
+    ),
+    (
+      Permission("jwks:read"),
+      localized("View JWKS and Server Metadata", "Просмотр JWKS и серверных метаданных"),
+      Set(
+        endpointId("GET", "/configuration/jwks"),
+        endpointId("GET", "/configuration/jwks/keys"),
+        endpointId("GET", "/configuration/server-metadata"),
+      ),
+    ),
+    (
+      Permission("jwks:manage"),
+      localized("Manage JWKS and Server Metadata", "Управление JWKS и серверными метаданными"),
+      Set(
+        endpointId("POST", "/configuration/jwks"),
+        endpointId("POST", "/configuration/jwks/generate"),
+        endpointId("PUT", "/configuration/jwks"),
+        endpointId("DELETE", "/configuration/jwks"),
+        endpointId("POST", "/configuration/server-metadata"),
+      ),
+    ),
+    (
+      Permission("service:operate"),
+      localized("Run configuration sync and outbox flush", "Запуск синхронизации конфигурации и сброса очереди"),
+      serviceEndpointIds,
+    ),
     (accountPermission, localized("Manage own account", "Управление своим аккаунтом"), accountEndpointIds),
   )
 
@@ -379,7 +506,15 @@ object BootstrapService:
       (
         RoleId("security"),
         localized("Security Officer", "Сотрудник безопасности (ИБ)"),
-        List("oauth:read", "oauth:manage", "users:read", "users:manage", "access:read", "security:read", "resources:read").map(Permission(_)) :+ accountPermission,
+        List(
+          "oauth:read",
+          "oauth:manage",
+          "users:read",
+          "users:manage",
+          "access:read",
+          "security:read",
+          "resources:read",
+        ).map(Permission(_)) :+ accountPermission,
       ),
       (
         RoleId("support"),
@@ -460,7 +595,7 @@ object BootstrapService:
 
   /** Scopes granted to the central admin client. */
   private val clientScopes: Set[ScopeToken] =
-    List[String](/*"openid", "profile", "email"*/).map(ScopeToken(_)).toSet
+    List[String]( /*"openid", "profile", "email"*/ ).map(ScopeToken(_)).toSet
 
   /** Default OTP message template referenced by the bootstrapped clients. */
   private val defaultOtpTemplateId = "default"
@@ -473,47 +608,47 @@ object BootstrapService:
   private val defaultEmailOtpTemplate: Map[String, String] =
     localized(
       """|<!doctype html>
-       |<html>
-       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
-       |    <table role="presentation" style="width:100%;border-collapse:collapse">
-       |      <tr>
-       |        <td align="center">
-       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
-       |            <tr>
-       |              <td style="padding:48px 44px;text-align:center">
-       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
-       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Verify your identity</h1>
-       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Your verification code is:</p>
-       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
-       |              </td>
-       |            </tr>
-       |          </table>
-       |        </td>
-       |      </tr>
-       |    </table>
-       |  </body>
-       |</html>""".stripMargin,
+         |<html>
+         |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+         |    <table role="presentation" style="width:100%;border-collapse:collapse">
+         |      <tr>
+         |        <td align="center">
+         |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+         |            <tr>
+         |              <td style="padding:48px 44px;text-align:center">
+         |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+         |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Verify your identity</h1>
+         |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Your verification code is:</p>
+         |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
+         |              </td>
+         |            </tr>
+         |          </table>
+         |        </td>
+         |      </tr>
+         |    </table>
+         |  </body>
+         |</html>""".stripMargin,
       """|<!doctype html>
-       |<html>
-       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
-       |    <table role="presentation" style="width:100%;border-collapse:collapse">
-       |      <tr>
-       |        <td align="center">
-       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
-       |            <tr>
-       |              <td style="padding:48px 44px;text-align:center">
-       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
-       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Подтвердите личность</h1>
-       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Ваш код подтверждения:</p>
-       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
-       |              </td>
-       |            </tr>
-       |          </table>
-       |        </td>
-       |      </tr>
-       |    </table>
-       |  </body>
-       |</html>""".stripMargin,
+         |<html>
+         |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+         |    <table role="presentation" style="width:100%;border-collapse:collapse">
+         |      <tr>
+         |        <td align="center">
+         |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+         |            <tr>
+         |              <td style="padding:48px 44px;text-align:center">
+         |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+         |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Подтвердите личность</h1>
+         |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Ваш код подтверждения:</p>
+         |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:28px;font-weight:700;letter-spacing:8px;color:#15171c">{{code}}</div>
+         |              </td>
+         |            </tr>
+         |          </table>
+         |        </td>
+         |      </tr>
+         |    </table>
+         |  </body>
+         |</html>""".stripMargin,
     )
 
   /** Default per-tenant template used to deliver an admin-issued temporary password. */
@@ -526,49 +661,49 @@ object BootstrapService:
   private val defaultPasswordTemplate: Map[String, String] =
     localized(
       """|<!doctype html>
-       |<html>
-       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
-       |    <table role="presentation" style="width:100%;border-collapse:collapse">
-       |      <tr>
-       |        <td align="center">
-       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
-       |            <tr>
-       |              <td style="padding:48px 44px;text-align:center">
-       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
-       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Your temporary password</h1>
-       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Use this password to sign in:</p>
-       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
-       |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">It expires in {{expiresHours}} hours.</p>
-       |              </td>
-       |            </tr>
-       |          </table>
-       |        </td>
-       |      </tr>
-       |    </table>
-       |  </body>
-       |</html>""".stripMargin,
+         |<html>
+         |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+         |    <table role="presentation" style="width:100%;border-collapse:collapse">
+         |      <tr>
+         |        <td align="center">
+         |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+         |            <tr>
+         |              <td style="padding:48px 44px;text-align:center">
+         |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+         |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Your temporary password</h1>
+         |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Use this password to sign in:</p>
+         |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
+         |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">It expires in {{expiresHours}} hours.</p>
+         |              </td>
+         |            </tr>
+         |          </table>
+         |        </td>
+         |      </tr>
+         |    </table>
+         |  </body>
+         |</html>""".stripMargin,
       """|<!doctype html>
-       |<html>
-       |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
-       |    <table role="presentation" style="width:100%;border-collapse:collapse">
-       |      <tr>
-       |        <td align="center">
-       |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
-       |            <tr>
-       |              <td style="padding:48px 44px;text-align:center">
-       |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
-       |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Ваш временный пароль</h1>
-       |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Используйте этот пароль для входа:</p>
-       |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
-       |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">Он истекает через {{expiresHours}} часов.</p>
-       |              </td>
-       |            </tr>
-       |          </table>
-       |        </td>
-       |      </tr>
-       |    </table>
-       |  </body>
-       |</html>""".stripMargin,
+         |<html>
+         |  <body style="margin:0;padding:20px;background:#f6f8fa;font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#15171c">
+         |    <table role="presentation" style="width:100%;border-collapse:collapse">
+         |      <tr>
+         |        <td align="center">
+         |          <table role="presentation" style="width:100%;max-width:540px;background:#fff;border:1px solid #e3e6eb;border-radius:24px">
+         |            <tr>
+         |              <td style="padding:48px 44px;text-align:center">
+         |                <div style="font-size:20px;font-weight:700;margin-bottom:28px">Versola</div>
+         |                <h1 style="font-size:26px;font-weight:600;margin:0 0 14px">Ваш временный пароль</h1>
+         |                <p style="font-size:16px;line-height:1.6;color:#6b7280;margin:0 0 24px">Используйте этот пароль для входа:</p>
+         |                <div style="display:inline-block;padding:15px 24px;background:#f6f7f9;border:1px solid #e3e6eb;border-radius:14px;font-size:20px;font-weight:700;color:#15171c">{{password}}</div>
+         |                <p style="font-size:14px;line-height:1.6;color:#6b7280;margin:24px 0 0">Он истекает через {{expiresHours}} часов.</p>
+         |              </td>
+         |            </tr>
+         |          </table>
+         |        </td>
+         |      </tr>
+         |    </table>
+         |  </body>
+         |</html>""".stripMargin,
     )
 
   /** Default authentication challenge settings seeded for the default tenant. */
@@ -639,6 +774,7 @@ object BootstrapService:
 
   /** Hard-coded resourceId for the edge-facing resource that proxies central's admin API. */
   private val centralResourceId = ResourceId("central")
+
   /** Admin API surface exposed to the console through the edge proxy. Each
     * (method, path) is registered as a resource endpoint; the edge validates the
     * caller's session token and performs the real per-user authorization
@@ -648,84 +784,84 @@ object BootstrapService:
     * shared secret (see authorizeBasic).
     */
   private val centralEndpointCatalog: List[(String, String)] = List(
-    "GET"    -> "/configuration/auth-request-presets",
-    "POST"   -> "/configuration/auth-request-presets",
-    "GET"    -> "/configuration/challenges/challenge-settings",
-    "PUT"    -> "/configuration/challenges/challenge-settings",
-    "GET"    -> "/configuration/system-settings",
-    "PUT"    -> "/configuration/system-settings",
-    "GET"    -> "/configuration/challenges/otp-templates",
-    "PUT"    -> "/configuration/challenges/otp-templates",
+    "GET" -> "/configuration/auth-request-presets",
+    "POST" -> "/configuration/auth-request-presets",
+    "GET" -> "/configuration/challenges/challenge-settings",
+    "PUT" -> "/configuration/challenges/challenge-settings",
+    "GET" -> "/configuration/system-settings",
+    "PUT" -> "/configuration/system-settings",
+    "GET" -> "/configuration/challenges/otp-templates",
+    "PUT" -> "/configuration/challenges/otp-templates",
     "DELETE" -> "/configuration/challenges/otp-templates",
-    "GET"    -> "/configuration/authorization-detail-types",
-    "POST"   -> "/configuration/authorization-detail-types",
-    "PUT"    -> "/configuration/authorization-detail-types",
+    "GET" -> "/configuration/authorization-detail-types",
+    "POST" -> "/configuration/authorization-detail-types",
+    "PUT" -> "/configuration/authorization-detail-types",
     "DELETE" -> "/configuration/authorization-detail-types",
-    "GET"    -> "/configuration/clients",
-    "POST"   -> "/configuration/clients",
-    "PUT"    -> "/configuration/clients",
+    "GET" -> "/configuration/clients",
+    "POST" -> "/configuration/clients",
+    "PUT" -> "/configuration/clients",
     "DELETE" -> "/configuration/clients",
-    "POST"   -> "/configuration/clients/rotate-secret",
+    "POST" -> "/configuration/clients/rotate-secret",
     "DELETE" -> "/configuration/clients/previous-secret",
-    "POST"   -> "/configuration/clients/edge-certificate/renew",
-    "GET"    -> "/configuration/edges",
-    "POST"   -> "/configuration/edges",
+    "POST" -> "/configuration/clients/edge-certificate/renew",
+    "GET" -> "/configuration/edges",
+    "POST" -> "/configuration/edges",
     "DELETE" -> "/configuration/edges",
-    "POST"   -> "/configuration/edges/rotate-key",
+    "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
-    "GET"    -> "/configuration/forms",
-    "PUT"    -> "/configuration/forms",
-    "PUT"    -> "/configuration/forms/active",
-    "GET"    -> "/configuration/jwks",
-    "GET"    -> "/configuration/jwks/keys",
-    "POST"   -> "/configuration/jwks",
-    "POST"   -> "/configuration/jwks/generate",
-    "PUT"    -> "/configuration/jwks",
+    "GET" -> "/configuration/forms",
+    "PUT" -> "/configuration/forms",
+    "PUT" -> "/configuration/forms/active",
+    "GET" -> "/configuration/jwks",
+    "GET" -> "/configuration/jwks/keys",
+    "POST" -> "/configuration/jwks",
+    "POST" -> "/configuration/jwks/generate",
+    "PUT" -> "/configuration/jwks",
     "DELETE" -> "/configuration/jwks",
-    "GET"    -> "/configuration/server-metadata",
-    "POST"   -> "/configuration/server-metadata",
-    "GET"    -> "/configuration/locales",
-    "PUT"    -> "/configuration/locales",
-    "PUT"    -> "/configuration/locales/default",
-    "GET"    -> "/configuration/permissions",
-    "POST"   -> "/configuration/permissions",
-    "PUT"    -> "/configuration/permissions",
+    "GET" -> "/configuration/server-metadata",
+    "POST" -> "/configuration/server-metadata",
+    "GET" -> "/configuration/locales",
+    "PUT" -> "/configuration/locales",
+    "PUT" -> "/configuration/locales/default",
+    "GET" -> "/configuration/permissions",
+    "POST" -> "/configuration/permissions",
+    "PUT" -> "/configuration/permissions",
     "DELETE" -> "/configuration/permissions",
-    "GET"    -> "/configuration/resources",
-    "POST"   -> "/configuration/resources",
-    "PUT"    -> "/configuration/resources",
+    "GET" -> "/configuration/resources",
+    "POST" -> "/configuration/resources",
+    "PUT" -> "/configuration/resources",
     "DELETE" -> "/configuration/resources",
-    "POST"   -> "/configuration/resources/rotate-secret",
+    "POST" -> "/configuration/resources/rotate-secret",
     "DELETE" -> "/configuration/resources/previous-secret",
-    "GET"    -> "/configuration/roles",
-    "POST"   -> "/configuration/roles",
-    "PUT"    -> "/configuration/roles",
+    "GET" -> "/configuration/roles",
+    "POST" -> "/configuration/roles",
+    "PUT" -> "/configuration/roles",
     "DELETE" -> "/configuration/roles",
-    "GET"    -> "/configuration/scopes",
-    "POST"   -> "/configuration/scopes",
-    "PUT"    -> "/configuration/scopes",
+    "GET" -> "/configuration/scopes",
+    "POST" -> "/configuration/scopes",
+    "PUT" -> "/configuration/scopes",
     "DELETE" -> "/configuration/scopes",
-    "GET"    -> "/configuration/tenants",
-    "POST"   -> "/configuration/tenants",
-    "PUT"    -> "/configuration/tenants",
+    "GET" -> "/configuration/tenants",
+    "POST" -> "/configuration/tenants",
+    "PUT" -> "/configuration/tenants",
     "DELETE" -> "/configuration/tenants",
-    "GET"    -> "/configuration/themes",
-    "POST"   -> "/configuration/themes",
-    "PUT"    -> "/configuration/themes",
+    "GET" -> "/configuration/themes",
+    "POST" -> "/configuration/themes",
+    "PUT" -> "/configuration/themes",
     "DELETE" -> "/configuration/themes",
-    "GET"    -> "/users",
-    "POST"   -> "/users",
-    "PATCH"  -> "/users",
-    "PATCH"  -> "/users/claims",
-    "GET"    -> "/users/passkeys",
-    "PATCH"  -> "/users/passkeys",
+    "GET" -> "/users",
+    "POST" -> "/users",
+    "PATCH" -> "/users",
+    "PATCH" -> "/users/claims",
+    "GET" -> "/users/passkeys",
+    "PATCH" -> "/users/passkeys",
     "DELETE" -> "/users/passkeys",
-    "GET"    -> "/users/roles",
-    "PATCH"  -> "/users/roles",
-    "GET"    -> "/users/sessions",
+    "GET" -> "/users/roles",
+    "PATCH" -> "/users/roles",
+    "GET" -> "/users/sessions",
     "DELETE" -> "/users/sessions",
-    "POST"   -> "/users/limits/reset",
-    "POST"   -> "/users/password/reset",
+    "POST" -> "/users/limits/reset",
+    "POST" -> "/users/password/reset",
   )
 
   private[versola] def centralEndpoints(envName: EnvName): List[(String, String)] =
@@ -758,7 +894,8 @@ object BootstrapService:
     ZIO.blocking:
       ZIO.attemptBlocking:
         val source = Source.fromResource(path)
-        try source.mkString finally source.close()
+        try source.mkString
+        finally source.close()
 
   val live: ZLayer[
     TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
@@ -843,7 +980,7 @@ object BootstrapService:
       ZIO.foreachDiscard(scopeCatalog): scope =>
         scopeRepo.findScope(tenantId, scope.token).flatMap:
           case Some(_) => ZIO.unit
-          case None    => scopeRepo.createScope(tenantId, scope.token, scope.description, scope.claims)
+          case None => scopeRepo.createScope(tenantId, scope.token, scope.description, scope.claims)
 
     private def seedRoles(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(roleCatalog): (roleId, desc, perms) =>
@@ -873,7 +1010,8 @@ object BootstrapService:
       ): (id, localizations, channel) =>
         otpTemplateRepo.find(id, tenantId, OtpTemplatePurpose.otp, channel).flatMap:
           case Some(_) => ZIO.unit
-          case None    => otpTemplateRepo.upsertTemplate(OtpTemplateRecord(id, tenantId, localizations, purpose = OtpTemplatePurpose.otp, channel = channel))
+          case None =>
+            otpTemplateRepo.upsertTemplate(OtpTemplateRecord(id, tenantId, localizations, purpose = OtpTemplatePurpose.otp, channel = channel))
 
     private def seedPasswordTemplate(tenantId: TenantId): Task[Unit] =
       ZIO.foreachDiscard(
@@ -912,19 +1050,19 @@ object BootstrapService:
 
     private def seedTheme(): Task[Unit] =
       for
-        _       <- ZIO.logInfo("Seeding default theme from resources...")
-        themes  <- themeRepo.getAll
-        current  = themes.find(_.id == defaultThemeId)
-        css     <- readResource("forms/common.css")
+        _ <- ZIO.logInfo("Seeding default theme from resources...")
+        themes <- themeRepo.getAll
+        current = themes.find(_.id == defaultThemeId)
+        css <- readResource("forms/common.css")
         _ <- current match
-          case None                            => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
+          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
           case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
-          case Some(_)                         => ZIO.unit
+          case Some(_) => ZIO.unit
       yield ()
 
     private def seedLocales(): Task[Unit] =
       for
-        _        <- ZIO.logInfo("Seeding default locales...")
+        _ <- ZIO.logInfo("Seeding default locales...")
         existing <- localeRepo.getAll.map(_.map(_.code).toSet)
         missing = defaultLocales.filterNot(locale => existing.contains(locale.code))
         _ <- ZIO.unless(missing.isEmpty):
@@ -933,16 +1071,16 @@ object BootstrapService:
 
     private def seedForms(): Task[Unit] =
       for
-        _      <- ZIO.logInfo("Seeding default forms from resources...")
-        all    <- formRepo.getAll
+        _ <- ZIO.logInfo("Seeding default forms from resources...")
+        all <- formRepo.getAll
         active = all.filter(_.active).map(form => form.id -> form).toMap
         _ <- ZIO.foreachDiscard(defaultForms): (formId, properties) =>
           val current = active.get(FormId(formId))
           (for
-            jsSource   <- readResource(s"forms/$formId.tsx")
+            jsSource <- readResource(s"forms/$formId.tsx")
             jsCompiled <- readResource(s"forms/$formId.js")
-            style      <- readResource(s"forms/$formId.css")
-            i18nJson   <- readResource(s"forms/$formId.i18n.json")
+            style <- readResource(s"forms/$formId.css")
+            i18nJson <- readResource(s"forms/$formId.i18n.json")
             localizations <- ZIO.fromEither(i18nJson.fromJson[Map[String, Map[String, String]]])
               .mapError(message => new RuntimeException(s"Invalid i18n for form $formId: $message"))
             unchanged = current.exists(form =>
@@ -963,7 +1101,7 @@ object BootstrapService:
             .foldZIO(
               {
                 case _: UserConflict => ZIO.logInfo(s"Admin user '${config.login}' already exists in user index (conflict), skipping")
-                case t: Throwable    => ZIO.fail(t)
+                case t: Throwable => ZIO.fail(t)
               },
               _ => ZIO.logInfo(s"Seeded admin user '${config.login}' with id $adminUserId in user index"),
             )
@@ -1011,18 +1149,18 @@ object BootstrapService:
         ),
       )
       val request = CreateClientRequest(
-        tenantId       = CentralConfig.defaultTenantId,
-        id             = CentralConfig.centralClientId,
-        clientName     = localized("Central Admin", "Central Admin"),
-        redirectUris   = redirectUris,
-        allowedScopes  = clientScopes,
-        permissions    = Set.empty,
+        tenantId = CentralConfig.defaultTenantId,
+        id = CentralConfig.centralClientId,
+        clientName = localized("Central Admin", "Central Admin"),
+        redirectUris = redirectUris,
+        allowedScopes = clientScopes,
+        permissions = Set.empty,
         accessTokenTtl = 3600,
         refreshTokenTtl = None,
-        theme          = "default",
-        authFlow       = Some(authFlow),
+        theme = "default",
+        authFlow = Some(authFlow),
         registrationFlow = None,
-        otpTemplateId  = "default",
+        otpTemplateId = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
         backChannelLogoutUri = None,
@@ -1050,7 +1188,11 @@ object BootstrapService:
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
           case _: ClientAlreadyExists =>
-            refuseAuthMethodMismatch(CentralConfig.centralClientId, credential.authMethod, "bootstrap.central-admin-mtls") *> clientService.updateClient(
+            refuseAuthMethodMismatch(
+              CentralConfig.centralClientId,
+              credential.authMethod,
+              "bootstrap.central-admin-mtls",
+            ) *> clientService.updateClient(
               UpdateClientRequest(
                 clientId = CentralConfig.centralClientId,
                 clientName = None,
@@ -1090,7 +1232,7 @@ object BootstrapService:
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
           case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
-          case e: Throwable           => ZIO.fail(e)
+          case e: Throwable => ZIO.fail(e)
         },
         _ => ZIO.unit,
       )
@@ -1111,101 +1253,101 @@ object BootstrapService:
         seed: CentralConfig.BootstrapConfig.UtilityClientSeed,
         credential: UtilityClientCredential,
     ): Task[Unit] =
-        val request = CreateClientRequest(
-          tenantId = CentralConfig.defaultTenantId,
-          id = seed.clientId,
-          clientName = localized("Utilities", "Утилиты"),
-          redirectUris = Set.empty,
-          allowedScopes = Set.empty,
-          permissions = utilityClientPermissions,
-          accessTokenTtl = 3600,
-          refreshTokenTtl = None,
-          theme = "default",
-          authFlow = None,
-          registrationFlow = None,
-          otpTemplateId = "default",
-          frontChannelLogoutUri = None,
-          frontChannelLogoutSessionRequired = false,
-          backChannelLogoutUri = None,
-          logoUri = None,
-          policyUri = None,
-          tosUri = None,
-          consentFlow = None,
-          dpopBoundAccessTokens = credential.conformant,
-          dpopSigningAlgs = Set.empty,
-          dpopMinRsaKeySize = None,
-          authMethod = credential.authMethod,
-          mtlsAuth = None,
-          certificateBoundAccessTokens = false,
-          jwks = credential.jwks,
-          generateJwks = None,
-          requireSignedRequestObject = false,
-          requirePushedAuthorizationRequests = false,
-          edgeSigningKey = None,
-          edgeClientCertificate = None,
-          template = None,
-          applicationType = None,
-          issueEdgeClientCertificate = false,
-          enrollEdgeClientCertificate = false,
-        )
-        // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
-        // does not admit, is still seeded for a deployment that configured no key for it.
-        val warnNonConformant = ZIO.logWarning(
-          s"'${seed.clientId}' is seeded with client_secret, which the FAPI 2.0 profile of tenant " +
-            s"'${CentralConfig.defaultTenantId}' does not admit -- configure " +
-            "bootstrap.utility-client.public-key-jwk to have it authenticate with private_key_jwt instead",
-        ).unless(credential.conformant)
-        warnNonConformant *> clientService.registerClient(
-          request,
-          presetSecret = credential.secret,
-          enforceSecurityProfile = credential.conformant,
-        ).foldZIO(
-          {
-            // Already seeded by an earlier boot: a secret stays whatever central holds, since
-            // rotating it here would break a loadgen configured with the previous value, but the
-            // permission set is reasserted so a catalog change reaches an existing deployment --
-            // and so is a configured key, so that a rotated one reaches central.
-            case _: ClientAlreadyExists =>
-              refuseAuthMethodMismatch(seed.clientId, credential.authMethod, "bootstrap.utility-client") *> clientService.updateClient(
-                UpdateClientRequest(
-                  clientId = seed.clientId,
-                  clientName = None,
-                  redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
-                  scope = PatchClientScope(Set.empty, Set.empty),
-                  permissions = PatchPermissions(add = utilityClientPermissions, remove = Set.empty),
-                  accessTokenTtl = None,
-                  refreshTokenTtl = None,
-                  theme = None,
-                  authFlow = None,
-                  registrationFlow = None,
-                  otpTemplateId = None,
-                  frontChannelLogoutUri = None,
-                  frontChannelLogoutSessionRequired = None,
-                  backChannelLogoutUri = None,
-                  logoUri = None,
-                  policyUri = None,
-                  tosUri = None,
-                  consentFlow = None,
-                  dpopBoundAccessTokens = Option.when(credential.conformant)(true),
-                  dpopSigningAlgs = None,
-                  dpopMinRsaKeySize = None,
-                  authMethod = None,
-                  mtlsAuth = None,
-                  certificateBoundAccessTokens = None,
-                  jwks = credential.jwks.map(Patch.Modified(_)),
-                  requireSignedRequestObject = None,
-                  requirePushedAuthorizationRequests = None,
-                  edgeSigningKey = None,
-                  edgeClientCertificate = None,
-                  applicationType = None,
-                ),
-                enforceSecurityProfile = credential.conformant,
-              ).mapError(registrationConfigurationError)
-            case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
-            case e: Throwable => ZIO.fail(e)
-          },
-          _ => ZIO.unit,
-        )
+      val request = CreateClientRequest(
+        tenantId = CentralConfig.defaultTenantId,
+        id = seed.clientId,
+        clientName = localized("Utilities", "Утилиты"),
+        redirectUris = Set.empty,
+        allowedScopes = Set.empty,
+        permissions = utilityClientPermissions,
+        accessTokenTtl = 3600,
+        refreshTokenTtl = None,
+        theme = "default",
+        authFlow = None,
+        registrationFlow = None,
+        otpTemplateId = "default",
+        frontChannelLogoutUri = None,
+        frontChannelLogoutSessionRequired = false,
+        backChannelLogoutUri = None,
+        logoUri = None,
+        policyUri = None,
+        tosUri = None,
+        consentFlow = None,
+        dpopBoundAccessTokens = credential.conformant,
+        dpopSigningAlgs = Set.empty,
+        dpopMinRsaKeySize = None,
+        authMethod = credential.authMethod,
+        mtlsAuth = None,
+        certificateBoundAccessTokens = false,
+        jwks = credential.jwks,
+        generateJwks = None,
+        requireSignedRequestObject = false,
+        requirePushedAuthorizationRequests = false,
+        edgeSigningKey = None,
+        edgeClientCertificate = None,
+        template = None,
+        applicationType = None,
+        issueEdgeClientCertificate = false,
+        enrollEdgeClientCertificate = false,
+      )
+      // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
+      // does not admit, is still seeded for a deployment that configured no key for it.
+      val warnNonConformant = ZIO.logWarning(
+        s"'${seed.clientId}' is seeded with client_secret, which the FAPI 2.0 profile of tenant " +
+          s"'${CentralConfig.defaultTenantId}' does not admit -- configure " +
+          "bootstrap.utility-client.public-key-jwk to have it authenticate with private_key_jwt instead",
+      ).unless(credential.conformant)
+      warnNonConformant *> clientService.registerClient(
+        request,
+        presetSecret = credential.secret,
+        enforceSecurityProfile = credential.conformant,
+      ).foldZIO(
+        {
+          // Already seeded by an earlier boot: a secret stays whatever central holds, since
+          // rotating it here would break a loadgen configured with the previous value, but the
+          // permission set is reasserted so a catalog change reaches an existing deployment --
+          // and so is a configured key, so that a rotated one reaches central.
+          case _: ClientAlreadyExists =>
+            refuseAuthMethodMismatch(seed.clientId, credential.authMethod, "bootstrap.utility-client") *> clientService.updateClient(
+              UpdateClientRequest(
+                clientId = seed.clientId,
+                clientName = None,
+                redirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
+                scope = PatchClientScope(Set.empty, Set.empty),
+                permissions = PatchPermissions(add = utilityClientPermissions, remove = Set.empty),
+                accessTokenTtl = None,
+                refreshTokenTtl = None,
+                theme = None,
+                authFlow = None,
+                registrationFlow = None,
+                otpTemplateId = None,
+                frontChannelLogoutUri = None,
+                frontChannelLogoutSessionRequired = None,
+                backChannelLogoutUri = None,
+                logoUri = None,
+                policyUri = None,
+                tosUri = None,
+                consentFlow = None,
+                dpopBoundAccessTokens = Option.when(credential.conformant)(true),
+                dpopSigningAlgs = None,
+                dpopMinRsaKeySize = None,
+                authMethod = None,
+                mtlsAuth = None,
+                certificateBoundAccessTokens = None,
+                jwks = credential.jwks.map(Patch.Modified(_)),
+                requireSignedRequestObject = None,
+                requirePushedAuthorizationRequests = None,
+                edgeSigningKey = None,
+                edgeClientCertificate = None,
+                applicationType = None,
+              ),
+              enforceSecurityProfile = credential.conformant,
+            ).mapError(registrationConfigurationError)
+          case e: InvalidRegistrationConfiguration => ZIO.fail(registrationConfigurationError(e))
+          case e: Throwable => ZIO.fail(e)
+        },
+        _ => ZIO.unit,
+      )
 
     private def registrationConfigurationError(error: InvalidRegistrationConfiguration | Throwable): Throwable =
       error match
@@ -1215,28 +1357,28 @@ object BootstrapService:
 
     private def refuseAuthMethodMismatch(clientId: ClientId, wanted: AuthMethod, setting: String): Task[Unit] =
       clientRepo.find(clientId).flatMap: existing =>
-        ZIO.foreachDiscard(BootstrapService.authMethodMismatch(existing, wanted, setting)):
-          reason => ZIO.fail(RuntimeException(reason))
+        ZIO.foreachDiscard(BootstrapService.authMethodMismatch(existing, wanted, setting)): reason =>
+          ZIO.fail(RuntimeException(reason))
 
     private def seedPresets(config: CentralConfig.BootstrapConfig): Task[Unit] =
       ZIO.foreachDiscard(config.presets.getOrElse(Nil)): seed =>
         for
           _ <- presetRepo.find(PresetId(seed.id)).flatMap:
             case Some(_) => ZIO.unit
-            case None    =>
+            case None =>
               val preset = AuthorizationPreset(
-                id                   = PresetId(seed.id),
-                clientId             = CentralConfig.centralClientId,
-                description          = seed.description,
-                redirectUri          = RedirectUri(seed.redirectUri),
+                id = PresetId(seed.id),
+                clientId = CentralConfig.centralClientId,
+                description = seed.description,
+                redirectUri = RedirectUri(seed.redirectUri),
                 postLoginRedirectUri = RedirectUri(seed.postLoginRedirectUri),
                 postLogoutRedirectUri = seed.postLogoutRedirectUri.map(RedirectUri(_)).orElse(Some(RedirectUri(seed.postLoginRedirectUri))),
-                scope                = clientScopes,
-                responseType         = ResponseType.Code,
-                uiLocales            = None,
-                customParameters     = Map.empty,
-                cookieDomain         = seed.cookieDomain,
-                cookiePath           = seed.cookiePath,
+                scope = clientScopes,
+                responseType = ResponseType.Code,
+                uiLocales = None,
+                customParameters = Map.empty,
+                cookieDomain = seed.cookieDomain,
+                cookiePath = seed.cookiePath,
               )
               presetRepo.replace(CentralConfig.centralClientId, Seq(preset))
           _ <- ZIO.foreachDiscard(seed.postLogoutRedirectUri)(registerPostLogoutRedirectUri(CentralConfig.defaultTenantId, _))
@@ -1260,7 +1402,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None    => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
+          case None => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, EdgeRecord.DefaultRequireDpopNonce)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the
@@ -1337,7 +1479,6 @@ object BootstrapService:
                   s"Adding ${missing.size} missing and removing ${stale.size} stale endpoint(s) on central resource '$centralResourceId'",
                 ) *>
                   resourceRepo.updateResource(centralResourceId, None, audience, missing.toVector, stale)
-
         yield ()
 
     /** Seeds the internal resource that proxies Account Settings to auth's additional port.
@@ -1403,7 +1544,7 @@ object BootstrapService:
             case Some(kid) =>
               jwksRepo.find(kid).flatMap:
                 case Some(_) => ZIO.unit
-                case None    => jwksRepo.create(kid, jwk, privateKey = None)
+                case None => jwksRepo.create(kid, jwk, privateKey = None)
             case None =>
               ZIO.logWarning("Skipping bootstrap JWK without a 'kid' field")
 

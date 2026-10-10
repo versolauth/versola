@@ -12,12 +12,12 @@ import zio.test.*
   * verifier and the state, keeps both server-side, and the browser never sees a token.
   */
 object EdgeWebLoginSpec extends EdgeSpec(
-      EdgeFixture.Config(
-        resourceId = "e2e-edge-login",
-        resourceUri = "http://localhost:9004",
-        endpoints = List(EdgeFixture.Endpoint(name = "liveness", path = "/liveness")),
-      ),
-    ):
+    EdgeFixture.Config(
+      resourceId = "e2e-edge-login",
+      resourceUri = "http://localhost:9004",
+      endpoints = List(EdgeFixture.Endpoint(name = "liveness", path = "/liveness")),
+    ),
+  ):
 
   def spec = suite("Edge web login")(
     test("/login redirects to the OP's authorization endpoint") {

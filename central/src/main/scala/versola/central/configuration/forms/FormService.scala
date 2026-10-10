@@ -41,7 +41,7 @@ object FormService:
 
     override def getSyncForms: Task[Vector[FormRecord]] =
       for
-        forms         <- cache.get.map(_.filter(_.active).sortBy(_.id))
+        forms <- cache.get.map(_.filter(_.active).sortBy(_.id))
         activeLocales <- localeService.getActive.map(_.map(_.code).toSet)
         formWithActiveLocales = forms.map(f => f.copy(localizations = f.localizations.filter((code, _) => activeLocales.contains(code))))
       yield formWithActiveLocales

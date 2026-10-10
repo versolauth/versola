@@ -1,4 +1,3 @@
-
 package versola
 
 import versola.util.SequentialLayers.*
@@ -10,18 +9,44 @@ import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateEnrollment, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
+import versola.edge.{
+  AuthorizationPresetsSyncClient,
+  CentralSyncTokenService,
+  ClientCertificateEnrollment,
+  ClientCertificateFiles,
+  DpopAlgorithmsSyncClient,
+  DpopPolicySyncClient,
+  EdgeConfig,
+  EdgeController,
+  EdgeService,
+  JwksService,
+  JwksSyncClient,
+  OAuthClientService,
+  OAuthClientsSyncClient,
+  PermissionService,
+  PermissionsSyncClient,
+  PostgresDpopProofRepository,
+  PostgresEdgeSessionRepository,
+  PostgresLoginRepository,
+  PostgresRevocationNotifications,
+  PostgresRevocationRepository,
+  ResourceService,
+  ResourcesSyncClient,
+  RolesSyncClient,
+  SSOClient,
+  ServiceController,
+}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
+import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
 import zio.http.*
 import zio.http.Client
 import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
-import zio.*
 
 object PostgresEdgeApp extends VersolaApp("edge"):
   val environmentTag = Tag[Environment]
@@ -30,35 +55,35 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   type Dependencies =
     EdgeConfig &
-    SecureRandom &
-    SecurityService &
-    CentralSyncTokenService &
-    AuthorizationPresetsSyncClient &
-    OAuthClientsSyncClient &
-    ResourcesSyncClient &
-    RolesSyncClient &
-    PermissionsSyncClient &
-    DpopAlgorithmsSyncClient &
-    DpopPolicySyncClient &
-    DpopPolicyService &
-    OAuthClientService &
-    ResourceService &
-    PermissionService &
-    CelEvaluator &
-    LoginRepository &
-    EdgeSessionRepository &
-    RevocationRepository &
-    RevocationNotifications &
-    TokenRevocationService &
-    JwksService &
-    ClientCertificateFiles &
-    SSOClient &
-    DpopProofRepository &
-    DpopReplayGuard &
-    DpopVerifier &
-    EdgeService &
-    NativeAuthClient &
-    NativeService
+      SecureRandom &
+      SecurityService &
+      CentralSyncTokenService &
+      AuthorizationPresetsSyncClient &
+      OAuthClientsSyncClient &
+      ResourcesSyncClient &
+      RolesSyncClient &
+      PermissionsSyncClient &
+      DpopAlgorithmsSyncClient &
+      DpopPolicySyncClient &
+      DpopPolicyService &
+      OAuthClientService &
+      ResourceService &
+      PermissionService &
+      CelEvaluator &
+      LoginRepository &
+      EdgeSessionRepository &
+      RevocationRepository &
+      RevocationNotifications &
+      TokenRevocationService &
+      JwksService &
+      ClientCertificateFiles &
+      SSOClient &
+      DpopProofRepository &
+      DpopReplayGuard &
+      DpopVerifier &
+      EdgeService &
+      NativeAuthClient &
+      NativeService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -107,7 +132,6 @@ object PostgresEdgeApp extends VersolaApp("edge"):
       EdgeService.live >++>
       NativeAuthClient.live >++>
       NativeService.live
-
 
   given DeriveConfig[versola.edge.model.EdgeId] = DeriveConfig[String].map(versola.edge.model.EdgeId(_))
 

@@ -5,12 +5,21 @@ import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethodRef, AuthorizationDetail, ClientCredentials, ClientId, ClientIdWithSecret, ResourceUri, ScopeToken}
-import versola.oauth.dpop.DpopService
 import versola.oauth.clientauth.{AuthenticatedEndpoint, CertificateRelevance, ClientAuthentication}
-import versola.oauth.mtls.ClientCertificate
+import versola.oauth.dpop.DpopService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeVerifier, RefreshToken}
-import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError, TokenErrorResponse, TokenRequest, TokenResponse}
+import versola.oauth.mtls.ClientCertificate
+import versola.oauth.token.model.{
+  ClientCredentialsRequest,
+  CodeExchangeRequest,
+  IssuedTokens,
+  RefreshTokenRequest,
+  TokenEndpointError,
+  TokenErrorResponse,
+  TokenRequest,
+  TokenResponse,
+}
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
@@ -74,11 +83,11 @@ object TokenEndpointController extends Controller:
             oauthTokenService.exchangeAuthorizationCode(codeExchangeRequest, credentials, dpopJkt, certificate)
           case refreshTokenRequest: RefreshTokenRequest =>
             oauthTokenService.refreshAccessToken(
-                refreshTokenRequest,
-                credentials,
-                dpopJkt,
-                certificate,
-                request.headers.get(IdempotencyKeyHeader),
+              refreshTokenRequest,
+              credentials,
+              dpopJkt,
+              certificate,
+              request.headers.get(IdempotencyKeyHeader),
             )
           case clientCredentialsRequest: ClientCredentialsRequest =>
             oauthTokenService.clientCredentials(clientCredentialsRequest, credentials, dpopJkt, certificate)
@@ -178,7 +187,6 @@ object TokenEndpointController extends Controller:
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
         AuthMethodRef.idTokenClaims(tokens.amr, tokens.authTime, tokens.acr)
-
 
       // For client_credentials grant, use client_id as subject; otherwise use user_id
       subject = tokens.userId.map(_.toString).getOrElse(tokens.clientId)

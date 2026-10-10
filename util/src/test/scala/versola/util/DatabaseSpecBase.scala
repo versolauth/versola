@@ -14,7 +14,7 @@ trait DatabaseSpecBase[E: Tag] extends ZIOStubs { self: ZIOSpec[TransactorZIO] =
     suite(name)(
       ZIO.serviceWith[E] { env =>
         testCases(env).map(_ @@ TestAspect.before(beforeEach(env)))
-      }
+      },
     )
       .@@(TestAspect.sequential)
       .@@(TestAspect.timed)

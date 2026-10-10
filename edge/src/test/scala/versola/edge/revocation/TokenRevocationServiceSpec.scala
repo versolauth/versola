@@ -1,8 +1,18 @@
 package versola.edge.revocation
 
 import org.scalamock.stubs.ZIOStubs
+import versola.edge.model.{
+  AccessTokenId,
+  AuthorizationPreset,
+  ClientCredential,
+  ClientId,
+  EdgeId,
+  OAuthClient,
+  PresetId,
+  RefreshTokenFamilyId,
+  SessionId,
+}
 import versola.edge.{AuthorizationPresetsSyncClient, EdgeConfig, OAuthClientService, OAuthClientsSyncClient}
-import versola.edge.model.{ClientCredential, AccessTokenId, AuthorizationPreset, ClientId, EdgeId, OAuthClient, PresetId, RefreshTokenFamilyId, SessionId}
 import versola.util.{ReloadingCache, Secret}
 import zio.*
 import zio.http.URL
@@ -56,7 +66,8 @@ object TokenRevocationServiceSpec extends ZIOSpecDefault, ZIOStubs:
     privateKey =
       val generator = KeyPairGenerator.getInstance("RSA").nn
       generator.initialize(2048)
-      generator.generateKeyPair().nn.getPrivate.nn,
+      generator.generateKeyPair().nn.getPrivate.nn
+    ,
     security = EdgeConfig.Security(
       tokenEncryption = EdgeConfig.Security.TokenEncryption(Secret.Bytes32(Array.fill(32)(3.toByte))),
       edgeSessions = EdgeConfig.Security.EdgeSessions(Secret.Bytes32(Array.fill(32)(5.toByte)), 1.hour),

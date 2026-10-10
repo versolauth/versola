@@ -71,7 +71,7 @@ object CleanupManagerSpec extends ZIOSpecDefault:
       for
         (cleanup, calls, fibers) <- manager(config)
         _ <- ZIO.scoped(
-          cleanup.start() *> TestClock.adjust(0.seconds) *> fibers.get.flatMap(f => ZIO.succeed(f))
+          cleanup.start() *> TestClock.adjust(0.seconds) *> fibers.get.flatMap(f => ZIO.succeed(f)),
         )
         recorded <- calls.get
       yield assertTrue(recorded.map(_.tableName).toSet == Set("sessions", "codes", "tokens"))

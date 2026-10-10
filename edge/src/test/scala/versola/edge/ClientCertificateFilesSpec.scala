@@ -6,8 +6,8 @@ import zio.http.ClientSSLCertConfig
 import zio.test.*
 
 import java.nio.charset.StandardCharsets
-import java.nio.file.{Files, Path}
 import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.{Files, Path}
 import scala.jdk.CollectionConverters.*
 
 /** The one place a client's private key reaches the disk. What matters is that the files are

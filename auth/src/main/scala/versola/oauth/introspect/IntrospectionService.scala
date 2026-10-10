@@ -1,11 +1,11 @@
 package versola.oauth.introspect
 
-import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.client.model.{AuthorizationDetail, ClientCredentials, OAuthClientRecord, ResourceRecord, ResourceUri}
-import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
+import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
 import versola.oauth.clientauth.{AuthenticatedEndpoint, ClientAuthentication}
-import versola.oauth.mtls.ClientCertificate
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
+import versola.oauth.mtls.ClientCertificate
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.RefreshTokenRecord
 import versola.util.{CoreConfig, Secret, SecurityService}

@@ -4,10 +4,10 @@ import versola.auth.TestEnvConfig
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, PushedAuthorizationError, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
-import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import versola.oauth.client.model.SecurityProfile
+import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
+import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*

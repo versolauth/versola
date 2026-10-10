@@ -1,19 +1,12 @@
 package versola.loadgen.calibrate
 
+import io.opentelemetry.api
 import versola.loadgen.config.*
 import versola.loadgen.metrics.{LatencyRecorder, LatencySummary, MeasurementId}
-import versola.loadgen.protocol.{
-  AccessToken,
-  ActionCall,
-  ActionClient,
-  EdgeActionClient,
-  EdgeCredential,
-  LoadgenHttpClient,
-}
+import versola.loadgen.protocol.{AccessToken, ActionCall, ActionClient, EdgeActionClient, EdgeCredential, LoadgenHttpClient}
 import versola.loadgen.scenario.BusinessActions
 import versola.loadgen.scheduler.{ArrivalProcess, CampaignSchedule, RandomSource, ScheduleLag}
 import versola.loadgen.store.{MetricSnapshotRepository, MetricSnapshotRow}
-import io.opentelemetry.api
 import zio.*
 import zio.http.*
 import zio.http.netty.NettyConfig

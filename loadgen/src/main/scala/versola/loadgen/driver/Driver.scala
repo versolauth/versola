@@ -1,6 +1,5 @@
 package versola.loadgen.driver
 
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{ClientsConfig, LoadgenConfig, ShardConfig}
 import versola.loadgen.coordinator.{LoadPlan, PlanScenario}
@@ -10,6 +9,7 @@ import versola.loadgen.scenario.*
 import versola.loadgen.scheduler.*
 import versola.loadgen.store.*
 import versola.util.Dpop
+import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client

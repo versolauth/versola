@@ -1,5 +1,6 @@
 package versola.configuration.sync
 
+import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.clients.{ClientId, PresetId}
 import versola.central.configuration.details.AuthorizationDetailType
 import versola.central.configuration.forms.FormId
@@ -7,13 +8,12 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceId
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.ScopeToken
-import versola.central.configuration.challenges.{OtpTemplateChannel, OtpTemplatePurpose}
 import versola.central.configuration.sync.{CacheSyncRepository, SyncEvent}
 import versola.central.configuration.tenants.TenantId
 import versola.util.postgres.{NotificationEvent, PostgresConfig, PostgresNotificationListener}
-import zio.json.JsonDecoder
-import zio.json.DecoderOps
 import zio.*
+import zio.json.DecoderOps
+import zio.json.JsonDecoder
 import zio.stream.Stream
 
 class PostgresCacheSyncRepository(listener: PostgresNotificationListener) extends CacheSyncRepository:

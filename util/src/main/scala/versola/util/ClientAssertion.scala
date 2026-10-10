@@ -302,8 +302,7 @@ object ClientAssertion:
     for
       candidates <- ZIO.attempt(Option(jwt.getHeader.getKeyID) match
         case Some(kid) => Option(keys.keys.getKeyByKeyId(kid)).toList
-        case None => keys.keys.getKeys.asScala.toList,
-      ).orElseFail(Error.UnknownKey)
+        case None => keys.keys.getKeys.asScala.toList).orElseFail(Error.UnknownKey)
 
       usable = candidates.filter(usableWith(_, algorithm))
       _ <- ZIO.fail(Error.UnknownKey).when(usable.isEmpty)
@@ -336,8 +335,8 @@ object ClientAssertion:
       case key: ECKey => algorithm == Algorithm.ES256 && key.getCurve == Curve.P_256
       case _ => false
     typeMatches &&
-      Option(key.getAlgorithm).forall(_ == algorithm.jwsAlgorithm) &&
-      !Option(key.getKeyUse).contains(KeyUse.ENCRYPTION)
+    Option(key.getAlgorithm).forall(_ == algorithm.jwsAlgorithm) &&
+    !Option(key.getKeyUse).contains(KeyUse.ENCRYPTION)
 
   private def verifyWith(jwt: SignedJWT, key: JWK): Boolean =
     key match

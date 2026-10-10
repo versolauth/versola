@@ -1,9 +1,9 @@
 package versola.loadgen.store
 
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.zaxxer.hikari.HikariDataSource
 import versola.loadgen.config.StoreConfig
+import versola.util.EnvName
 import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
 import zio.*
 
@@ -28,7 +28,7 @@ object LoadgenStore:
     *   `PostgresHikariDataSource.layer`.
     */
   def transactor(
-      migrate: Boolean
+      migrate: Boolean,
   ): ZLayer[Scope & ConfigProvider & EnvName, Throwable, TransactorZIO & HikariDataSource & PostgresConfig] =
     PostgresHikariDataSource.transactor(
       serviceName = Some("loadgen-store"),

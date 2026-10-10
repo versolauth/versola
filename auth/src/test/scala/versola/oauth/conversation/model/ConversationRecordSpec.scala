@@ -160,7 +160,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
             credential = Some(Some(Left(email))),
             step = Some(step),
             authFlow = None,
-          )
+          ),
         )
         assertTrue(
           patched.userId == Some(userId),
@@ -178,7 +178,7 @@ object ConversationRecordSpec extends ZIOSpecDefault:
             credential = Some(None),
             step = None,
             authFlow = None,
-          )
+          ),
         )
         assertTrue(cleared.userId.isEmpty, cleared.credential.isEmpty)
       },

@@ -102,7 +102,7 @@ object LogoutServiceSpec extends UnitSpecBase:
       test("returns empty logoutUris and drops the redirect when no session is found") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(None)
+          _ <- env.sessionService.invalidate.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-1"))
         yield assertTrue(
           result == LogoutService.LogoutResult(Nil, None, Some("st-1")),
@@ -112,32 +112,32 @@ object LogoutServiceSpec extends UnitSpecBase:
       test("returns empty logoutUris when the session's client is not found") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(None)
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(result.logoutUris.isEmpty)
       },
       test("returns empty logoutUris when the session's client has no frontChannelLogoutUri") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
           result <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(result.logoutUris.isEmpty)
       },
       test("adds iss and sid query params even when frontChannelLogoutSessionRequired is false") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientA))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientA))
           result <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(result.logoutUris == List(logoutUriA))
       },
       test("adds iss and sid query params when frontChannelLogoutSessionRequired is true") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientB))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientB))
           result <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(result.logoutUris == List(logoutUriB))
       },
@@ -147,17 +147,17 @@ object LogoutServiceSpec extends UnitSpecBase:
         val participants = Map(clientA.id -> clientA, clientADuplicate.id -> clientADuplicate, clientB.id -> clientB)
         val record = record1.copy(clients = List(clientA.id, clientADuplicate.id, clientB.id).map(ClientEntry(_, Instant.EPOCH)))
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(SessionInfo(mac, record)))
-          _      <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(SessionInfo(mac, record)))
+          _ <- env.configuration.find.returnsZIO(id => ZIO.succeed(participants.get(id)))
           result <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(result.logoutUris == List(logoutUriA, logoutUriB))
       },
       test("preserves the postLogoutRedirectUri and state when it exactly matches a registered URI") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
-          _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
           result <- env.service.logout(Left(publicSessionId1), Some(redirectUri), Some("st-2"))
         yield assertTrue(
           result.postLogoutRedirectUri == Some(redirectUri),
@@ -167,7 +167,7 @@ object LogoutServiceSpec extends UnitSpecBase:
       test("drops the postLogoutRedirectUri when no session is found, without checking the registry") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(None)
+          _ <- env.sessionService.invalidate.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-3"))
         yield assertTrue(result.postLogoutRedirectUri == None, env.configuration.getPostLogoutRedirectUris.calls.isEmpty)
       },
@@ -175,9 +175,9 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         val disallowedRedirect = URL.decode("https://evil.example/steal").toOption.get
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
-          _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
           result <- env.service.logout(Right(rawSessionId), Some(disallowedRedirect), Some("st-4"))
         yield assertTrue(result.postLogoutRedirectUri == None)
       },
@@ -185,18 +185,18 @@ object LogoutServiceSpec extends UnitSpecBase:
         val env = Env()
         val downgradedRedirect = URL.decode("http://example.com/callback").toOption.get
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
-          _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(List(redirectUri))
           result <- env.service.logout(Right(rawSessionId), Some(downgradedRedirect), Some("st-5"))
         yield assertTrue(result.postLogoutRedirectUri == None)
       },
       test("drops the postLogoutRedirectUri when nothing is registered for the tenant") {
         val env = Env()
         for
-          _      <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
-          _      <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
-          _      <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(clientNoLogoutUri))
+          _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-6"))
         yield assertTrue(result.postLogoutRedirectUri == None)
       },

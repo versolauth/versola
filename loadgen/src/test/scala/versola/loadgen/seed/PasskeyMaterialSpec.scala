@@ -25,16 +25,16 @@ object PasskeyMaterialSpec extends ZIOSpecDefault:
       val cose = material.publicKeyCose
       assertTrue(
         cose.length == 77,
-        cose(0) == 0xa5.toByte, // five-entry map
-        cose(1) == 0x01.toByte, // key 1: kty
-        cose(2) == 0x02.toByte, //   EC2
-        cose(3) == 0x03.toByte, // key 3: alg
-        cose(4) == 0x26.toByte, //   ES256 (-7, encoded as major 1 / value 6)
-        cose(5) == 0x20.toByte, // key -1: crv
-        cose(6) == 0x01.toByte, //   P-256
-        cose(7) == 0x21.toByte, // key -2: x
-        cose(8) == 0x58.toByte, //   byte string, one-byte length
-        cose(9) == 0x20.toByte, //   32 bytes
+        cose(0) == 0xa5.toByte,  // five-entry map
+        cose(1) == 0x01.toByte,  // key 1: kty
+        cose(2) == 0x02.toByte,  //   EC2
+        cose(3) == 0x03.toByte,  // key 3: alg
+        cose(4) == 0x26.toByte,  //   ES256 (-7, encoded as major 1 / value 6)
+        cose(5) == 0x20.toByte,  // key -1: crv
+        cose(6) == 0x01.toByte,  //   P-256
+        cose(7) == 0x21.toByte,  // key -2: x
+        cose(8) == 0x58.toByte,  //   byte string, one-byte length
+        cose(9) == 0x20.toByte,  //   32 bytes
         cose(42) == 0x22.toByte, // key -3: y
         cose(43) == 0x58.toByte,
         cose(44) == 0x20.toByte,

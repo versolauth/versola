@@ -47,7 +47,7 @@ object FlowResources:
     yield json
 
 final case class MissingFlowResource(path: String)
-    extends RuntimeException(s"Flow resource '$path' is not on the classpath")
+  extends RuntimeException(s"Flow resource '$path' is not on the classpath")
 
 final case class MalformedFlowResource(path: String, detail: String)
-    extends RuntimeException(s"Flow resource '$path' is not valid JSON: $detail")
+  extends RuntimeException(s"Flow resource '$path' is not valid JSON: $detail")

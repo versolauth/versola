@@ -70,8 +70,10 @@ object CertManagerIssuer:
           if !status.isSuccess then ZIO.fail(RuntimeException(s"cert-manager refused the request with $status: $text"))
           else
             ZIO.fromEither(text.fromJson[Json.Obj].left.map(RuntimeException(_)))
-              .flatMap(obj => ZIO.fromOption(obj.get("metadata").flatMap(_.asObject).flatMap(_.get("name")).flatMap(_.asString))
-                .orElseFail(RuntimeException("cert-manager's answer names no request")))
+              .flatMap(obj =>
+                ZIO.fromOption(obj.get("metadata").flatMap(_.asObject).flatMap(_.get("name")).flatMap(_.asString))
+                  .orElseFail(RuntimeException("cert-manager's answer names no request")),
+              )
 
       private def await(base: String, name: String): Task[String] =
         call(Request.get(_), s"$base/$name").flatMap: (status, text) =>

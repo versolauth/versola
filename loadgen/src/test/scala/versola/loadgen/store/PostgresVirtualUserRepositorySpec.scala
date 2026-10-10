@@ -51,7 +51,7 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
     test("insertAll then find round-trips every persisted column, in the order V0001 declares them") {
       val planned = user(1, shard = 0)
       for
-        _     <- env.repository.insertAll(Chunk(planned))
+        _ <- env.repository.insertAll(Chunk(planned))
         found <- env.repository.find(1)
       yield assertTrue(found.contains(planned))
     },
@@ -66,7 +66,7 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
         passkeyCredId = Some("credential-1"),
       )
       for
-        _     <- env.repository.insertAll(Chunk(enrolled))
+        _ <- env.repository.insertAll(Chunk(enrolled))
         found <- env.repository.find(1)
       yield assertTrue(
         found.map(_.copy(passkeyKey = None)).contains(enrolled.copy(passkeyKey = None)),
@@ -79,17 +79,17 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
     test("the phone constraint rejects a second user claiming the same number") {
       val taken = user(1, shard = 0)
       for
-        _    <- env.repository.insertAll(Chunk(taken))
+        _ <- env.repository.insertAll(Chunk(taken))
         exit <- env.repository.insertAll(Chunk(user(2, shard = 0).copy(phone = taken.phone))).exit
       yield assertTrue(exit.isFailure)
     },
     test("loadShardSlice pages through one driver's slice by keyset, without repeating a row") {
       val population = Chunk(user(1, 0), user(2, 1), user(3, 0), user(4, 1), user(5, 0))
       for
-        _      <- env.repository.insertAll(population)
-        first  <- env.repository.loadShardSlice(shard = 0, afterId = None, limit = 2)
+        _ <- env.repository.insertAll(population)
+        first <- env.repository.loadShardSlice(shard = 0, afterId = None, limit = 2)
         second <- env.repository.loadShardSlice(shard = 0, afterId = first.lastOption.map(_.id), limit = 2)
-        third  <- env.repository.loadShardSlice(shard = 0, afterId = second.lastOption.map(_.id), limit = 2)
+        third <- env.repository.loadShardSlice(shard = 0, afterId = second.lastOption.map(_.id), limit = 2)
       yield assertTrue(
         first.map(_.id) == Vector(1L, 3L),
         second.map(_.id) == Vector(5L),
@@ -98,15 +98,15 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
     },
     test("loadShardSlice starting from no id begins at the first user, not the second") {
       for
-        _     <- env.repository.insertAll(Chunk(user(1, 0), user(2, 0)))
+        _ <- env.repository.insertAll(Chunk(user(1, 0), user(2, 0)))
         slice <- env.repository.loadShardSlice(shard = 0, afterId = None, limit = 10)
       yield assertTrue(slice.map(_.id) == Vector(1L, 2L))
     },
     test("markRegistered records the SUT identity and leaves the state registered in one statement") {
       val sutUserId = UUID.fromString("00000000-0000-0000-0000-00000000000a")
       for
-        _     <- env.repository.insertAll(Chunk(user(1, shard = 0)))
-        _     <- env.repository.markRegistered(1, sutUserId)
+        _ <- env.repository.insertAll(Chunk(user(1, shard = 0)))
+        _ <- env.repository.markRegistered(1, sutUserId)
         found <- env.repository.find(1)
       yield assertTrue(
         found.flatMap(_.sutUserId).contains(sutUserId),
@@ -115,16 +115,16 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
     },
     test("markBroken moves a user out of the population the scheduler picks from") {
       for
-        _     <- env.repository.insertAll(Chunk(user(1, shard = 0, state = VirtualUserState.Registered)))
-        _     <- env.repository.markBroken(1)
+        _ <- env.repository.insertAll(Chunk(user(1, shard = 0, state = VirtualUserState.Registered)))
+        _ <- env.repository.markBroken(1)
         found <- env.repository.find(1)
       yield assertTrue(found.map(_.state).contains(VirtualUserState.Broken))
     },
     test("recordPasskey persists the key and the credential id the SUT now knows about") {
       val key = Secret.fromString("pkcs8-private-key")
       for
-        _     <- env.repository.insertAll(Chunk(user(1, shard = 0)))
-        _     <- env.repository.recordPasskey(1, key, "credential-1")
+        _ <- env.repository.insertAll(Chunk(user(1, shard = 0)))
+        _ <- env.repository.recordPasskey(1, key, "credential-1")
         found <- env.repository.find(1)
       yield assertTrue(
         found.map(u => bytes(u.passkeyKey)).contains(Some(key.toSeq)),
@@ -134,9 +134,9 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
     test("touchAll moves last_seen_at for the batch, and of nothing else") {
       val seenAt = java.time.Instant.parse("2026-01-01T12:00:00Z")
       for
-        _         <- env.repository.insertAll(Chunk(user(1, 0), user(2, 0)))
-        _         <- env.repository.touchAll(Chunk(UserTouch(1, seenAt)))
-        touched   <- env.repository.find(1)
+        _ <- env.repository.insertAll(Chunk(user(1, 0), user(2, 0)))
+        _ <- env.repository.touchAll(Chunk(UserTouch(1, seenAt)))
+        touched <- env.repository.find(1)
         untouched <- env.repository.find(2)
       yield assertTrue(
         touched.flatMap(_.lastSeenAt).contains(seenAt),
@@ -153,7 +153,7 @@ object PostgresVirtualUserRepositorySpec extends LoadgenPostgresSpec, DatabaseSp
         user(3, 0, state = VirtualUserState.Registered),
       )
       for
-        _      <- env.repository.insertAll(population)
+        _ <- env.repository.insertAll(population)
         counts <- env.repository.countByState
       yield assertTrue(
         counts == Map(VirtualUserState.Planned -> 2L, VirtualUserState.Registered -> 1L),

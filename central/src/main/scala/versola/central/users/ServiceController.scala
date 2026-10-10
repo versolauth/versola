@@ -1,7 +1,7 @@
 package versola.central.users
 
-import versola.central.configuration.resources.ResourceService
 import versola.central.authorizeBasic
+import versola.central.configuration.resources.ResourceService
 import versola.util.EnvName
 import versola.util.http.Controller
 import zio.*

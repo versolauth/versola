@@ -60,7 +60,9 @@ object HttpExchangeSpec extends ZIOSpecDefault:
         recovered <- HttpExchange.retrying(flaky, HttpExchange.maxRetries)(onlyClosed).either
         _ <- calls.set(0)
         other = calls.updateAndGet(_ + 1) *> ZIO.fail(ProtocolError.Transport(RuntimeException("refused")))
-        notRetried <- HttpExchange.retrying(other, HttpExchange.maxRetries) { case ProtocolError.Transport(c) if c.isInstanceOf[io.netty.handler.codec.PrematureChannelClosureException] => () }.either
+        notRetried <- HttpExchange.retrying(other, HttpExchange.maxRetries) {
+          case ProtocolError.Transport(c) if c.isInstanceOf[io.netty.handler.codec.PrematureChannelClosureException] => ()
+        }.either
         refusedAttempts <- calls.get
       yield assertTrue(
         gaveUp == Left(closed),

@@ -2,9 +2,9 @@ package versola.oauth.conversation.otp
 
 import versola.auth.model.OtpCode
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.OtpSettings
 import versola.oauth.client.model.{ClientId, OtpType}
 import versola.oauth.conversation.model.{AuthId, ConversationStep}
-import versola.oauth.client.model.OtpSettings
 import versola.oauth.conversation.otp.model.{OtpTemplate, SendOtpResult, SubmitOtpResult}
 import versola.user.model.UserId
 import versola.util.{Email, EnvName, Phone, UnitSpecBase}

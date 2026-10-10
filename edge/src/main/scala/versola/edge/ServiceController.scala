@@ -1,8 +1,8 @@
 package versola.edge
 
 import versola.edge.dpop.DpopPolicyService
-import versola.util.{EnvName, Secret}
 import versola.util.http.{Controller, Unauthorized}
+import versola.util.{EnvName, Secret}
 import zio.*
 import zio.http.*
 import zio.telemetry.opentelemetry.tracing.Tracing

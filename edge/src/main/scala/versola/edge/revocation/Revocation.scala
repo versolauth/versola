@@ -39,9 +39,9 @@ enum RevocationKey:
   case Sub(userId: String)
 
   def encoded: String = this match
-    case Jti(id)     => s"${RevocationKey.JtiPrefix}$id"
-    case Fam(id)     => s"${RevocationKey.FamPrefix}$id"
-    case Sid(id)     => s"${RevocationKey.SidPrefix}$id"
+    case Jti(id) => s"${RevocationKey.JtiPrefix}$id"
+    case Fam(id) => s"${RevocationKey.FamPrefix}$id"
+    case Sid(id) => s"${RevocationKey.SidPrefix}$id"
     case Sub(userId) => s"${RevocationKey.SubPrefix}$userId"
 
 object RevocationKey:

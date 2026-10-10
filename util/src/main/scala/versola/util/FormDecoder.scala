@@ -1,11 +1,10 @@
 package versola.util
 
-import zio.{IO, ZIO}
 import zio.http.Form
+import zio.{IO, ZIO}
 
 trait FormDecoder[A]:
   def decode(form: Form): IO[String, A]
-
 
 object FormDecoder:
   def single[A](form: Form, name: String, parse: String => Either[String, A]): IO[String, A] =

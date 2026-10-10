@@ -11,10 +11,10 @@
 
 import java.io.{File, PrintWriter}
 import java.net.URI
-import java.security.{KeyPairGenerator, SecureRandom}
 import java.security.interfaces.{RSAPrivateCrtKey, RSAPublicKey}
-import scala.sys.process.Process
+import java.security.{KeyPairGenerator, SecureRandom}
 import java.util.Base64
+import scala.sys.process.Process
 
 def rand(rng: SecureRandom, n: Int): String =
   val b = Array.ofDim[Byte](n)
@@ -25,16 +25,16 @@ def genUUIDv7(rng: SecureRandom): String =
   val now = System.currentTimeMillis()
   val b = Array.ofDim[Byte](16)
   rng.nextBytes(b)
-  b(0) = ((now >>> 40) & 0xFF).toByte
-  b(1) = ((now >>> 32) & 0xFF).toByte
-  b(2) = ((now >>> 24) & 0xFF).toByte
-  b(3) = ((now >>> 16) & 0xFF).toByte
-  b(4) = ((now >>> 8)  & 0xFF).toByte
-  b(5) = (now          & 0xFF).toByte
-  b(6) = ((b(6) & 0x0F) | 0x70).toByte  // version 7
-  b(8) = ((b(8) & 0x3F) | 0x80).toByte  // variant 10xx
-  val msb = (0 until 8).foldLeft(0L)((acc, i) => (acc << 8) | (b(i) & 0xFF))
-  val lsb = (8 until 16).foldLeft(0L)((acc, i) => (acc << 8) | (b(i) & 0xFF))
+  b(0) = ((now >>> 40) & 0xff).toByte
+  b(1) = ((now >>> 32) & 0xff).toByte
+  b(2) = ((now >>> 24) & 0xff).toByte
+  b(3) = ((now >>> 16) & 0xff).toByte
+  b(4) = ((now >>> 8) & 0xff).toByte
+  b(5) = (now & 0xff).toByte
+  b(6) = ((b(6) & 0x0f) | 0x70).toByte // version 7
+  b(8) = ((b(8) & 0x3f) | 0x80).toByte // variant 10xx
+  val msb = (0 until 8).foldLeft(0L)((acc, i) => (acc << 8) | (b(i) & 0xff))
+  val lsb = (8 until 16).foldLeft(0L)((acc, i) => (acc << 8) | (b(i) & 0xff))
   java.util.UUID(msb, lsb).toString
 
 def b64std(bytes: Array[Byte]): String = Base64.getEncoder.encodeToString(bytes)
@@ -64,7 +64,7 @@ def parseCliArgs(args: Seq[String]): Map[String, String] =
     if !arg.startsWith("--") then None
     else
       val body = arg.stripPrefix("--")
-      val eq   = body.indexOf('=')
+      val eq = body.indexOf('=')
       // A bare `--flag` (no `=value`) is treated as `true`, so
       // `promptYN`-backed flags (--otp, --smtp) can be given without a
       // value, matching how a shell boolean flag usually reads.
@@ -153,14 +153,52 @@ def genInternalTlsCertificate(dir: File): Unit =
   val serverCsr = File(dir, "server.csr").getPath
   val serverCert = File(dir, "server.crt").getPath
 
-  run("req", "-x509", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", caKey, "-out", caCert, "-days", "3650",
-    "-subj", "/CN=versola-internal-tls-ca")
-  run("req", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=localhost",
-    "-addext", "subjectAltName=DNS:localhost")
-  run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
-    "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
+  run(
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    caKey,
+    "-out",
+    caCert,
+    "-days",
+    "3650",
+    "-subj",
+    "/CN=versola-internal-tls-ca",
+  )
+  run(
+    "req",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    serverKey,
+    "-out",
+    serverCsr,
+    "-subj",
+    "/CN=localhost",
+    "-addext",
+    "subjectAltName=DNS:localhost",
+  )
+  run(
+    "x509",
+    "-req",
+    "-in",
+    serverCsr,
+    "-CA",
+    caCert,
+    "-CAkey",
+    caKey,
+    "-CAcreateserial",
+    "-out",
+    serverCert,
+    "-days",
+    "3650",
+    "-copy_extensions",
+    "copy",
+  )
 
 /** The listener `PostgresOAuthApp.mutualTlsServerConfig` terminates itself (RFC 8705 §5),
   * plus a client certificate e2e presents to it -- the counterpart, on this side, of
@@ -193,19 +231,83 @@ def genAuthMutualTlsCertificate(dir: File): Unit =
   val clientCsr = File(dir, "client.csr").getPath
   val clientCert = File(dir, "client.crt").getPath
 
-  run("req", "-x509", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", caKey, "-out", caCert, "-days", "3650",
-    "-subj", "/CN=versola-auth-mtls-ca")
-  run("req", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", serverKey, "-out", serverCsr, "-subj", "/CN=localhost",
-    "-addext", "subjectAltName=DNS:localhost")
-  run("x509", "-req", "-in", serverCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
-    "-out", serverCert, "-days", "3650", "-copy_extensions", "copy")
-  run("req", "-newkey", "rsa:2048", "-nodes",
-    "-keyout", clientKey, "-out", clientCsr, "-subj", "/CN=e2e-native-mtls-client",
-    "-addext", "subjectAltName=DNS:e2e-native-mtls-client.versola.test")
-  run("x509", "-req", "-in", clientCsr, "-CA", caCert, "-CAkey", caKey, "-CAcreateserial",
-    "-out", clientCert, "-days", "3650", "-copy_extensions", "copy")
+  run(
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    caKey,
+    "-out",
+    caCert,
+    "-days",
+    "3650",
+    "-subj",
+    "/CN=versola-auth-mtls-ca",
+  )
+  run(
+    "req",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    serverKey,
+    "-out",
+    serverCsr,
+    "-subj",
+    "/CN=localhost",
+    "-addext",
+    "subjectAltName=DNS:localhost",
+  )
+  run(
+    "x509",
+    "-req",
+    "-in",
+    serverCsr,
+    "-CA",
+    caCert,
+    "-CAkey",
+    caKey,
+    "-CAcreateserial",
+    "-out",
+    serverCert,
+    "-days",
+    "3650",
+    "-copy_extensions",
+    "copy",
+  )
+  run(
+    "req",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    clientKey,
+    "-out",
+    clientCsr,
+    "-subj",
+    "/CN=e2e-native-mtls-client",
+    "-addext",
+    "subjectAltName=DNS:e2e-native-mtls-client.versola.test",
+  )
+  run(
+    "x509",
+    "-req",
+    "-in",
+    clientCsr,
+    "-CA",
+    caCert,
+    "-CAkey",
+    caKey,
+    "-CAcreateserial",
+    "-out",
+    clientCert,
+    "-days",
+    "3650",
+    "-copy_extensions",
+    "copy",
+  )
 
 /** The certificate edge presents as `central-admin` (#353): RFC 8705 §2.1 `tls_client_auth`,
   * which is what the default tenant's FAPI 2.0 profile admits for an edge-fronted web client.
@@ -230,8 +332,21 @@ def genCentralAdminCertificate(dir: File): String =
   val cert = File(dir, "central-admin.crt").getPath
   run("genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048", "-out", key)
   run("req", "-new", "-key", key, "-out", csr, "-subj", "/O=Versola/CN=central-admin")
-  run("x509", "-req", "-in", csr, "-CA", File(dir, "ca.crt").getPath, "-CAkey", File(dir, "ca.key").getPath,
-    "-CAcreateserial", "-out", cert, "-days", "3650")
+  run(
+    "x509",
+    "-req",
+    "-in",
+    csr,
+    "-CA",
+    File(dir, "ca.crt").getPath,
+    "-CAkey",
+    File(dir, "ca.key").getPath,
+    "-CAcreateserial",
+    "-out",
+    cert,
+    "-days",
+    "3650",
+  )
   def read(path: String) = scala.io.Source.fromFile(path).mkString.trim
   s"${read(cert)}\n${read(key)}\n"
 
@@ -373,18 +488,24 @@ enum SecretType(val json: String):
     * length (padding optional), not the number of characters. Only for values whose decoder
     * enforces that length (`Secret.Bytes16/Bytes32`); anything looser is `Opaque`. */
   case Base64Url extends SecretType("base64url")
+
   /** RSA private key, PKCS#8 DER in standard base64. No `size`: gen-env generates 2048 bits, but
     * `PrivateKeyUtil.parse` accepts any modulus and an imported key (develop.md, "Onboarding") may
     * be 3072 or 4096, so the modulus is not a promise about every value the store may hold. */
   case RsaPrivateKey extends SecretType("rsa-private-key")
+
   /** `{"keys":[...]}`: public JWKs, wrapped the way central's bootstrap.jwks expects. */
   case JwkSet extends SecretType("jwk-set")
+
   /** One public JWK, single-line JSON. */
   case PublicJwk extends SecretType("public-jwk")
+
   /** One private JWK (carries `d`), single-line JSON. */
   case PrivateJwk extends SecretType("private-jwk")
+
   /** An identifier derived together with a key, not random (`edge-<date>`). */
   case KeyId extends SecretType("key-id")
+
   /** No shape, no size: a value the operator can set (a prompt, a flag, an imported existing
     * password), so nothing may be validated about it. A secret is only `Base64Url` etc. when
     * every value the store may hold has that shape, not merely the one gen-env generates. */
@@ -394,12 +515,14 @@ enum SecretType(val json: String):
 enum OnMissing(val json: String):
   /** Take this run's generated candidate. */
   case Generate extends OnMissing("generate")
+
   /** Take the candidate on a first install only; on an upgrade a missing value is an
     * error, because something already depends on the real one: either something outside the
     * store holds it (POSTGRES_PASSWORD: the role in Postgres has a password of its own), or
     * data it protects is stored (PASSWORDS_SECRET, REFRESH_TOKENS_SECRET, CLIENT_SECRETS_SECRET,
     * EDGE_TOKEN_ENC_KEY, CENTRAL_RESOURCE_SECRET, the signing, edge and utils key pairs). */
   case GenerateOnFirstInstallOnly extends OnMissing("generate-on-first-install-only")
+
   /** Never generated here; the operator supplies it. */
   case External extends OnMissing("external")
 
@@ -473,6 +596,7 @@ object SecretSchema:
 
   /** The services whose *.generated-secrets.env this script writes. */
   val Services: List[String] = List("auth", "central", "edge")
+
   /** `utils` plus the services above: every valid entry in SecretSpec.services. */
   private val Holders: Set[String] = Services.toSet + "utils"
 
@@ -650,11 +774,11 @@ object SecretSchema:
   /** Stops the run when `written` (the keys about to be written, names only) isn't exactly the
     * schema's set for `service` on `target`. The message names keys and nothing else. */
   def verifyKeys(target: SecretTarget, service: String, written: Seq[String]): Unit =
-    val expected   = keysFor(target, service)
-    val actual     = written.toSet
-    val missing    = (expected -- actual).toList.sorted
+    val expected = keysFor(target, service)
+    val actual = written.toSet
+    val missing = (expected -- actual).toList.sorted
     val unexpected = (actual -- expected).toList.sorted
-    val repeated   = written.diff(written.distinct).distinct.sorted
+    val repeated = written.diff(written.distinct).distinct.sorted
     if missing.nonEmpty || unexpected.nonEmpty || repeated.nonEmpty then
       throw RuntimeException(
         s"secret schema mismatch for $service.generated-secrets.env on ${target.json}: " +
@@ -721,7 +845,7 @@ object SecretSchema:
     val out = StringBuilder("\"")
     s.foreach: ch =>
       ch match
-        case '"'  => out ++= "\\\""
+        case '"' => out ++= "\\\""
         case '\\' => out ++= "\\\\"
         case '\n' => out ++= "\\n"
         case '\r' => out ++= "\\r"
@@ -736,9 +860,9 @@ object SecretSchema:
   def toJson(target: SecretTarget): String =
     val entries = forTarget(target).map: spec =>
       val services = spec.services.map(jsonString).mkString("[", ",", "]")
-      val size     = spec.size.fold("null")(_.toString)
-      val group    = spec.group.fold("null")(jsonString)
-      val file     = spec.file.fold("null")(jsonString)
+      val size = spec.size.fold("null")(_.toString)
+      val group = spec.group.fold("null")(jsonString)
+      val file = spec.file.fold("null")(jsonString)
       "    {" +
         s""""name":${jsonString(spec.name)},""" +
         s""""services":$services,""" +
@@ -776,12 +900,12 @@ object SecretSchema:
   def genRsaKey(kid: String, alg: String = "RS256"): RsaKey =
     val kpg = KeyPairGenerator.getInstance("RSA")
     kpg.initialize(2048, rng)
-    val kp      = kpg.generateKeyPair()
+    val kp = kpg.generateKeyPair()
     val privKey = kp.getPrivate.asInstanceOf[RSAPrivateCrtKey]
-    val pubKey  = kp.getPublic.asInstanceOf[RSAPublicKey]
-    val n       = b64url(pubKey.getModulus)
-    val e       = b64url(pubKey.getPublicExponent)
-    val jwk     = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
+    val pubKey = kp.getPublic.asInstanceOf[RSAPublicKey]
+    val n = b64url(pubKey.getModulus)
+    val e = b64url(pubKey.getPublicExponent)
+    val jwk = s"""{"kty":"RSA","e":"$e","use":"sig","kid":"$kid","alg":"$alg","n":"$n"}"""
     RsaKey(b64std(privKey.getEncoded), jwk, kid)
 
   /** `privateJwk` is the same pair as one JWK carrying `d`, for the one consumer that signs
@@ -795,9 +919,9 @@ object SecretSchema:
   def genEcKey(kid: String): EcKey =
     val kpg = KeyPairGenerator.getInstance("EC")
     kpg.initialize(java.security.spec.ECGenParameterSpec("secp256r1"), rng)
-    val kp      = kpg.generateKeyPair()
+    val kp = kpg.generateKeyPair()
     val privKey = kp.getPrivate.asInstanceOf[java.security.interfaces.ECPrivateKey]
-    val pubKey  = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
+    val pubKey = kp.getPublic.asInstanceOf[java.security.interfaces.ECPublicKey]
     def coordinate(value: java.math.BigInteger): String =
       val raw = value.toByteArray
       val fixed =
@@ -805,8 +929,8 @@ object SecretSchema:
         else if raw.length > 32 then raw.takeRight(32)
         else Array.fill[Byte](32 - raw.length)(0) ++ raw
       Base64.getUrlEncoder.withoutPadding.encodeToString(fixed)
-    val x   = coordinate(pubKey.getW.getAffineX)
-    val y   = coordinate(pubKey.getW.getAffineY)
+    val x = coordinate(pubKey.getW.getAffineX)
+    val y = coordinate(pubKey.getW.getAffineY)
     val jwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","use":"sig","kid":"$kid","alg":"ES256"}"""
     val privateJwk = s"""{"kty":"EC","crv":"P-256","x":"$x","y":"$y","d":"${coordinate(privKey.getS)}","use":"sig","kid":"$kid","alg":"ES256"}"""
     EcKey(b64std(privKey.getEncoded), jwk, kid, privateJwk)
@@ -828,33 +952,34 @@ object SecretSchema:
   // Edge key: central encrypts each edge's client secrets with the public half and
   // verifies the edge's sync tokens against it; the edge signs/decrypts with the private half.
   val edgeKey = genRsaKey(s"edge-$today")
-  val jwks    = s"""{"keys":[${jwtKey.jwk}, ${esKey.jwk}]}"""
+  val jwks = s"""{"keys":[${jwtKey.jwk}, ${esKey.jwk}]}"""
 
   // ── Admin user ID ─────────────────────────────────────────────────────────────
   val adminUserId = genUUIDv7(rng) // stable across restarts; seeded in both auth and central
 
   // ── Random secrets ────────────────────────────────────────────────────────────
-  val centralSecretKey          = rand(rng, 32) // shared: auth↔central (edge doesn't read it)
-  val clientSecretsSecret       = rand(rng, 16) // shared: auth + central (central: AES key of client secrets, signing keys, resource secrets at rest)
-  val accessTokensSecret        = rand(rng, 32)
-  val refreshTokensSecret       = rand(rng, 32)
-  val authCodesSecret           = rand(rng, 32)
-  val sessionsSecret            = rand(rng, 32)
-  val passwordsSecret           = rand(rng, 16)
-  val conversationCookieSecret  = rand(rng, 32) // auth only: signs the SSO_CONVERSATION cookie
-  val sessionCookieSecret       = rand(rng, 32)
-  val userAgentCookieSecret     = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
-  val edgeTokenEncKey           = rand(rng, 32)
-  val edgeSessionsSecret        = rand(rng, 32)
-  val edgeInternalSecret        = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
-  val parRequestsSecret         = rand(rng, 32) // auth only: keys the stored request_uri references
-  val dpopNoncesSecret          = rand(rng, 32) // auth only: authenticates DPoP-Nonce values
+  val centralSecretKey = rand(rng, 32)    // shared: auth↔central (edge doesn't read it)
+  val clientSecretsSecret = rand(rng, 16) // shared: auth + central (central: AES key of client secrets, signing keys, resource secrets at rest)
+  val accessTokensSecret = rand(rng, 32)
+  val refreshTokensSecret = rand(rng, 32)
+  val authCodesSecret = rand(rng, 32)
+  val sessionsSecret = rand(rng, 32)
+  val passwordsSecret = rand(rng, 16)
+  val conversationCookieSecret = rand(rng, 32) // auth only: signs the SSO_CONVERSATION cookie
+  val sessionCookieSecret = rand(rng, 32)
+  val userAgentCookieSecret = rand(rng, 32) // auth only: signs the SSO_USER_AGENT_ID cookie
+  val edgeTokenEncKey = rand(rng, 32)
+  val edgeSessionsSecret = rand(rng, 32)
+  val edgeInternalSecret = rand(rng, 32) // authorizes edge's non-prod /service/configuration/sync
+  val parRequestsSecret = rand(rng, 32)  // auth only: keys the stored request_uri references
+  val dpopNoncesSecret = rand(rng, 32)   // auth only: authenticates DPoP-Nonce values
   // Edge's own nonce space, kept apart from auth's: RFC 9449 §9 has the resource server
   // issue nonces under its own key, so a nonce minted by auth is not valid at edge.
-  val edgeDpopNonceSalt         = rand(rng, 32)
-  val edgeNativeBlobKey         = rand(rng, 32)
+  val edgeDpopNonceSalt = rand(rng, 32)
+  val edgeNativeBlobKey = rand(rng, 32)
   val accountResourceSecretGenerated = rand(rng, 32) // central: seeds the "auth" resource record; auth fetches it decrypted via registry sync
-  val centralResourceSecretGenerated = rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
+  val centralResourceSecretGenerated =
+    rand(rng, 32) // central: seeds its own "central" resource record; edge fetches it to proxy admin calls (auth.scala's authorizeBasic)
   // central: seeds bootstrap.utility-client with the public half; the private half is loadgen's
   // provision.provisioner-private-key. See `utilityKey`'s use below for where each half goes.
   val utilityKey = genEcKey("utils")
@@ -865,7 +990,7 @@ object SecretSchema:
   // defaults, interactive vs non-interactive) -- see `env` below for why
   // this is deliberately a different question from "what environment name
   // gets written into the config".
-  val target  = prompt("  Target [local]: ", "local", flag = "target")
+  val target = prompt("  Target [local]: ", "local", flag = "target")
   val isLocal = target == "local"
   // docker-local is for "versola bootstrap local": auth/central/edge each run
   // in their own container on one Docker Compose bridge network, instead of
@@ -1017,13 +1142,16 @@ object SecretSchema:
         )
       val kid = s""""kid"\\s*:\\s*"([^"]*)"""".r.findFirstMatchIn(jwk).map(_.group(1)).getOrElse("utils")
       field("d") // must be a private key
-      val publicJwk = s"""{"kty":"${field("kty")}","crv":"${field("crv")}","x":"${field("x")}","y":"${field("y")}","use":"sig","kid":"$kid","alg":"ES256"}"""
+      val publicJwk =
+        s"""{"kty":"${field("kty")}","crv":"${field("crv")}","x":"${field("x")}","y":"${field("y")}","use":"sig","kid":"$kid","alg":"ES256"}"""
       (publicJwk, jwk)
   val utilityPublicJwk =
-    if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","use":"sig","kid":"utils-local","alg":"ES256"}"""
+    if isLocal then
+      """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","use":"sig","kid":"utils-local","alg":"ES256"}"""
     else reusedUtilityKey.fold(utilityKey.jwk)(_._1)
   val utilityPrivateJwk =
-    if isLocal then """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","d":"jWGh5lV46NJ3RwT8kJ5lfBeBTGBtXnM5V3gwgAEYpXM","use":"sig","kid":"utils-local","alg":"ES256"}"""
+    if isLocal then
+      """{"kty":"EC","crv":"P-256","x":"Rst-brXjn7AQChQkaCwR6Vf5-nlVw4SDw-swh8g3GdU","y":"gD6MZlaRGOf1MColB6GhG5N3TdvJGsiF1J7_jYNAgfo","d":"jWGh5lV46NJ3RwT8kJ5lfBeBTGBtXnM5V3gwgAEYpXM","use":"sig","kid":"utils-local","alg":"ES256"}"""
     else reusedUtilityKey.fold(utilityKey.privateJwk)(_._2)
   // Several lines rather than one, so unlike the resource-secret line above it supplies its
   // own newlines and nothing follows it on a line.
@@ -1051,9 +1179,9 @@ object SecretSchema:
   // authUrl is a public-facing string (JWT issuer, browser redirects) — it
   // never needs to be a Docker service name, even in docker-local, since
   // browsers/JWT verifiers reach it via the host's published port either way.
-  val authUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then requiredEnv("AUTH_URL") else "http://localhost:9003"
-  val authUrl              = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault, flag = "auth-url")
-  val passkeyRpId         = URI.create(authUrl).getHost
+  val authUrlDefault = if isDockerLocal then "http://localhost:2821" else if isVps then requiredEnv("AUTH_URL") else "http://localhost:9003"
+  val authUrl = prompt(s"  Auth public URL [$authUrlDefault]: ", authUrlDefault, flag = "auth-url")
+  val passkeyRpId = URI.create(authUrl).getHost
   // authInternalUrl, unlike authUrl, IS a real network call — central uses it
   // to reach auth's admin API server-to-server. Defaulting this to authUrl
   // (as the non-docker-local branch below does) is correct when both share
@@ -1061,7 +1189,7 @@ object SecretSchema:
   // container can't reach auth via "localhost", it needs auth's Compose
   // service name.
   val authInternalDefault = if isDockerLocal then "http://auth:8080" else authUrl
-  val authInternalUrl     = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault, flag = "auth-internal-url")
+  val authInternalUrl = prompt(s"  Auth internal URL [$authInternalDefault]: ", authInternalDefault, flag = "auth-internal-url")
   // edgeInternalUrl / edgeInternalTrustPath -- versola-internal-url and
   // versola-internal-trusted-certificates in edge's own config (EdgeConfig.scala), which
   // SSOClient.scala uses only for the calls it makes as an RFC 8705 mutual-TLS client. Not
@@ -1204,8 +1332,8 @@ object SecretSchema:
   // port-consistency comment on #176 was about the interactive-vs-docker
   // discrepancy in general; this one specific value turned out to be
   // load-bearing for CI, not just a cosmetic mismatch.
-  val centralUrlDefault   = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
-  val centralUrl           = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault, flag = "central-url")
+  val centralUrlDefault = if isDockerLocal then "http://central:8090" else if isVps then "http://127.0.0.1:8090" else "http://localhost:9001"
+  val centralUrl = prompt(s"  Central URL [$centralUrlDefault]: ", centralUrlDefault, flag = "central-url")
   // edgeUrl is public-facing only, same reasoning as authUrl above — BUT
   // in docker-local, nginx (not edge's own port) is the actual public
   // entry point a browser can reach. edge's own port (8095) isn't
@@ -1216,8 +1344,8 @@ object SecretSchema:
   // this at 8095 sent the post-login redirect straight to a closed port
   // and the browser got ERR_CONNECTION_REFUSED right after a real login
   // succeeded.
-  val edgeUrlDefault      = if isDockerLocal then "http://localhost:2821" else if isVps then authUrl else "http://localhost:9005"
-  val edgeUrl              = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault, flag = "edge-url")
+  val edgeUrlDefault = if isDockerLocal then "http://localhost:2821" else if isVps then authUrl else "http://localhost:9005"
+  val edgeUrl = prompt(s"  Edge URL [$edgeUrlDefault]: ", edgeUrlDefault, flag = "edge-url")
   section("\n── Auth service ──────────────────────────────────────────────────────")
   // Postgres is its own container in docker-local (compose service name
   // "postgres"), and all three services share one database via
@@ -1240,17 +1368,18 @@ object SecretSchema:
   // gets the verified default, with its CA bundle set through `postgres.ssl-root-cert` if the
   // JVM does not already trust it (see deploy.md).
   val pgPlaintext = !isVps || Set("127.0.0.1", "localhost", "[::1]").contains(pgHostDefault.replaceAll(":\\d+$", ""))
-  val pgTlsParam  = if pgPlaintext then "sslmode=disable" else ""
+  val pgTlsParam = if pgPlaintext then "sslmode=disable" else ""
   def pgUrl(host: String, schema: Option[String]): String =
     val query = (schema.map("currentSchema=" + _).toList ++ Option.when(pgTlsParam.nonEmpty)(pgTlsParam).toList).mkString("&")
     s"jdbc:postgresql://$host/auth" + (if query.isEmpty then "" else "?" + query)
-  val authPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("auth")) else if isVps then pgUrl(pgHostDefault, Some("auth")) else pgUrl("localhost:5432", None)
-  val authPgUrl        = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
-  val authPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "auth-postgres-user")
-  val authPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "auth-postgres-password")
+  val authPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("auth"))
+  else if isVps then pgUrl(pgHostDefault, Some("auth")) else pgUrl("localhost:5432", None)
+  val authPgUrl = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
+  val authPgUser = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "auth-postgres-user")
+  val authPgPass = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "auth-postgres-password")
 
   section("\n── Auth bootstrap admin user ──────────────────────────────────────────────")
-  val bootstrapLogin    = prompt("  Admin login [admin]: ", "admin", flag = "admin-login")
+  val bootstrapLogin = prompt("  Admin login [admin]: ", "admin", flag = "admin-login")
   // vps's default here is a freshly random value, not the fixed
   // "Admin1234!" the other envs use -- unlike Postgres's password (see
   // pgPassDefault above), nothing outside this script already owns this
@@ -1272,13 +1401,14 @@ object SecretSchema:
   // bootstrap" wires up central-ui, see versola-cli) or 404s cleanly, not a
   // crash loop. Still not localhost:3000 -- nothing runs there in
   // docker-local.
-  val redirectUriDefault  = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
-  val centralRedirectUris = prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault, flag = "central-redirect-uris")
-  val centralPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("central")) else if isVps then pgUrl(pgHostDefault, Some("central")) else pgUrl("localhost:5432", None)
-  val centralPgUrl        = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault, flag = "central-postgres-url")
-  val centralPgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "central-postgres-user")
-  val centralPgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "central-postgres-password")
-
+  val redirectUriDefault = if isDockerLocal then s"$edgeUrl/central/admin/" else if isVps then s"$authUrl/central/admin/" else "http://localhost:3000"
+  val centralRedirectUris =
+    prompt(s"  Admin panel bootstrap redirect URIs (comma-separated) [$redirectUriDefault]: ", redirectUriDefault, flag = "central-redirect-uris")
+  val centralPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("central"))
+  else if isVps then pgUrl(pgHostDefault, Some("central")) else pgUrl("localhost:5432", None)
+  val centralPgUrl = prompt(s"  Postgres URL [$centralPgUrlDefault]: ", centralPgUrlDefault, flag = "central-postgres-url")
+  val centralPgUser = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "central-postgres-user")
+  val centralPgPass = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "central-postgres-password")
 
   // "dpop_signing_alg_values_supported" below (RFC 9449 §5.1) is not a mirror of anything:
   // auth reads the set a proof is checked against straight off this document, so editing it
@@ -1325,17 +1455,18 @@ object SecretSchema:
        |}""".stripMargin
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
-  val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge")) else if isVps then pgUrl(pgHostDefault, Some("edge")) else pgUrl("localhost:5432", None)
-  val edgePgUrl        = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
-  val edgePgUser       = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
-  val edgePgPass       = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
+  val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge"))
+  else if isVps then pgUrl(pgHostDefault, Some("edge")) else pgUrl("localhost:5432", None)
+  val edgePgUrl = prompt(s"  Postgres URL [$edgePgUrlDefault]: ", edgePgUrlDefault, flag = "edge-postgres-url")
+  val edgePgUser = prompt(s"  Postgres user [$pgUserDefault]: ", pgUserDefault, flag = "edge-postgres-user")
+  val edgePgPass = prompt(s"  Postgres password [$pgPassDefault]: ", pgPassDefault, flag = "edge-postgres-password")
   // The schema says vps has one POSTGRES_PASSWORD for all three services, and versola-cli stores
   // it as one value; the three flags would let a run say otherwise. Only the password is
   // checked: the users and URLs have their own flags and are not secrets.
   if isVps then SecretSchema.verifySharedPostgresPassword(authPgPass, centralPgPass, edgePgPass)
 
   // Edge complete URL is always added as a registered redirect URI so the preset can use it.
-  val edgeCompleteUrl        = s"$edgeUrl/complete"
+  val edgeCompleteUrl = s"$edgeUrl/complete"
   // OP-initiated front-channel logout is loaded by the browser, so it needs a publicly
   // reachable URL. Locally, edge is exposed directly on its own port (edgeUrl); in
   // production it's path-routed behind auth's public domain instead (see deploy.md).
@@ -1345,7 +1476,7 @@ object SecretSchema:
       .distinct
       .map(u => s""""$u"""")
       .mkString(", ")
-  val postLoginRedirectUri   = centralRedirectUris.split(",").map(_.trim).head
+  val postLoginRedirectUri = centralRedirectUris.split(",").map(_.trim).head
   val passkeyOrigins = List(authUrl, edgeUrl).distinct.map(u => "\"" + u + "\"").mkString(", ")
 
   // ── OTP provider ──────────────────────────────────────────────────────────────
@@ -1353,12 +1484,12 @@ object SecretSchema:
   val wantsOtp = promptYN("Configure OTP provider?", flag = "otp")
   val otpBlock =
     if wantsOtp then
-      val url    = prompt("  OTP provider URL: ", "http://localhost:9100/sms", flag = "otp-url")
+      val url = prompt("  OTP provider URL: ", "http://localhost:9100/sms", flag = "otp-url")
       val method = prompt("  HTTP method [POST]: ", "POST", flag = "otp-method")
-      val uname  = prompt("  Username (empty = none): ", flag = "otp-username")
-      val pass   = prompt("  Password (empty = none): ", flag = "otp-password")
-      val uLine  = if uname.nonEmpty then s"""  username = "$uname"\n""" else ""
-      val pLine  = if pass.nonEmpty  then s"""  password = "$pass"\n""" else ""
+      val uname = prompt("  Username (empty = none): ", flag = "otp-username")
+      val pass = prompt("  Password (empty = none): ", flag = "otp-password")
+      val uLine = if uname.nonEmpty then s"""  username = "$uname"\n""" else ""
+      val pLine = if pass.nonEmpty then s"""  password = "$pass"\n""" else ""
       s"""
          |otp-provider {
          |  method = "$method"
@@ -1390,14 +1521,14 @@ object SecretSchema:
   val wantsSmtp = promptYN("Configure SMTP?", flag = "smtp")
   val smtpBlock =
     if wantsSmtp then
-      val host    = prompt("  Host: ", "localhost", flag = "smtp-host")
+      val host = prompt("  Host: ", "localhost", flag = "smtp-host")
       val portStr = prompt("  Port [587]: ", "587", flag = "smtp-port")
-      val port    = portStr.toIntOption.getOrElse(587)
-      val uname   = prompt("  Username: ", "dev", flag = "smtp-username")
-      val pass    = prompt("  Password: ", "dev", flag = "smtp-password")
-      val from    = prompt("  From email [noreply@example.com]: ", "noreply@example.com", flag = "smtp-from")
-      val subj    = prompt("  Subject [Your verification code]: ", "Your verification code", flag = "smtp-subject")
-      val tls     = promptYN("  Use STARTTLS?", defaultYes = true, flag = "smtp-starttls")
+      val port = portStr.toIntOption.getOrElse(587)
+      val uname = prompt("  Username: ", "dev", flag = "smtp-username")
+      val pass = prompt("  Password: ", "dev", flag = "smtp-password")
+      val from = prompt("  From email [noreply@example.com]: ", "noreply@example.com", flag = "smtp-from")
+      val subj = prompt("  Subject [Your verification code]: ", "Your verification code", flag = "smtp-subject")
+      val tls = promptYN("  Use STARTTLS?", defaultYes = true, flag = "smtp-starttls")
       s"""
          |smtp {
          |  host = "$host"
@@ -1767,9 +1898,9 @@ object SecretSchema:
   // ── Write files ───────────────────────────────────────────────────────────────
   println("\nGenerating config files...")
   if isLocal then
-    writeFile(File("auth/dev"),     "env.conf", authConf)
-    writeFile(File("central/dev"),  "env.conf", centralConf)
-    writeFile(File("edge/dev"),     "env.conf", edgeConf)
+    writeFile(File("auth/dev"), "env.conf", authConf)
+    writeFile(File("central/dev"), "env.conf", centralConf)
+    writeFile(File("edge/dev"), "env.conf", edgeConf)
     // The CA and server certificate were generated with central-admin's certificate, above.
     writeFile(edgeInternalTlsDir, "nginx.conf", internalTlsNginxConf(edgeInternalTlsDir, edgeInternalTlsPort, authInternalUrl))
     genAuthMutualTlsCertificate(authMutualTlsDir)
@@ -1800,9 +1931,9 @@ object SecretSchema:
     // know what env value this run happened to resolve to (ENV_NAME,
     // for vps, isn't necessarily "prod" -- see env's own comment above).
     val dir = File(s".local/env/$target")
-    writeFile(dir, "auth.conf",    authConf)
+    writeFile(dir, "auth.conf", authConf)
     writeFile(dir, "central.conf", centralConf)
-    writeFile(dir, "edge.conf",    edgeConf)
+    writeFile(dir, "edge.conf", edgeConf)
 
     // versola-cli resolves each of these against OpenBao (existing value
     // wins; a first-time value gets stored there) before starting any
@@ -1818,10 +1949,12 @@ object SecretSchema:
       // here: "versola_app" (or whatever a k8s deployment typed at its own
       // prompt) isn't secret, so it stays a literal value in the .conf
       // files instead (see pgUserDefault).
-      val authExtras = if isVps || isKubernetes then Seq(
-        "POSTGRES_PASSWORD"        -> authPgPass,
-        "ADMIN_BOOTSTRAP_PASSWORD" -> bootstrapPassword,
-      ) else Seq.empty
+      val authExtras = if isVps || isKubernetes then
+        Seq(
+          "POSTGRES_PASSWORD" -> authPgPass,
+          "ADMIN_BOOTSTRAP_PASSWORD" -> bootstrapPassword,
+        )
+      else Seq.empty
       val secretTarget = SecretSchema.parseTarget(target).getOrElse(
         throw RuntimeException(s"no secret schema for target '$target' (placeholders are only written for docker-local, vps and k8s)"),
       )
@@ -1829,61 +1962,76 @@ object SecretSchema:
       SecretSchema.problems(SecretSchema.specs) match
         case Nil => ()
         case found => throw RuntimeException("secret schema is inconsistent: " + found.mkString("; "))
-      writeGeneratedSecrets(dir, secretTarget, "auth", Seq(
-        "ACCESS_TOKENS_SECRET"       -> accessTokensSecret,
-        "CLIENT_SECRETS_SECRET"      -> clientSecretsSecret,
-        "REFRESH_TOKENS_SECRET"      -> refreshTokensSecret,
-        "AUTH_CODES_SECRET"          -> authCodesSecret,
-        "SESSIONS_SECRET"            -> sessionsSecret,
-        "PASSWORDS_SECRET"           -> passwordsSecret,
-        "CONVERSATION_COOKIE_SECRET" -> conversationCookieSecret,
-        "SESSION_COOKIE_SECRET"      -> sessionCookieSecret,
-        "USER_AGENT_COOKIE_SECRET"   -> userAgentCookieSecret,
-        "PAR_REQUESTS_SECRET"        -> parRequestsSecret,
-        "DPOP_NONCES_SECRET"         -> dpopNoncesSecret,
-        "JWT_PRIVATE_KEY"            -> jwtKey.privateB64,
-        "CENTRAL_SECRET_KEY"         -> centralSecretKey,
-      ) ++ authExtras)
+      writeGeneratedSecrets(
+        dir,
+        secretTarget,
+        "auth",
+        Seq(
+          "ACCESS_TOKENS_SECRET" -> accessTokensSecret,
+          "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+          "REFRESH_TOKENS_SECRET" -> refreshTokensSecret,
+          "AUTH_CODES_SECRET" -> authCodesSecret,
+          "SESSIONS_SECRET" -> sessionsSecret,
+          "PASSWORDS_SECRET" -> passwordsSecret,
+          "CONVERSATION_COOKIE_SECRET" -> conversationCookieSecret,
+          "SESSION_COOKIE_SECRET" -> sessionCookieSecret,
+          "USER_AGENT_COOKIE_SECRET" -> userAgentCookieSecret,
+          "PAR_REQUESTS_SECRET" -> parRequestsSecret,
+          "DPOP_NONCES_SECRET" -> dpopNoncesSecret,
+          "JWT_PRIVATE_KEY" -> jwtKey.privateB64,
+          "CENTRAL_SECRET_KEY" -> centralSecretKey,
+        ) ++ authExtras,
+      )
 
       val centralExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> centralPgPass) else Seq.empty
-      writeGeneratedSecrets(dir, secretTarget, "central", Seq(
-        "CENTRAL_SECRET_KEY"    -> centralSecretKey,
-        "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
-        "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
-        // Reached only when useOpenBao is true (isLocal, the only other target that ever
-        // sets these, has its own pinned literals and never runs this far -- see
-        // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholders
-        // these var names back always resolve to exactly the generated value here.
-        "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
-        // The public half only -- see bootstrapUtilityClientLines for where the private
-        // half goes instead.
-        "UTILITY_CLIENT_PUBLIC_JWK" -> utilityPublicJwk,
-        // Not secret in the confidentiality sense (these are public keys),
-        // but resolved through OpenBao the same as everything else here
-        // regardless -- see the comment on jwks/public-key-jwk above for
-        // why they have to travel with JWT_PRIVATE_KEY/EDGE_PRIVATE_KEY's
-        // resolution rather than being written fresh every run.
-        "JWKS_JSON"        -> jwks,
-        "EDGE_PUBLIC_JWK"  -> edgeKey.jwk,
-      ) ++ centralExtras)
+      writeGeneratedSecrets(
+        dir,
+        secretTarget,
+        "central",
+        Seq(
+          "CENTRAL_SECRET_KEY" -> centralSecretKey,
+          "CLIENT_SECRETS_SECRET" -> clientSecretsSecret,
+          "ACCOUNT_RESOURCE_SECRET" -> accountResourceSecret,
+          // Reached only when useOpenBao is true (isLocal, the only other target that ever
+          // sets these, has its own pinned literals and never runs this far -- see
+          // bootstrapResourceSecretLine/bootstrapUtilityClientLines above), so the placeholders
+          // these var names back always resolve to exactly the generated value here.
+          "CENTRAL_RESOURCE_SECRET" -> centralResourceSecretGenerated,
+          // The public half only -- see bootstrapUtilityClientLines for where the private
+          // half goes instead.
+          "UTILITY_CLIENT_PUBLIC_JWK" -> utilityPublicJwk,
+          // Not secret in the confidentiality sense (these are public keys),
+          // but resolved through OpenBao the same as everything else here
+          // regardless -- see the comment on jwks/public-key-jwk above for
+          // why they have to travel with JWT_PRIVATE_KEY/EDGE_PRIVATE_KEY's
+          // resolution rather than being written fresh every run.
+          "JWKS_JSON" -> jwks,
+          "EDGE_PUBLIC_JWK" -> edgeKey.jwk,
+        ) ++ centralExtras,
+      )
 
       val edgeExtras = if isVps || isKubernetes then Seq("POSTGRES_PASSWORD" -> edgePgPass) else Seq.empty
-      writeGeneratedSecrets(dir, secretTarget, "edge", Seq(
-        "EDGE_PRIVATE_KEY"     -> edgeKey.privateB64,
-        // Travels with EDGE_PRIVATE_KEY, not written separately -- see the
-        // comment on edgeConf's key-id line for why a bare literal here
-        // would drift out of sync with whichever private key actually ends
-        // up resolved.
-        "EDGE_KEY_ID"          -> edgeKey.kid,
-        "EDGE_TOKEN_ENC_KEY"   -> edgeTokenEncKey,
-        "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
-        "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
-        "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
-        // native.blob-key: a secret like the rest, so it is placeholdered and resolved through
-        // the secret store instead of being regenerated into edge.conf on every run (a blob
-        // sealed under one run's key could not be opened after the next).
-        "EDGE_NATIVE_BLOB_KEY" -> edgeNativeBlobKey,
-      ) ++ edgeExtras)
+      writeGeneratedSecrets(
+        dir,
+        secretTarget,
+        "edge",
+        Seq(
+          "EDGE_PRIVATE_KEY" -> edgeKey.privateB64,
+          // Travels with EDGE_PRIVATE_KEY, not written separately -- see the
+          // comment on edgeConf's key-id line for why a bare literal here
+          // would drift out of sync with whichever private key actually ends
+          // up resolved.
+          "EDGE_KEY_ID" -> edgeKey.kid,
+          "EDGE_TOKEN_ENC_KEY" -> edgeTokenEncKey,
+          "EDGE_SESSIONS_SECRET" -> edgeSessionsSecret,
+          "EDGE_INTERNAL_SECRET" -> edgeInternalSecret,
+          "EDGE_DPOP_NONCE_SALT" -> edgeDpopNonceSalt,
+          // native.blob-key: a secret like the rest, so it is placeholdered and resolved through
+          // the secret store instead of being regenerated into edge.conf on every run (a blob
+          // sealed under one run's key could not be opened after the next).
+          "EDGE_NATIVE_BLOB_KEY" -> edgeNativeBlobKey,
+        ) ++ edgeExtras,
+      )
 
       // What the keys above are, for versola-cli: see SecretSchema. Values are never in it.
       writeFile(dir, "secrets.schema.json", SecretSchema.toJson(secretTarget))
@@ -1897,7 +2045,9 @@ object SecretSchema:
       File(dir, "utils.private-key.jwk").toPath,
       java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
     )
-    println("  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.")
+    println(
+      "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
+    )
 
     println(
       s"""

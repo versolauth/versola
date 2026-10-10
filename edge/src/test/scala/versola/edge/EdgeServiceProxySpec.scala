@@ -30,6 +30,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val clientId = ClientId("web-app")
   private val backendUrl = URL.decode("http://backend.local").toOption.get
   private val centralUrl = URL.decode("https://central.example").toOption.get
+
   /** The origin clients reach the edge on, and so the base of every `htu` a proof is
     * checked against. Deliberately neither the upstream's nor auth's. */
   private val edgePublicUrl = URL.decode("https://edge.example").toOption.get
@@ -50,8 +51,18 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     cookiePath = Some("/"),
   )
 
-  private val oauthClient = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
-  private val svcClient = OAuthClient(id = ClientId("svc-1"), credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val oauthClient = OAuthClient(
+    id = clientId,
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
+  private val svcClient = OAuthClient(
+    id = ClientId("svc-1"),
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
     * auth issues it certificate-bound (§3). */

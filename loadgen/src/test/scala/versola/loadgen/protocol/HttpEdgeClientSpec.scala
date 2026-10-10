@@ -55,7 +55,9 @@ object HttpEdgeClientSpec extends ZIOSpecDefault:
     // carries `client_id` and `request_uri` only, and `state` is inside the pushed request.
     test("a pushed request has no state on the authorize URL, and login still starts") {
       for
-        edge <- edgeAnswering(Response.seeOther(URL.decode(StubSut.authUrl + "/authorize?client_id=web-otp&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Ar1").toOption.get))
+        edge <- edgeAnswering(Response.seeOther(
+          URL.decode(StubSut.authUrl + "/authorize?client_id=web-otp&request_uri=urn%3Aietf%3Aparams%3Aoauth%3Arequest_uri%3Ar1").toOption.get,
+        ))
         started <- edge.login(preset, None)
       yield assertTrue(started.state.isEmpty, started.authorizeUrl.contains("request_uri="))
     },

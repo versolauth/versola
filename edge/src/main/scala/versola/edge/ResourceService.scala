@@ -20,7 +20,7 @@ object ResourceService:
           ReloadingCache.make[Map[ResourceId, Resource]](config.configurationCacheRefreshInterval),
         )
       ) ++
-      ZLayer.service[ResourcesSyncClient]
+        ZLayer.service[ResourcesSyncClient]
     ) >>> ZLayer.fromFunction(Impl(_, _))
 
   class Impl(

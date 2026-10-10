@@ -31,10 +31,11 @@ final case class CampaignControl(
       // The pause is subtracted from the campaign clock rather than from the phase offsets: one
       // instant to shift, and the drivers re-anchor on it from the plan's own
       // `startedAtEpochMillis` with no notion of how many pauses there have been.
-      val resumed = for
-        anchor <- startedAt
-        paused <- pausedAt
-      yield anchor.plus(JavaDuration.between(paused, now))
+      val resumed =
+        for
+          anchor <- startedAt
+          paused <- pausedAt
+        yield anchor.plus(JavaDuration.between(paused, now))
       Right(copy(state = CampaignState.Running, startedAt = resumed.orElse(Some(now)), pausedAt = None))
     case CampaignState.Running => Right(this)
     case CampaignState.Stopped => Left("a stopped campaign cannot be restarted; start a new one")

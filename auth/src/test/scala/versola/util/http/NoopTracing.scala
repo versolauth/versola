@@ -5,7 +5,6 @@ import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{ULayer, ZLayer}
 
-
 object NoopTracing:
   val layer: ULayer[Tracing] =
     ZLayer.make[Tracing](

@@ -18,13 +18,13 @@ import zio.test.*
 import javax.crypto.spec.SecretKeySpec
 
 object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
-  private val config    = TestCentralConfig.config
+  private val config = TestCentralConfig.config
   private val secretKey = config.secretKey
 
   private val testJwks = Json.Obj(
     "keys" -> Json.Arr(
       Json.Obj("kid" -> Json.Str("test-key"), "kty" -> Json.Str("RSA"), "use" -> Json.Str("sig")),
-    )
+    ),
   )
 
   private val syncToken = Unsafe.unsafe { unsafe ?=>
@@ -56,23 +56,23 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client             <- ZIO.service[Client]
-        service            = stub[JwksService]
-        edgeService        = stub[EdgeService]
-        resourceService      = stub[ResourceService]
-        tracing            <- tracingLayer.build
+        client <- ZIO.service[Client]
+        service = stub[JwksService]
+        edgeService = stub[EdgeService]
+        resourceService = stub[ResourceService]
+        tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             JwksController.routes.provideEnvironment(
               ZEnvironment[JwksService](service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+            ),
+          ),
         )
-        _            <- resourceService.verifySecret.succeedsWith(true)
-        _            <- setup(service)
-        response     <- client.batched(
-          authHeader.foldLeft(request.addHeader(Header.Accept(MediaType.application.json)))(_.addHeader(_))
+        _ <- resourceService.verifySecret.succeedsWith(true)
+        _ <- setup(service)
+        response <- client.batched(
+          authHeader.foldLeft(request.addHeader(Header.Accept(MediaType.application.json)))(_.addHeader(_)),
         )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -100,7 +100,7 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.getRaw.succeedsWith(testJwks),
       verify = (response, service) =>
         for
-          body    <- response.body.asString
+          body <- response.body.asString
           payload <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(new RuntimeException(_))
         yield assertTrue(
           service.getRaw.calls.length == 1,
@@ -179,7 +179,7 @@ object JwksControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.getRaw.succeedsWith(testJwks),
       verify = (response, service) =>
         for
-          body    <- response.body.asString
+          body <- response.body.asString
           payload <- ZIO.fromEither(body.fromJson[Json.Obj]).mapError(new RuntimeException(_))
         yield assertTrue(
           service.getRaw.calls.length == 1,

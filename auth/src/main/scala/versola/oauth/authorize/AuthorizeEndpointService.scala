@@ -1,7 +1,7 @@
 package versola.oauth.authorize
 
-import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.AuthMetrics
+import versola.oauth.authorize.model.{AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
@@ -36,8 +36,10 @@ object AuthorizeEndpointService:
   private enum MissingUserBehavior:
     /** Step-up / re-verify of the current session: the session-bound identity must exist. */
     case Deny
+
     /** Fresh id_token_hint or account switch: the hint is advisory, drop it and prompt for credentials. */
     case Fallback
+
     /** No known identity is expected. */
     case Ignore
 
@@ -103,7 +105,12 @@ object AuthorizeEndpointService:
               case Some(values) =>
                 acrResolutionService.resolveAchievableAcr(userId, values, request.clientId, flow, Set.empty).flatMap:
                   case None =>
-                    ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+                    ZIO.fail(Error.UnmetAuthenticationRequirements(
+                      request.clientId,
+                      request.redirectUri,
+                      request.state,
+                      responseMode = request.responseMode,
+                    ))
                   case Some(targetAcr) =>
                     createConversation(
                       authId,
@@ -170,7 +177,12 @@ object AuthorizeEndpointService:
                     case Some(values) if targetUserId.isDefined =>
                       acrResolutionService.resolveAchievableAcr(targetUserId.get, values, request.clientId, flow, Set.empty).flatMap:
                         case None =>
-                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+                          ZIO.fail(Error.UnmetAuthenticationRequirements(
+                            request.clientId,
+                            request.redirectUri,
+                            request.state,
+                            responseMode = request.responseMode,
+                          ))
                         case Some(targetAcr) =>
                           createConversation(
                             authId,
@@ -211,14 +223,15 @@ object AuthorizeEndpointService:
                         knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),
-                            priorSessionUserId = Some(session.userId),
+                        priorSessionUserId = Some(session.userId),
                       )
                 else if !acrSatisfied then
                   // A deleted user has no auth factors registered, so resolveAchievableAcr would
                   // return None → UnmetAuthenticationRequirements instead of AccessDenied.
                   // Check existence first so the right error is returned.
                   userRepository.find(session.userId).flatMap:
-                    case None => ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+                    case None =>
+                      ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
                     case Some(_) =>
                       acrResolutionService.resolveAchievableAcr(
                         session.userId,
@@ -228,7 +241,12 @@ object AuthorizeEndpointService:
                         session.amr.keySet,
                       ).flatMap:
                         case None =>
-                          ZIO.fail(Error.UnmetAuthenticationRequirements(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+                          ZIO.fail(Error.UnmetAuthenticationRequirements(
+                            request.clientId,
+                            request.redirectUri,
+                            request.state,
+                            responseMode = request.responseMode,
+                          ))
                         case Some(targetAcr) =>
                           createConversation(
                             authId,
@@ -256,7 +274,7 @@ object AuthorizeEndpointService:
                     knownUserId = Some(session.userId),
                     missingUser = MissingUserBehavior.Deny,
                     priorSessionId = Some(id),
-                            priorSessionUserId = Some(session.userId),
+                    priorSessionUserId = Some(session.userId),
                   )
                 else if clientRecord.consentFlow.isEmpty then
                   // No consent flow configured for this client: skip the decision entirely,
@@ -285,19 +303,25 @@ object AuthorizeEndpointService:
                         targetAcr = satisfiedAcr,
                         missingUser = MissingUserBehavior.Deny,
                         priorSessionId = Some(id),
-                            priorSessionUserId = Some(session.userId),
+                        priorSessionUserId = Some(session.userId),
                       )
                     case ConsentDecision.Satisfied(grantedScope) =>
                       silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr, grantedScope)
             yield result
       yield response
 
-    private def applyLoginHint(request: AuthorizeRequest, uiLocales: Option[List[String]], csrfToken: String)(response: AuthorizeResponse): Task[AuthorizeResponse] =
+    private def applyLoginHint(
+        request: AuthorizeRequest,
+        uiLocales: Option[List[String]],
+        csrfToken: String,
+    )(response: AuthorizeResponse): Task[AuthorizeResponse] =
       response match
         case AuthorizeResponse.Initialize(authId) =>
           request.loginHint match
-            case Some(Left(email)) => conversationRouter.submit(authId, EmailSubmission(email, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
-            case Some(Right(phone)) => conversationRouter.submit(authId, PhoneSubmission(phone, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
+            case Some(Left(email)) =>
+              conversationRouter.submit(authId, EmailSubmission(email, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
+            case Some(Right(phone)) =>
+              conversationRouter.submit(authId, PhoneSubmission(phone, csrfToken), uiLocales.flatMap(_.headOption), None).as(response)
             case None => ZIO.succeed(response)
         case _ => ZIO.succeed(response)
 
@@ -327,7 +351,8 @@ object AuthorizeEndpointService:
         effectiveUserId <- (knownUserId, userOpt) match
           case (Some(_), None) =>
             missingUser match
-              case MissingUserBehavior.Deny => ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+              case MissingUserBehavior.Deny =>
+                ZIO.fail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
               case _ => ZIO.none
           case _ => ZIO.succeed(knownUserId)
         _ <- ZIO.foreachDiscard(effectiveUserId)(uid => Observability.setUserId(uid.toString))

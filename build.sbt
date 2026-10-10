@@ -2,7 +2,7 @@ lazy val root = project.in(file("."))
   .settings(
     commonSettings,
     Test / compile := (Test / compile)
-      .dependsOn(e2e / Test / compile).value
+      .dependsOn(e2e / Test / compile).value,
   )
   .aggregate(
     util,
@@ -36,7 +36,7 @@ lazy val `util-postgres` = project.in(utilImplementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
   ).dependsOn(
-    util % CompileTest
+    util % CompileTest,
   )
 
 lazy val implementations = file("auth/implementations")
@@ -48,10 +48,10 @@ lazy val `auth-postgres-impl` = project.in(implementations / "postgres")
     commonSettings,
     libraryDependencies ++= Dependencies.database.postgres,
     Compile / mainClass := Some("versola.PostgresOAuthApp"),
-    sbtForkSettings
+    sbtForkSettings,
   ).dependsOn(
     auth % CompileTest,
-    `util-postgres` % CompileTest
+    `util-postgres` % CompileTest,
   )
 
 lazy val auth = project
@@ -60,10 +60,10 @@ lazy val auth = project
     name := "auth",
     commonSettings,
     libraryDependencies ++= Dependencies.core,
-    libraryDependencies ++= Dependencies.http
+    libraryDependencies ++= Dependencies.http,
   )
   .dependsOn(
-    util % CompileTest
+    util % CompileTest,
   )
 
 lazy val edgeImplementations = file("edge/implementations")
@@ -78,10 +78,10 @@ lazy val `edge-postgres-impl` = project.in(edgeImplementations / "postgres")
     // Every spec in here truncates the same `revocations` table between tests,
     // so two of them running at once would clear each other's rows.
     Test / parallelExecution := false,
-    sbtForkSettings
+    sbtForkSettings,
   ).dependsOn(
     edge % CompileTest,
-    `util-postgres` % CompileTest
+    `util-postgres` % CompileTest,
   )
 
 lazy val edge = project
@@ -93,9 +93,8 @@ lazy val edge = project
     libraryDependencies ++= Dependencies.http,
   )
   .dependsOn(
-    util % CompileTest
+    util % CompileTest,
   )
-
 
 lazy val central = project
   .in(file("central"))
@@ -106,7 +105,7 @@ lazy val central = project
     libraryDependencies ++= Dependencies.http,
   )
   .dependsOn(
-    util % CompileTest
+    util % CompileTest,
   )
 
 lazy val centralImplementations = file("central/implementations")
@@ -122,7 +121,7 @@ lazy val `central-postgres-impl` = project.in(centralImplementations / "postgres
     sbtForkSettings,
   ).dependsOn(
     central % CompileTest,
-    `util-postgres` % CompileTest
+    `util-postgres` % CompileTest,
   )
 
 // Standalone migration runner shipped inside versola-tools (see docker/Dockerfile.tools and
@@ -158,8 +157,8 @@ lazy val migrateTool = project
     libraryDependencies ++= Dependencies.migrateTool,
     // Flyway pulls Jackson 2.19.1, which has known denial-of-service CVEs (fixed in 2.22.2+).
     dependencyOverrides ++= Seq(
-      "com.fasterxml.jackson.core" % "jackson-core"        % "2.22.3",
-      "com.fasterxml.jackson.core" % "jackson-databind"    % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-core" % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-databind" % "2.22.3",
       "com.fasterxml.jackson.core" % "jackson-annotations" % "2.22",
     ),
     Compile / mainClass := Some("versola.migrate.MigrateTool"),
@@ -337,7 +336,7 @@ lazy val sbtForkSettings = Seq(
   run / baseDirectory := (ThisBuild / baseDirectory).value,
   run / envVars := sys.env,
   run / javaOptions ++= sys.props
-    .collect { case (key, value) if key.startsWith("env.") => s"-D$key=$value"}
+    .collect { case (key, value) if key.startsWith("env.") => s"-D$key=$value" }
     .toSeq,
 )
 
@@ -345,24 +344,24 @@ lazy val sbtForkSettings = Seq(
 // resolves them: `commonSettings` and `mockapi` (which opts out of commonSettings). Netty is
 // pinned as one set so all its modules stay on the same version.
 lazy val securityPins = Seq(
-  "io.netty" % "netty-buffer"                     % "4.2.19.Final",
-  "io.netty" % "netty-codec-base"                % "4.2.19.Final",
-  "io.netty" % "netty-codec-compression"         % "4.2.19.Final",
-  "io.netty" % "netty-codec-http"                % "4.2.19.Final",
-  "io.netty" % "netty-codec-socks"               % "4.2.19.Final",
-  "io.netty" % "netty-common"                    % "4.2.19.Final",
-  "io.netty" % "netty-handler"                   % "4.2.19.Final",
-  "io.netty" % "netty-handler-proxy"             % "4.2.19.Final",
-  "io.netty" % "netty-resolver"                  % "4.2.19.Final",
-  "io.netty" % "netty-transport"                 % "4.2.19.Final",
-  "io.netty" % "netty-transport-classes-epoll"    % "4.2.19.Final",
-  "io.netty" % "netty-transport-classes-kqueue"   % "4.2.19.Final",
-  "io.netty" % "netty-transport-native-epoll"     % "4.2.19.Final",
-  "io.netty" % "netty-transport-native-kqueue"    % "4.2.19.Final",
+  "io.netty" % "netty-buffer" % "4.2.19.Final",
+  "io.netty" % "netty-codec-base" % "4.2.19.Final",
+  "io.netty" % "netty-codec-compression" % "4.2.19.Final",
+  "io.netty" % "netty-codec-http" % "4.2.19.Final",
+  "io.netty" % "netty-codec-socks" % "4.2.19.Final",
+  "io.netty" % "netty-common" % "4.2.19.Final",
+  "io.netty" % "netty-handler" % "4.2.19.Final",
+  "io.netty" % "netty-handler-proxy" % "4.2.19.Final",
+  "io.netty" % "netty-resolver" % "4.2.19.Final",
+  "io.netty" % "netty-transport" % "4.2.19.Final",
+  "io.netty" % "netty-transport-classes-epoll" % "4.2.19.Final",
+  "io.netty" % "netty-transport-classes-kqueue" % "4.2.19.Final",
+  "io.netty" % "netty-transport-native-epoll" % "4.2.19.Final",
+  "io.netty" % "netty-transport-native-kqueue" % "4.2.19.Final",
   "io.netty" % "netty-transport-native-unix-common" % "4.2.19.Final",
-  "com.google.protobuf" % "protobuf-java"       % "4.36.2",
-  "org.yaml" % "snakeyaml"                       % "2.7",
-  "com.nimbusds" % "nimbus-jose-jwt"              % "10.10",
+  "com.google.protobuf" % "protobuf-java" % "4.36.2",
+  "org.yaml" % "snakeyaml" % "2.7",
+  "com.nimbusds" % "nimbus-jose-jwt" % "10.10",
 )
 
 lazy val commonSettings =
@@ -374,13 +373,13 @@ lazy val commonSettings =
     // occur at runtime (e.g. StreamReadConstraints.validateDocumentLength added in 2.16,
     // CLEAR_CURRENT_TOKEN_ON_CLOSE added in 2.20).
     dependencyOverrides ++= Seq(
-      "com.fasterxml.jackson.core"       % "jackson-core"             % "2.22.3",
-      "com.fasterxml.jackson.core"       % "jackson-databind"         % "2.22.3",
-      "com.fasterxml.jackson.core"       % "jackson-annotations"      % "2.22",
-      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jsr310"  % "2.22.3",
-      "com.fasterxml.jackson.datatype"   % "jackson-datatype-jdk8"    % "2.22.3",
-      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor"  % "2.22.3",
-      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-yaml"  % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-core" % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-databind" % "2.22.3",
+      "com.fasterxml.jackson.core" % "jackson-annotations" % "2.22",
+      "com.fasterxml.jackson.datatype" % "jackson-datatype-jsr310" % "2.22.3",
+      "com.fasterxml.jackson.datatype" % "jackson-datatype-jdk8" % "2.22.3",
+      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-cbor" % "2.22.3",
+      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-yaml" % "2.22.3",
     ),
     dependencyOverrides ++= securityPins,
     scalacOptions ++= Seq(
@@ -401,8 +400,7 @@ lazy val commonSettings =
     testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
     // Entry points and bootstrap wiring are not unit-testable in isolation, exclude from coverage.
     coverageExcludedFiles := ".*App.*|.*BootstrapService.*",
-    semanticdbEnabled := true
+    semanticdbEnabled := true,
   )
 
 val CompileTest = "compile->compile;test->test"
-

@@ -87,7 +87,10 @@ object RedirectUri:
           Left("Redirect URI must name a host")
         case Some(scheme) if isPrivateUseScheme(scheme.encode) =>
           if allowPrivateUseSchemes then Right(redirectUri)
-          else Left("Redirect URI must use https:// (or http:// to a loopback address); private-use schemes are not accepted under the FAPI 2.0 security profile")
+          else
+            Left(
+              "Redirect URI must use https:// (or http:// to a loopback address); private-use schemes are not accepted under the FAPI 2.0 security profile",
+            )
         case _ =>
           Left("Redirect URI must use https:// (or http:// to a loopback address)")
 

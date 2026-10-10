@@ -342,7 +342,10 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-id = edge-1\n  mtls-certificate-header = x-client-cert",
           )
           .replace("shard-count      = 8", "shard-count      = 8\n  namespace         = fapi")
-          .replace("roles { retail-user = 0.90, retail-basic = 0.10 }", "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi")
+          .replace(
+            "roles { retail-user = 0.90, retail-basic = 0.10 }",
+            "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi",
+          )
         for
           config <- loadConfig(hoconFapi2)
           bad <- loadConfig(hocon.replace("security-profile = standard", "security-profile = fapi3")).exit

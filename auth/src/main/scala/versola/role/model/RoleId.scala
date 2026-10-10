@@ -10,4 +10,3 @@ object RoleId:
   inline def apply(string: String): RoleId = string
   inline def from(string: String): Either[String, RoleId] = Right(string)
   given Schema[RoleId] = Schema.primitive[String].transformOrFail(from, Right(_))
-

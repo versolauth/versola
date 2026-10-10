@@ -23,8 +23,8 @@ import zio.logging.LogFormat.{cause, fiberId, label, level, line, logAnnotation,
 import zio.logging.slf4j.bridge.Slf4jBridge
 import zio.logging.{ConsoleLoggerConfig, LogFilter, LogFormat, LoggerNameExtractor}
 import zio.metrics.connectors.MetricsConfig
-import zio.metrics.jvm.{BufferPools, DefaultJvmMetrics, JvmMetricsSchedule}
 import zio.metrics.connectors.prometheus.{PrometheusPublisher, prometheusLayer, publisherLayer}
+import zio.metrics.jvm.{BufferPools, DefaultJvmMetrics, JvmMetricsSchedule}
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.context.ContextStorage
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -111,9 +111,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
     */
   private def boolEnv(name: String, default: Boolean): Boolean =
     Option(java.lang.System.getenv(name)) match
-      case None            => default
-      case Some("true")    => true
-      case Some("false")   => false
+      case None => default
+      case Some("true") => true
+      case Some("false") => false
       case Some(value) =>
         throw new IllegalArgumentException(
           s"$name must be 'true' or 'false', got: '$value'",

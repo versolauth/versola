@@ -1,10 +1,10 @@
 package versola.central.configuration.tenants
 
 import versola.central.CentralConfig
-import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, PasskeySettings, SubmissionLimits}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
+import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.util.ReloadingCache
 import versola.util.http.BadRequest
 import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}

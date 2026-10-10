@@ -10,7 +10,7 @@ object SyncEventSpec extends UnitSpecBase:
 
   private val tenantId1 = TenantId("a")
   private val tenantId2 = TenantId("b")
-  private val clientId  = ClientId("c1")
+  private val clientId = ClientId("c1")
 
   private def makeScopeRecord(tid: TenantId, id: ScopeToken): ScopeRecord =
     ScopeRecord(tid, id, Map.empty, Vector.empty)
@@ -22,14 +22,14 @@ object SyncEventSpec extends UnitSpecBase:
     },
     test("ScopesUpdated.matches returns true for matching tenantId and id") {
       val scopeId = ScopeToken("read")
-      val event   = SyncEvent.ScopesUpdated(tenantId1, scopeId, SyncEvent.Op.UPDATE)
-      val record  = makeScopeRecord(tenantId1, scopeId)
+      val event = SyncEvent.ScopesUpdated(tenantId1, scopeId, SyncEvent.Op.UPDATE)
+      val record = makeScopeRecord(tenantId1, scopeId)
       assertTrue(event.matches(record))
     },
     test("ScopesUpdated.matches returns false for different tenantId") {
       val scopeId = ScopeToken("read")
-      val event   = SyncEvent.ScopesUpdated(tenantId1, scopeId, SyncEvent.Op.UPDATE)
-      val record  = makeScopeRecord(tenantId2, scopeId)
+      val event = SyncEvent.ScopesUpdated(tenantId1, scopeId, SyncEvent.Op.UPDATE)
+      val record = makeScopeRecord(tenantId2, scopeId)
       assertTrue(!event.matches(record))
     },
     test("ScopesUpdated.sort orders records by tenantId then id") {

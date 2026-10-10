@@ -1,7 +1,7 @@
 package versola.loadgen.metrics
 
-import versola.loadgen.store.SutStatPhase
 import versola.loadgen.config.SecurityProfile
+import versola.loadgen.store.SutStatPhase
 import versola.loadgen.sut.{SutStatsDelta, SutStatsFixture}
 import zio.json.*
 import zio.test.*

@@ -59,7 +59,7 @@ object DpopKeyPolicySpec extends E2ESpec:
       case _: TokenResult.Success => ZIO.unit
       case failure => ZIO.fail(RuntimeException(s"Client $id not visible to auth yet: $failure"))
     .retry(Schedule.spaced(100.millis) && Schedule.recurs(100))
-    .unit
+      .unit
 
   private def rejection(result: TokenResult): Task[String] =
     result match

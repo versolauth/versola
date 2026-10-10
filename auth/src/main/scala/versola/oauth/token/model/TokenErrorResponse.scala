@@ -20,4 +20,3 @@ object TokenErrorResponse:
       errorDescription = tokenError.errorDescription,
       errorUri = tokenError.errorUri,
     )
-

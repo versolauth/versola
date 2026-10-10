@@ -2,10 +2,24 @@ package versola.oauth.introspect
 
 import org.scalamock.stubs.ZIOStubs
 import versola.auth.TestEnvConfig
+import versola.oauth.client.model.{
+  AuthMethod,
+  AuthMethodRef,
+  AuthorizationDetail,
+  ClientId,
+  ClientIdWithSecret,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  ResourceId,
+  ResourceRecord,
+  ResourceUri,
+  ScopeToken,
+  TenantId,
+}
 import versola.oauth.client.{OAuthConfigurationService, ResourceResolver}
-import versola.oauth.client.model.{AuthMethod, AuthMethodRef, AuthorizationDetail, ClientId, ClientIdWithSecret, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, ResourceId, ResourceRecord, ResourceUri, ScopeToken, TenantId}
-import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.model.{AccessToken, AccessTokenPayload, Cnf, RefreshToken}
 import versola.oauth.session.SessionRepository
 import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId, RefreshTokenRecord, SessionId}
@@ -28,14 +42,14 @@ object IntrospectionServiceSpec extends UnitSpecBase:
   val publicSessionId1 = PublicSessionId("public-session-1")
   val familyId1 = RefreshTokenFamilyId("family-1")
   val scope1 = Set(ScopeToken("read"), ScopeToken("write"))
-  
+
   val refreshToken1 = RefreshToken(Array.fill(32)(10.toByte))
   val refreshTokenMac1 = MAC(Array.fill(32)(11.toByte))
-  
+
   val accessToken1 = AccessToken(Array.fill(32)(20.toByte))
-  
+
   val clientSecret1 = Secret(Array.fill(32)(30.toByte))
-  
+
   val testClient = OAuthClientRecord(
     id = clientId1,
     tenantId = TenantId("default"),

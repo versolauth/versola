@@ -172,7 +172,7 @@ object MigrateTool:
           case Some(t) => List(t)
           case None =>
             System.err.println(
-              s"versola-tools migrate: unknown --service '$name' (expected one of ${targets.map(_.serviceName).mkString(", ")})"
+              s"versola-tools migrate: unknown --service '$name' (expected one of ${targets.map(_.serviceName).mkString(", ")})",
             )
             sys.exit(1)
 

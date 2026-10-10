@@ -24,7 +24,7 @@ class PostgresAuthorizationPresetRepository(
   given DbCodec[RedirectUri] = DbCodec.StringCodec.biMap(RedirectUri(_), identity[String])
   given DbCodec[ResponseType] = DbCodec.StringCodec.biMap(
     s => ResponseType.fromString(s).getOrElse(throw new IllegalArgumentException(s"Invalid response_type: $s")),
-    _.asString
+    _.asString,
   )
 
   given JsonEncoder[Map[String, List[String]]] = JsonEncoder.map
@@ -58,11 +58,11 @@ class PostgresAuthorizationPresetRepository(
             )
           """.update
     .unit
-    .mapError {
-      case e if PostgresAuthorizationPresetRepository.isUniqueViolation(e) =>
-        versola.central.configuration.clients.PresetValidationError.DuplicatePresetId
-      case e => e
-    }
+      .mapError {
+        case e if PostgresAuthorizationPresetRepository.isUniqueViolation(e) =>
+          versola.central.configuration.clients.PresetValidationError.DuplicatePresetId
+        case e => e
+      }
 
   override def getAll: Task[Vector[AuthorizationPreset]] =
     xa.connectMeasured("get-all-presets"):

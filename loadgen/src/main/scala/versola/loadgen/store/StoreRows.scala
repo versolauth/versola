@@ -114,6 +114,7 @@ case class PoolerStatSnapshotRow(
   */
 enum SutStatPhase:
   case Before, After
+
   /** The instants the first measured phase begins and the last one ends. Together they bracket
     * exactly the span the latency quantiles are computed over, which [[Before]]/[[After]]
     * (the operator's start and stop, warm-up and tail included) do not.

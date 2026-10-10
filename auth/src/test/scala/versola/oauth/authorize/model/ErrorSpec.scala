@@ -102,7 +102,8 @@ object ErrorSpec extends ZIOSpecDefault:
     ),
     test("the redirect keeps query parameters the client already put on its redirect_uri") {
       val withQuery = zio.http.URL.decode("https://example.com/callback?tenant=acme").toOption.get
-      val redirect = Error.LoginRequired(clientId, withQuery, state, responseMode = ResponseMode.Query).redirectUriWithErrorParams("https://issuer.example")
+      val redirect =
+        Error.LoginRequired(clientId, withQuery, state, responseMode = ResponseMode.Query).redirectUriWithErrorParams("https://issuer.example")
       assertTrue(
         redirect.queryParams.queryParam("tenant") == Some("acme"),
         redirect.queryParams.queryParam("error") == Some(ErrorCode.LoginRequired.toString),

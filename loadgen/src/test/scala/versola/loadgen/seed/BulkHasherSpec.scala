@@ -1,6 +1,6 @@
 package versola.loadgen.seed
 
-import versola.util.{Argon2Config, EcKeyPair, MAC, RsaKeyPair, Salt, SecureRandom, SecurityService, Secret}
+import versola.util.{Argon2Config, EcKeyPair, MAC, RsaKeyPair, Salt, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.prelude.EqualOps
 import zio.test.*

@@ -1,6 +1,6 @@
 package versola.loadgen.seed
 
-import versola.util.{MAC, Salt, SecureRandom, SecurityService, Secret}
+import versola.util.{MAC, Salt, Secret, SecureRandom, SecurityService}
 import zio.{Chunk, Task, ZIO}
 
 /** One seeded `user_passwords` row's cryptographic material. Salt and hash together, because

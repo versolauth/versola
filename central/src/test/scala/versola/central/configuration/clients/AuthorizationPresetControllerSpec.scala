@@ -1,20 +1,20 @@
 package versola.central.configuration.clients
 
+import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.{AuthorizationPresetInput, AuthorizationPresetResponse, SaveAuthorizationPresetsRequest}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{AuthorizationPresetInput, AuthorizationPresetResponse, SaveAuthorizationPresetsRequest}
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.{RedirectUri, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
-import zio.test.*
-import zio.telemetry.opentelemetry.tracing.Tracing
-import io.opentelemetry.api
 import zio.telemetry.opentelemetry.OpenTelemetry
+import zio.telemetry.opentelemetry.tracing.Tracing
+import zio.test.*
 
 import javax.crypto.spec.SecretKeySpec
 
@@ -97,14 +97,14 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           AuthorizationPresetController.routes.provideEnvironment(
             ZEnvironment[AuthorizationPresetService](service) ++ ZEnvironment(config) ++ tracing ++
-              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService)
-          ).sandbox
+              ZEnvironment[EdgeService](edgeService) ++ ZEnvironment[ResourceService](resourceService),
+          ).sandbox,
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
-          case _    => request
+          case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -115,7 +115,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return client presets",
       request = Request.get(
         (URL.empty / "configuration" / "auth-request-presets")
-          .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId))
+          .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId)),
       ),
       expectedStatus = Status.Ok,
       setup = service =>
@@ -162,7 +162,7 @@ object AuthorizationPresetControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return empty array when no presets",
       request = Request.get(
         (URL.empty / "configuration" / "auth-request-presets")
-          .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId))
+          .addQueryParams(Map("tenantId" -> tenantId, "clientId" -> clientId)),
       ),
       expectedStatus = Status.Ok,
       setup = service =>

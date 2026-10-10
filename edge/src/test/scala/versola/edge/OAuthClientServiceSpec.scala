@@ -1,7 +1,7 @@
 package versola.edge
 
 import org.scalamock.stubs.ZIOStubs
-import versola.edge.model.{ClientCredential, AuthorizationPreset, ClientId, OAuthClient, PresetId}
+import versola.edge.model.{AuthorizationPreset, ClientCredential, ClientId, OAuthClient, PresetId}
 import versola.util.{RedirectUri, ReloadingCache, Secret}
 import zio.*
 import zio.test.*
@@ -12,8 +12,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val presetId = PresetId("preset-default")
   private val otherPresetId = PresetId("preset-mobile")
 
-  private val client = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
-  private val otherClient = OAuthClient(id = otherClientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val client = OAuthClient(
+    id = clientId,
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
+  private val otherClient = OAuthClient(
+    id = otherClientId,
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(2.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
 
   private val preset = AuthorizationPreset(
     id = presetId,
@@ -43,25 +53,25 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("findPreset returns cached preset when id is known") {
       for
         service <- env(presets = Map(presetId -> preset))
-        result  <- service.findPreset(presetId)
+        result <- service.findPreset(presetId)
       yield assertTrue(result.contains(preset))
     },
     test("findPreset returns None when id is unknown") {
       for
         service <- env(presets = Map(presetId -> preset))
-        result  <- service.findPreset(otherPresetId)
+        result <- service.findPreset(otherPresetId)
       yield assertTrue(result.isEmpty)
     },
     test("findClient returns cached client when id is known") {
       for
         service <- env(clients = Map(clientId -> client, otherClientId -> otherClient))
-        result  <- service.findClient(otherClientId)
+        result <- service.findClient(otherClientId)
       yield assertTrue(result.contains(otherClient))
     },
     test("findClient returns None when id is unknown") {
       for
         service <- env(clients = Map(clientId -> client))
-        result  <- service.findClient(otherClientId)
+        result <- service.findClient(otherClientId)
       yield assertTrue(result.isEmpty)
     },
   )

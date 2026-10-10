@@ -1,7 +1,14 @@
 package versola.oauth.challenge.password
 
 import versola.auth.model.{Password, PasswordRecord}
-import versola.oauth.challenge.password.model.{CheckPassword, DeliveryChannel, PasswordDeliveryUnavailable, PasswordRevealForbidden, PasswordReuseError, TemporaryPasswordGenerationFailed}
+import versola.oauth.challenge.password.model.{
+  CheckPassword,
+  DeliveryChannel,
+  PasswordDeliveryUnavailable,
+  PasswordReuseError,
+  PasswordRevealForbidden,
+  TemporaryPasswordGenerationFailed,
+}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.OtpTemplateChannel
 import versola.oauth.conversation.otp.model.OtpTemplate
@@ -62,7 +69,7 @@ object PasswordService:
 
           case (Vector(temp, _*), _) =>
             check(password, temp).map:
-              case true  => CheckPassword.Temporary
+              case true => CheckPassword.Temporary
               case false => CheckPassword.Failure
 
           case (_, Vector()) =>
@@ -136,11 +143,11 @@ object PasswordService:
           userRepository.find(userId).flatMap: userOpt =>
             val contact = deliveryChannel match
               case DeliveryChannel.email => userOpt.flatMap(_.email).map(Left(_))
-              case DeliveryChannel.sms   => userOpt.flatMap(_.phone).map(Right(_))
-              case DeliveryChannel.show  => None
+              case DeliveryChannel.sms => userOpt.flatMap(_.phone).map(Right(_))
+              case DeliveryChannel.show => None
             contact match
               case Some(value) => ZIO.some(value)
-              case None        => ZIO.fail(PasswordDeliveryUnavailable(userId, deliveryChannel))
+              case None => ZIO.fail(PasswordDeliveryUnavailable(userId, deliveryChannel))
 
     private def deliverPassword(
         password: Password,
@@ -155,9 +162,9 @@ object PasswordService:
               contact.fold(_ => OtpTemplateChannel.email, _ => OtpTemplateChannel.sms),
               None,
             )
-            message   = renderPasswordTemplate(template, password, ttlSeconds)
+            message = renderPasswordTemplate(template, password, ttlSeconds)
             _ <- contact match
-              case Left(email)  => emailOtpProvider.send(email, message)
+              case Left(email) => emailOtpProvider.send(email, message)
               case Right(phone) => smsOtpProvider.send(phone, message)
           yield ()
 
@@ -171,11 +178,11 @@ object PasswordService:
       def attempt: UIO[String] =
         secureRandom.execute { r =>
           // Guarantee at least one char from each category
-          val upper   = TempUpperAlpha(r.nextInt(TempUpperAlpha.length)).toString
-          val lower   = TempLowerAlpha(r.nextInt(TempLowerAlpha.length)).toString
-          val digit   = TempDigits(r.nextInt(TempDigits.length)).toString
+          val upper = TempUpperAlpha(r.nextInt(TempUpperAlpha.length)).toString
+          val lower = TempLowerAlpha(r.nextInt(TempLowerAlpha.length)).toString
+          val digit = TempDigits(r.nextInt(TempDigits.length)).toString
           val special = TempSpecials(r.nextInt(TempSpecials.length)).toString
-          val rest    = (1 to TempPasswordLen - 4).map(_ => TempAllChars(r.nextInt(TempAllChars.length))).mkString
+          val rest = (1 to TempPasswordLen - 4).map(_ => TempAllChars(r.nextInt(TempAllChars.length))).mkString
           scala.util.Random(r).shuffle((upper + lower + digit + special + rest).toList).mkString
         }
 
@@ -187,7 +194,7 @@ object PasswordService:
             (Option.when(ok)(pwd), n + 1)
           }
       }.flatMap {
-        case (Some(pwd), _)   => ZIO.succeed(Password(pwd))
+        case (Some(pwd), _) => ZIO.succeed(Password(pwd))
         case (None, attempts) => ZIO.fail(TemporaryPasswordGenerationFailed(attempts))
       }
 

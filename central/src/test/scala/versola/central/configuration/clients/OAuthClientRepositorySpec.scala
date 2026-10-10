@@ -10,6 +10,7 @@ import zio.*
 import zio.http.URL
 import zio.prelude.EqualOps
 import zio.test.*
+
 import java.time.Instant
 
 trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySpec.Env]:
@@ -96,7 +97,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(client)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found === Some(client)
+          found === Some(client),
         )
       },
       test("create and find a client registered from a template") {
@@ -109,7 +110,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(templated)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found === Some(templated)
+          found === Some(templated),
         )
       },
       test("update client should leave the template and the registration time alone") {
@@ -126,7 +127,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           )
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found === Some(templated.copy(accessTokenTtl = 4.hours))
+          found === Some(templated.copy(accessTokenTtl = 4.hours)),
         )
       },
       test("create client twice should fail with ClientAlreadyExists") {
@@ -134,7 +135,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(client)
           error <- env.repository.createClient(client).flip
         yield assertTrue(
-          error == ClientAlreadyExists(clientId)
+          error == ClientAlreadyExists(clientId),
         )
       },
       test("update client should preserve existing name when new name is absent") {
@@ -168,8 +169,8 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
               scope = Set(writeScope),
               permissions = Set(writePermission),
               accessTokenTtl = 15.minutes,
-            )
-          )
+            ),
+          ),
         )
       },
       test("create and find client with a registration flow") {
@@ -179,7 +180,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(registering)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found === Some(registering)
+          found === Some(registering),
         )
       },
       test("update client should leave the registration flow untouched when the patch is absent") {
@@ -190,7 +191,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchRegistrationFlow(env, None)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(RegistrationFlow.default)
+          found.flatMap(_.registrationFlow) === Some(RegistrationFlow.default),
         )
       },
       test("update client should clear the registration flow when the patch is an explicit None") {
@@ -201,14 +202,14 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchRegistrationFlow(env, Some(Patch.Deleted))
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.map(_.registrationFlow) === Some(None)
+          found.map(_.registrationFlow) === Some(None),
         )
       },
       test("update client should replace the registration flow when the patch carries one") {
         val updated = RegistrationFlow(
-            credential = RegistrationCredential.phone,
+          credential = RegistrationCredential.phone,
           steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()),
-            roleIds = Set(RegistrationFlow.defaultRoleId),
+          roleIds = Set(RegistrationFlow.defaultRoleId),
         )
 
         for
@@ -216,7 +217,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchRegistrationFlow(env, Some(Patch.Modified(updated)))
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(updated)
+          found.flatMap(_.registrationFlow) === Some(updated),
         )
       },
       test("update client should leave the auth flow untouched when the patch is absent") {
@@ -225,7 +226,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchNullableFields(env, authFlow = None)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.flatMap(_.authFlow) === Some(AuthFlow.default)
+          found.flatMap(_.authFlow) === Some(AuthFlow.default),
         )
       },
       test("update client should clear the auth flow when the patch is an explicit delete") {
@@ -234,7 +235,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchNullableFields(env, authFlow = Some(Patch.Deleted))
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.map(_.authFlow) === Some(None)
+          found.map(_.authFlow) === Some(None),
         )
       },
       test("update client should clear the logout URIs when the patch is an explicit delete") {
@@ -245,7 +246,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- patchNullableFields(env, frontChannelLogoutUri = Some(Patch.Deleted))
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found.map(_.frontChannelLogoutUri) === Some(None)
+          found.map(_.frontChannelLogoutUri) === Some(None),
         )
       },
       test("update client should swap the logout channel when one is cleared and the other set") {
@@ -254,10 +255,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         for
           _ <- env.repository.createClient(withLogout)
           _ <- patchNullableFields(
-                 env,
-                 frontChannelLogoutUri = Some(Patch.Deleted),
-                 backChannelLogoutUri = Some(Patch.Modified(backLogoutUri)),
-               )
+            env,
+            frontChannelLogoutUri = Some(Patch.Deleted),
+            backChannelLogoutUri = Some(Patch.Modified(backLogoutUri)),
+          )
           found <- env.repository.find(clientId)
         yield assertTrue(
           found.map(_.frontChannelLogoutUri) === Some(None),
@@ -274,7 +275,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           _ <- env.repository.createClient(narrowed)
           found <- env.repository.find(clientId)
         yield assertTrue(
-          found === Some(narrowed)
+          found === Some(narrowed),
         )
       },
       test("update client should replace the DPoP algorithms and clear the RSA minimum") {
@@ -325,15 +326,15 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
             client.copy(
               secret = Some(secret2),
               previousSecret = Some(secret1),
-            )
+            ),
           ),
           withoutPrevious === Some(
             client.copy(
               secret = Some(secret2),
               previousSecret = None,
-            )
+            ),
           ),
-          deleted === None
+          deleted === None,
         )
       },
     )

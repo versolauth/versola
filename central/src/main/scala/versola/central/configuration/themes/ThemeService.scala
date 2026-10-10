@@ -19,7 +19,7 @@ object ThemeService:
   val DefaultThemeId = "default"
 
   final class ThemeInUseError
-      extends RuntimeException("Theme is in use by one or more clients and cannot be deleted")
+    extends RuntimeException("Theme is in use by one or more clients and cannot be deleted")
 
   def live: ZLayer[ThemeRepository & Scope & CentralConfig, Throwable, ThemeService] =
     (ZLayer.fromZIO:
@@ -63,4 +63,4 @@ object ThemeService:
     private def isForeignKeyViolation(error: Throwable): Boolean =
       error match
         case e: SQLException => Option(e.getSQLState).contains("23503")
-        case _               => Option(error.getCause).exists(isForeignKeyViolation)
+        case _ => Option(error.getCause).exists(isForeignKeyViolation)

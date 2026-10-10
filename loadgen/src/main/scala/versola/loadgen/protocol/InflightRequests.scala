@@ -28,6 +28,4 @@ object InflightRequests:
     * sessions that own these calls.
     */
   private[protocol] def around[R, E, A](effect: ZIO[R, E, A]): ZIO[R, E, A] =
-    ZIO.acquireReleaseWith(ZIO.succeed(outstanding.incrementAndGet()))(_ => ZIO.succeed(outstanding.decrementAndGet()))(
-      _ => effect,
-    )
+    ZIO.acquireReleaseWith(ZIO.succeed(outstanding.incrementAndGet()))(_ => ZIO.succeed(outstanding.decrementAndGet()))(_ => effect)

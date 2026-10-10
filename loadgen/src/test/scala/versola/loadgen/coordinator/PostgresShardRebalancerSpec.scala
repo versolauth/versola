@@ -5,12 +5,7 @@ import com.augustnagro.magnum.sql
 import versola.loadgen.model.{DeviceSession, SessionKind, VirtualUserState}
 import versola.loadgen.protocol.{RefreshToken, SsoSession}
 import versola.loadgen.scheduler.ShardAssignment
-import versola.loadgen.store.{
-  LoadgenPostgresSpec,
-  PostgresDeviceSessionRepository,
-  PostgresVirtualUserRepository,
-  VirtualUserRepository,
-}
+import versola.loadgen.store.{LoadgenPostgresSpec, PostgresDeviceSessionRepository, PostgresVirtualUserRepository, VirtualUserRepository}
 import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*

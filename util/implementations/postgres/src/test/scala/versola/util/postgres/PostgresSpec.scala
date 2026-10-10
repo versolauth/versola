@@ -11,7 +11,6 @@ abstract class PostgresSpec extends ZIOSpec[TransactorZIO]:
 
 object PostgresSpec:
 
-
   def config =
     ZLayer.fromZIO:
       System.env("POSTGRES_HOST")
@@ -36,4 +35,3 @@ object PostgresSpec:
       migrate = true,
       validateOnMigrate = false,
     )) >>> TransactorZIO.layer
-

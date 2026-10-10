@@ -26,7 +26,14 @@ object ClientCertificateEnrollmentSpec extends ZIOSpecDefault:
 
   private val ca = TestCertificates.generate(subject = "CN=client-ca", ca = true)
   private val clientId = ClientId("mobile-app")
-  private val subject = CertificateSubject("CN=mobile-app", "mobile-app", dnsNames = List("mobile-app.clients.versola.test"), uris = Nil, emailAddresses = Nil, ipAddresses = Nil)
+  private val subject = CertificateSubject(
+    "CN=mobile-app",
+    "mobile-app",
+    dnsNames = List("mobile-app.clients.versola.test"),
+    uris = Nil,
+    emailAddresses = Nil,
+    ipAddresses = Nil,
+  )
 
   private case class SignRequest(clientId: String, csr: String) derives JsonCodec
   private case class SignResponse(certificate: String) derives JsonCodec
@@ -57,7 +64,12 @@ object ClientCertificateEnrollmentSpec extends ZIOSpecDefault:
     val csr = JcaPKCS10CertificationRequest(PEMParser(StringReader(csrPem)).readObject().asInstanceOf[PKCS10CertificationRequest])
     val now = java.lang.System.currentTimeMillis()
     val builder = JcaX509v3CertificateBuilder(
-      ca.certificate, BigInteger.valueOf(now), Date(now - 60_000), Date(now + lifetime.toMillis), csr.getSubject, csr.getPublicKey,
+      ca.certificate,
+      BigInteger.valueOf(now),
+      Date(now - 60_000),
+      Date(now + lifetime.toMillis),
+      csr.getSubject,
+      csr.getPublicKey,
     )
     Option(csr.getRequestedExtensions).flatMap(e => Option(e.getExtension(Extension.subjectAlternativeName))).foreach: san =>
       builder.addExtension(Extension.subjectAlternativeName, false, GeneralNames.getInstance(san.getParsedValue))

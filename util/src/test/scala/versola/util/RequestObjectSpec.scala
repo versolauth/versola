@@ -231,9 +231,13 @@ object RequestObjectSpec extends ZIOSpecDefault:
           iat60 <- verify(withExp("iat" -> at(60))).either
           iat61 <- verify(withExp("iat" -> at(61))).either
         yield assertTrue(
-          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf9.isRight,
+          nbf10.isRight,
+          nbf11.isRight,
+          nbf60.isRight,
           nbf61 == Left(RequestObject.Error.NotYetValid),
-          iat10.isRight, iat60.isRight,
+          iat10.isRight,
+          iat60.isRight,
           iat61 == Left(RequestObject.Error.IssuedInFuture),
         )
       },
@@ -265,7 +269,6 @@ object RequestObjectSpec extends ZIOSpecDefault:
           ))).either
         yield assertTrue(result == Left(RequestObject.Error.NotYetValid))
       },
-
       test("accepts the explicitly registered type, and refuses a type naming something else") {
         for
           typed <- verify(requestObject(typ = Some(RequestObject.Type))).either

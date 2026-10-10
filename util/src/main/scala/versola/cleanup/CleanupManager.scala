@@ -85,10 +85,10 @@ object CleanupManager:
       def runBatch: Task[Int] =
         semaphore.withPermit:
           for
-            start   <- Clock.currentTime(TimeUnit.MILLISECONDS)
+            start <- Clock.currentTime(TimeUnit.MILLISECONDS)
             deleted <- cleanupBatch(config.tableName, config.batchSize, keyColumn)
-            end     <- Clock.currentTime(TimeUnit.MILLISECONDS)
-            _       <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${end - start}ms")
+            end <- Clock.currentTime(TimeUnit.MILLISECONDS)
+            _ <- ZIO.logInfo(s"Cleaned ${config.tableName}: $deleted rows in ${end - start}ms")
           yield deleted
       def loop: Task[Unit] = runBatch.flatMap(deleted => ZIO.when(deleted >= config.batchSize)(loop).unit)
       loop

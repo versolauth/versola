@@ -7,16 +7,15 @@ import versola.oauth.client.model.{
   ChallengeSettingsRecord,
   ClientId,
   ClientSecret,
-  SecurityProfile,
   FormRecord,
   Locales,
   MtlsCertificateSource,
   OAuthClientRecord,
-  OtpType,
   OtpSettings,
   OtpTemplateChannel,
   OtpTemplatePurpose,
   OtpTemplateRecord,
+  OtpType,
   PassedAuthFactor,
   PasskeySettings,
   PasswordHistorySettings,
@@ -25,6 +24,7 @@ import versola.oauth.client.model.{
   ResourceUri,
   ScopeRecord,
   ScopeToken,
+  SecurityProfile,
   SubmissionLimits,
   SystemSettingsRecord,
   TenantId,
@@ -33,7 +33,18 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata, ServerMetadataRecord}
-import versola.util.{CacheSource, ClientAssertion, CoreConfig, Dpop, JsonSchemaValidator, ReloadingCache, RequestObject, Secret, SecureRandom, SecurityService}
+import versola.util.{
+  CacheSource,
+  ClientAssertion,
+  CoreConfig,
+  Dpop,
+  JsonSchemaValidator,
+  ReloadingCache,
+  RequestObject,
+  Secret,
+  SecureRandom,
+  SecurityService,
+}
 import zio.*
 import zio.http.{Client, URL}
 import zio.json.ast.Json
@@ -361,14 +372,13 @@ object OAuthConfigurationService:
         otpType: OtpType,
     ): UIO[Option[OtpTemplateRecord]] =
       val channel = otpType match
-        case OtpType.sms   => OtpTemplateChannel.sms
+        case OtpType.sms => OtpTemplateChannel.sms
         case OtpType.email => OtpTemplateChannel.email
       otpTemplateCache.get.map(_.find: template =>
         template.tenantId == tenantId
           && template.id == otpTemplateId
           && template.purpose == OtpTemplatePurpose.otp
-          && template.channel == channel
-      )
+          && template.channel == channel)
 
     override def getClientTemplate(
         id: ClientId,

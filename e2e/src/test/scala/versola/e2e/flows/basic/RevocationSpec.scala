@@ -20,7 +20,13 @@ object RevocationSpec extends E2ESpec:
       cookie = authorize.conversationCookie.get
       challenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
       code <- auth.submitLoginPassword(cookie, s.login.get, s.password, challenge.csrf).assertRedirect(auth, cookie)
-      token <- auth.token(code, authorize.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+      token <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
     yield token
 
   /** EmailOtp's client is the only one of the ad-hoc test clients registered with the
@@ -34,7 +40,13 @@ object RevocationSpec extends E2ESpec:
       _ <- auth.submitEmail(cookie, s.email.get, challenge.csrf)
       otpChallenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
       code <- auth.submitOtp(cookie, "123456", otpChallenge.csrf).assertRedirect(auth, cookie)
-      token <- auth.token(code, authorize.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+      token <- auth.token(
+        code,
+        authorize.verifier,
+        clientId = Some(s.clientId),
+        clientSecret = Some(s.clientSecret),
+        redirectUri = Some(s.redirectUri),
+      ).success
     yield token
 
   private def errorOf(response: zio.http.Response): Task[Option[String]] =
@@ -149,7 +161,7 @@ object RevocationSpec extends E2ESpec:
         token <- login(s, auth)
         response <- auth.revoke(token.accessToken, s.clientId, s.clientSecret, tokenTypeHint = Some("refresh_token"))
       yield assertTrue(response.status == Status.Ok)
-          .label("RevocationController.tokenDecoder sniffs isJWT and never consults token_type_hint")
+        .label("RevocationController.tokenDecoder sniffs isJWT and never consults token_type_hint")
     },
     test("GET /revoke is rejected -- it is a POST-only endpoint") {
       for
@@ -167,7 +179,13 @@ object RevocationSpec extends E2ESpec:
         _ <- auth.submitEmail(cookie, s.email.get, challenge.csrf)
         otpChallenge <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
         code <- auth.submitOtp(cookie, "123456", otpChallenge.csrf).assertRedirect(auth, cookie)
-        token <- auth.token(code, authorize.verifier, clientId = Some(s.clientId), clientSecret = Some(s.clientSecret), redirectUri = Some(s.redirectUri)).success
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
         refreshToken <- ZIO.fromOption(token.refreshToken).orElseFail(RuntimeException("expected a refresh_token"))
         response <- auth.revoke(refreshToken, s.clientId, s.clientSecret, tokenTypeHint = Some("access_token"))
       yield assertTrue(response.status == Status.Ok)

@@ -5,8 +5,8 @@ import versola.util.postgres.given
 import versola.util.{Dpop, Secret}
 import zio.Config
 import zio.Duration
-import zio.durationInt
 import zio.config.magnolia.DeriveConfig
+import zio.durationInt
 
 /** Root configuration tree for `loadgen`, decoded from HOCON via `VersolaApp.parseConfig`
   * (see versola-loadgen-dev-spec.md §5). One process, one file, one binary: `role` picks which

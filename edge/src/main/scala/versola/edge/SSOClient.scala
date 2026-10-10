@@ -1,6 +1,17 @@
 package versola.edge
 
-import versola.edge.model.{AccessToken, AuthorizationPreset, ClientCredential, ClientId, Code, CodeVerifier, OAuthClient, RefreshToken, State, TokenResponse}
+import versola.edge.model.{
+  AccessToken,
+  AuthorizationPreset,
+  ClientCredential,
+  ClientId,
+  Code,
+  CodeVerifier,
+  OAuthClient,
+  RefreshToken,
+  State,
+  TokenResponse,
+}
 import versola.util.{Base64, ClientAssertion, EdgeAssertion, PrivateClientCertificate, RedirectUri, RequestObject, Secret}
 import zio.Chunk
 import zio.http.*
@@ -159,7 +170,8 @@ object SSOClient:
       * (`CredentialNeedsTls`), not made unauthenticated.
       */
     private val certificateRoute: CertificateRoute =
-      if config.internalUrl.scheme.contains(Scheme.HTTPS) then CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
+      if config.internalUrl.scheme.contains(Scheme.HTTPS) then
+        CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
       else
         config.native.fold(CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))): native =>
           CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates))
@@ -394,7 +406,9 @@ object SSOClient:
           if response.status.isSuccess then response.bodyAs[TokenResponse]
           else
             response.bodyAs[ErrorResponse].flatMap: error =>
-              ZIO.fail(new RuntimeException(s"Authorization code exchange failed: ${response.status.code} ${error.error}${error.errorDescription.fold("")(d => s" - $d")}"))
+              ZIO.fail(new RuntimeException(
+                s"Authorization code exchange failed: ${response.status.code} ${error.error}${error.errorDescription.fold("")(d => s" - $d")}",
+              ))
       yield tokenResponse
 
     override def exchangeRefreshToken(

@@ -2,9 +2,9 @@ package versola.oauth.token.model
 
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, ResourceUri, ScopeToken, TenantId}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
+import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.role.model.RoleId
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenFamilyId}
 import versola.user.model.{UserId, UserRecord}
 import zio.Duration
 
@@ -25,7 +25,7 @@ case class IssuedTokens(
     uiLocales: Option[List[String]],
     nonce: Option[Nonce],
     user: Option[UserRecord],
-    tenantId: TenantId, // every client belongs to a tenant, including client_credentials
+    tenantId: TenantId,  // every client belongs to a tenant, including client_credentials
     roles: List[RoleId], // role IDs within tenantId; empty for client_credentials
     sessionId: Option[PublicSessionId],
     /** The refresh-token family this access token is issued from, carried as its `fam` claim

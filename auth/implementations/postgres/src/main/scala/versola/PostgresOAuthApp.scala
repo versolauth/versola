@@ -3,32 +3,44 @@ package versola
 import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
-import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
 import versola.oauth.account.AccountSettingsController
-import versola.oauth.authorize.{AcrResolutionService, AuthorizationResponseService, AuthorizeEndpointController, AuthorizeEndpointService, AuthorizeRequestParser, PushedAuthorizationController, PushedAuthorizationRepository, PushedAuthorizationService, RequestObjectService}
+import versola.oauth.authorize.{
+  AcrResolutionService,
+  AuthorizationResponseService,
+  AuthorizeEndpointController,
+  AuthorizeEndpointService,
+  AuthorizeRequestParser,
+  PushedAuthorizationController,
+  PushedAuthorizationRepository,
+  PushedAuthorizationService,
+  RequestObjectService,
+}
 import versola.oauth.challenge.passkey.{PasskeyRepository, PostgresPasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.{PasswordRepository, PasswordService, PostgresPasswordRepository}
-import versola.oauth.client.{ServiceController, OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient}
-import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
-import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
-import versola.oauth.conversation.otp.{EmailOtpProvider, SmsOtpProvider, OtpGenerationService, OtpService}
-import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
-import versola.oauth.conversation.{ConversationController, ConversationRenderService, ConversationRepository, ConversationRouter, ConversationService, PostgresConversationRepository}
-import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.client.CentralSyncTokenService
+import versola.oauth.client.{OAuthClientSyncClient, OAuthConfigurationService, OAuthScopeSyncClient, ServiceController}
+import versola.oauth.clientauth.{ClientAssertionRepository, ClientAssertionService, ClientAuthentication, PostgresClientAssertionRepository}
+import versola.oauth.consent.{ConsentRepository, ConsentService, PostgresConsentRepository}
+import versola.oauth.conversation.limit.{ChallengeThrottleRepository, PostgresChallengeThrottleRepository, SubmissionLimiter}
+import versola.oauth.conversation.otp.{EmailOtpProvider, OtpGenerationService, OtpService, SmsOtpProvider}
+import versola.oauth.conversation.{
+  ConversationController,
+  ConversationRenderService,
+  ConversationRepository,
+  ConversationRouter,
+  ConversationService,
+  PostgresConversationRepository,
+}
+import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
+import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
-import versola.oauth.clientauth.{
-  ClientAssertionRepository,
-  ClientAssertionService,
-  ClientAuthentication,
-  PostgresClientAssertionRepository,
-}
+import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
 import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController, RevocationService}
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
-import versola.oauth.metadata.{MetadataController, MetadataSyncClient}
+import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
 import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
 import versola.util.http.VersolaApp
@@ -37,7 +49,6 @@ import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
 import zio.http.Server.RequestStreaming
-
 import zio.telemetry.opentelemetry.tracing.Tracing
 
 import java.security.PrivateKey

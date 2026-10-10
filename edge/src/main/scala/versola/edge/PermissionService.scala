@@ -28,19 +28,17 @@ object PermissionService:
           ReloadingCache.make[Map[(TenantId, RoleId), Set[PermissionId]]](config.configurationCacheRefreshInterval),
         )
       ) ++ // (tenantId, roleId) → permIds
-      (ZLayer.fromZIO:
-        ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](config.configurationCacheRefreshInterval),
-        )
-      ) ++ // permId → endpointIds
-      (ZLayer.fromZIO:
-        ZIO.serviceWithZIO[EdgeConfig](config =>
-          ReloadingCache.make[Map[ClientId, Set[PermissionId]]](config.configurationCacheRefreshInterval),
-        )
-      ) ++          // clientId → OAuthClient
-      ZLayer.service[RolesSyncClient] ++
-      ZLayer.service[PermissionsSyncClient] ++
-      ZLayer.service[ClientPermissionsSyncClient]
+        (ZLayer.fromZIO:
+          ZIO.serviceWithZIO[EdgeConfig](config =>
+            ReloadingCache.make[Map[PermissionId, Set[ResourceEndpointId]]](config.configurationCacheRefreshInterval),
+          )) ++ // permId → endpointIds
+        (ZLayer.fromZIO:
+          ZIO.serviceWithZIO[EdgeConfig](config =>
+            ReloadingCache.make[Map[ClientId, Set[PermissionId]]](config.configurationCacheRefreshInterval),
+          )) ++ // clientId → OAuthClient
+        ZLayer.service[RolesSyncClient] ++
+        ZLayer.service[PermissionsSyncClient] ++
+        ZLayer.service[ClientPermissionsSyncClient]
     ) >>> ZLayer.fromFunction(Impl(_, _, _, _, _, _))
 
   class Impl(

@@ -26,7 +26,7 @@ import java.time.Instant
   * statement are the same today, and the tests on both sides are what keep that honest.
   */
 class PostgresDpopProofRepository(xa: TransactorZIO) extends DpopProofRepository, BasicCodecs:
-  import PostgresDpopProofRepository.{digestOf, slotOf, EvictionLockTimeout, MaxClockSkew, SlotWidth}
+  import PostgresDpopProofRepository.{EvictionLockTimeout, MaxClockSkew, SlotWidth, digestOf, slotOf}
 
   override def recordIfAbsent(jkt: String, jti: String, iat: Instant): Task[Boolean] =
     xa.connectMeasured("record-dpop-proof-if-absent"):

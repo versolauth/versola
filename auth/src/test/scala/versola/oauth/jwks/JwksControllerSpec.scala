@@ -1,8 +1,8 @@
 package versola.oauth.jwks
 
 import versola.auth.TestEnvConfig
-import versola.util.http.NoopTracing
 import versola.util.UnitSpecBase
+import versola.util.http.NoopTracing
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -25,7 +25,7 @@ object JwksControllerSpec extends UnitSpecBase:
 
         _ <- TestClient.addRoutes(
           JwksController.routes
-            .provideEnvironment(ZEnvironment(jwksService) ++ tracing)
+            .provideEnvironment(ZEnvironment(jwksService) ++ tracing),
         )
 
         response <- client.batched(request)
@@ -38,7 +38,7 @@ object JwksControllerSpec extends UnitSpecBase:
       jwksTestCase(
         description = "successfully return JWKS with public keys",
         request = Request.get(
-          url = URL.empty / ".well-known" / "jwks.json"
+          url = URL.empty / ".well-known" / "jwks.json",
         ),
         expectedStatus = Status.Ok,
         verify = response =>
@@ -56,11 +56,10 @@ object JwksControllerSpec extends UnitSpecBase:
             jwks.isInstanceOf[Json.Obj],
           ),
       ),
-
       jwksTestCase(
         description = "return JWKS with exact expected structure",
         request = Request.get(
-          url = URL.empty / ".well-known" / "jwks.json"
+          url = URL.empty / ".well-known" / "jwks.json",
         ),
         expectedStatus = Status.Ok,
         verify = response =>
@@ -74,11 +73,10 @@ object JwksControllerSpec extends UnitSpecBase:
             actualJson == expectedJson,
           ),
       ),
-
       jwksTestCase(
         description = "cache headers should allow 24 hour caching",
         request = Request.get(
-          url = URL.empty / ".well-known" / "jwks.json"
+          url = URL.empty / ".well-known" / "jwks.json",
         ),
         expectedStatus = Status.Ok,
         verify = response =>
@@ -92,4 +90,3 @@ object JwksControllerSpec extends UnitSpecBase:
       ),
     ),
   )
-

@@ -19,4 +19,3 @@ object TenantId:
   given Schema[TenantId] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonEncoder[TenantId] = JsonEncoder.string
   given JsonDecoder[TenantId] = JsonDecoder.string.mapOrFail(from)
-

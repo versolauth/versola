@@ -2,12 +2,12 @@ package versola.central.configuration.scopes
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.util.http.Observability
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.JWT
+import versola.util.http.Observability
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -34,8 +34,8 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         JWT.serialize(
           JWT.Claims("a", "b", List("c"), Json.Obj("tenantId" -> Json.Str(tenantId.toString))),
           1.minute,
-          JWT.Signature.Symmetric(secretKey)
-        )
+          JWT.Signature.Symmetric(secretKey),
+        ),
       )
       .getOrThrowFiberFailure()
   }
@@ -82,7 +82,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             add = Map("ru" -> "Почта"),
             delete = Set.empty,
           ),
-        )
+        ),
       ),
       delete = Set(nameClaim),
       description = PatchDescription(
@@ -108,19 +108,19 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client      <- ZIO.service[Client]
-        service     =  stub[OAuthScopeService]
-        edgeService =  stub[versola.central.configuration.edges.EdgeService]
+        client <- ZIO.service[Client]
+        service = stub[OAuthScopeService]
+        edgeService = stub[versola.central.configuration.edges.EdgeService]
         resourceService = stub[ResourceService]
-        tracing     <- tracingLayer.build
+        tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ScopeController.routes.provideEnvironment(
               ZEnvironment[OAuthScopeService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService) ++
-                ZEnvironment[ResourceService](resourceService)
-            )
-          )
+                ZEnvironment[ResourceService](resourceService),
+            ),
+          ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
@@ -128,7 +128,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         // (the sync-endpoint test sends an internal sync token instead).
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
-          case _    => request
+          case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -139,7 +139,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return tenant scopes with pagination params",
       request = Request.get(
         (URL.empty / "configuration" / "scopes")
-          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "1", "limit" -> "3"))
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "1", "limit" -> "3")),
       ),
       expectedStatus = Status.Ok,
       setup = service =>
@@ -166,7 +166,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ClaimResponse(emailClaim, Map("en" -> "Email")),
                 ),
               ),
-            )
+            ),
           ),
         ),
     ),
@@ -174,7 +174,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "use default offset and empty limit when pagination params are absent",
       request = Request.get(
         (URL.empty / "configuration" / "scopes")
-          .addQueryParam("tenantId", tenantId.toString)
+          .addQueryParam("tenantId", tenantId.toString),
       ),
       expectedStatus = Status.Ok,
       setup = service =>
@@ -191,7 +191,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return synced tenant scopes for authorized service token",
       request = Request.get(
         (URL.empty / "configuration" / "scopes" / "sync")
-          .addQueryParam("tenantId", tenantId.toString)
+          .addQueryParam("tenantId", tenantId.toString),
       ).addHeader(Header.Authorization.Bearer(syncToken)),
       expectedStatus = Status.Ok,
       setup = service =>
@@ -218,7 +218,7 @@ object ScopeControllerSpec extends ZIOSpecDefault, ZIOStubs:
                   ClaimResponse(emailClaim, Map("en" -> "Email")),
                 ),
               ),
-            )
+            ),
           ),
         ),
     ),

@@ -1,6 +1,7 @@
 package versola.edge
 
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
+import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.edge.model.{
   AccessToken,
@@ -27,7 +28,6 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-import io.opentelemetry.api
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
@@ -96,10 +96,10 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       dpopSetup: Stub[versola.edge.dpop.DpopVerifier] => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
-      client  <- ZIO.service[Client]
-      service =  stub[EdgeService]
-      jwks    =  stub[JwksService]
-      presets =  stub[AuthorizationPresetsSyncClient]
+      client <- ZIO.service[Client]
+      service = stub[EdgeService]
+      jwks = stub[JwksService]
+      presets = stub[AuthorizationPresetsSyncClient]
       revocation = stub[TokenRevocationService]
       dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
       tracing <- tracingLayer.build
@@ -116,11 +116,11 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         ),
       )
-      _        <- jwks.getPublicKeys.succeedsWith(publicKeys)
-      _        <- revocation.isRevoked.succeedsWith(revoked)
-      _        <- setup(service, jwks)
-      _        <- presetsSetup(presets)
-      _        <- dpopSetup(dpopVerifier)
+      _ <- jwks.getPublicKeys.succeedsWith(publicKeys)
+      _ <- revocation.isRevoked.succeedsWith(revoked)
+      _ <- setup(service, jwks)
+      _ <- presetsSetup(presets)
+      _ <- dpopSetup(dpopVerifier)
       response <- client.batched(request)
     yield (response, service, jwks)
 
@@ -255,7 +255,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request
           .get(URL.decode("/permissions/me").toOption.get)
           .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken"))
-          emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
+        emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(emptyResponse))
       yield assertTrue(
         response.status == Status.Ok,
@@ -518,7 +518,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         (response, service, _) <- run(
-          Request.get(URL.decode("/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1").toOption.get),
+          Request.get(URL.decode(
+            "/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1",
+          ).toOption.get),
           (s, _) => s.completeError.succeedsWith(redirectUrl),
         )
         location = response.header(Header.Location).map(_.url)

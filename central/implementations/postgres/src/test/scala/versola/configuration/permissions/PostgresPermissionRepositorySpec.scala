@@ -1,7 +1,7 @@
 package versola.configuration.permissions
 
-import com.augustnagro.magnum.sql
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.sql
 import versola.central.configuration.permissions.PermissionRepositorySpec
 import versola.util.postgres.PostgresSpec
 import zio.*

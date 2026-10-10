@@ -30,20 +30,19 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
   ): Task[(Option[Int], String)] =
     ZIO.acquireReleaseWith(
       ZIO.attemptBlocking((Files.createTempFile("e2e-central-", ".conf").nn, Files.createTempFile("e2e-central-", ".log").nn)),
-    )((conf, log) => ZIO.attemptBlocking { Files.deleteIfExists(conf); Files.deleteIfExists(log) }.ignore):
-      (conf, log) =>
-        ZIO.attemptBlocking:
-          Files.writeString(conf, edit(Files.readString(Path.of(config.centralEnvConf))) + "\n" + `override` + "\n")
-          val builder = ProcessBuilder(config.centralLauncher, s"-Denv.path=$conf")
-            .redirectErrorStream(true)
-            .redirectOutput(log.toFile)
-          builder.environment().nn.put("PORT", "9011")
-          builder.environment().nn.put("DPORT", "9012")
-          builder.environment().nn.put("RUN_MIGRATIONS", "false")
-          val process = builder.start().nn
-          val exited = process.waitFor(2, TimeUnit.MINUTES)
-          if !exited then process.destroyForcibly()
-          (Option.when(exited)(process.exitValue()), Files.readString(log))
+    )((conf, log) => ZIO.attemptBlocking { Files.deleteIfExists(conf); Files.deleteIfExists(log) }.ignore): (conf, log) =>
+      ZIO.attemptBlocking:
+        Files.writeString(conf, edit(Files.readString(Path.of(config.centralEnvConf))) + "\n" + `override` + "\n")
+        val builder = ProcessBuilder(config.centralLauncher, s"-Denv.path=$conf")
+          .redirectErrorStream(true)
+          .redirectOutput(log.toFile)
+        builder.environment().nn.put("PORT", "9011")
+        builder.environment().nn.put("DPORT", "9012")
+        builder.environment().nn.put("RUN_MIGRATIONS", "false")
+        val process = builder.start().nn
+        val exited = process.waitFor(2, TimeUnit.MINUTES)
+        if !exited then process.destroyForcibly()
+        (Option.when(exited)(process.exitValue()), Files.readString(log))
 
   private def authMethodOf(central: CentralApi, clientId: String): Task[Option[String]] =
     central.get("/configuration/clients", "tenantId" -> Fixtures.defaultTenant)
@@ -66,7 +65,8 @@ object BootstrapAuthMethodSpec extends ZIOSpec[CentralApi & E2EConfig]:
         )).label("the refusal must name the client, both methods and the setting to restore") &&
         assertTrue(after == before).label("the refused boot must leave the client as it was")
     },
-    test("central refuses to start when utils is given a secret in place of the key it was created with") {      for
+    test("central refuses to start when utils is given a secret in place of the key it was created with") {
+      for
         central <- ZIO.service[CentralApi]
         config <- ZIO.service[E2EConfig]
         before <- authMethodOf(central, config.provisionerClientId)

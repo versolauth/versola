@@ -1,9 +1,20 @@
 package versola.oauth.conversation.model
 
 import versola.oauth.authorize.model.{ResponseMode, ResponseTypeEntry}
-import versola.oauth.client.model.{Acr, AuthFlow, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, RegistrationFlow, RegistrationStep, ResourceUri, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
+import versola.oauth.client.model.{
+  Acr,
+  AuthFlow,
+  AuthorizationDetail,
+  ClientId,
+  PassedAuthFactor,
+  PassedFactorRecord,
+  RegistrationFlow,
+  RegistrationStep,
+  ResourceUri,
+  ScopeToken,
+}
 import versola.oauth.model.UserAgentCookiePayload
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.{Login, UserId, UserRecord}
@@ -11,7 +22,6 @@ import versola.util.{Email, MAC, Phone}
 import zio.http.URL
 import zio.json.ast.Json
 import zio.prelude.NonEmptySet
-
 
 case class ConversationRecord(
     clientId: ClientId,
@@ -76,7 +86,7 @@ case class ConversationRecord(
       phone = userPhone,
       login = userLogin,
       claims = userClaims.getOrElse(Json.Obj.empty),
-      uiLocales = uiLocales
+      uiLocales = uiLocales,
     )
   }
 

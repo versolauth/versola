@@ -237,7 +237,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
 
           // Simulate concurrent attempts to mark as used
           results <- ZIO.collectAllPar(
-            List.fill(10)(env.repository.markAsUsed(code1))
+            List.fill(10)(env.repository.markAsUsed(code1)),
           )
 
           _ <- env.repository.delete(code1)
@@ -247,7 +247,7 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
           reuseCount = results.count(_.isLeft)
         yield assertTrue(
           successCount == 1, // Exactly one should succeed
-          reuseCount == 9, // The other 9 should detect reuse
+          reuseCount == 9,   // The other 9 should detect reuse
           results.collect { case Left(family) => family }.forall(_ === familyId1),
         )
       },
@@ -255,4 +255,3 @@ trait AuthorizationCodeRepositorySpec extends DatabaseSpecBase[AuthorizationCode
 
 object AuthorizationCodeRepositorySpec:
   case class Env(repository: AuthorizationCodeRepository)
-

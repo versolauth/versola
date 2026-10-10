@@ -75,14 +75,14 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     test("insert then find round-trips every persisted column, in the order V0002 declares them") {
       val session = mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000))
       for
-        _     <- env.repository.insert(session)
+        _ <- env.repository.insert(session)
         found <- env.repository.find(1)
       yield assertTrue(found.contains(session))
     },
     test("a web session round-trips with the cookie and no refresh token, which is not the same as an empty one") {
       val session = web(1, shard = 3, accessExpiresAt = now.plusSeconds(1200))
       for
-        _     <- env.repository.insert(session)
+        _ <- env.repository.insert(session)
         found <- env.repository.find(1)
       yield assertTrue(
         found.contains(session),
@@ -95,51 +95,51 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     },
     test("listLive returns a live web session, which has no refresh expiry to be live by") {
       for
-        _      <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
-        live   <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
+        _ <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
+        live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
       yield assertTrue(live.map(_.id) == Vector(1L))
     },
     test("listLive orders both kinds by the expiry each is resumable until") {
       for
-        _    <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
-        _    <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
+        _ <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
         live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
       yield assertTrue(live.map(_.id) == Vector(2L, 1L))
     },
     test("listLive excludes an expired session of either kind") {
       for
-        _    <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.minusSeconds(60)))
-        _    <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.minusSeconds(60)))
-        _    <- env.repository.insert(web(3, shard = 3, accessExpiresAt = now.plusSeconds(60)))
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.minusSeconds(60)))
+        _ <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.minusSeconds(60)))
+        _ <- env.repository.insert(web(3, shard = 3, accessExpiresAt = now.plusSeconds(60)))
         live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
       yield assertTrue(live.map(_.id) == Vector(3L))
     },
     test("listLive is confined to the driver's own shard") {
       for
-        _    <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
-        _    <- env.repository.insert(web(2, shard = 4, accessExpiresAt = now.plusSeconds(1200)))
+        _ <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
+        _ <- env.repository.insert(web(2, shard = 4, accessExpiresAt = now.plusSeconds(1200)))
         live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
       yield assertTrue(live.map(_.id) == Vector(1L))
     },
     test("listLive honours its limit, taking the sessions that expire soonest") {
       for
-        _    <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(3600)))
-        _    <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
+        _ <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(3600)))
+        _ <- env.repository.insert(web(2, shard = 3, accessExpiresAt = now.plusSeconds(1200)))
         live <- env.repository.listLive(shard = 3, liveAt = now, limit = 1)
       yield assertTrue(live.map(_.id) == Vector(2L))
     },
     test("listByUser returns one user's sessions in id order and nobody else's") {
       for
-        _     <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 7))
-        _     <- env.repository.insert(mobile(2, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 7))
-        _     <- env.repository.insert(mobile(3, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 8))
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 7))
+        _ <- env.repository.insert(mobile(2, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 7))
+        _ <- env.repository.insert(mobile(3, shard = 3, refreshExpiresAt = now.plusSeconds(600)).copy(userId = 8))
         found <- env.repository.listByUser(7)
       yield assertTrue(found.map(_.id) == Vector(1L, 2L))
     },
     test("bumpGeneration returns the generation the caller now owns") {
       for
-        _      <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
-        first  <- env.repository.bumpGeneration(1)
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        first <- env.repository.bumpGeneration(1)
         second <- env.repository.bumpGeneration(1)
       yield assertTrue(first.contains(1), second.contains(2))
     },
@@ -149,7 +149,7 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     test("storeRotatedRefresh writes at the generation it was given") {
       val rotatedUntil = now.plusSeconds(2592000)
       for
-        _          <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
         generation <- env.repository.bumpGeneration(1)
         wrote <- env.repository.storeRotatedRefresh(
           id = 1,
@@ -189,8 +189,8 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     test("storeEdgeCookie adopts the cookie edge rotated, with its new expiry") {
       val rotatedUntil = now.plusSeconds(1800)
       for
-        _     <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(600)))
-        _     <- env.repository.storeEdgeCookie(1, EdgeSession("edge-rotated"), rotatedUntil)
+        _ <- env.repository.insert(web(1, shard = 3, accessExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.storeEdgeCookie(1, EdgeSession("edge-rotated"), rotatedUntil)
         found <- env.repository.find(1)
       yield assertTrue(
         found.flatMap(_.edgeCookie).contains(EdgeSession("edge-rotated")),
@@ -243,7 +243,7 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     },
     test("a session restored after a restart still carries the SSO session it was established on") {
       for
-        _    <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(2592000)))
         live <- env.repository.listLive(shard = 3, liveAt = now, limit = 10)
       yield assertTrue(live.flatMap(_.ssoSession) == Vector(SsoSession("sso-1")))
     },
@@ -253,7 +253,7 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
         _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
         _ <- env.repository.insert(mobile(2, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
         _ <- env.repository.touchAll(Chunk(SessionTouch(1, touchedTo)))
-        touched   <- env.repository.find(1)
+        touched <- env.repository.find(1)
         untouched <- env.repository.find(2)
       yield assertTrue(
         touched.flatMap(_.accessExpiresAt).contains(touchedTo),
@@ -380,8 +380,8 @@ object PostgresDeviceSessionRepositorySpec extends LoadgenPostgresSpec, Database
     },
     test("delete removes the session the recovery path retired") {
       for
-        _     <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
-        _     <- env.repository.delete(1)
+        _ <- env.repository.insert(mobile(1, shard = 3, refreshExpiresAt = now.plusSeconds(600)))
+        _ <- env.repository.delete(1)
         found <- env.repository.find(1)
       yield assertTrue(found.isEmpty)
     },

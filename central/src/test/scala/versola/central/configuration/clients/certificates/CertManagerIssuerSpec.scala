@@ -18,9 +18,23 @@ import java.util.Base64
 object CertManagerIssuerSpec extends ZIOSpecDefault:
 
   private val certificate = TestCertificates.generate(subject = "CN=issued").certificatePem
-  private val request = CertificateSigningRequest("-----BEGIN CERTIFICATE REQUEST-----\nAA==\n-----END CERTIFICATE REQUEST-----\n", "mobile-app", List("a.test"), Nil, Nil, Nil, 336.hours)
+  private val request = CertificateSigningRequest(
+    "-----BEGIN CERTIFICATE REQUEST-----\nAA==\n-----END CERTIFICATE REQUEST-----\n",
+    "mobile-app",
+    List("a.test"),
+    Nil,
+    Nil,
+    Nil,
+    336.hours,
+  )
 
-  private final case class Api(port: Int, created: Ref[List[Json.Obj]], deleted: Ref[List[String]], polls: Ref[Int], authorization: Ref[Option[String]])
+  private final case class Api(
+      port: Int,
+      created: Ref[List[Json.Obj]],
+      deleted: Ref[List[String]],
+      polls: Ref[Int],
+      authorization: Ref[Option[String]],
+  )
 
   /** @param statusOf what the GET answers on the n-th poll */
   private def api(statusOf: Int => Json): ZIO[Scope, Throwable, Api] =
@@ -51,7 +65,13 @@ object CertManagerIssuerSpec extends ZIOSpecDefault:
       token <- ZIO.attemptBlocking(Files.writeString(Files.createTempFile("sa-token", ""), "service-account-token"))
       ca <- ZIO.attemptBlocking(Files.writeString(Files.createTempFile("sa-ca", ".crt"), certificate))
       issuer <- CertManagerIssuer.make(
-        CertManagerConfig(issuerName = "versola-client-ca", namespace = Some("versola"), apiUrl = s"http://localhost:$port", tokenPath = token.toString, caPath = ca.toString),
+        CertManagerConfig(
+          issuerName = "versola-client-ca",
+          namespace = Some("versola"),
+          apiUrl = s"http://localhost:$port",
+          tokenPath = token.toString,
+          caPath = ca.toString,
+        ),
         client,
       )
     yield issuer
@@ -89,9 +109,11 @@ object CertManagerIssuerSpec extends ZIOSpecDefault:
     test("fails with cert-manager's reason when the request is denied") {
       ZIO.scoped:
         for
-          server <- api(_ => Json.Obj("status" -> Json.Obj("conditions" -> Json.Arr(
-            Json.Obj("type" -> Json.Str("Denied"), "status" -> Json.Str("True"), "message" -> Json.Str("not allowed by policy")),
-          ))))
+          server <- api(_ =>
+            Json.Obj("status" -> Json.Obj("conditions" -> Json.Arr(
+              Json.Obj("type" -> Json.Str("Denied"), "status" -> Json.Str("True"), "message" -> Json.Str("not allowed by policy")),
+            ))),
+          )
           issuer <- issuer(server.port)
           exit <- issuer.sign(request).exit
           deleted <- server.deleted.get
@@ -100,9 +122,16 @@ object CertManagerIssuerSpec extends ZIOSpecDefault:
     test("fails when the issuer reports the request Failed") {
       ZIO.scoped:
         for
-          server <- api(_ => Json.Obj("status" -> Json.Obj("conditions" -> Json.Arr(
-            Json.Obj("type" -> Json.Str("Ready"), "status" -> Json.Str("False"), "reason" -> Json.Str("Failed"), "message" -> Json.Str("issuer unavailable")),
-          ))))
+          server <- api(_ =>
+            Json.Obj("status" -> Json.Obj("conditions" -> Json.Arr(
+              Json.Obj(
+                "type" -> Json.Str("Ready"),
+                "status" -> Json.Str("False"),
+                "reason" -> Json.Str("Failed"),
+                "message" -> Json.Str("issuer unavailable"),
+              ),
+            ))),
+          )
           issuer <- issuer(server.port)
           exit <- issuer.sign(request).exit
         yield assertTrue(exit.isFailure, exit.toString.contains("issuer unavailable"))

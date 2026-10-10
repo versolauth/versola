@@ -210,7 +210,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
         )
         val updatedRecord = initialWithPrior.copy(
           step = realOtp,
-          userId = Some(userId1)
+          userId = Some(userId1),
         )
         for
           _ <- env.repository.create(authId1, initialWithPrior, ttl)
@@ -223,7 +223,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           overwritten,
           found2.priorSessionId.exists(m => java.util.Arrays.equals(m: Array[Byte], mac: Array[Byte])),
           found2.priorSessionUserId.contains(userId2),
-          found2.version == found1.version + 1
+          found2.version == found1.version + 1,
         )
       },
       test("find returns None for expired conversation") {
@@ -234,7 +234,6 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           result <- env.repository.find(pastAuthId)
         yield assertTrue(result.isEmpty)
       },
-
     )
 
 object ConversationRepositorySpec:
