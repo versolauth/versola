@@ -184,8 +184,18 @@ object AuthorizeEndpointService:
                             targetAcr = Some(targetAcr),
                             missingUser = reauthMissingUser,
                             priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                           )
                     case _ =>
+                      // Skipping the credential card for a known user is only sound when something
+                      // is still left to verify them with: a required OTP or password step. A flow
+                      // whose password lives in the credential card (inline) and asks no further
+                      // factor has nothing after it, so the conversation would finish the moment it
+                      // was created -- a re-authentication in which nobody authenticated, and a
+                      // /challenge that then finds no conversation (ConversationExpired). In that case
+                      // the card is shown again, as for any login.
+                      val leavesSomethingToVerify = flow.primary.factors.exists: factor =>
+                        factor.required && PassedAuthFactor.fromFactorType(factor.`type`).isDefined
                       createConversation(
                         authId,
                         request,
@@ -193,9 +203,15 @@ object AuthorizeEndpointService:
                         registrationFlow,
                         uiLocales,
                         Map.empty,
-                        knownUserId = targetUserId,
+                        // A re-authentication must not take a `login_hint` as the user's answer: when the
+                        // card is shown again nobody has been identified yet, and submitting the hint
+                        // would identify them and, for a flow with no factor after the card, finish
+                        // the login without anything having verified them.
+                        applyHint = false,
+                        knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
                         missingUser = reauthMissingUser,
                         priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                       )
                 else if !acrSatisfied then
                   // A deleted user has no auth factors registered, so resolveAchievableAcr would
@@ -226,6 +242,7 @@ object AuthorizeEndpointService:
                             targetAcr = Some(targetAcr),
                             missingUser = MissingUserBehavior.Deny,
                             priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                           )
                 else if !factorsSatisfied then
                   createConversation(
@@ -239,6 +256,7 @@ object AuthorizeEndpointService:
                     knownUserId = Some(session.userId),
                     missingUser = MissingUserBehavior.Deny,
                     priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                   )
                 else if clientRecord.consentFlow.isEmpty then
                   // No consent flow configured for this client: skip the decision entirely,
@@ -267,6 +285,7 @@ object AuthorizeEndpointService:
                         targetAcr = satisfiedAcr,
                         missingUser = MissingUserBehavior.Deny,
                         priorSessionId = Some(id),
+                            priorSessionUserId = Some(session.userId),
                       )
                     case ConsentDecision.Satisfied(grantedScope) =>
                       silentAuthorize(request, uiLocales, SessionInfo(id, session), satisfiedAcr, grantedScope)
@@ -294,6 +313,7 @@ object AuthorizeEndpointService:
         targetAcr: Option[Acr] = None,
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
         priorSessionId: Option[MAC.Of[SessionId]] = None,
+        priorSessionUserId: Option[UserId] = None,
     ): Task[AuthorizeResponse] =
       for
         userOpt <- knownUserId match
@@ -353,6 +373,7 @@ object AuthorizeEndpointService:
           targetAcr = targetAcr,
           csrfToken = csrfToken,
           priorSessionId = priorSessionId,
+          priorSessionUserId = priorSessionUserId,
           resources = request.resources,
           authorizationDetails = request.authorizationDetails,
           grantedScope = None,
@@ -439,6 +460,7 @@ object AuthorizeEndpointService:
           .orElseFail(Error.AccessDenied(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
+          clientId = request.clientId,
           scope = grantedScope,
           requestedClaims = request.requestedClaims,
           uiLocales = uiLocales,

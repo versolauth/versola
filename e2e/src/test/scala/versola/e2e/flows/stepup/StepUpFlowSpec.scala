@@ -124,6 +124,30 @@ object StepUpFlowSpec extends E2ESpec:
         yield assertTrue(code.nonEmpty).label("code must not be empty")
       },
 
+      // The credential card carries the password, and this flow asks nothing after it. Re-authentication
+      // used to skip the card for the session's user and finish with nothing verified, so the
+      // /challenge that followed found no conversation (what the conformance suite's oidcc-max-age-1
+      // saw as the ConversationExpired page).
+      test("max_age=0 with a login+password session asks for the credentials again") {
+        for
+          (s, auth) <- setup(Flows.Id.LoginPassword)
+          first <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          challenge <- auth.getChallenge(first.conversationCookie.get).assertStep(ConversationStep.Credential)
+          submit <- auth.submitLoginPassword(first.conversationCookie.get, s.login.get, s.password, challenge.csrf)
+          _ <- ZIO.succeed(submit).assertRedirect(auth, first.conversationCookie.get)
+          sessionCookie <- ZIO.fromOption(submit.sessionCookie)
+            .orElseFail(RuntimeException("No SSO_SESSION cookie in final submission response"))
+          second <- auth.authorizeRaw(
+            clientId = s.clientId,
+            redirectUri = s.redirectUri,
+            sessionCookie = Some(sessionCookie),
+            maxAge = Some(0),
+          ).assertChallengeRedirect
+          // A live conversation on the credential card, not the expired page.
+          _ <- auth.getChallenge(second.conversationCookie.get).assertStep(ConversationStep.Credential)
+        yield assertCompletes
+      },
+
       test("max_age=0 with valid session forces new challenge") {
         for
           (s, auth) <- setup(Flows.Id.EmailOtp)

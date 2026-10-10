@@ -9,13 +9,3 @@ CREATE TABLE user_consents (
     expires_at TIMESTAMP WITH TIME ZONE,
     PRIMARY KEY (user_id, client_id)
 );
-
--- The scope actually granted on the consent screen, which may be a subset of the requested
--- `scope` when the client allows partial grants. NULL until consent has been resolved.
-ALTER TABLE auth_conversations
-    ADD COLUMN granted_scope TEXT[];
-
--- OIDC `prompt=consent` must re-prompt even when a matching grant is already on file, and the
--- decision is taken long after `/authorize` has returned, so the request's intent is persisted.
-ALTER TABLE auth_conversations
-    ADD COLUMN prompt_consent BOOLEAN NOT NULL DEFAULT FALSE;

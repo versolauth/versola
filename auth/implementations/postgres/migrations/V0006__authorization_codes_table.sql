@@ -7,8 +7,9 @@ CREATE TABLE authorization_codes (
     redirect_uri TEXT NOT NULL,
     scope TEXT[] NOT NULL,
     resources TEXT[] NOT NULL,
-    code_challenge TEXT NOT NULL,
-    code_challenge_method TEXT NOT NULL,
+    -- Optional as on the conversation it ends: both or neither, held by the CHECK below.
+    code_challenge TEXT,
+    code_challenge_method TEXT,
     expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
     requested_claims JSONB,
     ui_locales TEXT[],
@@ -21,7 +22,13 @@ CREATE TABLE authorization_codes (
     family_id TEXT NOT NULL,
     acr TEXT,
     amr JSONB NOT NULL,
-    auth_time TIMESTAMP WITH TIME ZONE NOT NULL
+    auth_time TIMESTAMP WITH TIME ZONE NOT NULL,
+    -- RFC 9396 `authorization_details`, stored verbatim; see auth_conversations.
+    authorization_details JSONB[],
+    -- RFC 9449 section 10 `dpop_jkt` the code is bound to; see auth_conversations.
+    dpop_jkt TEXT,
+    CONSTRAINT authorization_codes_pkce_pair
+        CHECK ((code_challenge IS NULL) = (code_challenge_method IS NULL))
 );
 
 CREATE INDEX authorization_codes_expires_at_idx

@@ -434,8 +434,8 @@ object AuthorizeRequestParser:
         if !accepts(PrimaryCredential.phone) then ZIO.none
         else
           oauthClientService.getAllowedPhonePrefixes(client.id).map: prefixes =>
-            Option.when(prefixes.isEmpty || prefixes.exists(value.startsWith))(Phone.parse(value))
-              .flatMap(_.toOption)
+            Phone.parse(value).toOption
+              .filter(phone => prefixes.isEmpty || prefixes.exists(phone.startsWith))
               .map(Right(_))
       else
         ZIO.succeed(Option.when(accepts(PrimaryCredential.email))(Email.from(value)).flatMap(_.toOption).map(Left(_)))

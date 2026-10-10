@@ -31,7 +31,7 @@ object EnvironmentReaderSpec extends ZIOSpecDefault:
       )
     },
     test("sums an app's pods at each instant and keeps the busiest pod's own peak") {
-      val reader = VictoriaMetricsEnvironmentReader(
+      val reader = VictoriaMetricsEnvironmentReader.make(
         config,
         client(
           "container_cpu_usage_seconds_total" -> ZIO.succeed(
@@ -43,7 +43,9 @@ object EnvironmentReaderSpec extends ZIOSpecDefault:
           "container_last_seen" -> ZIO.succeed(List(MetricSeries(Map("pod" -> pods, "image" -> "registry/auth:fapi2"), Vector.empty))),
         ),
       )
-      for stats <- reader.read(from, to)
+      for
+        r <- reader
+        stats <- r.read(from, to)
       yield
         val app = stats.apps.head
         assertTrue(
@@ -60,7 +62,7 @@ object EnvironmentReaderSpec extends ZIOSpecDefault:
         )
     },
     test("orders routes by their peak and keeps the pool states apart") {
-      val reader = VictoriaMetricsEnvironmentReader(
+      val reader = VictoriaMetricsEnvironmentReader.make(
         config,
         client(
           "http_server_requests_total" -> ZIO.succeed(
@@ -71,7 +73,9 @@ object EnvironmentReaderSpec extends ZIOSpecDefault:
           ),
         ),
       )
-      for stats <- reader.read(from, to)
+      for
+        r <- reader
+        stats <- r.read(from, to)
       yield assertTrue(
         stats.routes.map(_.route) == List("/userinfo", "/token"),
         stats.routes.head.requestsPerSecond.peak == 2.0,
@@ -80,18 +84,63 @@ object EnvironmentReaderSpec extends ZIOSpecDefault:
     },
     // A query that failed must not be told from a quiet system: the report names it.
     test("a failed query is named as unavailable and costs the section, not the report") {
-      val reader = VictoriaMetricsEnvironmentReader(
+      val reader = VictoriaMetricsEnvironmentReader.make(
         config,
         client(
           "container_memory_working_set_bytes" -> ZIO.fail(RuntimeException("timeout")),
           "container_cpu_usage_seconds_total" -> ZIO.succeed(List(series("pod" -> pods)(0.1, 0.1, 0.1))),
         ),
       )
-      for stats <- reader.read(from, to)
+      for
+        r <- reader
+        stats <- r.read(from, to)
       yield assertTrue(
         stats.unavailable == List("memory"),
         stats.apps.head.cpuCores.isDefined,
         stats.apps.head.memoryBytes.isEmpty,
+      )
+    },
+    // The report endpoint is polled; an identical window answers from memory, a failed one retries.
+    test("an identical window is answered from memory, and an incomplete answer is not kept") {
+      for
+        calls <- Ref.make(0)
+        failing <- Ref.make(true)
+        counting = new VictoriaMetricsClient:
+          override def range(expression: String, from: Instant, to: Instant, step: Duration) =
+            calls.update(_ + 1) *> failing.get.flatMap: fails =>
+              if fails && expression.contains("container_memory_working_set_bytes") then ZIO.fail(RuntimeException("down"))
+              else ZIO.succeed(Nil)
+        reader <- VictoriaMetricsEnvironmentReader.make(config, counting)
+        first <- reader.read(from, to)
+        afterFailure <- calls.get
+        _ <- failing.set(false)
+        second <- reader.read(from, to)
+        afterRetry <- calls.get
+        _ <- reader.read(from, to)
+        afterCached <- calls.get
+        _ <- reader.read(from, to.plusSeconds(30))
+        afterMoved <- calls.get
+      yield assertTrue(
+        first.unavailable == List("memory"),
+        second.unavailable.isEmpty,
+        afterRetry == afterFailure * 2,
+        afterCached == afterRetry,
+        afterMoved == afterRetry + afterFailure,
+      )
+    },
+    test("limits are summed over a pod's containers that have one, as usage is summed over all of them") {
+      for
+        seen <- Ref.make(List.empty[String])
+        recording = new VictoriaMetricsClient:
+          override def range(expression: String, from: Instant, to: Instant, step: Duration) =
+            seen.update(expression :: _).as(Nil)
+        reader <- VictoriaMetricsEnvironmentReader.make(config, recording)
+        _ <- reader.read(from, to)
+        expressions <- seen.get
+      yield assertTrue(
+        expressions.exists(_.startsWith("sum by (pod) ((container_spec_cpu_quota")),
+        expressions.exists(_.startsWith("sum by (pod) (container_spec_memory_limit_bytes")),
+        !expressions.exists(_.contains("max by (pod) (container_spec")),
       )
     },
     test("the sample statistic ignores NaN and takes the nearest-rank p95") {

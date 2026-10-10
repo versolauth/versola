@@ -51,14 +51,14 @@ object PostgresCleanupManagerSpec extends PostgresSpec:
             sql"""
               INSERT INTO auth_conversations
                 (id, client_id, redirect_uri, scope, code_challenge, code_challenge_method,
-                resources, step, response_type, response_mode, auth_flow, version, amr, needs_password_change, csrf_token, expires_at)
+                resources, step, response_type, response_mode, auth_flow, version, amr, needs_password_change, csrf_token, expires_at, prompt_consent)
               VALUES
                 ($id1, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256', ARRAY[]::text[],
                 '{"type":"start"}'::json, 'code', 'query', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                false, '', NOW() - INTERVAL '2 minutes'),
+                false, '', NOW() - INTERVAL '2 minutes', false),
                 ($id2, 'c1', 'https://x.com', ARRAY['openid'], 'ch', 'S256', ARRAY[]::text[],
                 '{"type":"start"}'::json, 'code', 'query', '{"type":"pwd"}'::jsonb, 1, '[]'::jsonb,
-                false, '', NOW() + INTERVAL '5 minutes')
+                false, '', NOW() + INTERVAL '5 minutes', false)
             """.update.run()
           _             <- manager.runBatch("auth_conversations", 1000, "id")
           expiredExists <- xa.connect(sql"SELECT COUNT(*) FROM auth_conversations WHERE id = $id1".query[Long].run().head)

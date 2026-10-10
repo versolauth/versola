@@ -1730,7 +1730,11 @@ components:
     Phone:
       type: string
       pattern: '^\+?\d{9,15}$'
-      description: A number that parses and validates as an international phone number.
+      description: |
+        A number that parses and validates as an international phone number. It is stored and
+        returned in canonical E.164 (`+` and digits, national trunk prefix dropped), so
+        `+787011234567` is accepted and stored as `+77011234567`; lookups canonicalise the input
+        the same way.
       examples: ['+77001234567']
     Login:
       type: string
@@ -3593,7 +3597,7 @@ components:
           $ref: '#/components/schemas/TenantId'
         allowedPrefixes:
           type: array
-          description: Phone country prefixes accepted on the login form.
+          description: Phone country prefixes accepted on the login form, matched against the number in canonical E.164.
           items:
             type: string
         submissionLimits:

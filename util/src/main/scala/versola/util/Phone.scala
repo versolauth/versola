@@ -16,15 +16,30 @@ object Phone:
 
   inline def apply(phone: String): Phone = phone
 
+  /** Validates the input and returns it in canonical E.164, the only form that is stored,
+    * compared or hashed: inputs that denote one number, such as `+787011234567` with the
+    * national trunk prefix and `+77011234567`, yield one value.
+    */
   def parse(string: String): Either[String, Phone] = {
     try {
-      val isValid = regex.matches(string) && util.isValidNumber(util.parse(string, "ZZ"))
-      Either.cond(isValid, Phone(string), s"$string is invalid phone number")
+      Option.when(regex.matches(string))(util.parse(string, "ZZ"))
+        .filter(util.isValidNumber)
+        .map(number => Phone(util.format(number, PhoneNumberUtil.PhoneNumberFormat.E164)))
+        .toRight(s"$string is invalid phone number")
     } catch {
       case ex: NumberParseException =>
         Left(ex.getMessage)
     }
   }
+
+  /** ISO 3166-1 alpha-2 region of a number, e.g. `KZ` for `+77011234567`; `None` when the
+    * value is not a valid number.
+    */
+  def regionCode(value: Phone): Option[String] =
+    try
+      Option(util.getRegionCodeForNumber(util.parse(value, "ZZ"))).filter(_ != "ZZ")
+    catch
+      case _: NumberParseException => None
 
   /** Keeps the leading `+` and country calling code plus the last two digits,
     * masking everything in between with bullets. Valid phone values are formatted

@@ -142,6 +142,38 @@ object SSOClient:
     private val pushedAuthorizationUrl: URL = config.internalUrl / "par"
     private val userInfoUrl = config.internalUrl / "userinfo"
 
+    /** Where a call that presents a certificate goes, and the anchors it is checked against
+      * there: a certificate is only presented in a TLS handshake, so such a call cannot take
+      * `internalUrl` when that is plaintext.
+      *
+      * `internalUrl` stays the answer wherever it is `https` -- a TLS terminator in front of
+      * auth, which reads the certificate off the handshake and forwards it, and which accepts
+      * the calls that carry none just as well. Where it is plaintext and this edge has the
+      * `native` back channel, the certificate goes to auth's own mutual-TLS listener instead,
+      * pinned to the certificate that listener presents. That listener serves exactly the
+      * endpoints edge calls for a client (`/token`, `/par`, `/userinfo`) and refuses any
+      * connection without a certificate, which is why only these calls move and the ones
+      * that carry none (a key-bound `/userinfo`) stay on `internalUrl`.
+      *
+      * With neither, the route is `internalUrl` again and the call is refused as before
+      * (`CredentialNeedsTls`), not made unauthenticated.
+      */
+    private val certificateRoute: CertificateRoute =
+      if config.internalUrl.scheme.contains(Scheme.HTTPS) then CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))
+      else
+        config.native.fold(CertificateRoute(config.internalUrl, internalTrustOf(config.versolaInternalTrustedCertificates))): native =>
+          CertificateRoute(native.authMutualTlsUrl, internalTrustOf(native.trustedCertificates))
+
+    private def internalTrustOf(pins: Set[String]): Option[ClientSSLConfig] =
+      Option.when(pins.nonEmpty)(EdgeConfig.pinnedTrust(pins))
+
+    /** `path` on the route the credential's calls take: the listener or terminator for a
+      * certificate, `internalUrl` for everything else. */
+    private[edge] def endpoint(credential: ClientCredential, path: String): URL =
+      credential match
+        case ClientCredential.MutualTls(_) => certificateRoute.base / path
+        case _ => config.internalUrl / path
+
     /** What auth accepts as the `aud` of an assertion or a request object. Both take the
       * issuer identifier (`ClientAssertionService`, `RequestObjectService`), and the issuer is
       * the public address -- `internalUrl` is how this process reaches auth, not what auth
@@ -156,10 +188,6 @@ object SSOClient:
       * Absent is not a default to fall back on but a refusal (`CredentialNeedsTrustedServer`):
       * the only untrusted option zio-http offers is one that authenticates no server at all.
       */
-    private val internalTrust: Option[ClientSSLConfig] =
-      Option.when(config.versolaInternalTrustedCertificates.nonEmpty)(
-        EdgeConfig.pinnedTrust(config.versolaInternalTrustedCertificates),
-      )
 
     override def authorizeUri(
         preset: AuthorizationPreset,
@@ -230,14 +258,15 @@ object SSOClient:
       */
     private def push(params: List[(String, String)], client: OAuthClient): Task[URL] =
       for
+        pushedUrl = endpoint(client.credential, "par")
         authenticated <- authenticate(
           Form(params.map(FormField.simpleField(_, _))*),
           client.id,
           client.credential,
-          pushedAuthorizationUrl,
+          pushedUrl,
         )
         request = Request
-          .post(pushedAuthorizationUrl, Body.fromURLEncodedForm(authenticated.form))
+          .post(pushedUrl, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
         response <- ZIO.scoped(authenticated.over(httpClient).request(request))
@@ -326,10 +355,12 @@ object SSOClient:
       for
         _ <- ZIO.fail(SSOClient.CredentialNeedsTls(clientId, endpoint))
           .unless(endpoint.scheme.contains(Scheme.HTTPS))
-        trust <- ZIO.fromOption(internalTrust)
+        trust <- ZIO.fromOption(certificateRoute.trust)
           .orElseFail(SSOClient.CredentialNeedsTrustedServer(clientId, endpoint))
         certificateConfig <- certificateFiles.present(certificate)
       yield ClientSSLConfig.FromClientAndServerCert(trust, certificateConfig)
+
+    private case class CertificateRoute(base: URL, trust: Option[ClientSSLConfig])
 
     /** @param ssl how the connection this is sent over authenticates, for the one method that
       *            authenticates there rather than in the request. `None` leaves the client's
@@ -352,9 +383,10 @@ object SSOClient:
       )
 
       for
-        authenticated <- authenticate(form, clientId, credential, tokenUrl)
+        url = endpoint(credential, "token")
+        authenticated <- authenticate(form, clientId, credential, url)
         request = Request
-          .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
+          .post(url, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
         response <- ZIO.scoped(authenticated.over(httpClient).request(request))
@@ -376,9 +408,10 @@ object SSOClient:
       )
 
       for
-        authenticated <- authenticate(form, clientId, credential, tokenUrl)
+        url = endpoint(credential, "token")
+        authenticated <- authenticate(form, clientId, credential, url)
         request = Request
-          .post(tokenUrl, Body.fromURLEncodedForm(authenticated.form))
+          .post(url, Body.fromURLEncodedForm(authenticated.form))
           .addHeader(Header.ContentType(MediaType.application.`x-www-form-urlencoded`))
           .addHeaders(authenticated.headers)
         response <- ZIO.scoped(authenticated.over(httpClient).request(request))
@@ -413,16 +446,20 @@ object SSOClient:
         // unless it is the one `cnf.x5t#S256` names. The same certificate this client
         // authenticates with, which is why there is nothing to exempt it from here: proving
         // the binding and authenticating are the same act.
+        certificateBound = binding match
+          case SSOClient.TokenBinding.Certificate(_, credential @ ClientCredential.MutualTls(_)) => Some(credential)
+          case _ => None
+        userInfo = certificateBound.fold(userInfoUrl)(endpoint(_, "userinfo"))
         connection <- binding match
           case SSOClient.TokenBinding.Certificate(clientId, ClientCredential.MutualTls(certificate)) =>
-            mutualTlsConnection(clientId, certificate, userInfoUrl).asSome
+            mutualTlsConnection(clientId, certificate, userInfo).asSome
           case SSOClient.TokenBinding.Certificate(clientId, _) =>
             ZIO.fail(SSOClient.TokenBoundToAbsentCertificate(clientId))
           case SSOClient.TokenBinding.Key | SSOClient.TokenBinding.Unbound =>
             ZIO.none
 
         request = Request
-          .get(userInfoUrl)
+          .get(userInfo)
           .addHeader(Header.Authorization.Bearer(accessToken.toString))
           .addHeaders(assertion.fold(Headers.empty)(a => Headers(Header.Custom(EdgeAssertion.HeaderName, a))))
 

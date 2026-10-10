@@ -200,9 +200,11 @@ RUN OUTPUT=$(java -cp 'migrate-lib/*' versola.migrate.MigrateTool 2>&1); \
 # Also checks the output's permissions: the generated secrets must come out
 # 0600 (they land in a host bind mount), while openbao.hcl must stay
 # readable by others -- OpenBao reads it as its own user, so a blanket
-# umask 077 in entrypoint.sh would break it.
+# umask 077 in entrypoint.sh would break it. And the secret schema
+# versola-cli reads (secrets.schema.json) must have made it into the bundle.
 RUN OUT_DIR=/tmp/smoke-out TARGET=vps AUTH_URL=https://smoke-test.invalid POSTGRES_HOST=127.0.0.1:5432 ./entrypoint.sh \
  && test -f /tmp/smoke-out/central-ui/index.html \
+ && grep -q '"schemaVersion"' /tmp/smoke-out/secrets.schema.json \
  && for f in auth central edge; do \
       test "$(stat -c %a /tmp/smoke-out/$f.generated-secrets.env)" = 600 \
         || { echo "smoke test: $f.generated-secrets.env is not 0600" >&2; exit 1; }; \

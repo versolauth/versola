@@ -34,3 +34,10 @@ case class EdgeRecord(
 
   def activeRsaPublicKey: RSAPublicKey =
     RSAKey.parse(publicKey.toJson).toRSAPublicKey
+
+object EdgeRecord:
+  /** What a newly registered edge requires: edge has demanded a nonce on every proxied call
+    * since DPoP landed there, so an edge is registered that way until an operator turns it off
+    * ([[EdgeRepository.setRequireDpopNonce]]). Set by the code that registers an edge; the
+    * column has no default of its own. */
+  val DefaultRequireDpopNonce: Boolean = true

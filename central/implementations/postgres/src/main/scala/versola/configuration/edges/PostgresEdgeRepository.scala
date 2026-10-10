@@ -28,11 +28,11 @@ class PostgresEdgeRepository(xa: TransactorZIO) extends EdgeRepository, BasicCod
         WHERE id = $id
       """.query[EdgeRecord].run().headOption
 
-  override def createEdge(id: EdgeId, publicKeyJwk: Json.Obj): Task[Unit] =
+  override def createEdge(id: EdgeId, publicKeyJwk: Json.Obj, requireDpopNonce: Boolean): Task[Unit] =
     xa.connectMeasured("create-edge"):
       sql"""
-        INSERT INTO edges (id, public_key_jwk, old_public_key_jwk)
-        VALUES ($id, $publicKeyJwk, NULL)
+        INSERT INTO edges (id, public_key_jwk, old_public_key_jwk, require_dpop_nonce)
+        VALUES ($id, $publicKeyJwk, NULL, $requireDpopNonce)
       """.update.run()
     .unit
 

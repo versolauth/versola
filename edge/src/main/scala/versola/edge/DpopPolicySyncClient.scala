@@ -34,8 +34,7 @@ object DpopPolicySyncClient:
       for
         token <- centralSyncTokenService.getToken
         request = Request.get(DpopPolicyURL).addHeader(Header.Authorization.Bearer(token))
-        response <- ZIO.scoped(httpClient.request(request))
-        body <- response.bodyAs[EdgeDpopSyncResponse]
+        body <- ZIO.scoped(httpClient.request(request).flatMap(_.bodyAs[EdgeDpopSyncResponse]))
       yield DpopPolicy(requireNonce = body.requireDpopNonce)
 
   private case class EdgeDpopSyncResponse(

@@ -13,8 +13,16 @@ import java.time.Instant
 trait EnvironmentReader:
   def read(from: Instant, to: Instant): UIO[EnvironmentStats]
 
-final class VictoriaMetricsEnvironmentReader(config: EnvironmentConfig, client: VictoriaMetricsClient)
-    extends EnvironmentReader:
+/** Remembers the last complete answer: a report endpoint is polled, and the same window always
+  * gives the same figures (samples are never added inside a window that has passed), so only a
+  * window that moved needs the monitoring stack again. An answer with a failed query is not kept,
+  * so the next request retries what failed.
+  */
+final class VictoriaMetricsEnvironmentReader private (
+    config: EnvironmentConfig,
+    client: VictoriaMetricsClient,
+    last: Ref[Option[((Instant, Instant), EnvironmentStats)]],
+) extends EnvironmentReader:
   import EnvironmentReader.*
 
   private val ns = config.namespace
@@ -22,9 +30,17 @@ final class VictoriaMetricsEnvironmentReader(config: EnvironmentConfig, client: 
   private val containers = s"""namespace="$ns",container!="",container!="POD""""
 
   override def read(from: Instant, to: Instant): UIO[EnvironmentStats] =
+    last.get.flatMap:
+      case Some((window, stats)) if window == (from, to) => ZIO.succeed(stats)
+      case _ =>
+        collect(from, to).tap: stats =>
+          last.set(Some(((from, to), stats))).when(stats.unavailable.isEmpty)
+
+  private def collect(from: Instant, to: Instant): UIO[EnvironmentStats] =
     def query(name: String, expression: String): UIO[(String, Option[List[MetricSeries]])] =
       client
         .range(expression, from, to, config.step)
+        .timeoutFail(RuntimeException(s"no answer in ${config.timeout.render}"))(config.timeout)
         .map(series => name -> Some(series))
         .catchAllCause: cause =>
           ZIO.logWarningCause(s"Environment query '$name' failed; the report will carry no such figure", cause)
@@ -34,13 +50,16 @@ final class VictoriaMetricsEnvironmentReader(config: EnvironmentConfig, client: 
       .foreachPar(
         List(
           "cpu" -> s"sum by (pod) (rate(container_cpu_usage_seconds_total{$containers}[$rate]))",
-          "cpu-limit" -> s"max by (pod) (container_spec_cpu_quota{$containers} / container_spec_cpu_period{$containers})",
+          // Summed over the pod's containers that have a limit, as usage is summed over all of
+          // them, so a sidecar does not make the limit read as the largest container's alone.
+          // A container without a limit reports a quota of 0 and contributes nothing.
+          "cpu-limit" -> s"sum by (pod) ((container_spec_cpu_quota{$containers} > 0) / container_spec_cpu_period{$containers})",
           "throttled" -> (
             s"sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{$containers}[$rate])) / " +
               s"sum by (pod) (rate(container_cpu_cfs_periods_total{$containers}[$rate]))"
           ),
           "memory" -> s"sum by (pod) (container_memory_working_set_bytes{$containers})",
-          "memory-limit" -> s"max by (pod) (container_spec_memory_limit_bytes{$containers})",
+          "memory-limit" -> s"sum by (pod) (container_spec_memory_limit_bytes{$containers} > 0)",
           "network-receive" -> s"""sum by (pod) (rate(container_network_receive_bytes_total{namespace="$ns"}[$rate]))""",
           "network-transmit" -> s"""sum by (pod) (rate(container_network_transmit_bytes_total{namespace="$ns"}[$rate]))""",
           "images" -> s"""max by (pod, image) (container_last_seen{$containers})""",
@@ -95,6 +114,10 @@ final class VictoriaMetricsEnvironmentReader(config: EnvironmentConfig, client: 
           ,
           unavailable = results.collect { case (name, None) => name }.sorted,
         )
+
+object VictoriaMetricsEnvironmentReader:
+  def make(config: EnvironmentConfig, client: VictoriaMetricsClient): UIO[VictoriaMetricsEnvironmentReader] =
+    Ref.make(Option.empty[((Instant, Instant), EnvironmentStats)]).map(VictoriaMetricsEnvironmentReader(config, client, _))
 
 object EnvironmentReader:
 

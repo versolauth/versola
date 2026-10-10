@@ -79,7 +79,7 @@ object EdgeActionClientSpec extends ZIOSpecDefault:
 
   private val issuedNonce = "nonce-from-edge"
 
-  /** A registered edge requires a nonce by default (`V1024__edges_require_dpop_nonce.sql`), so
+  /** A registered edge requires a nonce by default (`V1001__edges_table.sql`), so
     * this is the ordinary path for a DPoP campaign rather than a corner of it. Every failure
     * below is silent in the same way: edge's refusal is a `401` with no `acr_values`, which the
     * driver would otherwise read as an expired token and answer with a refresh, so the campaign

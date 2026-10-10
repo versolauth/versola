@@ -197,9 +197,16 @@ genuinely shared values stay bare. So:
 | `CENTRAL_SECRET_KEY` | auth *and* central | `central-secret-key` — one key, one value |
 | `POSTGRES_PASSWORD` | each | `auth-postgres-password`, `central-postgres-password`, `edge-postgres-password` |
 
-Twenty-six keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
+Twenty-nine keys in total. `versola.secretEnv` fails the template if `secrets.existingSecret` is
 unset, and a missing key surfaces as an unresolved HOCON substitution at startup, so both
 mistakes fail loudly rather than silently.
+
+**Upgrading an existing Secret:** edge now reads its native-app blob key from `EDGE_NATIVE_BLOB_KEY`
+instead of a literal in `edge.conf`, so the shared Secret needs one more key, `edge-native-blob-key`
+(32 random bytes, URL-safe base64 without padding — it is in the new `edge.generated-secrets.env`).
+Add it before upgrading the chart, or edge's pods will not start. Until then the old edge keeps the
+literal from the `edge.conf` it was generated with; a new one regenerates it, so a native login
+in flight across the switch has to be restarted.
 
 Build both kinds from the generated files without the values passing through a terminal:
 
@@ -462,6 +469,14 @@ certificate use the two-pin procedure (publish the next leaf on every edge befor
 instead of relying on automatic renewal. **CA rotation** with `trustBundle`: add the incoming CA's
 Secret (in trust-manager's trust namespace) to `sources` next to the bootstrapped one, reissue the
 clients, then remove the outgoing source.
+
+A **web** client that authenticates with a certificate (`tls_client_auth`, what a FAPI 2.0 tenant admits) needs
+the same listener, and edge uses it by itself: with `versola-internal-url` plaintext (the chart's `http://versola-auth:8080`)
+and the `native { }` block present, edge sends that client's `/par`, `/token` and the `/userinfo` of its
+certificate-bound tokens to `native.auth-mutual-tls-url`, pinned to `native.trusted-certificates`. Every other call
+(a secret or key client, a key-bound token's `/userinfo`) stays on `versola-internal-url`. With a TLS terminator in front of
+auth instead (`versola-internal-url` is `https`), nothing moves. With neither, the login is refused with
+`CredentialNeedsTls` (versolauth/versola#551).
 
 Registering a native client that central should issue for needs no certificate in the request — see
 above. A client whose certificate you supply yourself (`edgeClientCertificate`) is left alone: central

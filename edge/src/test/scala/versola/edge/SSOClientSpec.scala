@@ -257,6 +257,72 @@ object SSOClientSpec extends ZIOSpecDefault:
         error == SSOClient.CredentialNeedsTls(clientId, plaintext.internalUrl / "token"),
       )
     },
+    // A deployment with no TLS terminator in front of auth (the chart's): `versola-internal-url`
+    // is plaintext, which no certificate can be presented over. With the native back channel
+    // configured, a certificate client's calls take auth's own mutual-TLS listener instead,
+    // pinned to what that listener presents, and nothing else moves.
+    suite("with a plaintext internal url and the native back channel")(
+      {
+        val plain = URL.decode("http://auth.internal:8080").toOption.get
+        val listener = URL.decode("https://auth.internal:8083").toOption.get
+        val native = EdgeConfig.Native(
+          authMutualTlsUrl = listener,
+          trustedCertificates = Set("listener.pem"),
+          blobKey = Secret.Bytes32(Array.fill(32)(9.toByte)),
+        )
+        val viaListener = config.copy(versolaInternalUrl = Some(plain), native = Some(native))
+        val mutualTls = ClientCredential.MutualTls(certificateMaterial)
+
+        Chunk(
+          // The stub client does not keep where a request was addressed, so the route itself is
+          // asserted; the calls below prove it is the one the requests then take.
+          test("routes a certificate client's token, push and userinfo calls to the listener, everyone else's to the plain url") {
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, viaListener, certificateFiles)
+            yield assertTrue(
+              sso.endpoint(mutualTls, "token") == listener / "token",
+              sso.endpoint(mutualTls, "par") == listener / "par",
+              sso.endpoint(mutualTls, "userinfo") == listener / "userinfo",
+              sso.endpoint(secretClient.credential, "token") == plain / "token",
+              sso.endpoint(keyClient.credential, "par") == plain / "par",
+            )
+          },
+          test("presents the certificate there instead of refusing the plaintext url") {
+            for
+              seen <- Ref.make(Option.empty[Request])
+              presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+              _ <- captureRequest(seen, Response.json(tokenJson))
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
+              _ <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls)
+              _ <- sso.exchangeRefreshToken(RefreshToken("r-1"), clientId, mutualTls)
+              _ <- sso.userInfo(AccessToken("at-1"), SSOClient.TokenBinding.Certificate(clientId, mutualTls))
+              certificates <- presented.get
+            yield assertTrue(certificates.size == 3)
+          },
+          test("a key-bound token's /userinfo carries no certificate and keeps to the plain url") {
+            for
+              seen <- Ref.make(Option.empty[Request])
+              presented <- Ref.make(List.empty[PrivateClientCertificate.Material])
+              _ <- captureRequest(seen, Response.json("""{"sub":"user-1"}"""))
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, viaListener, recordingCertificateFiles(presented))
+              _ <- sso.userInfo(AccessToken("at-2"), SSOClient.TokenBinding.Key)
+              certificates <- presented.get
+            yield assertTrue(certificates.isEmpty)
+          },
+          test("refuses a listener with no pins instead of trusting whatever answers") {
+            val unpinned = viaListener.copy(native = Some(native.copy(trustedCertificates = Set.empty)))
+            for
+              client <- ZIO.service[Client]
+              sso = SSOClient.Impl(client, unpinned, certificateFiles)
+              error <- sso.exchangeAuthorizationCode(Code("c-1"), CodeVerifier("v-1"), redirectUri, clientId, mutualTls).flip
+            yield assertTrue(error == SSOClient.CredentialNeedsTrustedServer(clientId, listener / "token"))
+          },
+        )
+      }*,
+    ),
     test("refuses an endpoint with no trust anchors instead of trusting whatever answers") {
       // zio-http's fallback authenticates no server at all, so presenting the certificate
       // without anchors would carry the session it opens over a connection to any host able
