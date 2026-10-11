@@ -64,7 +64,7 @@ object PostgresWalMetricsSpec extends PostgresSpec:
           after <- counter("db_checkpoints_total", MetricLabel("type", "requested"))
         yield assertTrue(after - before >= 1.0)
       },
-      test("reports the WAL an idle replication slot is holding back, and zeroes it once the slot is dropped") {
+      test("reports the WAL an idle replication slot is holding back, and stops reporting it once the slot is dropped") {
         val slot = s"wal_probe_slot_${java.util.UUID.randomUUID().toString.replace("-", "")}"
         val label = MetricLabel("slot", slot)
         for
@@ -81,6 +81,6 @@ object PostgresWalMetricsSpec extends PostgresSpec:
             .ensuring(xa.connect(sql"SELECT pg_drop_replication_slot($slot)".query[String].run()).ignore)
           _ <- sampler.sample
           afterDrop <- gauge("db_replication_slot_retained_bytes", label)
-        yield assertTrue(result._1 > 0.0, result._2 == 0.0, result._3 >= result._1, afterDrop == 0.0)
+        yield assertTrue(result._1 > 0.0, result._2 == 0.0, result._3 >= result._1, afterDrop.isNaN)
       },
     ) @@ TestAspect.sequential

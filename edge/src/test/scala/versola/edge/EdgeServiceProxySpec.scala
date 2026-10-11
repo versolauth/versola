@@ -316,8 +316,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       maxAge = None,
     )
 
-  private def usersResource(endpoints: ResourceEndpoint*) =
-    Resource(resourceId = ResourceId("users-api"), resource = backendUrl, endpoints = endpoints.toVector, secret = None)
+  private def usersResource(endpoints: ResourceEndpoint*): Resource = usersResourceNamed(ResourceId("users-api"), endpoints*)
+
+  private def usersResourceNamed(id: ResourceId, endpoints: ResourceEndpoint*) =
+    Resource(resourceId = id, resource = backendUrl, endpoints = endpoints.toVector, secret = None)
 
   private def centralEndpoint() =
     ResourceEndpoint(
@@ -665,14 +667,14 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("records the time edge spent before handing a request to the resource") {
       val env = new Env
-      val resource = ResourceId("users-api")
+      val resource = ResourceId("users-api-overhead-recorded")
       for
         _ <- env.setupDefaults()
         _ <- env.withClients()
         _ <- captureUpstream(body = "users-payload")
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
-        _ <- env.withResources(usersResource(usersEndpoint(allow = None)))
+        _ <- env.withResources(usersResourceNamed(resource, usersEndpoint(allow = None)))
         token <- env.signToken()
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
         before <- overheadCount(resource)
@@ -682,13 +684,13 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("records no overhead for a request refused before it reached the resource") {
       val env = new Env
-      val resource = ResourceId("users-api")
+      val resource = ResourceId("users-api-overhead-refused")
       for
         _ <- env.setupDefaults()
         _ <- env.withClients()
         client <- ZIO.service[Client]
         security <- ZIO.service[SecurityService]
-        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("false"))))
+        _ <- env.withResources(usersResourceNamed(resource, usersEndpoint(allow = Some("false"))))
         token <- env.signToken()
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
         before <- overheadCount(resource)
