@@ -1,7 +1,15 @@
 package versola.oauth.session
 
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{PublicSessionId, RefreshTokenRecord, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentDetails}
+import versola.oauth.session.model.{
+  PublicSessionId,
+  RefreshTokenRecord,
+  SessionId,
+  SessionInfo,
+  SessionRecord,
+  SessionUnderUserAgent,
+  UserAgentDetails,
+}
 import versola.user.model.UserId
 import versola.util.{CoreConfig, MAC, Secret, SecurityService}
 import zio.{Duration, Task, ZLayer}
@@ -86,7 +94,7 @@ object SessionService:
           repository.invalidateByPublicId(publicId).map(_.map(SessionInfo(_, _)))
         case Right(rawId) =>
           for
-            mac    <- macOf(rawId)
+            mac <- macOf(rawId)
             record <- repository.invalidate(mac)
           yield record.map(SessionInfo(mac, _))
 

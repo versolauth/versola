@@ -48,9 +48,9 @@ object UserOutboxProcessor:
     override def start(): URIO[Scope, Unit] =
       (ZIO.logInfo("Starting OutboxProcessor...")
         .delay(Duration.fromSeconds(20)) *>
-          runOnce
-            .repeat(Schedule.spaced(config.pollInterval))
-            .unit)
+        runOnce
+          .repeat(Schedule.spaced(config.pollInterval))
+          .unit)
         .forkScoped
         .flatMap(f => fiberRef.set(Some(f)))
 
@@ -95,7 +95,10 @@ object UserOutboxProcessor:
             val recover =
               if nextAttempt >= config.maxAttempts then
                 val errorMsg = cause.squash.getMessage
-                ZIO.logErrorCause(s"Outbox ${record.id} exceeded max attempts (${config.maxAttempts}). Moving to dead letter. Event: ${record.event}", cause) *>
+                ZIO.logErrorCause(
+                  s"Outbox ${record.id} exceeded max attempts (${config.maxAttempts}). Moving to dead letter. Event: ${record.event}",
+                  cause,
+                ) *>
                   repo.moveToDeadLetter(record.id, errorMsg).catchAllCause(c => ZIO.logErrorCause("moveToDeadLetter failed", c))
               else
                 val delay = backoff(nextAttempt)
@@ -103,10 +106,11 @@ object UserOutboxProcessor:
                   repo.rescheduleEvent(record.id, delay).catchAllCause(c => ZIO.logErrorCause("reschedule failed", c))
             recover.as(false)
           ,
-          _ => repo.deleteEvent(record.id).foldCauseZIO(
-            c => ZIO.logErrorCause("delete failed", c).as(false),
-            _ => ZIO.succeed(true),
-          ),
+          _ =>
+            repo.deleteEvent(record.id).foldCauseZIO(
+              c => ZIO.logErrorCause("delete failed", c).as(false),
+              _ => ZIO.succeed(true),
+            ),
         )
 
     private def dispatch(event: OutboxEvent): ZIO[Any, Throwable, Unit] =

@@ -1,8 +1,8 @@
 package versola.oauth.authorize.model
 
 import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
-import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.model.UserAgentCookiePayload
+import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.util.{Email, Phone}
@@ -43,7 +43,7 @@ private[authorize] case class AuthorizeRequest(
     dpopJkt: Option[String],
     ip: Option[String] = None,
 ):
-  def promptNone: Boolean    = prompt.contains(Prompt.none)
-  def promptLogin: Boolean   = prompt.contains(Prompt.login)
+  def promptNone: Boolean = prompt.contains(Prompt.none)
+  def promptLogin: Boolean = prompt.contains(Prompt.login)
   def promptConsent: Boolean = prompt.contains(Prompt.consent)
-  def isHybrid: Boolean      = responseType.contains(ResponseTypeEntry.IdToken)
+  def isHybrid: Boolean = responseType.contains(ResponseTypeEntry.IdToken)

@@ -50,7 +50,7 @@ trait ExternalOAuthClientRepositorySpec extends DatabaseSpecBase[ExternalOAuthCl
           clients.exists(c => c.provider == googleProvider && c.clientId == googleClientId),
           clients.exists(c => c.provider == githubProvider && c.clientId == githubClientId),
         )
-      }
+      },
     )
 
   def listAllTests(env: ExternalOAuthClientRepositorySpec.Env) =

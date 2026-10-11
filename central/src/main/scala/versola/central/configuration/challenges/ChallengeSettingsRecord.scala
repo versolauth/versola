@@ -22,6 +22,7 @@ enum MtlsCertificateEncoding derives Schema, JsonCodec:
     * as `ssl-client-cert` when `auth-tls-pass-certificate-to-upstream` is set.
     */
   case urlEncodedPem
+
   /** The certificate's DER bytes, base64-encoded, with the PEM delimiters and newlines
     * stripped. Traefik's `passTLSClientCert` middleware with `pem: true`.
     */

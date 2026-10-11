@@ -7,9 +7,9 @@ import versola.central.configuration.scopes.{Claim, ClaimRecord, OAuthScopeRepos
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateClaim, PatchScope}
 import versola.util.postgres.BasicCodecs
-import zio.{Task, ZLayer}
 import zio.json.ast.Json
 import zio.json.{EncoderOps, JsonDecoder, JsonEncoder}
+import zio.{Task, ZLayer}
 
 class PostgresOAuthScopeRepository(
     xa: TransactorZIO,

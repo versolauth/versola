@@ -5,10 +5,31 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.json.JsonBDbCodec
 import com.augustnagro.magnum.pg.{PgCodec, SqlArrayCodec}
 import versola.oauth.client.model.{Acr, AuthMethodRef, AuthorizationDetail, ClientId, PassedAuthFactor, PassedFactorRecord, ResourceUri, ScopeToken}
-import versola.oauth.model.{Nonce, RefreshToken}
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
 import versola.oauth.model.{AccessToken, Cnf, Nonce, RefreshToken}
-import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord, UserAgentId}
+import versola.oauth.model.{Nonce, RefreshToken}
+import versola.oauth.session.model.{
+  ClientEntry,
+  PriorSession,
+  PublicSessionId,
+  RefreshAlreadyExchanged,
+  RefreshTokenFamilyId,
+  RefreshTokenRecord,
+  RevokedFamily,
+  SessionId,
+  SessionRecord,
+  UserAgentId,
+}
+import versola.oauth.session.model.{
+  ClientEntry,
+  PriorSession,
+  PublicSessionId,
+  RefreshAlreadyExchanged,
+  RefreshTokenRecord,
+  RevokedFamily,
+  SessionId,
+  SessionRecord,
+  UserAgentId,
+}
 import versola.oauth.userinfo.model.RequestedClaims
 import versola.user.model.UserId
 import versola.util.MAC
@@ -21,14 +42,14 @@ import java.time.Instant
 import java.util.UUID
 
 class PostgresSessionRepository(xa: TransactorZIO)
-    extends SessionRepository, BasicCodecs:
+  extends SessionRepository, BasicCodecs:
 
   import PgCodec.ListCodec
   import SqlArrayCodec.ListSqlArrayCodec
 
   // ── shared codecs ─────────────────────────────────────────────────────────
-  given DbCodec[MAC]      = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
-  given DbCodec[UserId]   = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
+  given DbCodec[MAC] = DbCodec.ByteArrayCodec.biMap(MAC(_), identity[Array[Byte]])
+  given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[ClientId] = DbCodec.StringCodec.biMap(ClientId(_), identity[String])
 
   // ── session codecs ────────────────────────────────────────────────────────
@@ -40,25 +61,25 @@ class PostgresSessionRepository(xa: TransactorZIO)
   given DbCodec[SessionRecord] = DbCodec.derived[SessionRecord]
 
   // ── refresh-token codecs ──────────────────────────────────────────────────
-  given DbCodec[RefreshTokenFamilyId]          = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
-  given SqlArrayCodec[ClientId]                = SqlArrayCodec.StringSqlArrayCodec.asInstanceOf[SqlArrayCodec[ClientId]]
-  given DbCodec[ScopeToken]                    = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
-  given listStringDbCodec: DbCodec[List[String]]     = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
+  given DbCodec[RefreshTokenFamilyId] = DbCodec.StringCodec.biMap(RefreshTokenFamilyId(_), identity[String])
+  given SqlArrayCodec[ClientId] = SqlArrayCodec.StringSqlArrayCodec.asInstanceOf[SqlArrayCodec[ClientId]]
+  given DbCodec[ScopeToken] = DbCodec.StringCodec.biMap(ScopeToken(_), identity[String])
+  given listStringDbCodec: DbCodec[List[String]] = PgCodec.SeqCodec[String].biMap(_.toList, _.toSeq)
   given listClientIdDbCodec: DbCodec[List[ClientId]] =
     PgCodec.SeqCodec[String].biMap(_.map(ClientId(_)).toList, _.map(identity[String]))
   given listResourceUriDbCodec: DbCodec[List[ResourceUri]] =
     PgCodec.SeqCodec[String].biMap(_.map(ResourceUri(_)).toList, _.map(identity[String]))
-  given DbCodec[Nonce]                         = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
-  given DbCodec[RequestedClaims]               = jsonCodec[RequestedClaims]
-  given DbCodec[Set[AuthMethodRef]]            = jsonBCodec[Set[AuthMethodRef]]
-  given DbCodec[Acr]                           = DbCodec.StringCodec.biMap(Acr(_), identity[String])
-  given DbCodec[Cnf]                           = jsonBCodec[Cnf]
-  given JsonBDbCodec[AuthorizationDetail]      = jsonBCodec
+  given DbCodec[Nonce] = DbCodec.StringCodec.biMap(Nonce(_), identity[String])
+  given DbCodec[RequestedClaims] = jsonCodec[RequestedClaims]
+  given DbCodec[Set[AuthMethodRef]] = jsonBCodec[Set[AuthMethodRef]]
+  given DbCodec[Acr] = DbCodec.StringCodec.biMap(Acr(_), identity[String])
+  given DbCodec[Cnf] = jsonBCodec[Cnf]
+  given JsonBDbCodec[AuthorizationDetail] = jsonBCodec
   // The column is a nullable array; the model's `Option[List[...]]` maps onto it directly via
   // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
   given listAuthorizationDetailDbCodec: DbCodec[List[AuthorizationDetail]] =
     PgCodec.SeqCodec[AuthorizationDetail].biMap(_.toList, _.toSeq)
-  given DbCodec[RefreshTokenRecord]            = DbCodec.derived[RefreshTokenRecord]
+  given DbCodec[RefreshTokenRecord] = DbCodec.derived[RefreshTokenRecord]
 
   // ── SessionRepository ─────────────────────────────────────────────────────
 
@@ -152,7 +173,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   override def findByUserId(userId: UserId): Task[List[SessionRecord]] =
     for
-      now    <- Clock.instant
+      now <- Clock.instant
       result <- xa.connectMeasured("find-sessions-by-user"):
         sql"""
           SELECT user_id, clients, user_agent_id, created_at, amr, public_id, expires_at
@@ -409,7 +430,7 @@ class PostgresSessionRepository(xa: TransactorZIO)
 
   override def findToken(token: MAC.Of[RefreshToken]): Task[Option[RefreshTokenRecord]] =
     for
-      now    <- Clock.instant
+      now <- Clock.instant
       result <- xa.connectMeasured("find-refresh-token"):
         sql"""
           SELECT family_id, session_id, public_session_id, user_id, client_id,
@@ -607,13 +628,11 @@ object PostgresSessionRepository:
   private val ReplayDetectionWindow: Duration = Duration.fromSeconds(24 * 3600)
 
   private val SerializationFailureSqlState = "40001"
-  private val UniqueViolationSqlState      = "23505"
-  private val MaxCauseDepth                = 10
+  private val UniqueViolationSqlState = "23505"
+  private val MaxCauseDepth = 10
 
   private[session] def isSerializationOrUniqueViolationFailure(t: Throwable, depth: Int = 0): Boolean =
     depth < MaxCauseDepth && (t match
       case sql: SQLException =>
         sql.getSQLState == SerializationFailureSqlState || sql.getSQLState == UniqueViolationSqlState
-      case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1))
-    )
-
+      case _ => Option(t.getCause).exists(isSerializationOrUniqueViolationFailure(_, depth + 1)))

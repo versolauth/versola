@@ -102,9 +102,19 @@ object EdgeCertificate:
         // Signed by the same CA nginx's own certificate is (see the class doc): its issuer is
         // what a JDK-provider TLS client is offered against the handshake's advertised list.
         run(
-          "x509", "-req", "-in", csrFile.toString,
-          "-CA", caCert.toString, "-CAkey", caKey.toString, "-CAcreateserial",
-          "-out", certFile.toString, "-days", "2",
+          "x509",
+          "-req",
+          "-in",
+          csrFile.toString,
+          "-CA",
+          caCert.toString,
+          "-CAkey",
+          caKey.toString,
+          "-CAcreateserial",
+          "-out",
+          certFile.toString,
+          "-days",
+          "2",
         )
         val certificatePem = Files.readString(certFile).nn
 

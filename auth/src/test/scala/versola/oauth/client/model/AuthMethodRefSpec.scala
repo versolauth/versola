@@ -35,7 +35,7 @@ object AuthMethodRefSpec extends UnitSpecBase:
       test("password + otp adds mfa") {
         val amr = Map(
           PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.pwd)),
-          PassedAuthFactor.otp      -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp, AuthMethodRef.sms)),
+          PassedAuthFactor.otp -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.otp, AuthMethodRef.sms)),
         )
         assertTrue(
           AuthMethodRef.amrClaim(amr) ==
@@ -45,7 +45,7 @@ object AuthMethodRefSpec extends UnitSpecBase:
       test("password + passkey adds mfa") {
         val amr = Map(
           PassedAuthFactor.password -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.pwd)),
-          PassedAuthFactor.passkey  -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.swk, AuthMethodRef.user)),
+          PassedAuthFactor.passkey -> PassedFactorRecord(Instant.EPOCH, Set(AuthMethodRef.swk, AuthMethodRef.user)),
         )
         assertTrue(
           AuthMethodRef.amrClaim(amr) ==

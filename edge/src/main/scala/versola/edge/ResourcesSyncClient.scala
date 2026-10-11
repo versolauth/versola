@@ -2,8 +2,8 @@ package versola.edge
 
 import versola.edge.model.Resource.given
 import versola.edge.model.{Resource, ResourceEndpoint, ResourceId}
-import versola.util.{Base64, CacheSource, Secret, SecurityService}
 import versola.util.cel.CelEvaluator
+import versola.util.{Base64, CacheSource, Secret, SecurityService}
 import zio.http.{Client, Header, Request}
 import zio.json.JsonCodec
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec

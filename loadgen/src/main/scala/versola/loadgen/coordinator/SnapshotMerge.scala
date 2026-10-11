@@ -1,13 +1,6 @@
 package versola.loadgen.coordinator
 
-import versola.loadgen.metrics.{
-  DriverHistogramReport,
-  EncodedHistogram,
-  HistogramSample,
-  HistogramWire,
-  LatencySummary,
-  MeasurementId,
-}
+import versola.loadgen.metrics.{DriverHistogramReport, EncodedHistogram, HistogramSample, HistogramWire, LatencySummary, MeasurementId}
 import versola.loadgen.store.{MeasurementKind, MetricSnapshotRow}
 import zio.Chunk
 

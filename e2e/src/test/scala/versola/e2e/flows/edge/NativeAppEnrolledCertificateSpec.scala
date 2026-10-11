@@ -79,13 +79,13 @@ object NativeAppEnrolledCertificateSpec extends ZIOSpec[OAuthClient & CentralApi
       // not wait for -- so an early answer of either is a fresh sync and another try, not a result.
       response <- withNonce(nonce =>
         prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId), nonce = nonce)
-          .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof)))
+          .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof))),
       ).flatMap: first =>
         if first.status != Status.NotFound && first.status != Status.Unauthorized then ZIO.succeed(first)
         else
           (edgeApi.syncConfiguration *> authApi.syncConfiguration() *> withNonce(nonce =>
             prover.proof(Method.POST, edgeApi.nativeUrl("start", f.clientId), nonce = nonce)
-              .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof)))
+              .flatMap(proof => edgeApi.native("start", f.clientId, List("scope" -> "openid offline_access"), Some(proof))),
           ))
             .repeat(Schedule.spaced(1.second) *> Schedule.recurUntil[Response](r =>
               r.status != Status.NotFound && r.status != Status.Unauthorized,

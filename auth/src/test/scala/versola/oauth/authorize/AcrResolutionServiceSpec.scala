@@ -1,17 +1,18 @@
 package versola.oauth.authorize
 
+import org.scalamock.stubs.Stub
 import versola.auth.model.{CredentialDeviceType, CredentialId, PasskeyRecord}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PassedAuthFactor}
 import versola.user.UserRepository
-import versola.user.model.{UserRecord, UserId}
+import versola.user.model.{UserId, UserRecord}
 import versola.util.UnitSpecBase
+import zio.ZIO
 import zio.prelude.NonEmptyList
 import zio.test.*
-import zio.ZIO
-import org.scalamock.stubs.Stub
+
 import java.time.Instant
 import java.util.UUID
 
@@ -22,7 +23,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
       userRepository: Stub[UserRepository],
       passkeyRepository: Stub[PasskeyRepository],
       passwordService: Stub[PasswordService],
-      service: AcrResolutionService
+      service: AcrResolutionService,
   )
 
   def makeEnv =
@@ -34,7 +35,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
       configurationService,
       userRepository,
       passkeyRepository,
-      passwordService
+      passwordService,
     )
     Env(configurationService, userRepository, passkeyRepository, passwordService, service)
 
@@ -104,7 +105,7 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val env = makeEnv
         val vocabulary = Map(
           passwordAcr -> NonEmptyList(PassedAuthFactor.password),
-          mfaAcr -> NonEmptyList(PassedAuthFactor.otp)
+          mfaAcr -> NonEmptyList(PassedAuthFactor.otp),
         )
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
@@ -112,14 +113,14 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
           result <- env.service.resolveAchievableAcr(userId, NonEmptyList(passwordAcr, mfaAcr), clientId, flow, Set.empty)
         yield assertTrue(
           result == Some(passwordAcr),
-          env.userRepository.find.calls.isEmpty // otp check was skipped
+          env.userRepository.find.calls.isEmpty, // otp check was skipped
         )
       },
       test("fall-through: first ACR not achievable, second is") {
         val env = makeEnv
         val vocabulary = Map(
           passwordAcr -> NonEmptyList(PassedAuthFactor.password),
-          mfaAcr -> NonEmptyList(PassedAuthFactor.otp)
+          mfaAcr -> NonEmptyList(PassedAuthFactor.otp),
         )
         val user = UserRecord.empty(userId).copy(email = Some(versola.util.Email("test@example.com")))
         for
@@ -135,16 +136,18 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val acr2 = Acr("acr2")
         val vocabulary = Map(
           acr1 -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp),
-          acr2 -> NonEmptyList(PassedAuthFactor.otp)
+          acr2 -> NonEmptyList(PassedAuthFactor.otp),
         )
         for
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(vocabulary)
           _ <- env.passwordService.hasPassword.succeedsWith(false) // acr1 fails at password
-          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(email = Some(versola.util.Email("test@example.com"))))) // otp check for acr2 (or acr1 if it didn't fail earlier)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(email =
+            Some(versola.util.Email("test@example.com")),
+          ))) // otp check for acr2 (or acr1 if it didn't fail earlier)
           result <- env.service.resolveAchievableAcr(userId, NonEmptyList(acr1, acr2), clientId, flow, Set.empty)
         yield assertTrue(
           result == Some(acr2),
-          env.userRepository.find.calls.size == 1
+          env.userRepository.find.calls.size == 1,
         )
       },
       test("satisfied by sessionAmr via equivalents (no DB call)") {
@@ -158,9 +161,9 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
           result <- env.service.resolveAchievableAcr(userId, NonEmptyList(mfaAcr), clientId, flowWithEquivalents, sessionAmr)
         yield assertTrue(
           result == Some(mfaAcr),
-          env.userRepository.find.calls.isEmpty // No DB call because session satisfies it
+          env.userRepository.find.calls.isEmpty, // No DB call because session satisfies it
         )
-      }
+      },
     ),
     suite("checkAcrSatisfaction")(
       test("return true and matching ACR when satisfied") {
@@ -205,8 +208,8 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
         val env = makeEnv
         val otpAcr = Acr("otp")
         val vocabulary = Map(
-          mfaAcr  -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp),
-          otpAcr  -> NonEmptyList(PassedAuthFactor.otp),
+          mfaAcr -> NonEmptyList(PassedAuthFactor.password, PassedAuthFactor.otp),
+          otpAcr -> NonEmptyList(PassedAuthFactor.otp),
         )
         val amr = Set(PassedAuthFactor.otp) // satisfies otpAcr but not mfaAcr
         for
@@ -214,5 +217,5 @@ object AcrResolutionServiceSpec extends UnitSpecBase:
           result <- env.service.checkAcrSatisfaction(clientId, NonEmptyList(mfaAcr, otpAcr), amr, Map.empty)
         yield assertTrue(result == Some(otpAcr))
       },
-    )
+    ),
   )

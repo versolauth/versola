@@ -4,9 +4,9 @@ import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.util.Secret
-import zio.json.ast.Json
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
+import zio.json.ast.Json
 import zio.test.*
 
 object ChallengeSettingsServiceSpec extends UnitSpecBase:

@@ -38,7 +38,7 @@ trait EdgeClient extends ActionClient:
     * assurance level is missing (§7.4). Omitting it fails nothing: it silently turns every web
     * step-up into a full credential conversation, reported as a step-up.
     */
-  def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, ConversationCookie]
+  def startConversation(started: EdgeLoginStarted, ssoSession: Option[SsoSession]): IO[ProtocolError, EdgeAuthorization]
 
   /** §8.4's last hop: `GET {edge}/complete?code=…&state=…`, which exchanges the code behind the
     * driver's back and answers the redirect that sets `EDGE_SESSION`.

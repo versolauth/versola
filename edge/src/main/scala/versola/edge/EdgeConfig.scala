@@ -2,8 +2,8 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
-import zio.{Duration, Task, ZIO, ZLayer}
 import zio.http.{ClientSSLConfig, URL}
+import zio.{Duration, Task, ZIO, ZLayer}
 
 import java.io.FileInputStream
 import java.nio.charset.StandardCharsets

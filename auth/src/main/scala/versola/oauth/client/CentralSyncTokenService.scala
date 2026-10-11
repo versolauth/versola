@@ -69,4 +69,3 @@ object CentralSyncTokenService:
 
     private def authorized(request: Request, token: String): Request =
       request.addHeader(Header.Authorization.Bearer(token))
-

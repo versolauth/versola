@@ -1,7 +1,7 @@
 package versola.loadgen.store
 
-import com.augustnagro.magnum.{DbCodec, sql}
 import com.augustnagro.magnum.magzio.TransactorZIO
+import com.augustnagro.magnum.{DbCodec, sql}
 import versola.util.DatabaseSpecBase
 import zio.*
 import zio.test.*
@@ -52,26 +52,26 @@ object PostgresEventRepositorySpec extends LoadgenPostgresSpec, DatabaseSpecBase
     test("appendAll writes every sampled step, with every column where it belongs") {
       val sample = Chunk(event(0, "authorize"), event(1, "submit-otp"), event(2, "exchange-code"))
       for
-        _     <- env.repository.appendAll(sample)
+        _ <- env.repository.appendAll(sample)
         found <- stored(env)
       yield assertTrue(found == sample.toVector)
     },
     test("appendAll appends rather than replaces, so two flushes both survive") {
       for
-        _     <- env.repository.appendAll(Chunk(event(0, "authorize")))
-        _     <- env.repository.appendAll(Chunk(event(1, "submit-otp")))
+        _ <- env.repository.appendAll(Chunk(event(0, "authorize")))
+        _ <- env.repository.appendAll(Chunk(event(1, "submit-otp")))
         found <- stored(env)
       yield assertTrue(found.map(_.step) == Vector("authorize", "submit-otp"))
     },
     test("appendAll keeps a duplicate, because the sample is a log and not a state") {
       for
-        _     <- env.repository.appendAll(Chunk(event(0, "authorize"), event(0, "authorize")))
+        _ <- env.repository.appendAll(Chunk(event(0, "authorize"), event(0, "authorize")))
         found <- stored(env)
       yield assertTrue(found.size == 2)
     },
     test("appendAll on an empty chunk is a no-op, not an empty round trip") {
       for
-        _     <- env.repository.appendAll(Chunk.empty)
+        _ <- env.repository.appendAll(Chunk.empty)
         found <- stored(env)
       yield assertTrue(found.isEmpty)
     },

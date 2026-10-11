@@ -61,7 +61,6 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
       yield assertTrue(token.authorizationDetails.exists(_.elements.nonEmpty))
         .label(s"expected authorization_details in token response, got ${token.authorizationDetails}")
     },
-
     test("unregistered type redirects with error=invalid_authorization_details") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -73,7 +72,6 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
         ).assertErrorRedirect("invalid_authorization_details")
       yield assertCompletes
     },
-
     test("registering a type with an invalid JSON Schema is rejected by central") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -83,7 +81,6 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
       yield assertTrue(result.response.status.isClientError)
         .label(s"expected a client error registering an invalid schema, got status=${result.response.status}")
     },
-
     test("pushed request carries authorization_details through to the token") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -113,7 +110,6 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
       yield assertTrue(token.authorizationDetails.exists(_.elements.nonEmpty))
         .label(s"expected authorization_details in token response, got ${token.authorizationDetails}")
     },
-
     test("/par rejects an unregistered type directly instead of redirecting") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -127,10 +123,8 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
       yield assertTrue(result match
         case PushedAuthorizationResult.Failure(response, _, error) =>
           response.status == Status.BadRequest && error.contains("invalid_authorization_details")
-        case _: PushedAuthorizationResult.Success => false,
-      ).label(s"expected /par to reject an unregistered type, got $result")
+        case _: PushedAuthorizationResult.Success => false).label(s"expected /par to reject an unregistered type, got $result")
     },
-
     test("/par rejects a detail that violates the registered schema") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -149,7 +143,6 @@ object AuthorizationDetailsFlowSpec extends E2ESpec:
       yield assertTrue(result match
         case PushedAuthorizationResult.Failure(response, _, error) =>
           response.status == Status.BadRequest && error.contains("invalid_authorization_details")
-        case _: PushedAuthorizationResult.Success => false,
-      ).label(s"expected /par to reject a schema violation, got $result")
+        case _: PushedAuthorizationResult.Success => false).label(s"expected /par to reject a schema violation, got $result")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

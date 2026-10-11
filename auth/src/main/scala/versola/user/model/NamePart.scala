@@ -15,4 +15,3 @@ object NamePart:
   private def validate(string: String): Either[String, String] =
     if regex.matches(string) then Right(string)
     else Left(s"$string is invalid name part")
-

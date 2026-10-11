@@ -46,6 +46,7 @@ object LoadgenMetrics:
   private val refreshRejectedTotal = Metric.counter("loadgen_refresh_rejected_total")
   private val campaignInfoGauge = Metric.gauge("loadgen_campaign_info")
   private val dpopNonceRetriedTotal = Metric.counter("loadgen_dpop_nonce_retried_total")
+  private val transportRetriedTotal = Metric.counter("loadgen_transport_retried_total")
   private val storeFlushDroppedTotal = Metric.counter("loadgen_store_flush_dropped_total")
   private val populationGauge = Metric.gauge("loadgen_population")
 
@@ -172,6 +173,14 @@ object LoadgenMetrics:
     */
   def dpopNonceRetried: UIO[Unit] =
     dpopNonceRetriedTotal.increment
+
+  /** A safe request repeated once because the connection it was written to had been closed by the
+    * far side before answering (see `HttpExchange.send`). A steady trickle is a proxy retiring
+    * connections (ingress-nginx's `keep-alive-requests`); a rising one is something closing them
+    * early, and is the figure to read before trusting a low `transport` error count.
+    */
+  def transportRetried: UIO[Unit] =
+    transportRetriedTotal.increment
 
   private def unlabelled(what: String, outcome: StepOutcome): UIO[Unit] =
     ZIO.logWarning(s"${outcome.label} has no label on this metric and was not recorded for $what; " +

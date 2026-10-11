@@ -1,8 +1,9 @@
 package versola.oauth.conversation
 
 import versola.auth.model.PasskeyName
-import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.authorize.model.ResponseMode
+import versola.oauth.authorize.model.ResponseTypeEntry
+import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
 import versola.oauth.consent.ConsentService
@@ -18,7 +19,6 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.json.{jsonDiscriminator, jsonHint}
 import zio.{Chunk, Clock, Task, UIO, ZIO, ZLayer, durationInt}
-import versola.oauth.authorize.model.ResponseTypeEntry
 
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
@@ -82,6 +82,7 @@ object ConversationRenderService:
     case class Otp(length: Int, resendAfter: Int, lockedSeconds: Option[Int], destination: Option[String]) extends StepView
     @jsonHint("passkey-enroll")
     case class PasskeyEnroll(publicKeyOptions: String) extends StepView
+
     /** One row on the consent card. `description` and `claims` preserve the initial server-side
       * resolution, while the localization maps let the form react to a locale change in-place. */
     case class ConsentScope(
@@ -116,7 +117,7 @@ object ConversationRenderService:
         version: Option[String],
         createdAt: Instant,
         expiresAt: Instant,
-          /** The session the page is being viewed from, resolved from the access token's `sid`,
+        /** The session the page is being viewed from, resolved from the access token's `sid`,
             * so account settings can keep its revocation action unavailable. */
         current: Boolean,
     ) derives JsonCodec
@@ -186,7 +187,7 @@ object ConversationRenderService:
       for
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css  <- themeCss(themeId)
+        css <- themeCss(themeId)
         logo <- configuration.getIdentityProviderLogo
         maybeInfo <-
           formFor(
@@ -225,7 +226,12 @@ object ConversationRenderService:
           StepView.ConversationExpired(uri),
         )
 
-    override def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response] =
+    override def renderServiceUnavailable(
+        clientId: ClientId,
+        redirectUri: String,
+        state: Option[String],
+        responseMode: ResponseMode,
+    ): Task[Response] =
       returnUri(clientId, redirectUri, state, "temporarily_unavailable", responseMode).flatMap: uri =>
         renderTerminal(
           clientId,
@@ -250,13 +256,12 @@ object ConversationRenderService:
           val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           responseService.redirect(clientId, url, responseMode, params).map(uri => Some(uri.encode))
 
-
     private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
       for
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css     <- themeCss(themeId)
-        logo    <- configuration.getIdentityProviderLogo
+        css <- themeCss(themeId)
+        logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
       yield formOpt match
@@ -289,8 +294,8 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- configuration.find(clientId)
-        css     <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
-        logo    <- configuration.getIdentityProviderLogo
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm("auth-settings")
         locales <- configuration.getLocales
       yield formOpt match
@@ -386,8 +391,8 @@ object ConversationRenderService:
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
       for
-        css     <- themeCss(ThemeDefault)
-        logo    <- configuration.getIdentityProviderLogo
+        css <- themeCss(ThemeDefault)
+        logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales
       yield formOpt match
@@ -426,9 +431,9 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
-        css     <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
-        logo    <- configuration.getIdentityProviderLogo
-        form    <- configuration.getForm("confirm-logout")
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        logo <- configuration.getIdentityProviderLogo
+        form <- configuration.getForm("confirm-logout")
         locales <- configuration.getLocales
       yield form match
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
@@ -610,7 +615,7 @@ object ConversationRenderService:
             resendAfter = resendRemaining,
             lockedSeconds = Option.when(s.lockedSeconds > 0)(s.lockedSeconds),
             // Masked here so the unmasked credential never reaches window.__VERSOLA_FORM__.
-              destination = credential.map(_.fold(Email.mask, Phone.mask)),
+            destination = credential.map(_.fold(Email.mask, Phone.mask)),
           )
 
         case s: ConversationStep.PasskeyEnroll =>
@@ -692,9 +697,13 @@ object ConversationRenderService:
 
     private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
       val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
-      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(info.title)}</title>${faviconLink(
+      s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(
+          info.title,
+        )}</title>${faviconLink(
           logo,
-          )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(info.style)}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
+        )}<style>${escapeCssForStyle(themeCss)} ${escapeCssForStyle(
+          info.style,
+        )}</style><script>window.__VERSOLA_FORM__ = $config;</script></head><body><div id="versola-form-root"></div><script>${info.jsCompiled.getOrElse(
           "",
         )}</script></body></html>"""
 
@@ -704,7 +713,8 @@ object ConversationRenderService:
       s"""<link rel="icon" href="$href">"""
 
     private val defaultFavicon =
-      val svg = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="14" fill="#faf9f7"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="#155e75" fill-opacity="0.06"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="none" stroke="#155e75" stroke-width="2.2"/><text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800" font-size="26" fill="#155e75" text-anchor="middle">V</text></svg>"""
+      val svg =
+        """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none"><rect width="64" height="64" rx="14" fill="#faf9f7"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="#155e75" fill-opacity="0.06"/><path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z" fill="none" stroke="#155e75" stroke-width="2.2"/><text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800" font-size="26" fill="#155e75" text-anchor="middle">V</text></svg>"""
       "data:image/svg+xml;base64," + java.util.Base64.getEncoder.encodeToString(svg.getBytes(StandardCharsets.UTF_8))
 
     private def escapeAttribute(value: String): String =

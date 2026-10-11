@@ -17,7 +17,6 @@ object Permission:
   def from(string: String): Either[String, Permission] =
     if validPattern.matches(string) then Right(string) else Left(invalidMessage)
 
-  given Schema[Permission]      = Schema.primitive[String].transformOrFail(from, Right(_))
+  given Schema[Permission] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonEncoder[Permission] = JsonEncoder.string.contramap(identity)
   given JsonDecoder[Permission] = JsonDecoder.string.mapOrFail(from)
-

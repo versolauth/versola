@@ -2,8 +2,8 @@ package versola.oauth.client
 
 import versola.oauth.jwks.JwksService
 import versola.user.authorizeInternal
-import versola.util.{CoreConfig, EnvName}
 import versola.util.http.Controller
+import versola.util.{CoreConfig, EnvName}
 import zio.*
 import zio.http.*
 import zio.telemetry.opentelemetry.tracing.Tracing

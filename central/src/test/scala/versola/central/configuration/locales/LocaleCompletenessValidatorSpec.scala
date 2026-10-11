@@ -9,6 +9,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.util.RedirectUri
 import zio.*
 import zio.test.*
+
 import java.time.Instant
 
 object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:

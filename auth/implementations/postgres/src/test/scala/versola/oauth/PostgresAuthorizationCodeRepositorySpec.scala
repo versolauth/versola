@@ -18,4 +18,3 @@ object PostgresAuthorizationCodeRepositorySpec extends PostgresSpec, Authorizati
       xa <- ZIO.service[TransactorZIO]
       _ <- xa.connect(sql"TRUNCATE TABLE authorization_codes".update.run())
     yield ()
-

@@ -263,7 +263,8 @@ components:
         digits is treated as a phone number, anything else as an email address. It is only a hint
         (OpenID Connect Core §3.1.2.1): one the client's auth flow does not accept for that
         credential type, one outside the configured phone prefixes, or one that is not a valid
-        identifier is ignored, and the user signs in without it.
+        identifier is ignored, and the user signs in without it. A phone number is canonicalised
+        to E.164 before the prefix check and pre-filling.
       schema:
         type: string
       example: user@example.com

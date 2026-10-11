@@ -6,13 +6,13 @@ import zio.test.*
 
 object LocaleServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
-  private val enActive   = LocaleRecord("en", "English", isDefault = true,  active = true)
-  private val ruActive   = LocaleRecord("ru", "Russian", isDefault = false, active = true)
-  private val frInactive = LocaleRecord("fr", "French",  isDefault = false, active = false)
+  private val enActive = LocaleRecord("en", "English", isDefault = true, active = true)
+  private val ruActive = LocaleRecord("ru", "Russian", isDefault = false, active = true)
+  private val frInactive = LocaleRecord("fr", "French", isDefault = false, active = false)
 
   class Env:
     val repository = stub[LocaleRepository]
-    val service    = LocaleService.Impl(repository)
+    val service = LocaleService.Impl(repository)
 
   private def completenessResult(expectedMissing: Vector[String]): LocaleCompletenessValidator =
     new LocaleCompletenessValidator:

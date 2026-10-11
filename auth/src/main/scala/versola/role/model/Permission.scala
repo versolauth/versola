@@ -10,4 +10,3 @@ object Permission:
   inline def apply(string: String): Permission = string
   inline def from(string: String): Either[String, Permission] = Right(string)
   given Schema[Permission] = Schema.primitive[String].transformOrFail(from, Right(_))
-

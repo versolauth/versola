@@ -36,7 +36,7 @@ object EdgeSessionCookie:
   def parse(content: String): (PresetId, AccessToken) =
     content.indexOf(':') match
       case -1 => (PresetId(""), AccessToken(content))
-      case i  => (PresetId(content.substring(0, i)), AccessToken(content.substring(i + 1)))
+      case i => (PresetId(content.substring(0, i)), AccessToken(content.substring(i + 1)))
 
   def clear(domain: Option[String], path: Option[String]): Cookie.Response =
     Cookie.Response(

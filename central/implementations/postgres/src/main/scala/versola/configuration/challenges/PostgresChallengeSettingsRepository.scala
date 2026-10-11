@@ -3,7 +3,14 @@ package versola.configuration.challenges
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.pg.PgCodec
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsRepository, SecurityProfile, MtlsCertificateEncoding, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsRepository,
+  MtlsCertificateEncoding,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.tenants.TenantId
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}

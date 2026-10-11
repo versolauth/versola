@@ -1,7 +1,7 @@
 package versola.central.configuration.resources
 
-import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.clients.ClientId
+import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{InjectRule, ResourceUri}
 import versola.util.Secret
 

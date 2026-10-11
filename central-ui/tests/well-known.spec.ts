@@ -22,7 +22,7 @@ test('generates a key for the chosen algorithm and shows it in the list', async 
   await page.getByLabel('Algorithm to generate').selectOption('ES256');
   await page.getByRole('button', { name: 'Generate Key', exact: true }).click();
 
-  const request = findRequest(api.requests, 'POST', '/configuration/jwks/generate');
+  const request = await findRequest(api.requests, 'POST', '/configuration/jwks/generate');
   expect(request.searchParams['alg']).toBe('ES256');
 
   await expect(page.locator('.key-id').filter({ hasText: 'generated-es256' })).toBeVisible();

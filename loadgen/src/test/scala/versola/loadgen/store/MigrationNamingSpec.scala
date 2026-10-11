@@ -3,7 +3,6 @@ package versola.loadgen.store
 import zio.test.*
 
 import java.nio.file.{Files, Path}
-
 import scala.jdk.CollectionConverters.*
 
 /** Guards the one property of this schema that fails silently rather than loudly.

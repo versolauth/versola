@@ -94,13 +94,15 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
   ): Task[Request] =
     val authenticated = request.removeHeader(Header.Authorization).addHeader(basic(secret = callerSecret))
     if authenticated.method == Method.GET then
-      ZIO.succeed(authenticated.copy(url = authenticated.url
-        .removeQueryParam("userId")
-        .removeQueryParam("clientId")
-        .removeQueryParam("sessionId")
-        .addQueryParam("userId", callerUserId.toString)
-        .addQueryParam("clientId", clientId.toString)
-        .addQueryParam("sessionId", callerSessionId.toString)))
+      ZIO.succeed(authenticated.copy(url =
+        authenticated.url
+          .removeQueryParam("userId")
+          .removeQueryParam("clientId")
+          .removeQueryParam("sessionId")
+          .addQueryParam("userId", callerUserId.toString)
+          .addQueryParam("clientId", clientId.toString)
+          .addQueryParam("sessionId", callerSessionId.toString),
+      ))
     else
       for
         bodyString <- authenticated.body.asString

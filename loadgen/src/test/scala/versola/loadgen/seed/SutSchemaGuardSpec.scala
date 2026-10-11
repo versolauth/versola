@@ -168,8 +168,7 @@ object SutSchemaGuardSpec extends ZIOSpecDefault:
                   exit.isFailure,
                   exit.causeOption.exists(_.failures.exists:
                     case SutSchemaDrifted(report) => report.contains("user_passwords.algorithm")
-                    case _ => false,
-                  ),
+                    case _ => false),
                 )
       },
       // The tripwire, through the pre-flight, against a real change to auth's migrations
@@ -196,9 +195,8 @@ object SutSchemaGuardSpec extends ZIOSpecDefault:
                   exit.causeOption.exists(_.failures.exists:
                     case SutSchemaDrifted(report) =>
                       report.contains("auth/implementations/postgres/migrations") &&
-                        report.contains("sut-migrations.sha256")
-                    case _ => false,
-                  ),
+                      report.contains("sut-migrations.sha256")
+                    case _ => false),
                 )
       },
       test("Seeder.preflight passes against the schema as it stands") {

@@ -1,8 +1,8 @@
 package versola.central.configuration.clients
 
+import org.bouncycastle.asn1.x509.KeyUsage
 import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
-import org.bouncycastle.asn1.x509.KeyUsage
 import versola.util.TestCertificates
 import zio.*
 import zio.test.*

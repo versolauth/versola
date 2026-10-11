@@ -30,8 +30,8 @@ trait RoleRepositorySpec extends DatabaseSpecBase[RoleRepositorySpec.Env]:
               description = Map("en" -> "Administrators"),
               permissions = Set(readPermission),
               active = true,
-            )
-          )
+            ),
+          ),
         )
       },
       test("update role description and permissions") {
@@ -58,8 +58,8 @@ trait RoleRepositorySpec extends DatabaseSpecBase[RoleRepositorySpec.Env]:
               description = Map("en" -> "Administrators", "ru" -> "Администраторы"),
               permissions = Set(writePermission),
               active = true,
-            )
-          )
+            ),
+          ),
         )
       },
       test("mark role inactive and then delete it") {

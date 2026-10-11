@@ -18,7 +18,7 @@ object SmsOtpProvider:
     ZLayer.fromFunction: (client: Client, config: CoreConfig) =>
       config.otpProvider match
         case Some(otpConfig) => GenericHttpSmsOtpProvider(client, otpConfig)
-        case None            => NoOpSmsOtpProvider
+        case None => NoOpSmsOtpProvider
 
 object NoOpSmsOtpProvider extends SmsOtpProvider:
   override def sendOtp(phone: Phone, code: OtpCode, template: OtpTemplate): Task[Unit] =

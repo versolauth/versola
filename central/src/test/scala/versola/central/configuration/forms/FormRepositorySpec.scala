@@ -66,7 +66,7 @@ trait FormRepositorySpec extends DatabaseSpecBase[FormRepositorySpec.Env]:
         val formId = FormId("credential")
         for
           _ <- ZIO.foreachParDiscard((1 to 5).toList)(_ =>
-            env.repository.upsertForm(formId, "", Some("src"), None, Map.empty, Vector.empty, activate = false)
+            env.repository.upsertForm(formId, "", Some("src"), None, Map.empty, Vector.empty, activate = false),
           )
           all <- env.repository.getAll
           versions = all.filter(_.id == formId).map(_.version).sorted

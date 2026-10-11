@@ -111,9 +111,9 @@ object ServedMetadata:
       else Json.Obj((document.fields.filterNot(_._1 == MtlsAliasesField) :+ (MtlsAliasesField -> Json.Obj(aliases*)))*)
 
   def derive(
-    stored: Json.Obj,
-    publishedSigningAlgorithms: Set[JWT.Algorithm] = Set.empty,
-    mutualTlsExternalUrl: Option[String] = None,
+      stored: Json.Obj,
+      publishedSigningAlgorithms: Set[JWT.Algorithm] = Set.empty,
+      mutualTlsExternalUrl: Option[String] = None,
   ): ServedMetadata =
     val dpopAlgorithms = Dpop.Algorithm.fromMetadata(stored)
     val assertionAlgorithms = ClientAssertion.Algorithm.fromMetadata(stored)

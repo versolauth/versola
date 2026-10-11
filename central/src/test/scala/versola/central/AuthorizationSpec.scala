@@ -2,8 +2,8 @@ package versola.central
 
 import org.scalamock.stubs.ZIOStubs
 import versola.central.configuration.resources.ResourceService
-import versola.util.{Base64Url, Secret}
 import versola.util.http.Unauthorized
+import versola.util.{Base64Url, Secret}
 import zio.*
 import zio.http.{Header, Request, URL}
 import zio.test.*

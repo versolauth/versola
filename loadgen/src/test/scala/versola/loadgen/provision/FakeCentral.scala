@@ -67,9 +67,10 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
     } || (request.rawHeader("Authorization").exists(_.startsWith(s"DPoP $issuedTokenPrefix")) &&
       request.rawHeader("DPoP").nonEmpty)
     if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
-    else missingMember(request.method, path, body) match
-      case Some(refusal) => record.as(refusal)
-      case None => dispatch(request, path, body, record)
+    else
+      missingMember(request.method, path, body) match
+        case Some(refusal) => record.as(refusal)
+        case None => dispatch(request, path, body, record)
 
   /** Central decodes the body before any handler runs, so a payload that leaves out a member
     * its DTO declares mandatory is refused there and never reaches the behaviour these specs

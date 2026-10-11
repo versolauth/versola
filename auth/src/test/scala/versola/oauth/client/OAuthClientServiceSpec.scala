@@ -1,6 +1,33 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{AuthMethod, Acr, AuthorizationDetailType, AuthorizationDetailTypeRecord, ChallengeSettingsRecord, Claim, ClaimRecord, ClientId, FormRecord, Locales, OAuthClientRecord, OtpTemplateChannel, OtpTemplatePurpose, OtpTemplateRecord, OtpType, PassedAuthFactor, PasskeySettings, RateLimit, ResourceRecord, ScopeRecord, ScopeToken, SecurityProfile, SubmissionLimits, SystemSettingsRecord, TenantId, ThemeRecord}
+import versola.oauth.client.model.{
+  Acr,
+  AuthMethod,
+  AuthorizationDetailType,
+  AuthorizationDetailTypeRecord,
+  ChallengeSettingsRecord,
+  Claim,
+  ClaimRecord,
+  ClientId,
+  FormRecord,
+  Locales,
+  OAuthClientRecord,
+  OtpTemplateChannel,
+  OtpTemplatePurpose,
+  OtpTemplateRecord,
+  OtpType,
+  PassedAuthFactor,
+  PasskeySettings,
+  RateLimit,
+  ResourceRecord,
+  ScopeRecord,
+  ScopeToken,
+  SecurityProfile,
+  SubmissionLimits,
+  SystemSettingsRecord,
+  TenantId,
+  ThemeRecord,
+}
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
@@ -399,7 +426,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
           env <- makeEnv(otpTemplates = Vector.empty)
           result <- env.service.getPasswordTemplate(OtpTemplateChannel.email, None).exit
         yield assert(result)(fails(isSubtype[RuntimeException](hasMessage(equalTo("No global password template configured")))))
-      }
+      },
     ),
     test("getSubmissionLimits returns limits from challenge settings") {
       val limits = SubmissionLimits(otpRequest = List(RateLimit(5, 60)))
@@ -581,6 +608,4 @@ object OAuthClientServiceSpec extends UnitSpecBase:
         result <- env.service.getAcrVocabulary(clientId1)
       yield assertTrue(result == Map(Acr("factor1") -> NonEmptyList(PassedAuthFactor.password)))
     },
-
-
   )

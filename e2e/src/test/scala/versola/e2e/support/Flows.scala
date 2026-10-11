@@ -17,13 +17,13 @@ object Flows:
   /** Login credential with inline password, no additional factors. */
   val loginPasswordAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
-      "credentials"    -> Json.Arr(Json.Str("login")),
+      "credentials" -> Json.Arr(Json.Str("login")),
       "inlinePassword" -> Json.Bool(true),
-      "factors"        -> Json.Arr(),
+      "factors" -> Json.Arr(),
     ),
-    "passkey"     -> Json.Null,
+    "passkey" -> Json.Null,
     "equivalents" -> Json.Obj(),
-    "otpType"     -> Json.Str("sms"),
+    "otpType" -> Json.Str("sms"),
   )
 
   /** Login credential with inline password as a fallback, plus a passkey primary that needs
@@ -31,47 +31,47 @@ object Flows:
     */
   val loginPasswordPasskeyAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
-      "credentials"    -> Json.Arr(Json.Str("login")),
+      "credentials" -> Json.Arr(Json.Str("login")),
       "inlinePassword" -> Json.Bool(true),
-      "factors"        -> Json.Arr(),
+      "factors" -> Json.Arr(),
     ),
-    "passkey"     -> Json.Obj("factors" -> Json.Arr()),
+    "passkey" -> Json.Obj("factors" -> Json.Arr()),
     "equivalents" -> Json.Obj(),
-    "otpType"     -> Json.Str("sms"),
+    "otpType" -> Json.Str("sms"),
   )
 
   /** Email credential with OTP factor, no inline password. */
   val emailOtpAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
-      "credentials"    -> Json.Arr(Json.Str("email")),
+      "credentials" -> Json.Arr(Json.Str("email")),
       "inlinePassword" -> Json.Bool(false),
-      "factors"        -> Json.Arr(Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true))),
+      "factors" -> Json.Arr(Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true))),
     ),
-    "passkey"     -> Json.Null,
+    "passkey" -> Json.Null,
     "equivalents" -> Json.Obj(),
-    "otpType"     -> Json.Str("email"),
+    "otpType" -> Json.Str("email"),
   )
 
   /** Phone credential with OTP factor, no inline password. */
   val phoneOtpAuthFlow: Json = Json.Obj(
     "primary" -> Json.Obj(
-      "credentials"    -> Json.Arr(Json.Str("phone")),
+      "credentials" -> Json.Arr(Json.Str("phone")),
       "inlinePassword" -> Json.Bool(false),
-      "factors"        -> Json.Arr(Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true))),
+      "factors" -> Json.Arr(Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true))),
     ),
-    "passkey"     -> Json.Null,
+    "passkey" -> Json.Null,
     "equivalents" -> Json.Obj(),
-    "otpType"     -> Json.Str("sms"),
+    "otpType" -> Json.Str("sms"),
   )
 
   /** Registration entered from the phone credential card: prove the number, then pick a password. */
   val otpPasswordRegistrationFlow: Json = Json.Obj(
-      "credential" -> Json.Str("phone"),
+    "credential" -> Json.Str("phone"),
     "steps" -> Json.Arr(
       Json.Obj("type" -> Json.Str("otp")),
       Json.Obj("type" -> Json.Str("setPassword")),
     ),
-      "roleIds" -> Json.Arr(Json.Str("user")),
+    "roleIds" -> Json.Arr(Json.Str("user")),
   )
 
   /** Registration entered from the email credential card: prove the address, then pick a password. */
@@ -86,13 +86,13 @@ object Flows:
 
   /** Consent policy that prompts on the first authorization and remembers the grant. */
   val rememberedConsentFlow: Json = Json.Obj(
-    "allowPartial"     -> Json.Bool(false),
+    "allowPartial" -> Json.Bool(false),
     "rememberDuration" -> Json.Null,
   )
 
   /** Consent policy that permits deselecting optional scopes. */
   val partialConsentFlow: Json = Json.Obj(
-    "allowPartial"     -> Json.Bool(true),
+    "allowPartial" -> Json.Bool(true),
     "rememberDuration" -> Json.Null,
   )
 
@@ -117,12 +117,12 @@ object Flows:
 
   /** Register a client (login + inline password) and a matching user with a permanent password. */
   def setupLoginPassword(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
-    val login    = s"user-$uid"
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login = s"user-$uid"
     val password = s"Pass-$uid-1!"
     val clientId = s"login-client-$uid"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "Login Test Client",
@@ -130,20 +130,20 @@ object Flows:
         authFlow = Some(loginPasswordAuthFlow),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
   /** Register a client (login + inline password, plus passkey sign-in) and a matching user
     * with a permanent password used to log in once and enroll a passkey.
     */
   def setupPasskeyLogin(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
-    val login    = s"passkey-user-$uid"
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login = s"passkey-user-$uid"
     val password = s"Pass-$uid-1!"
     val clientId = s"passkey-client-$uid"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "Passkey Login Test Client",
@@ -151,18 +151,18 @@ object Flows:
         authFlow = Some(loginPasswordPasskeyAuthFlow),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
   /** Register a client (email + OTP) and a matching user with a permanent password. */
   def setupEmailOtp(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
-    val email    = s"otp-$uid@example.test"
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val email = s"otp-$uid@example.test"
     val password = s"Pass-$uid-1!"
     val clientId = s"otp-client-$uid"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "OTP Test Client",
@@ -171,19 +171,19 @@ object Flows:
         authFlow = Some(emailOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(email = Some(email))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, Some(email), None, password)
 
   /** Register a client (phone + OTP) and a matching user with a permanent password. */
   def setupPhoneOtp(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID()
-    val uidStr   = uid.toString.replace("-", "")
-    val phone    = f"+49151${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
+    val uid = UUID.randomUUID()
+    val uidStr = uid.toString.replace("-", "")
+    val phone = f"+49151${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
     val password = s"Pass-${uidStr.take(8)}-1!"
     val clientId = s"phone-client-${uidStr.take(8)}"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "Phone OTP Test Client",
@@ -191,8 +191,8 @@ object Flows:
         authFlow = Some(phoneOtpAuthFlow),
       ).success
       userId <- oauthClient.registerUser(phone = Some(phone))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, None, Some(phone), password)
 
   /** Register a client that offers self-service registration next to phone + OTP sign-in.
@@ -240,12 +240,12 @@ object Flows:
       allowedScopes: Set[String] = Set("openid", "email", "offline_access"),
       redirectUri: String = "http://localhost:3000",
   ): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
-    val login    = s"consent-user-$uid"
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login = s"consent-user-$uid"
     val password = s"Pass-$uid-1!"
     val clientId = s"consent-client-$uid"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "Consent Test Client",
@@ -255,20 +255,20 @@ object Flows:
         consentFlow = Some(consentFlow),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
   /** Register a client that receives security events at the edge, so that revoking one of
     * its tokens reaches the edge enforcing it.
     */
   def setupBackChannelLogout(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
-    val uid      = UUID.randomUUID().toString.replace("-", "").take(8)
-    val login    = s"user-$uid"
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val login = s"user-$uid"
     val password = s"Pass-$uid-1!"
     val clientId = s"revocation-client-$uid"
     for
-      oauthClient  <- ZIO.service[OAuthClient]
+      oauthClient <- ZIO.service[OAuthClient]
       clientResult <- oauthClient.registerClient(
         clientId,
         "Revocation Test Client",
@@ -277,8 +277,8 @@ object Flows:
         backChannelLogoutUri = Some(oauthClient.edgeBackChannelLogoutUri),
       ).success
       userId <- oauthClient.registerUser(login = Some(login))
-      _      <- oauthClient.flushUserOutbox()
-      _      <- oauthClient.setUserPassword(userId, password)
+      _ <- oauthClient.flushUserOutbox()
+      _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
   // ── Multi-setup helpers ─────────────────────────────────────────────────
@@ -298,29 +298,29 @@ object Flows:
   val layer: ZLayer[OAuthClient, Throwable, Setups] =
     ZLayer.fromZIO:
       for
-        client  <- ZIO.service[OAuthClient]
-        lp      <- setupLoginPassword()
+        client <- ZIO.service[OAuthClient]
+        lp <- setupLoginPassword()
         passkeyLogin <- setupPasskeyLogin()
-        otp     <- setupEmailOtp()
+        otp <- setupEmailOtp()
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
         emailRegistration <- setupEmailRegistration()
         consent <- setupConsent()
         consentPartial <- setupConsent(consentFlow = partialConsentFlow)
         backChannelLogout <- setupBackChannelLogout()
-        _       <- client.flushUserOutbox()
+        _ <- client.flushUserOutbox()
         // The mutual-TLS settings are part of the shared bootstrap rather than of the one
         // spec that uses them, because this call overwrites every field: a spec that set
         // them itself would be undone by the next spec's bootstrap. Configuring them for the
         // whole run costs the other specs nothing -- auth reads the header only for a client
         // that authenticates by certificate or binds its tokens to one, and none of their
         // clients do.
-        _       <- client.upsertChallengeSettings(
+        _ <- client.upsertChallengeSettings(
           acrVocabulary = Map(Acr.OtpLevel -> List("otp"), Acr.PasswordLevel -> List("password"), Acr.PasskeyLevel -> List("passkey")),
           mtlsCertificateHeader = Some(OAuthClient.mtlsCertificateHeader),
           mtlsCertificateEncoding = Some("urlEncodedPem"),
         )
-        _       <- client.syncConfiguration()
+        _ <- client.syncConfiguration()
         // The edge only accepts security events for a client it already knows about, and
         // otherwise waits for its next scheduled refresh from central to learn of one just
         // registered. Forcing that refresh now, rather than waiting, is what lets the
@@ -333,7 +333,7 @@ object Flows:
         // processes the resulting PostgreSQL NOTIFY. Every setup*() call still ahead of this
         // one in the chain gives that listener room to do so before this fires, so the pull
         // sees the client rather than racing the notification that would add it.
-        _       <- client.syncEdgeConfiguration()
+        _ <- client.syncEdgeConfiguration()
       yield Setups(
         Map(
           Id.LoginPassword -> lp,

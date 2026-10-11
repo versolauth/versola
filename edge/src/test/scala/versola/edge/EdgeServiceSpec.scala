@@ -18,10 +18,10 @@ import zio.test.*
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
-import scala.jdk.CollectionConverters.*
 import java.time.Instant
 import java.util.{Collections, Date, UUID}
 import javax.crypto.spec.SecretKeySpec
+import scala.jdk.CollectionConverters.*
 
 object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
@@ -51,7 +51,12 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
     val orphanPreset = preset.copy(id = otherPresetId, clientId = missingClientId)
 
-    val client = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+    val client = OAuthClient(
+      id = clientId,
+      credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
+      permissions = Set.empty,
+      accessTokenTtl = 15.minutes,
+    )
 
     val codeVerifierBytes = Array.fill[Byte](32)(7)
     val stateBytes = Array.fill[Byte](16)(9)
@@ -103,7 +108,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         url = URL.decode("https://central.example").toOption.get,
       ),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
-    edgeUrl = URL.decode("https://edge.example").toOption.get,
+      edgeUrl = URL.decode("https://edge.example").toOption.get,
       configurationCacheRefreshInterval = 5.minutes,
     )
 
@@ -932,7 +937,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
         now <- Clock.instant
-        token <- env.signRevocationToken(revokedJti = Some(List("revoked-token")), revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
+        token <-
+          env.signRevocationToken(revokedJti = Some(List("revoked-token")), revokedExpiresAt = Some(now.plusSeconds(300)), events = revocationEvent)
         _ <- service.backChannelLogout(token)
       yield assertTrue(
         // A client revoking one of its own tokens must not log every other client of that
@@ -1179,11 +1185,11 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private val centralEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000000"))
-  private val ordersEndpointId  = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000001"))
+  private val ordersEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000001"))
   private val billingEndpointId = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-9000-000000000002"))
-  private val centralResource   = simpleResource("central", centralEndpointId)
-  private val ordersResource    = simpleResource("orders", ordersEndpointId)
-  private val billingResource   = simpleResource("billing", billingEndpointId)
+  private val centralResource = simpleResource("central", centralEndpointId)
+  private val ordersResource = simpleResource("orders", ordersEndpointId)
+  private val billingResource = simpleResource("billing", billingEndpointId)
 
   private val getMyPermissionsSuite = suite("getMyPermissions")(
     test("reports the environment so the console can hide non-prod affordances") {
@@ -1281,13 +1287,13 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("resource aliases map only to permissions whose endpoints belong to that resource") {
       val env = new Env
-      val ordersPerm  = PermissionId("orders:read")
+      val ordersPerm = PermissionId("orders:read")
       val billingPerm = PermissionId("billing:read")
       for
         _ <- env.withResources(ordersResource, billingResource)
         _ <- env.permissionService.getPermissionsForRoles.returnsZIOOnCall:
-          case 1 => ZIO.succeed(Set(ordersPerm))   // first call: orders
-          case _ => ZIO.succeed(Set(billingPerm))  // second call: billing
+          case 1 => ZIO.succeed(Set(ordersPerm))  // first call: orders
+          case _ => ZIO.succeed(Set(billingPerm)) // second call: billing
         security <- ZIO.service[SecurityService]
         client <- ZIO.service[Client]
         service = env.buildService(client, security)
@@ -1303,7 +1309,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         response <- service.getMyPermissions(claims, List(ResourceId("orders"), ResourceId("billing")))
       yield assertTrue(
         response.resources == Map(
-          "orders"  -> EdgeService.ResourcePermissions(Set(ordersPerm)),
+          "orders" -> EdgeService.ResourcePermissions(Set(ordersPerm)),
           "billing" -> EdgeService.ResourcePermissions(Set(billingPerm)),
         ),
         env.permissionService.getPermissionsForRoles.calls.size == 2,
@@ -1311,7 +1317,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("combines central and resource aliases using their respective roles") {
       val env = new Env
-      val centralPerm  = PermissionId("users:read")
+      val centralPerm = PermissionId("users:read")
       val resourcePerm = PermissionId("orders:read")
       for
         _ <- env.withResources(centralResource, ordersResource)
@@ -1334,7 +1340,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       yield assertTrue(
         response.resources == Map(
           "central" -> EdgeService.ResourcePermissions(Set(centralPerm)),
-          "orders"  -> EdgeService.ResourcePermissions(Set(resourcePerm)),
+          "orders" -> EdgeService.ResourcePermissions(Set(resourcePerm)),
         ),
         env.permissionService.getPermissionsForRoles.calls.size == 2,
       )

@@ -1,6 +1,5 @@
 package versola.loadgen.driver
 
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{ClientsConfig, LoadgenConfig, ShardConfig}
 import versola.loadgen.coordinator.{LoadPlan, PlanScenario}
@@ -10,6 +9,7 @@ import versola.loadgen.scenario.*
 import versola.loadgen.scheduler.*
 import versola.loadgen.store.*
 import versola.util.Dpop
+import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
@@ -49,6 +49,16 @@ object Driver:
     * value twice as often as it changes.
     */
   val healthInterval: Duration = 5.seconds
+
+  /** Whether `cause` is nothing but the interruption of the fiber the driver raced against the
+    * server (`Main`): a ZIO interrupt, or the `InterruptedException` it surfaces as when a fiber
+    * blocked in the server's finalizers is stopped -- which arrives as a failure or a defect with
+    * that exception as its value, not as an `Interrupt`, and is why a finished campaign exited 1.
+    * Any other failure, mixed in or alone, is not this.
+    */
+  def endedByInterruption(cause: Cause[Any]): Boolean =
+    val values: List[Any] = cause.failures ++ cause.defects
+    !cause.isEmpty && (cause.isInterruptedOnly || (values.nonEmpty && values.forall(_.isInstanceOf[InterruptedException])))
 
   def run(config: LoadgenConfig): ZIO[Scope & ConfigProvider & EnvName & Tracing, Throwable, Unit] =
     boot(config).provideSome[Scope & ConfigProvider & EnvName & Tracing](LoadgenHttpClient.live)
@@ -118,11 +128,13 @@ object Driver:
       _ <- SnapshotPublisher(config.campaign.name, driverId, latencies, snapshots).run(SnapshotPublisher.interval)
       _ <- lagQuantile.run(lag, ScheduleLagQuantile.sampleInterval)
       _ <- healthReporter(lag, busy, buffer).flatMap(_.run(healthInterval).forkScoped)
+      // Before it says it is ready, so that nothing a campaign measures is the process's first call.
+      _ <- Warmup.run(client, config.targets, dpop)
       _ <- ZIO.logInfo(
         s"Driver $driverId ready for campaign '${config.campaign.name}' on shard ${shard.index}; " +
           s"polling ${config.coordinator.url} every ${config.coordinator.pollInterval.render}",
       )
-      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef, dpop)
+      engine = Engine(config, shard, clients, actions, flows, sessions, buffer, pool, busy, recorder, lag, tally, planRef, dpop, client)
       _ <- supervise(config, planClient, planRef, reporter, engine)
     yield ()
 
@@ -144,6 +156,7 @@ object Driver:
       tally: ArrivalTally,
       plan: Ref[LoadPlan],
       dpop: Option[DpopKeyPool],
+      client: Client,
   )
 
   private final case class ProtocolFlows(mobile: MobileFlows, web: WebFlows)
@@ -216,7 +229,12 @@ object Driver:
             current.fiber.interrupt *>
               ZIO.logInfo(s"Plan moved from ${current.generation} to $generation; restarting the loop") *>
               startGeneration(generation, plan, engine, running, failed).as(false)
-          case None => startGeneration(generation, plan, engine, running, failed).as(false)
+          // No loop is running: the first start, or a start after a pause or a stop. Whatever the pool
+          // holds has been idle since the process booted or the loop stopped, long enough for the
+          // far side to have closed it.
+          case None =>
+            Warmup.refreshConnections(engine.client, engine.config.targets) *>
+              startGeneration(generation, plan, engine, running, failed).as(false)
 
   private def halt(running: Ref[Option[Running]], why: String): UIO[Unit] =
     running.getAndSet(None).flatMap:

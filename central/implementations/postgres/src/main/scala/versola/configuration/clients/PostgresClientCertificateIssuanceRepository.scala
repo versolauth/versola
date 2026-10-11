@@ -3,8 +3,8 @@ package versola.configuration.clients
 import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.clients.ClientId
-import versola.util.postgres.BasicCodecs
 import versola.central.configuration.clients.certificates.{ClientCertificateIssuance, ClientCertificateIssuanceRepository}
+import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
 
 import java.time.Instant

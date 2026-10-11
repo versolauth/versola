@@ -23,6 +23,6 @@ object PostgresConsentRepositorySpec extends PostgresSpec, ConsentRepositorySpec
               VALUES
                 ('00000000-0000-7000-8000-000000000001'::uuid, '{}'::jsonb),
                 ('00000000-0000-7000-8000-000000000002'::uuid, '{}'::jsonb)
-              ON CONFLICT (id) DO NOTHING""".update.run()
+              ON CONFLICT (id) DO NOTHING""".update.run(),
       )
     yield ()

@@ -1,10 +1,19 @@
 package versola.oauth.clientauth
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientCredentials, ClientId, ClientIdWithAssertion, ClientIdWithSecret, MutualTlsAuth, OAuthClientRecord, SecurityProfile}
+import versola.oauth.client.model.{
+  AuthMethod,
+  ClientCredentials,
+  ClientId,
+  ClientIdWithAssertion,
+  ClientIdWithSecret,
+  MutualTlsAuth,
+  OAuthClientRecord,
+  SecurityProfile,
+}
 import versola.oauth.mtls.ClientCertificate
-import versola.util.{CoreConfig, JwtAudience}
 import versola.util.http.Observability
+import versola.util.{CoreConfig, JwtAudience}
 import zio.*
 import zio.http.Request
 
@@ -117,6 +126,7 @@ enum CertificateRelevance:
   /** RFC 8705 §2.1: the certificate is how this client authenticates, checked at every
     * endpoint that authenticates a client -- `/token`, `/introspect`, `/revoke`, `/par`. */
   case Authentication
+
   /** RFC 8705 §3: the certificate additionally binds the tokens `/token` issues to a client
     * that authenticates by secret and asked for that binding, so the header is read there for
     * a wider set of clients than the ones [[Authentication]] alone would cover. */
@@ -126,7 +136,7 @@ enum CertificateRelevance:
     case CertificateRelevance.Authentication => client.authenticatesWithCertificate
     // Both, not `bindsAccessTokens` alone: the two coincided until an edge-fronted native
     // client, which authenticates with a certificate that deliberately binds nothing.
-    case CertificateRelevance.TokenIssuance  => client.authenticatesWithCertificate || client.bindsAccessTokens
+    case CertificateRelevance.TokenIssuance => client.authenticatesWithCertificate || client.bindsAccessTokens
 
 /** The endpoints that authenticate a client, and the path each is served at.
   *

@@ -14,21 +14,18 @@ import zio.test.*
 object AuthorizeNegativeSpec extends E2ESpec:
 
   def spec = suite("Authorize - negative cases")(
-
     test("unknown client_id returns 400") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         result <- auth.authorizeRaw(clientId = "no-such-client", redirectUri = s.redirectUri)
       yield assertTrue(result.response.status == Status.BadRequest)
     },
-
     test("unregistered redirect_uri returns 400") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         result <- auth.authorizeRaw(clientId = s.clientId, redirectUri = "http://localhost:9999/not-registered")
       yield assertTrue(result.response.status == Status.BadRequest)
     },
-
     test("unsupported response_type redirects with error=unsupported_response_type") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -39,7 +36,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertErrorRedirect("unsupported_response_type")
       yield assertCompletes
     },
-
     test("missing code_challenge from a public client redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -62,7 +58,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
           .assertChallengeRedirect
       yield assertCompletes
     },
-
     test("a login_hint the client's flow does not take does not refuse the request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -70,7 +65,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
           .assertChallengeRedirect
       yield assertCompletes
     },
-
     test("acr_values the tenant does not define do not refuse the request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -156,10 +150,8 @@ object AuthorizeNegativeSpec extends E2ESpec:
         )
       yield assertTrue(result match
         case TokenResult.Failure(response, body) => response.status == Status.BadRequest && body.contains("invalid_grant")
-        case _ => false,
-      )
+        case _ => false)
     },
-
     test("code_challenge_method=plain redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -170,7 +162,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
     test("missing code_challenge_method redirects with error=invalid_request") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -181,7 +172,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertErrorRedirect("invalid_request")
       yield assertCompletes
     },
-
     test("prompt=none without session redirects with error=login_required") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -192,7 +182,6 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertErrorRedirect("login_required")
       yield assertCompletes
     },
-
     test("prompt=none without session redirects with fragment error=login_required for hybrid response_type") {
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
@@ -205,5 +194,4 @@ object AuthorizeNegativeSpec extends E2ESpec:
         ).assertFragmentErrorRedirect("login_required")
       yield assertCompletes
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

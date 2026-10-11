@@ -34,8 +34,8 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
           username = username,
           password = password,
           body = body,
-        )
-      )
+        ),
+      ),
     )
 
   def spec = suite("SmsOtpProvider")(
@@ -45,7 +45,7 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { req =>
             seen.set(Some(req)).as(Response.ok)
-          }.toRoutes
+          }.toRoutes,
         )
         provider <- ZIO.service[SmsOtpProvider]
         _ <- provider.sendOtp(phone, code, template)
@@ -60,14 +60,13 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
         body("mes") == expectedMessage,
       )
     }.provide(TestClient.layer, ZLayer.succeed(makeConfig()), SmsOtpProvider.live),
-
     test("adds Basic-Auth header when credentials are configured") {
       for
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { req =>
             seen.set(Some(req)).as(Response.ok)
-          }.toRoutes
+          }.toRoutes,
         )
         provider <- ZIO.service[SmsOtpProvider]
         _ <- provider.sendOtp(phone, code, template)
@@ -75,7 +74,7 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
       yield assertTrue(
         request.header(Header.Authorization) match
           case Some(Header.Authorization.Basic(_, _)) => true
-          case _ => false
+          case _ => false,
       )
     }.provide(
       TestClient.layer,
@@ -88,7 +87,7 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { req =>
             seen.set(Some(req)).as(Response.ok)
-          }.toRoutes
+          }.toRoutes,
         )
         provider <- ZIO.service[SmsOtpProvider]
         _ <- provider.sendOtp(phone, code, template)
@@ -98,7 +97,7 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
     test("fails when provider responds with non-2xx status") {
       for
         _ <- TestClient.addRoutes(
-          Handler.fromFunction[Request](_ => Response.status(Status.ServiceUnavailable)).toRoutes
+          Handler.fromFunction[Request](_ => Response.status(Status.ServiceUnavailable)).toRoutes,
         )
         provider <- ZIO.service[SmsOtpProvider]
         result <- provider.sendOtp(phone, code, template).exit
@@ -110,7 +109,7 @@ object SmsOtpProviderSpec extends ZIOSpecDefault:
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request] { req =>
             seen.set(Some(req)).as(Response.ok)
-          }.toRoutes
+          }.toRoutes,
         )
         provider <- ZIO.service[SmsOtpProvider]
         _ <- provider.sendOtp(phone, code, template)

@@ -4,7 +4,13 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
 import org.scalamock.stubs.ZIOStubs
 import versola.edge.model.{AccessTokenId, AuthorizationPreset, PresetId}
-import versola.edge.{AuthorizationPresetsSyncClient, OAuthClientService, OAuthClientsSyncClient, PostgresRevocationNotifications, PostgresRevocationRepository}
+import versola.edge.{
+  AuthorizationPresetsSyncClient,
+  OAuthClientService,
+  OAuthClientsSyncClient,
+  PostgresRevocationNotifications,
+  PostgresRevocationRepository,
+}
 import versola.util.ReloadingCache
 import versola.util.postgres.{PostgresConfig, PostgresSpec}
 import zio.*

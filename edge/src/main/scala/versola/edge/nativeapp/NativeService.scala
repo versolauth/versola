@@ -51,6 +51,7 @@ enum NativeError:
   case UnsupportedGrantType
   case InvalidDpopProof(description: String)
   case InvalidGrant(description: String)
+
   /** RFC 9449 §9: this edge requires a nonce and the proof carried none it issued, or one
     * that has expired. Carries a fresh one for the retry, the same challenge shape as the
     * proxied path's `Outcome.UseDpopNonce`. */
@@ -103,8 +104,16 @@ object NativeService:
     * as given. Everything that decides the security of the flow -- `response_type`, PKCE,
     * `state`, `dpop_jkt`, `client_id` -- is edge's and cannot be supplied. */
   val PassThroughParameters: List[String] = List(
-    "scope", "nonce", "acr_values", "prompt", "login_hint", "ui_locales", "max_age",
-    "claims", "resource", "authorization_details",
+    "scope",
+    "nonce",
+    "acr_values",
+    "prompt",
+    "login_hint",
+    "ui_locales",
+    "max_age",
+    "claims",
+    "resource",
+    "authorization_details",
   )
 
   /** Parameters that may legitimately repeat (RFC 8707 §2). */

@@ -21,7 +21,11 @@ trait CacheSyncService:
   def sync(): Task[Unit]
 
 object CacheSyncService:
-  def live: ZLayer[CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope, Nothing, CacheSyncService] =
+  def live: ZLayer[
+    CacheSyncRepository & TenantService & PermissionService & ResourceService & OAuthClientService & OAuthScopeService & AuthorizationDetailTypeService & RoleService & AuthorizationPresetService & EdgeService & FormService & OtpChallengeService & ChallengeSettingsService & SystemSettingsService & JwksService & ThemeService & ServerMetadataService & Scope,
+    Nothing,
+    CacheSyncService,
+  ] =
     ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >>>
       ZLayer(ZIO.serviceWithZIO[CacheSyncService.Impl](service => service.sync().forkScoped.as(service)))
 

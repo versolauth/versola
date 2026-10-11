@@ -52,9 +52,9 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ZEnvironment[ResourceService](resourceService) ++
                 ZEnvironment[EnvName](env) ++
                 ZEnvironment[UserService](userService) ++
-                tracing
-            )
-          )
+                tracing,
+            ),
+          ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(stubs)

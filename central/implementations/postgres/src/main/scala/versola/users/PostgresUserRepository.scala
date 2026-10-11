@@ -82,11 +82,11 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     (for
       version <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("create-user"):
-             upsertSql(id, email, phone, login)
-             enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
+        upsertSql(id, email, phone, login)
+        enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
     yield ()).mapError:
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
-      case e                                                => e
+      case e => e
 
   override def indexFromAuth(
       email: Option[Email],
@@ -97,7 +97,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       .retry(Schedule.recurWhile[Throwable](_ == PostgresUserRepository.IndexRace) && Schedule.recurs(3))
       .mapError:
         case PostgresUserRepository.IndexConflict => UserIndexConflict
-        case e                                    => e
+        case e => e
 
   private def attemptIndexFromAuth(
       email: Option[Email],
@@ -108,25 +108,25 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       id <- secureRandom.nextUUIDv7.map(UserId(_))
       version <- secureRandom.nextUUIDv7
       owner <- xa.transactMeasured("index-user-from-auth"):
-       val inserted =
-         sql"""INSERT INTO user_index (id, email, phone, login)
+        val inserted =
+          sql"""INSERT INTO user_index (id, email, phone, login)
                VALUES ($id, $email, $phone, $login)
                ON CONFLICT DO NOTHING
                RETURNING id""".returning[UserId].run().headOption
 
-       inserted match
-         case Some(owner) =>
-           enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
-           owner
-         case None =>
-           val owners =
-             sql"""SELECT id FROM user_index
+        inserted match
+          case Some(owner) =>
+            enqueueEventSql(id, version, OutboxEvent.UpsertUser(id, version, email, phone, login))
+            owner
+          case None =>
+            val owners =
+              sql"""SELECT id FROM user_index
                    WHERE email = $email OR phone = $phone OR login = $login
                    FOR UPDATE""".query[UserId].run().distinct
-           owners match
-             case Seq(owner) => owner
-             case Seq() => throw PostgresUserRepository.IndexRace
-             case _     => throw PostgresUserRepository.IndexConflict
+            owners match
+              case Seq(owner) => owner
+              case Seq() => throw PostgresUserRepository.IndexRace
+              case _ => throw PostgresUserRepository.IndexConflict
     yield owner
 
   override def patch(
@@ -165,8 +165,8 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     for
       eventId <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("delete-user"):
-             sql"DELETE FROM user_index WHERE id = $id".update.run()
-             enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id))
+        sql"DELETE FROM user_index WHERE id = $id".update.run()
+        enqueueEventSql(id, eventId, OutboxEvent.DeleteUser(id))
     yield ()
 
   override def enqueueRoleUpdate(
@@ -178,7 +178,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
     for
       eventId <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("enqueue-role-update"):
-             enqueueEventSql(userId, eventId, OutboxEvent.UpdateUserRoles(userId, tenantId, add, remove))
+        enqueueEventSql(userId, eventId, OutboxEvent.UpdateUserRoles(userId, tenantId, add, remove))
     yield ()
 
   /** Atomically claims a batch by pushing `next_attempt_at` forward by `leaseSeconds`.
@@ -236,7 +236,7 @@ object PostgresUserRepository:
 
   private def isUniqueViolation(t: Throwable): Boolean = t match
     case sql: SQLException => sql.getSQLState == UniqueViolationSqlState
-    case _                 => Option(t.getCause).exists(isUniqueViolation)
+    case _ => Option(t.getCause).exists(isUniqueViolation)
 
   /** Raised when the ON CONFLICT branch of [[PostgresUserRepository.attemptIndexFromAuth]] finds
     * no owner row, meaning a concurrent delete raced the insert. Retried since the claim is safe

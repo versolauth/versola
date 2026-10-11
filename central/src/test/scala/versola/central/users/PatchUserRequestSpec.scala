@@ -8,12 +8,12 @@ import java.util.UUID
 
 object PatchUserRequestSpec extends ZIOSpecDefault:
 
-  private val id    = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val id = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val email = Email("user@example.com")
   private val phone = Phone("+12025550123")
   private val login = Login("user123")
 
-  private val idStr   = "00000000-0000-0000-0000-000000000001"
+  private val idStr = "00000000-0000-0000-0000-000000000001"
 
   /** Only `id` present; all patchable fields absent. */
   private val minimalJson =

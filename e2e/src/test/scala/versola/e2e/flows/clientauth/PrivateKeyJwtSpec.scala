@@ -96,7 +96,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
           )
 
   def spec = suite("Private Key JWT (RFC 7523)")(
-
     test("a client with registered keys authenticates at /token with an assertion") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -108,7 +107,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("RFC 7523 §2.2: a key the client registered is the credential, so no secret is needed")
     },
-
     test("FAPI 2.0 §5.3.2.1-8: an assertion addressed to the token endpoint URL is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -123,7 +121,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client")
         .label("under the fapi2 profile only the issuer identifier names this server")
     },
-
     test("FAPI 2.0 §5.3.2.1-8: an audience sent as an array is refused, even naming only the issuer") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -137,7 +134,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
           yield error
       yield assertTrue(error == "invalid_client")
     },
-
     test("a client that registered keys is refused its own secret") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -150,7 +146,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client", status == Status.Unauthorized)
         .label("a secret must not authenticate a client that registered a key set")
     },
-
     test("the same assertion cannot be spent twice") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -163,7 +158,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(first.accessToken.nonEmpty, error == "invalid_client")
         .label("RFC 7523 §3: a jti already seen is a replay, whatever else the assertion says")
     },
-
     test("an assertion signed by a key the client never registered is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -175,7 +169,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
     },
-
     test("an assertion addressed to somewhere else is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -187,7 +180,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client")
         .label("RFC 7523 §3: an assertion is only good for the server its aud names")
     },
-
     test("FAPI 2.0 §5.3.2.1-13: an assertion from a clock a few seconds fast is accepted") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -199,7 +191,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("nbf/iat up to 10s in the future must be accepted to absorb clock skew")
     },
-
     test("FAPI 2.0 §5.3.2.1-13: an assertion issued more than 60 seconds in the future is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -211,7 +202,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
     },
-
     test("an assertion valid for longer than the tenant allows is refused") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -225,7 +215,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
     },
-
     test("a client that registered no keys cannot authenticate with an assertion") {
       for
         (setupResult, auth) <- setup(Flows.Id.LoginPassword)
@@ -239,7 +228,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client", setupResult.clientId.nonEmpty)
         .label("an assertion must not make a secret-authenticated client assertion-authenticable")
     },
-
     test("an assertion presented beside Basic authentication is refused as two methods") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -251,7 +239,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client")
         .label("RFC 6749 §2.3: a client uses one authentication method per request")
     },
-
     test("/introspect authenticates the caller by assertion") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -278,7 +265,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         ).success
       yield assertTrue(introspection.active)
     },
-
     test("/par authenticates the pushing client by assertion") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -289,7 +275,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(result.requestUri.nonEmpty)
         .label("RFC 9126 authenticates the pusher the same way /token does")
     },
-
     test("/par refuses an assertion addressed to the token endpoint instead of /par") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -303,7 +288,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         case PushedAuthorizationResult.Failure(response, _, error) =>
           assertTrue(response.status == Status.Unauthorized, error.contains("invalid_client"))
     },
-
     test("/revoke authenticates the caller by assertion") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -320,7 +304,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
       yield assertTrue(response.status.isSuccess, !introspection.active)
         .label("RFC 7009 accepts the same credential /token and /introspect do")
     },
-
     test("registration refuses a key set no supported algorithm could verify against") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -382,7 +365,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
         token.tokenType == "DPoP",
       ).label("the key central generated is the whole credential: no secret was ever issued")
     },
-
     test("generateJwks is refused together with a registered jwks") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -403,7 +385,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
           assertTrue(response.status == Status.BadRequest)
             .label("a client registers the key it holds or asks for one, not both")
     },
-
     test("generateJwks is refused for a method other than private_key_jwt") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -422,7 +403,6 @@ object PrivateKeyJwtSpec extends E2ESpec:
           assertTrue(response.status == Status.BadRequest)
             .label("generateJwks names the key an assertion is signed with, which client_secret never reads")
     },
-
     test("the metadata document advertises the method and the algorithms it will accept") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

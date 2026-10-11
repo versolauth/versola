@@ -5,8 +5,8 @@ import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateClaim, CreateScopeRequest, PatchClaim, PatchDescription, PatchScope, UpdateScopeRequest}
 import versola.util.ReloadingCache
-import zio.prelude.EqualOps
 import zio.*
+import zio.prelude.EqualOps
 import zio.test.*
 
 object OAuthScopeServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -84,7 +84,7 @@ object OAuthScopeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.repository.createScope.succeedsWith(())
         _ <- env.service.createScope(createRequest)
       yield assertTrue(
-        env.repository.createScope.calls == List((tenantId, profileScope, createRequest.description, createRequest.claims))
+        env.repository.createScope.calls == List((tenantId, profileScope, createRequest.description, createRequest.claims)),
       )
     },
     test("updateScope delegates request fields to repository") {

@@ -4,8 +4,8 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
 import zio.json.ast.Json
-import zio.{Scope, ZIO}
 import zio.test.*
+import zio.{Scope, ZIO}
 
 trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
   self: ZIOSpec[TransactorZIO] =>
@@ -68,7 +68,6 @@ trait EdgeRepositorySpec extends DatabaseSpecBase[EdgeRepositorySpec.Env]:
           afterRotation.get.oldPublicKey.contains(sampleJwk),
         )
       },
-
       test("deleteEdge removes edge") {
         for
           _ <- env.repository.createEdge(edgeId, sampleJwk, EdgeRecord.DefaultRequireDpopNonce)

@@ -17,8 +17,8 @@ object SystemSettingsRecord:
   // SystemSettingsController's upsert endpoint.
   val default: SystemSettingsRecord =
     SystemSettingsRecord(
-      passwordRegex        = DefaultPasswordRegex,
-      passwordHistorySize  = 2,
+      passwordRegex = DefaultPasswordRegex,
+      passwordHistorySize = 2,
       passwordNumDifferent = 1,
       identityProviderLogo = None,
     )

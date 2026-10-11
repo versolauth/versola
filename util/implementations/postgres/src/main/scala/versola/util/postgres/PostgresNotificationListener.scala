@@ -105,7 +105,6 @@ class PostgresNotificationListener(
           DbMetrics.notificationListenerQueueOverflow(1)
     .unit
 
-
   /** Opens the connection, `LISTEN`s, and starts polling it on a fiber of its own before
     * this returns — not lazily on the first pull of the resulting stream.
     *
@@ -229,9 +228,8 @@ class PostgresNotificationListener(
     */
   private def offer(queue: Queue[Take[Throwable, PGNotification]], notifications: List[PGNotification]): UIO[Unit] =
     ZIO
-      .foldLeft(notifications)(0):
-        (dropped, notification) =>
-          queue.offer(Take.single(notification)).map(accepted => if accepted then dropped else dropped + 1)
+      .foldLeft(notifications)(0): (dropped, notification) =>
+        queue.offer(Take.single(notification)).map(accepted => if accepted then dropped else dropped + 1)
       .flatMap: dropped =>
         ZIO.when(dropped > 0):
           ZIO.logWarning(s"Notification queue full; dropping $dropped notification(s)") *>
@@ -262,7 +260,7 @@ class PostgresNotificationListener(
   private def proven(session: Session, now: Instant): UIO[Unit] =
     session.delivered.get.flatMap:
       case Some(_) => session.delivered.set(Some(now))
-      case None    => session.delivered.set(Some(now)) *> DbMetrics.notificationListenerConnected(true)
+      case None => session.delivered.set(Some(now)) *> DbMetrics.notificationListenerConnected(true)
 
   /** Proves the connection still delivers, by giving it something to deliver.
     *
@@ -340,7 +338,9 @@ object PostgresNotificationListener:
     // Bounded rather than followed to null, in case a driver ever hands back a cause chain
     // that cycles back on itself: this is a classification, not a diagnostic, so a chain long
     // enough to matter here would be a bug elsewhere, not a reason to hang finding out.
-    Iterator.iterate(Option(cause))(_.flatMap(t => Option(t.getCause))).take(16).takeWhile(_.isDefined).flatten.exists(_.isInstanceOf[SocketTimeoutException])
+    Iterator.iterate(Option(cause))(
+      _.flatMap(t => Option(t.getCause)),
+    ).take(16).takeWhile(_.isDefined).flatten.exists(_.isInstanceOf[SocketTimeoutException])
 
   private val ReconnectMinBackoff = 100.millis
   private val ReconnectMaxBackoff = 10.seconds
@@ -372,10 +372,10 @@ object PostgresNotificationListener:
     * does before the deadline otherwise would.
     */
   private final class SilentConnection(timeout: Duration, cause: Option[Throwable] = None)
-      extends RuntimeException(
-        s"No notification on this connection in $timeout, including this listener's own heartbeat",
-        cause.orNull,
-      )
+    extends RuntimeException(
+      s"No notification on this connection in $timeout, including this listener's own heartbeat",
+      cause.orNull,
+    )
 
   /** The listener's connection, and what has to be remembered per connection to tell a quiet
     * one from a dead one. Replaced wholesale on every reconnect, along with the timers.
@@ -442,24 +442,23 @@ object PostgresNotificationListener:
     */
   private def verify(config: PostgresConfig): ZIO[Scope, Throwable, Unit] =
     val channel = s"versola_listener_check_${java.util.UUID.randomUUID().toString.replace("-", "_")}"
-    ZIO.acquireRelease(ZIO.attemptBlocking(open(config)))(c => ZIO.attemptBlocking(c.close()).ignoreLogged).flatMap:
-      connection =>
-        for
-          _ <- ZIO.attemptBlocking(execute(connection, List(s"LISTEN $channel", s"NOTIFY $channel")))
-          session <- ZIO.attempt(connection.unwrap(classOf[PGConnection]))
-          delivered <- ZIO
-            .attemptBlocking(Option(session.getNotifications(VerifyTimeout.toMillis.toInt)).exists(_.nonEmpty))
-            .timeoutTo(false)(identity)(VerifyTimeout)
-          _ <- ZIO.unless(delivered):
-            ZIO.fail(
-              IllegalStateException(
-                s"LISTEN/NOTIFY is not working on ${config.notificationsUrl.getOrElse(config.url)}: this connection " +
-                  "did not receive its own notification. The usual cause is a connection pooler in transaction " +
-                  "mode, which cannot support LISTEN; point postgres.notifications-url straight at Postgres, or " +
-                  "run the pooler in session mode.",
-              ),
-            )
-        yield ()
+    ZIO.acquireRelease(ZIO.attemptBlocking(open(config)))(c => ZIO.attemptBlocking(c.close()).ignoreLogged).flatMap: connection =>
+      for
+        _ <- ZIO.attemptBlocking(execute(connection, List(s"LISTEN $channel", s"NOTIFY $channel")))
+        session <- ZIO.attempt(connection.unwrap(classOf[PGConnection]))
+        delivered <- ZIO
+          .attemptBlocking(Option(session.getNotifications(VerifyTimeout.toMillis.toInt)).exists(_.nonEmpty))
+          .timeoutTo(false)(identity)(VerifyTimeout)
+        _ <- ZIO.unless(delivered):
+          ZIO.fail(
+            IllegalStateException(
+              s"LISTEN/NOTIFY is not working on ${config.notificationsUrl.getOrElse(config.url)}: this connection " +
+                "did not receive its own notification. The usual cause is a connection pooler in transaction " +
+                "mode, which cannot support LISTEN; point postgres.notifications-url straight at Postgres, or " +
+                "run the pooler in session mode.",
+            ),
+          )
+      yield ()
 
   /** Checks that notifications are deliverable at all, on a separate short-lived connection
     * so a subscriber cannot miss a real one arriving while the check is in progress, and

@@ -2,13 +2,19 @@ package versola.central.configuration.clients
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.clients.certificates.{ClientCertificateIssuanceRepository, ClientCertificateIssuance, ClientCertificateIssuer, ClientCertificateService, EdgeCertificateEnrollmentRepository}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
+import versola.central.configuration.clients.certificates.{
+  ClientCertificateIssuance,
+  ClientCertificateIssuanceRepository,
+  ClientCertificateIssuer,
+  ClientCertificateService,
+  EdgeCertificateEnrollmentRepository,
+}
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
@@ -21,8 +27,8 @@ import zio.test.*
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
-import javax.crypto.spec.SecretKeySpec
 import java.time.Instant
+import javax.crypto.spec.SecretKeySpec
 
 object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private val tenantId = TenantId("tenant-a")
@@ -235,10 +241,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
       override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
       override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) =
+        ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-      override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
-    )
+      override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
 
   /** No certificate is ever issued here: the controller is what is under test, and the real
     * service passes a plain registration straight through to the stubbed [[OAuthClientService]]. */
@@ -281,7 +287,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
+                versola.central.configuration.resources.ResourceService,
+              ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[versola.central.configuration.edges.EdgeService](edgeService),
             ),
           ),
@@ -291,7 +299,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
-          case _    => request
+          case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service, securityService)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -313,7 +321,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       accessTokenTtl: Duration,
       frontChannelLogoutUri: Option[String],
       frontChannelLogoutSessionRequired: Boolean,
-    )
+  )
 
   private def decryptSyncedClient(
       client: SyncOAuthClientRecord,
@@ -373,7 +381,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 policyUri = None,
                 tosUri = None,
                 consentFlow = Some(
-                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds))
+                  ConsentFlowDto(allowPartial = true, rememberDuration = Some(14.days.toSeconds)),
                 ),
                 dpopBoundAccessTokens = false,
                 dpopSigningAlgs = Set.empty,
@@ -508,7 +516,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           rsaKeys.update(_ :+ key) *> realSecurity.encryptRsa(data, key)
         override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = realSecurity.decryptRsa(data, key)
         override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-        override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+        override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) =
+          ZIO.dieMessage("Unused in test")
         override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
         override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
       for
@@ -531,7 +540,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
+                versola.central.configuration.resources.ResourceService,
+              ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 ZEnvironment[SecurityService](edgeSecurity(realSecurity, rsaKeys)) ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),
@@ -584,7 +595,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
+                versola.central.configuration.resources.ResourceService,
+              ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
                 ZEnvironment[EdgeService](edgeService),
             ),
           ),
@@ -626,7 +639,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
+                versola.central.configuration.resources.ResourceService,
+              ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 security ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),
@@ -668,7 +683,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             ClientController.routes.provideEnvironment(
-              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[versola.central.configuration.resources.ResourceService](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
+              ZEnvironment[OAuthClientService](service) ++ certificates(service) ++ ZEnvironment[
+                versola.central.configuration.resources.ResourceService,
+              ](resourceService) ++ ZEnvironment[CentralConfig](config) ++ tracing ++
                 security ++ ZEnvironment[EdgeService](edgeService),
             ),
           ),

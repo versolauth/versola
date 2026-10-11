@@ -23,7 +23,7 @@ object EmailOtpProvider:
     ZLayer.fromFunction: (config: CoreConfig) =>
       config.smtp match
         case Some(smtp) => SMTPOtpProvider(smtp)
-        case None       => NoOpEmailOtpProvider
+        case None => NoOpEmailOtpProvider
 
 object NoOpEmailOtpProvider extends EmailOtpProvider:
   override def sendOtp(email: Email, code: OtpCode, template: OtpTemplate): Task[Unit] =

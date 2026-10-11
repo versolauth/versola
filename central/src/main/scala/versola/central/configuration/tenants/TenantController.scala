@@ -1,8 +1,8 @@
 package versola.central.configuration.tenants
 
-import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
-import versola.central.configuration.resources.ResourceService
 import versola.central.authorizeBasic
+import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.{CreateTenantRequest, GetAllTenantsResponse, TenantResponse, UpdateTenantRequest}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}

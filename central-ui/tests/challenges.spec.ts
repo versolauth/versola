@@ -90,7 +90,7 @@ test('creates an authorization detail type from Challenges & Security', async ({
   await page.locator('form').getByRole('button', { name: 'Create Type', exact: true }).click();
 
   await expect(page.locator('.type-card').filter({ hasText: 'payment_initiation' })).toBeVisible();
-  expect(findRequest(api.requests, 'POST', '/configuration/authorization-detail-types').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/authorization-detail-types')).body).toEqual({
     tenantId: 'tenant-alpha',
     type: 'payment_initiation',
     description: { en: 'Payment initiation' },
@@ -236,7 +236,7 @@ test('edits passkeys and sends them in the save payload', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
     passkeySettings: { rpId: string; rpName: string; origins: string[]; userVerification: string } | null;
   };
   expect(body.passkeySettings).toEqual({
@@ -266,7 +266,7 @@ test('lists only the keys central can sign with, and sends the selected kid', as
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
     signingKeyId: string | null;
   };
   expect(body.signingKeyId).toBe('ps-kid');
@@ -295,7 +295,7 @@ test('clears the signing key selection as an explicit null', async ({ page }) =>
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  const body = findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings').body as {
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
     signingKeyId: string | null;
   };
   expect(body.signingKeyId).toBeNull();
@@ -323,7 +323,7 @@ test('adds a new OTP template', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates')).body).toMatchObject({
     id: 'signup-otp',
     tenantId: 'tenant-alpha',
     localizations: { en: 'Your code is {{code}}' },
@@ -375,7 +375,7 @@ test('validates and previews an email OTP template', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates')).body).toMatchObject({
     id: 'email-otp',
     channel: 'email',
     localizations: { en: '<html><body><p>Your verification code is {{code}}</p></body></html>' },
@@ -404,7 +404,7 @@ test('edits both OTP channels from the template editor', async ({ page }) => {
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/challenges/otp-templates')).body).toMatchObject({
     id: 'login-otp',
     channel: 'sms',
     localizations: { en: 'Your code is {{code}}' },
@@ -419,6 +419,6 @@ test('deletes an OTP template through the shared confirm dialog', async ({ page 
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
   await page.waitForTimeout(300);
 
-  findRequest(api.requests, 'DELETE', '/configuration/challenges/otp-templates');
+  (await findRequest(api.requests, 'DELETE', '/configuration/challenges/otp-templates'));
   await expect(page.locator('.template-id').filter({ hasText: 'login-otp' })).toHaveCount(0);
 });

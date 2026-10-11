@@ -38,15 +38,15 @@ object SutSchemaGuard:
     case MissingTable(table: String) extends Finding(s"table '$table' does not exist")
 
     case MissingColumn(table: String, column: String)
-        extends Finding(s"$table.$column is written by the seeder but does not exist")
+      extends Finding(s"$table.$column is written by the seeder but does not exist")
 
     case TypeChanged(table: String, column: String, declared: String, actual: String)
-        extends Finding(s"$table.$column is declared as '$declared' but is '$actual'")
+      extends Finding(s"$table.$column is declared as '$declared' but is '$actual'")
 
     case RequiredColumnNotWritten(table: String, column: String)
-        extends Finding(
-          s"$table.$column is NOT NULL with no default, and the seeder does not write it",
-        )
+      extends Finding(
+        s"$table.$column is NOT NULL with no default, and the seeder does not write it",
+      )
 
   /** One column as `information_schema` describes it. */
   private case class ActualColumn(name: String, udtName: String, nullable: Boolean, hasDefault: Boolean)

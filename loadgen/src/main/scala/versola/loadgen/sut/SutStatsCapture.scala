@@ -37,6 +37,12 @@ trait SutStatsCapture:
     */
   def deltas(campaign: String): Task[List[SutStatsDelta]]
 
+  /** The same differences over the campaign's measured window only -- from the snapshot taken as
+    * the first measured phase began to the one taken as the last ended -- so the database's cost
+    * is stated over the same span as the latency quantiles. Empty when the window never closed.
+    */
+  def windowDeltas(campaign: String): Task[List[SutStatsDelta]] = ZIO.succeed(Nil)
+
 final class PostgresSutStatsCapture(
     databases: List[SutStatsDatabaseConfig],
     snapshots: SutStatSnapshotRepository,
@@ -52,7 +58,12 @@ final class PostgresSutStatsCapture(
         )
 
   override def deltas(campaign: String): Task[List[SutStatsDelta]] =
-    snapshots.loadCampaign(campaign).map(SutStatsDelta.from)
+    snapshots.loadCampaign(campaign).map(SutStatsDelta.from(_))
+
+  override def windowDeltas(campaign: String): Task[List[SutStatsDelta]] =
+    snapshots
+      .loadCampaign(campaign)
+      .map(SutStatsDelta.from(_, SutStatPhase.MeasuredStart, SutStatPhase.MeasuredEnd))
 
   private def captureOne(campaign: String, phase: SutStatPhase, target: SutStatsDatabaseConfig): Task[Unit] =
     ZIO.scoped:
@@ -113,3 +124,5 @@ object SutStatsCapture:
   private[sut] def label(phase: SutStatPhase): String = phase match
     case SutStatPhase.Before => "before"
     case SutStatPhase.After => "after"
+    case SutStatPhase.MeasuredStart => "at the start of the measured window of"
+    case SutStatPhase.MeasuredEnd => "at the end of the measured window of"

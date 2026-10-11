@@ -223,9 +223,13 @@ object ClientAssertionSpec extends ZIOSpecDefault:
           iat60 <- verify(assertion(iat = at(60), exp = at(120))).either
           iat61 <- verify(assertion(iat = at(61), exp = at(120))).either
         yield assertTrue(
-          nbf9.isRight, nbf10.isRight, nbf11.isRight, nbf60.isRight,
+          nbf9.isRight,
+          nbf10.isRight,
+          nbf11.isRight,
+          nbf60.isRight,
           nbf61 == Left(ClientAssertion.Error.NotYetValid),
-          iat10.isRight, iat60.isRight,
+          iat10.isRight,
+          iat60.isRight,
           iat61 == Left(ClientAssertion.Error.IssuedInFuture),
         )
       },

@@ -1,5 +1,13 @@
-import { expect, test } from '@playwright/test';
-import { loadAdminApp } from './fixtures';
+import { expect, test, type Page } from '@playwright/test';
+import { findRequest, loadAdminApp } from './fixtures';
+
+/** Waits for the presets response. Start it before the click that triggers it: the mocked API
+ * answers immediately, and a wait started after the click can miss the response and time out. */
+function presetsLoaded(page: Page) {
+  return page.waitForResponse(resp =>
+    resp.url().includes('/configuration/auth-request-presets') && resp.status() === 200
+  );
+}
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -52,12 +60,9 @@ test('loads presets when client is expanded', async ({ page }) => {
   )).toBeFalsy();
 
   // Click to expand
+  const loaded = presetsLoaded(page);
   await card.locator('.client-header').click();
-
-  // Wait for presets to load
-  await page.waitForResponse(resp =>
-    resp.url().includes('/configuration/auth-request-presets') && resp.status() === 200
-  );
+  await loaded;
 
   // Verify GET request was made with correct params
   const presetsRequest = api.requests.find(req =>
@@ -79,10 +84,9 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
   const card = clientCard(page, 'alpha-web');
 
   // Expand first time
+  const loaded = presetsLoaded(page);
   await card.locator('.client-header').click();
-  await page.waitForResponse(resp =>
-    resp.url().includes('/configuration/auth-request-presets')
-  );
+  await loaded;
 
   const firstLoadCount = api.requests.filter(req =>
     req.pathname === '/configuration/auth-request-presets' &&
@@ -117,12 +121,9 @@ test('displays loaded presets in the expanded client card', async ({ page }) => 
   });
 
   const card = clientCard(page, 'alpha-web');
+  const loaded = presetsLoaded(page);
   await card.locator('.client-header').click();
-
-  // Wait for presets to load
-  await page.waitForResponse(resp =>
-    resp.url().includes('/configuration/auth-request-presets') && resp.status() === 200
-  );
+  await loaded;
 
   // Expand presets section
   await card.getByText('Authorization Presets').click();
@@ -204,16 +205,8 @@ test('adds a new preset with a manually entered ID', async ({ page }) => {
   // Now save all presets
   await page.getByRole('button', { name: 'Save Presets' }).click();
 
-  // Wait for the save to complete
-  await page.waitForTimeout(300);
-
-  // Verify the API request
-  const saveRequest = api.requests.find(req =>
-    req.pathname === '/configuration/auth-request-presets' &&
-    req.method === 'POST'
-  );
-
-  expect(saveRequest).toBeTruthy();
+  // The request is logged when the mocked API receives it, so wait for it rather than sleeping.
+  const saveRequest = await findRequest(api.requests, 'POST', '/configuration/auth-request-presets');
   expect(saveRequest?.body).toMatchObject({
     clientId: 'alpha-web',
     presets: expect.arrayContaining([
@@ -265,16 +258,8 @@ test('edits an existing preset', async ({ page }) => {
   // Save all presets
   await page.getByRole('button', { name: 'Save Presets' }).click();
 
-  // Wait for the save to complete
-  await page.waitForTimeout(300);
-
-  // Verify the API request
-  const saveRequest = api.requests.find(req =>
-    req.pathname === '/configuration/auth-request-presets' &&
-    req.method === 'POST'
-  );
-
-  expect(saveRequest).toBeTruthy();
+  // The request is logged when the mocked API receives it, so wait for it rather than sleeping.
+  const saveRequest = await findRequest(api.requests, 'POST', '/configuration/auth-request-presets');
   expect(saveRequest?.body).toMatchObject({
     presets: expect.arrayContaining([
       expect.objectContaining({
@@ -311,12 +296,7 @@ test('updates a preset with the prompt consent custom parameter', async ({ page 
   await page.getByRole('button', { name: 'Update Preset' }).click();
   await expect(page.getByRole('button', { name: 'Save Presets' })).toBeVisible();
   await page.getByRole('button', { name: 'Save Presets' }).click();
-  await page.waitForTimeout(300);
-
-  const saveRequest = api.requests.find(req =>
-    req.pathname === '/configuration/auth-request-presets' &&
-    req.method === 'POST'
-  );
+  const saveRequest = await findRequest(api.requests, 'POST', '/configuration/auth-request-presets');
   expect(saveRequest?.body).toMatchObject({
     presets: expect.arrayContaining([
       expect.objectContaining({
@@ -358,13 +338,8 @@ test('saves and reloads a preset with a post-logout redirect URI', async ({ page
   await page.getByRole('button', { name: 'Create Preset' }).click();
   await expect(page.getByRole('button', { name: 'Save Presets' })).toBeVisible();
   await page.getByRole('button', { name: 'Save Presets' }).click();
-  await page.waitForTimeout(300);
-
   // Verify the save request includes the post-logout redirect URI
-  const saveRequest = api.requests.find(req =>
-    req.pathname === '/configuration/auth-request-presets' &&
-    req.method === 'POST'
-  );
+  const saveRequest = await findRequest(api.requests, 'POST', '/configuration/auth-request-presets');
   expect(saveRequest?.body).toMatchObject({
     presets: expect.arrayContaining([
       expect.objectContaining({
@@ -409,14 +384,8 @@ test('deletes a preset', async ({ page }) => {
   // Save the changes
   await page.getByRole('button', { name: 'Save Presets' }).click();
 
-  // Wait for the save to complete
-  await page.waitForTimeout(300);
-
   // Verify the API request
-  const saveRequest = api.requests.find(req =>
-    req.pathname === '/configuration/auth-request-presets' &&
-    req.method === 'POST'
-  );
+  const saveRequest = await findRequest(api.requests, 'POST', '/configuration/auth-request-presets');
 
   // The request should only include the Mobile Login preset (Web Login was deleted)
   const presets = (saveRequest?.body as any)?.presets || [];

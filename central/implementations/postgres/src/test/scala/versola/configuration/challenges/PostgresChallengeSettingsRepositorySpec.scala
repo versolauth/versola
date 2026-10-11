@@ -19,6 +19,6 @@ object PostgresChallengeSettingsRepositorySpec extends PostgresSpec, ChallengeSe
         xa.connect(
           sql"""INSERT INTO tenants (id, description) VALUES
                 ('tenant-a', 'Tenant A'),
-                ('tenant-b', 'Tenant B')""".update.run()
+                ('tenant-b', 'Tenant B')""".update.run(),
         )
     }.unit

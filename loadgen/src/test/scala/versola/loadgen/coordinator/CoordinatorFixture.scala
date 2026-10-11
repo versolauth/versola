@@ -227,6 +227,10 @@ final class FakeSutStats(rows: Ref[Vector[SutStatSnapshotRow]], captures: Ref[In
   override def deltas(campaign: String): Task[List[SutStatsDelta]] =
     rows.get.map(recorded => SutStatsDelta.from(recorded.filter(_.campaign == campaign)))
 
+  override def windowDeltas(campaign: String): Task[List[SutStatsDelta]] =
+    rows.get.map: recorded =>
+      SutStatsDelta.from(recorded.filter(_.campaign == campaign), SutStatPhase.MeasuredStart, SutStatPhase.MeasuredEnd)
+
   def phases: UIO[List[SutStatPhase]] = rows.get.map(_.map(_.phase).toList)
 
 object FakeSutStats:

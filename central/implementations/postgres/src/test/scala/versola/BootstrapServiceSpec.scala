@@ -1,13 +1,22 @@
 package versola
 
-import org.scalamock.stubs.ZIOStubs
-import versola.central.CentralConfig
-import versola.central.configuration.challenges.ChallengeSettingsService
-import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, OAuthClientService}
-import versola.central.configuration.{InjectRule, InjectTarget}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
 import com.nimbusds.jose.jwk.{Curve, JWK}
+import org.scalamock.stubs.ZIOStubs
+import versola.central.CentralConfig
+import versola.central.configuration.challenges.ChallengeSettingsService
+import versola.central.configuration.clients.{
+  AuthFactor,
+  AuthFactorType,
+  AuthMethod,
+  ClientId,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  OAuthClientService,
+}
+import versola.central.configuration.{InjectRule, InjectTarget}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
 import zio.json.*
@@ -194,80 +203,80 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         ),
       )
     },
-      test("account endpoints inject trusted caller context and no step-up policy yet") {
-        val expectedQueryInjects = Vector(
-          InjectRule(InjectTarget.query, "userId", "token.sub"),
-          InjectRule(InjectTarget.query, "clientId", "token.client_id"),
-          InjectRule(InjectTarget.query, "sessionId", "token.sid"),
-        )
-        val expectedBodyInjects = Vector(
-          InjectRule(InjectTarget.body, "userId", "token.sub"),
-          InjectRule(InjectTarget.body, "clientId", "token.client_id"),
-        )
-        assertTrue(
-          BootstrapService.accountEndpointRecords.forall: endpoint =>
-            endpoint.inject == BootstrapService.accountCallerInjects(endpoint.method, endpoint.path),
-          BootstrapService.accountEndpointRecords.exists(_.inject == expectedQueryInjects),
-          BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
-          BootstrapService.accountEndpointRecords.forall(_.stepUpCondition.isEmpty),
-          BootstrapService.accountEndpointRecords.forall(_.stepUpAcr.isEmpty),
-          BootstrapService.accountEndpointRecords.forall(_.maxAge.isEmpty),
-        )
-      },
-      test("session revocation is denied for the caller's own session") {
-        assertTrue(
-          BootstrapService.accountEndpointRecords
-            .filter(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
-            .map(_.allowExpression) == List(Some("token.sid != request.body.targetSessionId")),
-          BootstrapService.accountEndpointRecords
-            .filterNot(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
-            .forall(_.allowExpression.isEmpty),
-        )
-      },
-      // A client's method is fixed when it is created, so a boot whose configuration calls for
-      // another one refuses -- in either direction -- rather than apply it or carry on unchanged.
-      test("refuses a boot whose configuration calls for another method than the client holds") {
-        assertTrue(
-          BootstrapService.authMethodMismatch(
-            Some(centralAdminRecord(AuthMethod.tls_client_auth)),
-            AuthMethod.client_secret,
-            "bootstrap.central-admin-mtls",
-          ).exists(reason =>
-            reason.contains("'central-admin' is registered with tls_client_auth") &&
-              reason.contains("bootstrap.central-admin-mtls calls for client_secret") &&
-              reason.contains("fixed when it is created"),
-          ),
-          BootstrapService.authMethodMismatch(
-            Some(centralAdminRecord(AuthMethod.client_secret)),
-            AuthMethod.tls_client_auth,
-            "bootstrap.central-admin-mtls",
-          ).exists(_.contains("registered with client_secret")),
-          BootstrapService.authMethodMismatch(
-            Some(centralAdminRecord(AuthMethod.private_key_jwt)),
-            AuthMethod.client_secret,
-            "bootstrap.utility-client",
-          ).exists(_.contains("bootstrap.utility-client calls for client_secret")),
-        )
-      },
-      test("does not refuse a boot that calls for the method the client already holds") {
-        assertTrue(
-          BootstrapService.authMethodMismatch(
-            Some(centralAdminRecord(AuthMethod.client_secret)),
-            AuthMethod.client_secret,
-            "bootstrap.central-admin-mtls",
-          ).isEmpty,
-          BootstrapService.authMethodMismatch(
-            Some(centralAdminRecord(AuthMethod.tls_client_auth)),
-            AuthMethod.tls_client_auth,
-            "bootstrap.central-admin-mtls",
-          ).isEmpty,
-        )
-      },
-      test("does not refuse a boot with no prior client to hold a method") {
-        assertTrue(
-          BootstrapService.authMethodMismatch(None, AuthMethod.client_secret, "bootstrap.central-admin-mtls").isEmpty,
-        )
-      },
+    test("account endpoints inject trusted caller context and no step-up policy yet") {
+      val expectedQueryInjects = Vector(
+        InjectRule(InjectTarget.query, "userId", "token.sub"),
+        InjectRule(InjectTarget.query, "clientId", "token.client_id"),
+        InjectRule(InjectTarget.query, "sessionId", "token.sid"),
+      )
+      val expectedBodyInjects = Vector(
+        InjectRule(InjectTarget.body, "userId", "token.sub"),
+        InjectRule(InjectTarget.body, "clientId", "token.client_id"),
+      )
+      assertTrue(
+        BootstrapService.accountEndpointRecords.forall: endpoint =>
+          endpoint.inject == BootstrapService.accountCallerInjects(endpoint.method, endpoint.path),
+        BootstrapService.accountEndpointRecords.exists(_.inject == expectedQueryInjects),
+        BootstrapService.accountEndpointRecords.exists(_.inject == expectedBodyInjects),
+        BootstrapService.accountEndpointRecords.forall(_.stepUpCondition.isEmpty),
+        BootstrapService.accountEndpointRecords.forall(_.stepUpAcr.isEmpty),
+        BootstrapService.accountEndpointRecords.forall(_.maxAge.isEmpty),
+      )
+    },
+    test("session revocation is denied for the caller's own session") {
+      assertTrue(
+        BootstrapService.accountEndpointRecords
+          .filter(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
+          .map(_.allowExpression) == List(Some("token.sid != request.body.targetSessionId")),
+        BootstrapService.accountEndpointRecords
+          .filterNot(endpoint => endpoint.method == "DELETE" && endpoint.path == "/settings/sessions")
+          .forall(_.allowExpression.isEmpty),
+      )
+    },
+    // A client's method is fixed when it is created, so a boot whose configuration calls for
+    // another one refuses -- in either direction -- rather than apply it or carry on unchanged.
+    test("refuses a boot whose configuration calls for another method than the client holds") {
+      assertTrue(
+        BootstrapService.authMethodMismatch(
+          Some(centralAdminRecord(AuthMethod.tls_client_auth)),
+          AuthMethod.client_secret,
+          "bootstrap.central-admin-mtls",
+        ).exists(reason =>
+          reason.contains("'central-admin' is registered with tls_client_auth") &&
+            reason.contains("bootstrap.central-admin-mtls calls for client_secret") &&
+            reason.contains("fixed when it is created"),
+        ),
+        BootstrapService.authMethodMismatch(
+          Some(centralAdminRecord(AuthMethod.client_secret)),
+          AuthMethod.tls_client_auth,
+          "bootstrap.central-admin-mtls",
+        ).exists(_.contains("registered with client_secret")),
+        BootstrapService.authMethodMismatch(
+          Some(centralAdminRecord(AuthMethod.private_key_jwt)),
+          AuthMethod.client_secret,
+          "bootstrap.utility-client",
+        ).exists(_.contains("bootstrap.utility-client calls for client_secret")),
+      )
+    },
+    test("does not refuse a boot that calls for the method the client already holds") {
+      assertTrue(
+        BootstrapService.authMethodMismatch(
+          Some(centralAdminRecord(AuthMethod.client_secret)),
+          AuthMethod.client_secret,
+          "bootstrap.central-admin-mtls",
+        ).isEmpty,
+        BootstrapService.authMethodMismatch(
+          Some(centralAdminRecord(AuthMethod.tls_client_auth)),
+          AuthMethod.tls_client_auth,
+          "bootstrap.central-admin-mtls",
+        ).isEmpty,
+      )
+    },
+    test("does not refuse a boot with no prior client to hold a method") {
+      assertTrue(
+        BootstrapService.authMethodMismatch(None, AuthMethod.client_secret, "bootstrap.central-admin-mtls").isEmpty,
+      )
+    },
     // #424: the default tenant is FAPI 2.0, and private_key_jwt with DPoP-bound tokens is what
     // it admits for a service client with no redirect URIs.
     test("registers utils as private_key_jwt against its configured public key, over a secret also given") {

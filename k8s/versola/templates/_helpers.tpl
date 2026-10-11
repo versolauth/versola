@@ -186,14 +186,15 @@ also proxies to auth/edge, because on a single VPS nginx is the only thing
 in front of the services. Here the Ingress does that, so everything below
 is about serving one directory.
 
-The image bakes central-ui's dist/ at /usr/share/nginx/html/central/admin
-(docker/Dockerfile.gateway); `alias` re-exposes it at console.basePath.
+central-ui's dist/ is mounted at /usr/share/nginx/html/central/admin -- copied there
+by an init container out of the versola-tools image (docker/Dockerfile.tools);
+`alias` re-exposes it at console.basePath.
 vite.config.ts emits relative asset URLs (#222), so index.html resolves
 versola-admin.js correctly regardless of which path that is.
 
 sub_filter stamps console-mode onto <versola-admin> on the way out. The
-attribute exists (#223) but the published image can't hardcode it -- the
-same image serves docker-compose, which needs the other mode. Rewriting
+attribute exists (#223) but the build can't hardcode it -- the same
+files serve docker-compose, which needs the other mode. Rewriting
 one tag here keeps that a deployment choice rather than a second image.
 ngx_http_sub_module is compiled into the official nginx images.
 */}}
@@ -475,5 +476,65 @@ The env central.conf's `client-certificates.cert-manager` block reads (scripts/g
 {{- else -}}
 - name: CLIENT_CERT_ISSUER_NAME
   value: {{ printf "%s-client-ca" (include "versola.fullname" .) | quote }}
+{{- end -}}
+{{- end -}}
+
+{{/*
+How many replicas a service runs at least: `autoscaling.minReplicas` when its HPA is on, the Deployment's
+`replicaCount` otherwise. A PodDisruptionBudget only means something above one (see pdb.yaml).
+*/}}
+{{- define "versola.minReplicas" -}}
+{{- if .svc.autoscaling.enabled -}}{{ .svc.autoscaling.minReplicas }}{{- else -}}{{ .svc.replicaCount }}{{- end -}}
+{{- end -}}
+
+{{/*
+The PriorityClass a service's pods run under: the service's own `priorityClassName` when set; otherwise,
+only when this chart creates the classes (`priorityClasses.create`), `controlPlane` for central and
+`customerFacing` for auth and edge. Empty -- no priorityClassName on the pod -- in every other case: a
+name that no cluster object carries leaves the pod unschedulable, so the chart does not guess one.
+*/}}
+{{- define "versola.priorityClassName" -}}
+{{- if .svc.priorityClassName -}}
+{{- .svc.priorityClassName -}}
+{{- else if .root.Values.priorityClasses.create -}}
+{{- if eq .name "central" -}}{{ .root.Values.priorityClasses.controlPlane.name }}{{- else -}}{{ .root.Values.priorityClasses.customerFacing.name }}{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+A service's topologySpreadConstraints: its own when non-empty, otherwise `global`'s -- a replacement, not a
+merge, like the rest of the placement fields. A constraint without a `labelSelector` gets the service's own
+selector labels, so one global list spreads each service across its own replicas, not all pods together.
+*/}}
+{{- define "versola.topologySpreadConstraints" -}}
+{{- $selector := dict "matchLabels" (include "versola.componentSelectorLabels" (dict "component" .name "context" .root) | fromYaml) -}}
+{{- $constraints := list -}}
+{{- range $constraint := (.svc.topologySpreadConstraints | default .root.Values.global.topologySpreadConstraints) -}}
+{{- $constraints = append $constraints (ternary $constraint (merge (deepCopy $constraint) (dict "labelSelector" $selector)) (hasKey $constraint "labelSelector")) -}}
+{{- end -}}
+{{- if $constraints -}}{{ toYaml $constraints }}{{- end -}}
+{{- end -}}
+
+{{/*
+Refuses availability settings that would otherwise render something other than what was asked for.
+Called from validate-values.yaml.
+*/}}
+{{- define "versola.checkAvailability" -}}
+{{- range $name, $svc := .Values.services -}}
+{{- if $svc.enabled -}}
+{{- $hpa := $svc.autoscaling -}}
+{{- if $hpa.enabled -}}
+{{- if lt (int $hpa.maxReplicas) (int $hpa.minReplicas) -}}
+{{- fail (printf "services.%s.autoscaling: maxReplicas (%v) is below minReplicas (%v)" $name $hpa.maxReplicas $hpa.minReplicas) -}}
+{{- end -}}
+{{- if and (not $hpa.metrics) (not (dig "requests" "cpu" "" ($svc.resources | default dict))) -}}
+{{- fail (printf "services.%s.autoscaling: the default CPU metric is a utilisation of the CPU request, and services.%s.resources.requests.cpu is not set; set it, or give autoscaling.metrics explicitly" $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- $pdb := $svc.podDisruptionBudget -}}
+{{- if and $pdb.enabled (kindIs "invalid" $pdb.minAvailable | not) (kindIs "invalid" $pdb.maxUnavailable | not) -}}
+{{- fail (printf "services.%s.podDisruptionBudget: set minAvailable or maxUnavailable, not both" $name) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}

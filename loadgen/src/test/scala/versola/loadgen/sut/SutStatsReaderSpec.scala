@@ -164,4 +164,33 @@ object SutStatsReaderSpec extends ZIOSpecDefault:
           reading <- SutStatsReader.read(connection)
         yield assertTrue(reading.stats.counters.statements.isDefined == preloaded)
     },
+    // A managed service creates the extension in `public` while the campaign's connection runs
+    // with `currentSchema=<service schema>`: an unqualified view name is then "does not exist",
+    // which used to read as "not preloaded" and dropped the section on a cluster that had it.
+    test("finds pg_stat_statements in a schema the connection's search_path does not include") {
+      ZIO.scoped:
+        for
+          config <- SutDatabases.prepare(SutDatabases.authDatabase, SutSchema.SchemaOwner.Auth.migrationsDirectory)
+          connection <- SutDatabases.connect(config)
+          preloaded <- ZIO.attemptBlocking:
+            val statement = connection.prepareStatement("SHOW shared_preload_libraries")
+            try
+              val rows = statement.executeQuery()
+              try
+                rows.next()
+                rows.getString(1).contains("pg_stat_statements")
+              finally rows.close()
+            finally statement.close()
+          _ <- ZIO.acquireRelease(
+            SutDatabases.statement(connection, "DROP EXTENSION IF EXISTS pg_stat_statements") *>
+              SutDatabases.statement(connection, "CREATE SCHEMA IF NOT EXISTS stats_ext") *>
+              SutDatabases.statement(connection, "CREATE EXTENSION pg_stat_statements SCHEMA stats_ext"),
+          ): _ =>
+            (SutDatabases.statement(connection, "SET search_path TO DEFAULT") *>
+              SutDatabases.statement(connection, "DROP EXTENSION IF EXISTS pg_stat_statements") *>
+              SutDatabases.statement(connection, "DROP SCHEMA IF EXISTS stats_ext")).orDie
+          _ <- SutDatabases.statement(connection, "SET search_path TO pg_catalog")
+          reading <- SutStatsReader.read(connection)
+        yield assertTrue(reading.stats.counters.statements.isDefined == preloaded)
+    },
   ) @@ TestAspect.timeout(3.minutes)

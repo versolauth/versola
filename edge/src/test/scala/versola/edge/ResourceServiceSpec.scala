@@ -47,26 +47,26 @@ object ResourceServiceSpec extends ZIOSpecDefault:
     test("findByResourceId returns cached resource when resourceId is known") {
       for
         service <- env(Map(ResourceId("alpha") -> alpha, ResourceId("beta") -> beta))
-        result  <- service.findByResourceId(ResourceId("alpha"))
+        result <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(result.contains(alpha))
     },
     test("findByResourceId returns None when resourceId is unknown") {
       for
         service <- env(Map(ResourceId("alpha") -> alpha))
-        result  <- service.findByResourceId(ResourceId("missing"))
+        result <- service.findByResourceId(ResourceId("missing"))
       yield assertTrue(result.isEmpty)
     },
     test("findByResourceId returns None when cache is empty") {
       for
         service <- env()
-        result  <- service.findByResourceId(ResourceId("alpha"))
+        result <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(result.isEmpty)
     },
     test("refreshNow replaces the cache with what central serves") {
       for
         service <- env(initial = Map(ResourceId("alpha") -> alpha), fromCentral = Map(ResourceId("beta") -> beta))
-        _       <- service.refreshNow
-        added   <- service.findByResourceId(ResourceId("beta"))
+        _ <- service.refreshNow
+        added <- service.findByResourceId(ResourceId("beta"))
         removed <- service.findByResourceId(ResourceId("alpha"))
       yield assertTrue(added.contains(beta), removed.isEmpty)
     },

@@ -25,7 +25,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
           decrypted <- cryptoService.decryptAes256(encrypted, key)
         yield assertTrue(
           !originalData.sameElements(encrypted), // Data should be encrypted
-          originalData.sameElements(decrypted), // Decrypted should match original
+          originalData.sameElements(decrypted),  // Decrypted should match original
         )
       },
       test("encrypt empty data") {
@@ -48,7 +48,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
           encrypted <- cryptoService.encryptAes256(originalData, key)
           decrypted <- cryptoService.decryptAes256(encrypted, key)
         yield assertTrue(
-          originalData.sameElements(decrypted)
+          originalData.sameElements(decrypted),
         )
       },
       test("different encryptions of same data produce different results") {
@@ -86,7 +86,7 @@ object CryptoServiceSpec extends ZIOSpecDefault:
           key = createTestKey()
           originalData = "Secret data".getBytes("UTF-8")
           encrypted <- cryptoService.encryptAes256(originalData, key)
-          corruptedData = encrypted.updated(encrypted.length / 2, (encrypted(encrypted.length / 2) ^ 0xFF).toByte)
+          corruptedData = encrypted.updated(encrypted.length / 2, (encrypted(encrypted.length / 2) ^ 0xff).toByte)
           result <- cryptoService.decryptAes256(corruptedData, key).exit
         yield assertTrue(result.isFailure)
       },

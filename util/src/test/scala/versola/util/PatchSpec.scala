@@ -84,4 +84,3 @@ object PatchSpec extends ZIOSpecDefault:
       assertTrue(opt.toUpdate == (true, Some("hello")))
     },
   )
-

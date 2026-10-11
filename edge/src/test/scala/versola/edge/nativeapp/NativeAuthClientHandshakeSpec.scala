@@ -159,9 +159,11 @@ object NativeAuthClientHandshakeSpec extends ZIOSpecDefault:
         httpClient <- ZIO.service[Client]
         certificateFiles <- ZIO.service[ClientCertificateFiles]
         otherPin <- write(paths._4.getParent, "other-rotated.crt", TestCertificates.generate(subject = "CN=outgoing").certificatePem)
-        config = edgeConfig(listening).copy(native = edgeConfig(listening).native.map(native =>
-          native.copy(trustedCertificates = Set(otherPin.toString, listening.serverPin.toString)),
-        ))
+        config = edgeConfig(listening).copy(native =
+          edgeConfig(listening).native.map(native =>
+            native.copy(trustedCertificates = Set(otherPin.toString, listening.serverPin.toString)),
+          ),
+        )
         authClient = NativeAuthClient.Impl(httpClient, config, certificateFiles)
         relayed <- authClient.par("mobile-app", material(client), Form(FormField.simpleField("scope", "openid")))
       yield assertTrue(relayed.status == Status.BadRequest)

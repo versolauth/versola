@@ -76,7 +76,7 @@ object PostgresTlsSpec extends ZIOSpecDefault:
         )
       },
     ),
-      suite("startup")(
+    suite("startup")(
       test("prod refuses a URL that does not verify the certificate, without touching the database") {
         val config = PostgresConfig(
           url = "jdbc:postgresql://db.internal:5432/auth?sslmode=require",

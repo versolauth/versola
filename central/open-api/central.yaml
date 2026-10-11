@@ -1730,7 +1730,11 @@ components:
     Phone:
       type: string
       pattern: '^\+?\d{9,15}$'
-      description: A number that parses and validates as an international phone number.
+      description: |
+        A number that parses and validates as an international phone number. It is stored and
+        returned in canonical E.164 (`+` and digits, national trunk prefix dropped), so
+        `+787011234567` is accepted and stored as `+77011234567`; lookups canonicalise the input
+        the same way.
       examples: ['+77001234567']
     Login:
       type: string
@@ -1833,6 +1837,24 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/Permission'
+      required: [add, remove]
+    PatchAudience:
+      description: >-
+        Change to a resource's audience. Applied to the stored list in order, and idempotent: a
+        client already in the audience is not added twice, so concurrent writers adding themselves
+        do not drop each other the way submitting a whole list would.
+      type: object
+      properties:
+        add:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClientId'
+        remove:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/ClientId'
       required: [add, remove]
     PatchClientRedirectUris:
       type: object
@@ -2895,9 +2917,7 @@ components:
             - $ref: '#/components/schemas/ResourceUri'
             - type: 'null'
         audience:
-          type: [array, 'null']
-          items:
-            $ref: '#/components/schemas/ClientId'
+          $ref: '#/components/schemas/PatchAudience'
         deleteEndpoints:
           type: array
           uniqueItems: true
@@ -2907,7 +2927,7 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/CreateResourceEndpointRequest'
-      required: [resourceId, deleteEndpoints, createEndpoints]
+      required: [resourceId, audience, deleteEndpoints, createEndpoints]
     CreateResourceResponse:
       type: object
       properties:
@@ -3593,7 +3613,7 @@ components:
           $ref: '#/components/schemas/TenantId'
         allowedPrefixes:
           type: array
-          description: Phone country prefixes accepted on the login form.
+          description: Phone country prefixes accepted on the login form, matched against the number in canonical E.164.
           items:
             type: string
         submissionLimits:

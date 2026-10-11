@@ -10,9 +10,9 @@ import com.yubico.webauthn.{
   StartAssertionOptions,
   StartRegistrationOptions,
 }
+import zio.ZIO
 import zio.json.*
 import zio.test.*
-import zio.ZIO
 
 import java.nio.ByteBuffer
 import java.util.UUID

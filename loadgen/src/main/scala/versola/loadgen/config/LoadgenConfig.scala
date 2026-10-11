@@ -6,6 +6,7 @@ import versola.util.{Dpop, Secret}
 import zio.Config
 import zio.Duration
 import zio.config.magnolia.DeriveConfig
+import zio.durationInt
 
 /** Root configuration tree for `loadgen`, decoded from HOCON via `VersolaApp.parseConfig`
   * (see versola-loadgen-dev-spec.md §5). One process, one file, one binary: `role` picks which
@@ -41,6 +42,27 @@ case class LoadgenConfig(
     sutStats: Option[SutStatsConfig],
     poolerStats: Option[PoolerStatsConfig],
     dpop: Option[DpopConfig],
+    environment: Option[EnvironmentConfig] = None,
+)
+
+/** Where the coordinator reads the SUT's resource use for the report (CPU, memory, network, request
+  * rates, pool connections), as `versola.loadgen.environment.EnvironmentStats`. Optional like
+  * [[SutStatsConfig]]: absent, the report simply has no such section.
+  *
+  * @param victoriaMetricsUrl
+  *   a VictoriaMetrics (or Prometheus-compatible) base URL answering `/api/v1/query_range`
+  * @param namespace
+  *   the Kubernetes namespace the SUT's pods run in
+  * @param step
+  *   the sampling step of the range queries; `rateWindow` is the `rate()` window under them;
+  *   `timeout` bounds each query (they run in parallel, so it also bounds the whole read)
+  */
+case class EnvironmentConfig(
+    victoriaMetricsUrl: String,
+    namespace: String,
+    step: Duration = 30.seconds,
+    rateWindow: Duration = 1.minute,
+    timeout: Duration = 10.seconds,
 )
 
 /** Drives the campaign with RFC 9449 sender-constrained tokens instead of bearer ones.
@@ -254,6 +276,25 @@ case class ActionCountConfig(mobileMean: Double, webMean: Double, dispersion: Do
 
 case class ThinkTimeConfig(median: Duration, sigma: Double)
 
+/** Refresh exchanges a mobile session performs *in addition* to the one a resume is and to the
+  * single TTL-gated one `extra-refresh-probability` allows, independent of the access-token TTL.
+  *
+  * Why a count and not the clock: a FAPI2 campaign runs on a 1h access-token TTL and a modelled
+  * session lasts about a minute, so the TTL-gated refresh essentially never fires and refreshes
+  * come only from resumes -- about twice the code exchanges, where the target profile has five to
+  * ten times. A real app refreshes many times between its rare full logins; the compressed
+  * session time cannot reach that by waiting, so the number of exchanges is drawn per session
+  * instead. Logins are not touched, so the code-exchange rate stays what the campaign configured.
+  *
+  * @param mobileMean
+  *   the mean of the NB2 count per mobile session; 0 (the default) draws none, as a campaign
+  *   written before this existed. Web has no field: edge refreshes behind the cookie, so there is
+  *   no exchange the driver could add.
+  * @param dispersion
+  *   NB2 α, as for [[ActionCountConfig]]
+  */
+case class RefreshCountConfig(mobileMean: Double = 0.0, dispersion: Double = 0.6)
+
 case class LogoutProbabilityConfig(mobile: Double, web: Double)
 
 /** @param refreshTokenTtl
@@ -275,6 +316,7 @@ case class SessionConfig(
     logoutProbability: LogoutProbabilityConfig,
     accessTokenTtl: Duration,
     refreshTokenTtl: Duration,
+    refreshCount: RefreshCountConfig = RefreshCountConfig(),
 )
 
 /** One phase of the campaign's arrival-rate envelope (§7.3). Which kind of phase it is, is
@@ -294,6 +336,14 @@ case class CampaignPhaseConfig(
     scale: Option[Double],
     scaleFrom: Option[Double],
     scaleTo: Option[Double],
+    /** Whether this phase's latencies count toward the report's quantiles. A warm-up or a ramp
+      * does not describe the system at its load: connections are cold, caches empty, and the
+      * first calls of a driver pay for it, which on a few hundred samples *is* the p99. A phase
+      * with `measured = false` is still driven, and its errors, health and database deltas are
+      * still reported; only its latency snapshots are left out of the merge. Absent: measured, as
+      * every campaign before this existed.
+      */
+    measured: Boolean = true,
 )
 
 object CampaignPhaseConfig:

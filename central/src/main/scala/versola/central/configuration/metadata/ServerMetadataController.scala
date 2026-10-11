@@ -1,8 +1,8 @@
 package versola.central.configuration.metadata
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.*
 import zio.http.*

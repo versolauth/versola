@@ -1,11 +1,11 @@
 package versola.oauth.introspect
 
-import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
 import versola.oauth.clientauth.{CertificateRelevance, ClientAuthentication}
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionErrorResponse, IntrospectionResponse}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
-import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import versola.util.http.{Controller, Observability, extractCredentials}
+import versola.util.{Base64, Base64Url, CoreConfig, FormDecoder, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*

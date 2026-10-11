@@ -49,18 +49,18 @@ def authorize(
     case Some((raw, presentation)) =>
       for
         jwksService <- ZIO.service[JwksService]
-        keys        <- jwksService.getPublicKeys
-        claims      <- JWT.deserialize[PermissionsClaims](raw, keys, JWT.Type.AccessToken)
+        keys <- jwksService.getPublicKeys
+        claims <- JWT.deserialize[PermissionsClaims](raw, keys, JWT.Type.AccessToken)
           .orElseFail(AuthorizeOutcome.Denied)
         // The edge's own endpoints answer on the same tokens it proxies with, so a revoked
         // one must not be accepted here either.
         revocationService <- ZIO.service[TokenRevocationService]
-        revoked     <- revocationService.isRevoked(
+        revoked <- revocationService.isRevoked(
           RevocationKey.of(claims.jti, claims.family, claims.sid, claims.subject),
           Instant.ofEpochSecond(claims.issuedAt),
         )
-        _           <- ZIO.fail(AuthorizeOutcome.Denied).when(revoked)
-        _           <- verifyBinding(request, raw, claims, presentation)
+        _ <- ZIO.fail(AuthorizeOutcome.Denied).when(revoked)
+        _ <- verifyBinding(request, raw, claims, presentation)
       yield claims
 
     case None =>

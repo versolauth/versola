@@ -21,7 +21,7 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           bytes <- secureRandom.nextBytes(10)
         } yield assertTrue(
-          bytes.length == 10
+          bytes.length == 10,
         )
       },
       test("generate empty array for zero length") {
@@ -29,7 +29,7 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           bytes <- secureRandom.nextBytes(0)
         } yield assertTrue(
-          bytes.length == 0
+          bytes.length == 0,
         )
       },
       test("generate different arrays on subsequent calls") {
@@ -41,7 +41,7 @@ object SecureRandomSpec extends UnitSpecBase:
         } yield assertTrue(
           bytes1.length == 16,
           bytes2.length == 16,
-          !equal
+          !equal,
         )
       },
       test("generate large byte arrays") {
@@ -49,9 +49,9 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           bytes <- secureRandom.nextBytes(1024)
         } yield assertTrue(
-          bytes.length == 1024
+          bytes.length == 1024,
         )
-      }
+      },
     )
 
   private def nextHexTests =
@@ -62,7 +62,7 @@ object SecureRandomSpec extends UnitSpecBase:
           hex <- secureRandom.nextHex(8)
         } yield assertTrue(
           hex.length == 8,
-          hex.forall(c => "0123456789abcdef".contains(c))
+          hex.forall(c => "0123456789abcdef".contains(c)),
         )
       },
       test("generate empty string for zero length") {
@@ -70,7 +70,7 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           hex <- secureRandom.nextHex(0)
         } yield assertTrue(
-          hex.isEmpty
+          hex.isEmpty,
         )
       },
       test("generate different hex strings on subsequent calls") {
@@ -83,7 +83,7 @@ object SecureRandomSpec extends UnitSpecBase:
           hex2.length == 16,
           hex1 != hex2, // Should be different (extremely high probability)
           hex1.forall(c => "0123456789abcdef".contains(c)),
-          hex2.forall(c => "0123456789abcdef".contains(c))
+          hex2.forall(c => "0123456789abcdef".contains(c)),
         )
       },
       test("generate only valid hex characters") {
@@ -92,9 +92,9 @@ object SecureRandomSpec extends UnitSpecBase:
           hex <- secureRandom.nextHex(100)
         } yield assertTrue(
           hex.length == 100,
-          hex.forall(c => "0123456789abcdef".contains(c))
+          hex.forall(c => "0123456789abcdef".contains(c)),
         )
-      }
+      },
     )
 
   private def nextNumericTests =
@@ -105,7 +105,7 @@ object SecureRandomSpec extends UnitSpecBase:
           numeric <- secureRandom.nextNumeric(6)
         } yield assertTrue(
           numeric.length == 6,
-          numeric.forall(c => "0123456789".contains(c))
+          numeric.forall(c => "0123456789".contains(c)),
         )
       },
       test("generate empty string for zero length") {
@@ -113,7 +113,7 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           numeric <- secureRandom.nextNumeric(0)
         } yield assertTrue(
-          numeric.isEmpty
+          numeric.isEmpty,
         )
       },
       test("generate different numeric strings on subsequent calls") {
@@ -126,7 +126,7 @@ object SecureRandomSpec extends UnitSpecBase:
           numeric2.length == 10,
           numeric1 != numeric2, // Should be different (extremely high probability)
           numeric1.forall(c => "0123456789".contains(c)),
-          numeric2.forall(c => "0123456789".contains(c))
+          numeric2.forall(c => "0123456789".contains(c)),
         )
       },
       test("generate only valid numeric characters") {
@@ -135,9 +135,9 @@ object SecureRandomSpec extends UnitSpecBase:
           numeric <- secureRandom.nextNumeric(50)
         } yield assertTrue(
           numeric.length == 50,
-          numeric.forall(c => "0123456789".contains(c))
+          numeric.forall(c => "0123456789".contains(c)),
         )
-      }
+      },
     )
 
   private def nextAlphanumericTests =
@@ -148,7 +148,7 @@ object SecureRandomSpec extends UnitSpecBase:
           alphanumeric <- secureRandom.nextAlphanumeric(12)
         } yield assertTrue(
           alphanumeric.length == 12,
-          alphanumeric.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c))
+          alphanumeric.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c)),
         )
       },
       test("generate empty string for zero length") {
@@ -156,7 +156,7 @@ object SecureRandomSpec extends UnitSpecBase:
           secureRandom <- ZIO.service[SecureRandom]
           alphanumeric <- secureRandom.nextAlphanumeric(0)
         } yield assertTrue(
-          alphanumeric.isEmpty
+          alphanumeric.isEmpty,
         )
       },
       test("generate different alphanumeric strings on subsequent calls") {
@@ -169,7 +169,7 @@ object SecureRandomSpec extends UnitSpecBase:
           alphanumeric2.length == 20,
           alphanumeric1 != alphanumeric2, // Should be different (extremely high probability)
           alphanumeric1.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c)),
-          alphanumeric2.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c))
+          alphanumeric2.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c)),
         )
       },
       test("generate only valid alphanumeric characters") {
@@ -178,9 +178,9 @@ object SecureRandomSpec extends UnitSpecBase:
           alphanumeric <- secureRandom.nextAlphanumeric(100)
         } yield assertTrue(
           alphanumeric.length == 100,
-          alphanumeric.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c))
+          alphanumeric.forall(c => "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".contains(c)),
         )
-      }
+      },
     )
 
   private def executeTests =
@@ -191,7 +191,7 @@ object SecureRandomSpec extends UnitSpecBase:
           result <- secureRandom.execute(_.nextInt(100))
         } yield assertTrue(
           result >= 0,
-          result < 100
+          result < 100,
         )
       },
       test("execute multiple operations") {
@@ -202,9 +202,7 @@ object SecureRandomSpec extends UnitSpecBase:
           result3 <- secureRandom.execute(_.nextDouble())
         } yield assertTrue(
           result1 >= 0 && result1 < 1000,
-          result3 >= 0.0 && result3 < 1.0
+          result3 >= 0.0 && result3 < 1.0,
         )
-      }
+      },
     )
-
-

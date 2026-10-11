@@ -42,7 +42,7 @@ object CrossClientSsoFlowSpec extends E2ESpec:
   private def audienceOf(claims: IdTokenClaims): List[String] = claims.aud match
     case Json.Str(single) => List(single)
     case Json.Arr(values) => values.collect { case Json.Str(value) => value }.toList
-    case _                => Nil
+    case _ => Nil
 
   /** Registers a second client in the same tenant, reachable by the same browser session.
     *
@@ -103,7 +103,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
     yield ClientALogin(userId, sessionCookie, idToken, token.accessToken)
 
   def spec = suite("Cross-client SSO")(
-
     test("client B authorizes silently on the session client A established") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -122,7 +121,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         assertTrue(result.conversationCookie.isEmpty)
           .label("no conversation may be started: a credential prompt would need one")
     },
-
     test("client B's token names the same user but its own audience") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -158,7 +156,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         assertTrue(accessClaimsB.client_id == clientB)
           .label(s"client B's access token must name client B as the party, got ${accessClaimsB.client_id}")
     },
-
     test("both clients' id_tokens name the same session") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -187,7 +184,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         assertTrue(claimsB.sid == claimsA.sid)
           .label(s"both clients must name the same session, got ${claimsB.sid} vs ${claimsA.sid}")
     },
-
     test("client B without the session cookie is refused with login_required") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -201,7 +197,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         ).assertErrorRedirect("login_required")
       yield assertCompletes
     },
-
     test("client B requesting the ACR the session satisfies still authorizes silently") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -218,7 +213,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       yield assertTrue(code.nonEmpty)
         .label("an ACR the session's factors already meet must not force interaction")
     },
-
     test("client B requesting an unsatisfied ACR is not silently satisfied by the session") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -245,7 +239,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         ).assertErrorRedirect("login_required")
       yield assertCompletes
     },
-
     test("logging out ends the session for client B too") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -273,7 +266,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       yield assertTrue(before.nonEmpty)
         .label("client B must have been able to use the session before the logout")
     },
-
     test("client B requiring consent prompts for it despite the valid session") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -300,7 +292,6 @@ object CrossClientSsoFlowSpec extends E2ESpec:
       yield assertTrue(consent.html.contains("Cross-Client SSO Client B"))
         .label("the consent screen must name client B, not the client that established the session")
     },
-
     test("client B authorizes silently once consent has been granted") {
       for
         (a, auth) <- setup(Flows.Id.EmailOtp)
@@ -332,5 +323,4 @@ object CrossClientSsoFlowSpec extends E2ESpec:
         assertTrue(rotated != login.sessionCookie)
           .label("completing the consent conversation must issue a rotated session cookie")
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(180.seconds)

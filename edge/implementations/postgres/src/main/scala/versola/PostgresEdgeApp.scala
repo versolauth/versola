@@ -1,6 +1,6 @@
-
 package versola
 
+import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.typesafe.config.ConfigFactory
 import versola.cleanup.PostgresCleanupManager
@@ -9,18 +9,44 @@ import versola.edge.login.LoginRepository
 import versola.edge.nativeapp.{NativeAuthClient, NativeController, NativeService}
 import versola.edge.revocation.{RevocationNotifications, RevocationRepository, TokenRevocationService}
 import versola.edge.session.EdgeSessionRepository
-import versola.edge.{AuthorizationPresetsSyncClient, CentralSyncTokenService, ClientCertificateEnrollment, ClientCertificateFiles, DpopAlgorithmsSyncClient, DpopPolicySyncClient, EdgeConfig, EdgeController, EdgeService, JwksService, JwksSyncClient, OAuthClientService, OAuthClientsSyncClient, PermissionService, PermissionsSyncClient, PostgresDpopProofRepository, PostgresEdgeSessionRepository, PostgresLoginRepository, PostgresRevocationNotifications, PostgresRevocationRepository, ResourceService, ResourcesSyncClient, RolesSyncClient, SSOClient, ServiceController}
+import versola.edge.{
+  AuthorizationPresetsSyncClient,
+  CentralSyncTokenService,
+  ClientCertificateEnrollment,
+  ClientCertificateFiles,
+  DpopAlgorithmsSyncClient,
+  DpopPolicySyncClient,
+  EdgeConfig,
+  EdgeController,
+  EdgeService,
+  JwksService,
+  JwksSyncClient,
+  OAuthClientService,
+  OAuthClientsSyncClient,
+  PermissionService,
+  PermissionsSyncClient,
+  PostgresDpopProofRepository,
+  PostgresEdgeSessionRepository,
+  PostgresLoginRepository,
+  PostgresRevocationNotifications,
+  PostgresRevocationRepository,
+  ResourceService,
+  ResourcesSyncClient,
+  RolesSyncClient,
+  SSOClient,
+  ServiceController,
+}
 import versola.util.*
 import versola.util.cel.CelEvaluator
 import versola.util.http.VersolaApp
 import versola.util.postgres.{PostgresConfig, PostgresConfigSnapshotRepository, PostgresHikariDataSource}
+import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.*
 import zio.http.*
 import zio.http.Client
 import zio.http.Server.RequestStreaming
 import zio.telemetry.opentelemetry.tracing.Tracing
-import zio.*
 
 object PostgresEdgeApp extends VersolaApp("edge"):
   val environmentTag = Tag[Environment]
@@ -29,35 +55,35 @@ object PostgresEdgeApp extends VersolaApp("edge"):
 
   type Dependencies =
     EdgeConfig &
-    SecureRandom &
-    SecurityService &
-    CentralSyncTokenService &
-    AuthorizationPresetsSyncClient &
-    OAuthClientsSyncClient &
-    ResourcesSyncClient &
-    RolesSyncClient &
-    PermissionsSyncClient &
-    DpopAlgorithmsSyncClient &
-    DpopPolicySyncClient &
-    DpopPolicyService &
-    OAuthClientService &
-    ResourceService &
-    PermissionService &
-    CelEvaluator &
-    LoginRepository &
-    EdgeSessionRepository &
-    RevocationRepository &
-    RevocationNotifications &
-    TokenRevocationService &
-    JwksService &
-    ClientCertificateFiles &
-    SSOClient &
-    DpopProofRepository &
-    DpopReplayGuard &
-    DpopVerifier &
-    EdgeService &
-    NativeAuthClient &
-    NativeService
+      SecureRandom &
+      SecurityService &
+      CentralSyncTokenService &
+      AuthorizationPresetsSyncClient &
+      OAuthClientsSyncClient &
+      ResourcesSyncClient &
+      RolesSyncClient &
+      PermissionsSyncClient &
+      DpopAlgorithmsSyncClient &
+      DpopPolicySyncClient &
+      DpopPolicyService &
+      OAuthClientService &
+      ResourceService &
+      PermissionService &
+      CelEvaluator &
+      LoginRepository &
+      EdgeSessionRepository &
+      RevocationRepository &
+      RevocationNotifications &
+      TokenRevocationService &
+      JwksService &
+      ClientCertificateFiles &
+      SSOClient &
+      DpopProofRepository &
+      DpopReplayGuard &
+      DpopVerifier &
+      EdgeService &
+      NativeAuthClient &
+      NativeService
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -69,45 +95,44 @@ object PostgresEdgeApp extends VersolaApp("edge"):
   val dependencies: ZLayer[Scope & EnvName & ConfigProvider & Tracing & Client, Throwable, Dependencies] =
     // EdgeConfig.validated rejects a `versola-internal-trusted-certificates` that names a CA
     // rather than the leaf it is documented to require -- see that field's own comment.
-    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >+>
-      // `>+>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
+    (parseConfig[EdgeConfig] >>> EdgeConfig.validated) >++>
+      // `>++>` rather than `>>>`: PostgresRevocationNotifications needs the PostgresConfig the
       // transactor loaded, to open a connection of its own to park on LISTEN.
-      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >+>
+      (PostgresHikariDataSource.transactor(serviceName = Some("edge"), migrate = runMigrations) >++>
         (ZLayer.fromFunction(PostgresLoginRepository(_)) ++
           ZLayer.fromFunction(PostgresEdgeSessionRepository(_)) ++
           PostgresRevocationRepository.live ++
           PostgresDpopProofRepository.live ++
-          PostgresCleanupManager.live)) >+>
-      PostgresRevocationNotifications.live >+>
-      SecureRandom.live >+>
-      SecurityService.live >+>
-      configSnapshot >+>
-      CentralSyncTokenService.live >+>
-      AuthorizationPresetsSyncClient.live >+>
-      ClientCertificateEnrollment.live >+>
-      OAuthClientsSyncClient.live >+>
-      versola.edge.ClientPermissionsSyncClient.live >+>
-      CelEvaluator.live >+>
-      ResourcesSyncClient.live >+>
-      RolesSyncClient.live >+>
-      PermissionsSyncClient.live >+>
-      DpopAlgorithmsSyncClient.live >+>
-      DpopPolicySyncClient.live >+>
-      DpopPolicyService.live >+>
-      JwksSyncClient.live >+>
-      OAuthClientService.live >+>
-      ResourceService.live >+>
-      PermissionService.live >+>
-      JwksService.live >+>
-      TokenRevocationService.live >+>
-      ClientCertificateFiles.live >+>
-      SSOClient.live >+>
-      DpopReplayGuard.shared >+>
-      DpopVerifier.live >+>
-      EdgeService.live >+>
-      NativeAuthClient.live >+>
+          PostgresCleanupManager.live)) >++>
+      PostgresRevocationNotifications.live >++>
+      SecureRandom.live >++>
+      SecurityService.live >++>
+      configSnapshot >++>
+      CentralSyncTokenService.live >++>
+      AuthorizationPresetsSyncClient.live >++>
+      ClientCertificateEnrollment.live >++>
+      OAuthClientsSyncClient.live >++>
+      versola.edge.ClientPermissionsSyncClient.live >++>
+      CelEvaluator.live >++>
+      ResourcesSyncClient.live >++>
+      RolesSyncClient.live >++>
+      PermissionsSyncClient.live >++>
+      DpopAlgorithmsSyncClient.live >++>
+      DpopPolicySyncClient.live >++>
+      DpopPolicyService.live >++>
+      JwksSyncClient.live >++>
+      OAuthClientService.live >++>
+      ResourceService.live >++>
+      PermissionService.live >++>
+      JwksService.live >++>
+      TokenRevocationService.live >++>
+      ClientCertificateFiles.live >++>
+      SSOClient.live >++>
+      DpopReplayGuard.shared >++>
+      DpopVerifier.live >++>
+      EdgeService.live >++>
+      NativeAuthClient.live >++>
       NativeService.live
-
 
   /** Keyed off this edge's private key, see [[ConfigSnapshot]]. */
   private val configSnapshot: ZLayer[TransactorZIO & EdgeConfig, Nothing, ConfigSnapshot] =

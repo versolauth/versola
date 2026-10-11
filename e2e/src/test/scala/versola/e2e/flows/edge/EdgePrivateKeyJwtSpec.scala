@@ -16,19 +16,19 @@ import zio.test.*
   * and a stub on either side of it can be made to agree with a mistake.
   */
 object EdgePrivateKeyJwtSpec extends EdgeSpec(
-      EdgeFixture.Config(
-        resourceId = "e2e-edge-private-key-jwt",
-        // Not UpstreamStub.uri (9104) or DpopBoundTokenSpec's 9105 -- EdgeFixture.Config's
-        // doc requires every spec to claim a distinct resource URI, since central resolves a
-        // token's audience by it. This one previously reused auth's own APORT (9007), which
-        // is claimed elsewhere and produced an intermittent "resource already exists" 500 on
-        // a full `e2e/test` run.
-        resourceUri = UpstreamStub.uriOn(9106),
-        privateKeyJwt = true,
-        requireSignedRequestObject = true,
-        requirePushedAuthorizationRequests = true,
-      ),
-    ):
+    EdgeFixture.Config(
+      resourceId = "e2e-edge-private-key-jwt",
+      // Not UpstreamStub.uri (9104) or DpopBoundTokenSpec's 9105 -- EdgeFixture.Config's
+      // doc requires every spec to claim a distinct resource URI, since central resolves a
+      // token's audience by it. This one previously reused auth's own APORT (9007), which
+      // is claimed elsewhere and produced an intermittent "resource already exists" 500 on
+      // a full `e2e/test` run.
+      resourceUri = UpstreamStub.uriOn(9106),
+      privateKeyJwt = true,
+      requireSignedRequestObject = true,
+      requirePushedAuthorizationRequests = true,
+    ),
+  ):
 
   def spec = suite("edge fronting a private_key_jwt client")(
     test("signs in through /par and a signed request object, with no secret anywhere") {

@@ -26,7 +26,7 @@ object Patch:
     new JsonEncoder[Patch[A]]:
       def unsafeEncode(patch: Patch[A], indent: Option[Int], out: Write): Unit =
         patch match
-          case Deleted     => out.write("null")
+          case Deleted => out.write("null")
           case Modified(v) => JsonEncoder[A].unsafeEncode(v, indent, out)
       // Never skip — Deleted must emit null, not be omitted
       override def isNothing(patch: Patch[A]): Boolean = false
@@ -34,7 +34,7 @@ object Patch:
   given [A: JsonDecoder as dec] => JsonDecoder[Patch[A]] =
     JsonDecoder[Json].mapOrFail:
       case Json.Null => Right(Patch.Deleted)
-      case json      => dec.fromJsonAST(json).map(Patch.Modified(_))
+      case json => dec.fromJsonAST(json).map(Patch.Modified(_))
 
   given [A: {JsonEncoder, JsonDecoder}] => JsonCodec[Patch[A]] =
     JsonCodec(JsonEncoder[Patch[A]], JsonDecoder[Patch[A]])
@@ -58,13 +58,13 @@ object Patch:
   given [A: Schema] => Schema[Patch[A]] =
     Schema.option[A].transform(
       {
-        case None    => Patch.Deleted
+        case None => Patch.Deleted
         case Some(v) => Patch.Modified(v)
       },
       {
-        case Patch.Deleted     => None
+        case Patch.Deleted => None
         case Patch.Modified(v) => Some(v)
-      }
+      },
     )
 
   extension [A](opt: Option[Patch[A]])
@@ -75,8 +75,8 @@ object Patch:
      *   - Some(Modified(v)) → (true,  Some(v))     set column to v
      */
     def toUpdate: (Boolean, Option[A]) = opt match
-      case None                    => (false, None)
-      case Some(Patch.Deleted)     => (true, None)
+      case None => (false, None)
+      case Some(Patch.Deleted) => (true, None)
       case Some(Patch.Modified(v)) => (true, Some(v))
 
     /** Applies the patch to a currently stored nullable value:
@@ -85,6 +85,6 @@ object Patch:
      *   - Some(Modified(v)) → Some(v)
      */
     def applyTo(current: Option[A]): Option[A] = opt match
-      case None                    => current
-      case Some(Patch.Deleted)     => None
+      case None => current
+      case Some(Patch.Deleted) => None
       case Some(Patch.Modified(v)) => Some(v)

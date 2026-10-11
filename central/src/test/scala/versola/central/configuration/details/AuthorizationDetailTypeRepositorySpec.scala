@@ -38,8 +38,8 @@ trait AuthorizationDetailTypeRepositorySpec extends DatabaseSpecBase[Authorizati
               `type` = paymentType,
               description = Map("en" -> "Payment initiation"),
               schema = schema,
-            )
-          )
+            ),
+          ),
         )
       },
       test("update type replaces description and schema") {

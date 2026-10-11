@@ -136,13 +136,13 @@ object PostgresConfigSpec extends ZIOSpecDefault:
         assertTrue(
           PostgresHikariDataSource
             .validate(validConfig.copy(maxLifetime = 30.seconds, leakDetectionThreshold = 60.seconds))
-            .isLeft
+            .isLeft,
         )
       },
       test("accepts leakDetectionThreshold greater than maxLifetime when maxLifetime is disabled (0)") {
         assertTrue(
           PostgresHikariDataSource
-            .validate(validConfig.copy(maxLifetime = Duration.Zero, leakDetectionThreshold = 60.seconds)) == Right(())
+            .validate(validConfig.copy(maxLifetime = Duration.Zero, leakDetectionThreshold = 60.seconds)) == Right(()),
         )
       },
       test("rejects a poolMetricsInterval below 1 second") {

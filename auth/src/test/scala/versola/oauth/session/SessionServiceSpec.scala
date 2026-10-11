@@ -2,7 +2,16 @@ package versola.oauth.session
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentDetails, UserAgentId}
+import versola.oauth.session.model.{
+  ClientEntry,
+  PublicSessionId,
+  SessionId,
+  SessionInfo,
+  SessionRecord,
+  SessionUnderUserAgent,
+  UserAgentDetails,
+  UserAgentId,
+}
 import versola.user.model.UserId
 import versola.util.{MAC, SecurityService, UnitSpecBase}
 import zio.*
@@ -42,30 +51,30 @@ object SessionServiceSpec extends UnitSpecBase:
       test("Right(rawId) computes the MAC and delegates to repository.invalidate") {
         val env = Env()
         for
-          _      <- env.security.mac.succeedsWith(mac)
-          _      <- env.repository.invalidate.succeedsWith(Some(record))
+          _ <- env.security.mac.succeedsWith(mac)
+          _ <- env.repository.invalidate.succeedsWith(Some(record))
           result <- env.service.invalidate(Right(rawId))
         yield assertTrue(result.contains(SessionInfo(mac, record)))
       },
       test("Right(rawId) returns None when the repository finds nothing") {
         val env = Env()
         for
-          _      <- env.security.mac.succeedsWith(mac)
-          _      <- env.repository.invalidate.succeedsWith(None)
+          _ <- env.security.mac.succeedsWith(mac)
+          _ <- env.repository.invalidate.succeedsWith(None)
           result <- env.service.invalidate(Right(rawId))
         yield assertTrue(result.isEmpty)
       },
       test("Left(publicId) delegates to repository.invalidateByPublicId") {
         val env = Env()
         for
-          _      <- env.repository.invalidateByPublicId.succeedsWith(Some((mac, record)))
+          _ <- env.repository.invalidateByPublicId.succeedsWith(Some((mac, record)))
           result <- env.service.invalidate(Left(publicId))
         yield assertTrue(result.contains(SessionInfo(mac, record)))
       },
       test("Left(publicId) returns None when the repository finds nothing") {
         val env = Env()
         for
-          _      <- env.repository.invalidateByPublicId.succeedsWith(None)
+          _ <- env.repository.invalidateByPublicId.succeedsWith(None)
           result <- env.service.invalidate(Left(publicId))
         yield assertTrue(result.isEmpty)
       },
@@ -76,16 +85,16 @@ object SessionServiceSpec extends UnitSpecBase:
           _ <- env.service.invalidate(Left(publicId))
         yield assertTrue(env.security.mac.calls.isEmpty)
       },
-        test("invalidateForUser delegates the ownership check to the repository") {
-          val env = Env()
-          for
-            _      <- env.repository.invalidateByPublicIdForUser.succeedsWith(true)
-            result <- env.service.invalidateForUser(publicId, userId)
-          yield assertTrue(
-            result,
-            env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId)),
-          )
-        },
+      test("invalidateForUser delegates the ownership check to the repository") {
+        val env = Env()
+        for
+          _ <- env.repository.invalidateByPublicIdForUser.succeedsWith(true)
+          result <- env.service.invalidateForUser(publicId, userId)
+        yield assertTrue(
+          result,
+          env.repository.invalidateByPublicIdForUser.calls == List((publicId, userId)),
+        )
+      },
     ),
     suite("listByUser")(
       test("produces one entry per session, enriched with its user agent's details") {
@@ -97,13 +106,31 @@ object SessionServiceSpec extends UnitSpecBase:
         val session1 = record.copy(userAgentId = userAgentId1, publicId = PublicSessionId("s1"))
         val session2 = record.copy(userAgentId = userAgentId2, publicId = PublicSessionId("s2"))
         for
-          _      <- env.repository.findByUserId.succeedsWith(List(session1, session2))
-          _      <- env.userAgentRepository.findMany.succeedsWith(Map(userAgentId1 -> details1, userAgentId2 -> details2))
+          _ <- env.repository.findByUserId.succeedsWith(List(session1, session2))
+          _ <- env.userAgentRepository.findMany.succeedsWith(Map(userAgentId1 -> details1, userAgentId2 -> details2))
           result <- env.service.listByUser(userId)
         yield assertTrue(
           result == List(
-            SessionUnderUserAgent(session1.publicId, session1.clients, session1.createdAt, details1.platform, details1.os, details1.browser, details1.version, session1.expiresAt),
-            SessionUnderUserAgent(session2.publicId, session2.clients, session2.createdAt, details2.platform, details2.os, details2.browser, details2.version, session2.expiresAt),
+            SessionUnderUserAgent(
+              session1.publicId,
+              session1.clients,
+              session1.createdAt,
+              details1.platform,
+              details1.os,
+              details1.browser,
+              details1.version,
+              session1.expiresAt,
+            ),
+            SessionUnderUserAgent(
+              session2.publicId,
+              session2.clients,
+              session2.createdAt,
+              details2.platform,
+              details2.os,
+              details2.browser,
+              details2.version,
+              session2.expiresAt,
+            ),
           ),
           env.userAgentRepository.findMany.calls == List(List(userAgentId1, userAgentId2)),
         )
@@ -114,11 +141,20 @@ object SessionServiceSpec extends UnitSpecBase:
         val session = record.copy(userAgentId = userAgentId)
         val unknown = UserAgentDetails.parse(None)
         for
-          _      <- env.repository.findByUserId.succeedsWith(List(session))
-          _      <- env.userAgentRepository.findMany.succeedsWith(Map.empty)
+          _ <- env.repository.findByUserId.succeedsWith(List(session))
+          _ <- env.userAgentRepository.findMany.succeedsWith(Map.empty)
           result <- env.service.listByUser(userId)
         yield assertTrue(
-          result == List(SessionUnderUserAgent(session.publicId, session.clients, session.createdAt, unknown.platform, unknown.os, unknown.browser, unknown.version, session.expiresAt)),
+          result == List(SessionUnderUserAgent(
+            session.publicId,
+            session.clients,
+            session.createdAt,
+            unknown.platform,
+            unknown.os,
+            unknown.browser,
+            unknown.version,
+            session.expiresAt,
+          )),
         )
       },
     ),

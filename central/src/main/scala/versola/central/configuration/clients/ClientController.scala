@@ -1,18 +1,18 @@
 package versola.central.configuration.clients
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.*
 import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.{Controller, Unauthorized}
 import versola.util.{Base64Url, Patch, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
-import zio.schema.*
 import zio.prelude.These
+import zio.schema.*
 
 object ClientController extends Controller:
   type Env = Tracing & OAuthClientService & ClientCertificateService & ResourceService & CentralConfig & SecurityService & EdgeService
@@ -88,12 +88,13 @@ object ClientController extends Controller:
         edgeId <- authorizeInternal(request)
         transportEncrypt <- edgeId match
           case Some(id) =>
-            edgeService.find(id).someOrFail(Unauthorized).map { edge =>
-              // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
-              // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
-              // the one transport both go through.
-              (secret: Secret) =>
-                securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
+            edgeService.find(id).someOrFail(Unauthorized).map {
+              edge =>
+                // Hybrid, not encryptRsa directly: a generated client secret fits in one RSA-
+                // OAEP block, but edgeSigningKey's stored JWK document does not, and this is
+                // the one transport both go through.
+                (secret: Secret) =>
+                  securityService.encryptRsaHybrid(secret, edge.activeRsaPublicKey).map(Base64Url.encode)
             }
           case None =>
             ZIO.succeed: (secret: Secret) =>
@@ -152,7 +153,6 @@ object ClientController extends Controller:
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
     }
-
 
   val createClientEndpoint =
     Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
@@ -223,7 +223,7 @@ object ClientController extends Controller:
   private def isSettingValue(patch: Option[Patch[String]]): Boolean =
     patch.exists:
       case Patch.Modified(_) => true
-      case Patch.Deleted     => false
+      case Patch.Deleted => false
 
   /** A client that did not register [[AuthMethod.client_secret]] has no secret to rotate or
     * forget - a public client because it holds no credential at all, a private_key_jwt or
@@ -285,7 +285,7 @@ object ClientController extends Controller:
       yield Response.json(response.toJson))
         .catchAll {
           case error: ClientHasNoSecret => ZIO.succeed(secretlessClientConflict(error))
-          case error: Throwable         => ZIO.fail(error)
+          case error: Throwable => ZIO.fail(error)
         }
     }
 
@@ -299,7 +299,7 @@ object ClientController extends Controller:
       yield Response.status(Status.NoContent))
         .catchAll {
           case error: ClientHasNoSecret => ZIO.succeed(secretlessClientConflict(error))
-          case error: Throwable         => ZIO.fail(error)
+          case error: Throwable => ZIO.fail(error)
         }
     }
 
@@ -312,4 +312,3 @@ object ClientController extends Controller:
         _ <- service.deleteClient(clientId)
       yield Response.status(Status.NoContent)
     }
-

@@ -37,10 +37,11 @@ object CampaignControlSpec extends ZIOSpecDefault:
         )
       },
       test("a pause is subtracted from the campaign clock, so the phase resumes where it left") {
-        val resumed = for
-          paused <- started.pause(t0.plusSeconds(600))
-          running <- paused.start(t0.plusSeconds(600 + 1800))
-        yield running
+        val resumed =
+          for
+            paused <- started.pause(t0.plusSeconds(600))
+            running <- paused.start(t0.plusSeconds(600 + 1800))
+          yield running
         assertTrue(
           // Ten minutes of campaign ran, thirty of wall clock passed, so the anchor moves by the
           // thirty minutes of pause: at the moment of resume the campaign is ten minutes old.

@@ -3,7 +3,7 @@ package versola.central.configuration.jwks
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{KeyUse, RSAKey}
 import versola.central.TestCentralConfig
-import versola.util.{Base64, JWT, SecureRandom, SecurityService, Secret}
+import versola.util.{Base64, JWT, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -83,14 +83,14 @@ object JwksServiceSpec extends ZIOSpecDefault:
       val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], None)
       (for
         service <- ZIO.service[JwksService]
-        raw     <- service.getRaw
+        raw <- service.getRaw
       yield assertTrue(raw == testJwks)).provide(serviceFrom(Vector(record)))
     },
     test("getPublicKeys parses the configured JWKS") {
       val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], None)
       (for
         service <- ZIO.service[JwksService]
-        keys    <- service.getPublicKeys
+        keys <- service.getPublicKeys
       yield assertTrue(
         keys.keys.size() == 1,
         keys.active.id == "key-1",
@@ -99,7 +99,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
     test("getPublicKeys returns an empty key set for an empty JWKS") {
       (for
         service <- ZIO.service[JwksService]
-        keys    <- service.getPublicKeys
+        keys <- service.getPublicKeys
       yield assertTrue(keys.keys.size() == 0)).provide(serviceFrom(Vector.empty))
     },
     // Edge reads `getRaw` on its verification path and must never receive key material it
@@ -108,7 +108,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
       val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], Some(encryptedPrivateKey))
       (for
         service <- ZIO.service[JwksService]
-        raw     <- service.getRaw
+        raw <- service.getRaw
       yield assertTrue(raw == testJwks)).provide(serviceFrom(Vector(record)))
     },
     suite("getSigningKeys")(
@@ -118,14 +118,14 @@ object JwksServiceSpec extends ZIOSpecDefault:
       test("carries the private half of every signable key, encrypted for transport") {
         val (_, layer) = env(Vector.empty)
         (for
-          service  <- ZIO.service[JwksService]
+          service <- ZIO.service[JwksService]
           security <- ZIO.service[SecurityService]
-          kid      <- service.generateKey(JWT.Algorithm.PS256)
-          keys     <- service.getSigningKeys
+          kid <- service.generateKey(JWT.Algorithm.PS256)
+          keys <- service.getSigningKeys
           transported = Base64.urlDecode(keys(kid))
-          pkcs8    <- security.decryptAes256(transported, transportKey)
-          parsed   <- ZIO.attempt(KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pkcs8)))
-          atRest   <- security.decryptAes256(transported, atRestKey).exit
+          pkcs8 <- security.decryptAes256(transported, transportKey)
+          parsed <- ZIO.attempt(KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(pkcs8)))
+          atRest <- security.decryptAes256(transported, atRestKey).exit
         yield assertTrue(
           keys.keySet == Set(kid),
           parsed.getAlgorithm == "RSA",
@@ -138,7 +138,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
         val record = JwksRecord("key-1", testKey.asInstanceOf[Json.Obj], None)
         (for
           service <- ZIO.service[JwksService]
-          keys    <- service.getSigningKeys
+          keys <- service.getSigningKeys
         yield assertTrue(keys.isEmpty)).provide(serviceFrom(Vector(record)))
       },
       test("omits a key published without a usable alg") {
@@ -146,7 +146,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
         val record = JwksRecord("key-1", noAlg, Some(encryptedPrivateKey))
         (for
           service <- ZIO.service[JwksService]
-          keys    <- service.getSigningKeys
+          keys <- service.getSigningKeys
         yield assertTrue(keys.isEmpty)).provide(serviceFrom(Vector(record)))
       },
     ),
@@ -155,7 +155,7 @@ object JwksServiceSpec extends ZIOSpecDefault:
       val verifyOnly = JwksRecord("key-2", Json.Obj("kid" -> Json.Str("key-2"), "kty" -> Json.Str("RSA")), None)
       (for
         service <- ZIO.service[JwksService]
-        keys    <- service.listKeys
+        keys <- service.listKeys
       yield assertTrue(
         keys.map(_.kid) == Vector("key-1", "key-2"),
         keys.map(_.canSign) == Vector(true, false),

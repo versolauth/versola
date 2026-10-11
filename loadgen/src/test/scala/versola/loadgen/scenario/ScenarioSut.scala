@@ -16,9 +16,9 @@ import zio.http.*
   * discipline is stated against.
   */
 object ScenarioSut:
-  export StubSut.{authUrl, edgeUrl, origin, redirectUri, csrf, ssoSession, code, edgeState, requestTimeout, registry, page}
-  export StubSut.{preset, edgeCookieTtl, postLoginRedirect, postLogoutRedirect, logoutCsrf, logoutConfirmPage, authLogoutUrl}
-  export StubSut.{authorizeUrl, edgeCodeRedirect, codeRedirect, passkeyOptions}
+  export StubSut.{authLogoutUrl, edgeCookieTtl, logoutConfirmPage, logoutCsrf, postLoginRedirect, postLogoutRedirect, preset}
+  export StubSut.{authUrl, code, csrf, edgeState, edgeUrl, origin, page, redirectUri, registry, requestTimeout, ssoSession}
+  export StubSut.{authorizeUrl, codeRedirect, edgeCodeRedirect, passkeyOptions}
 
   /** The ACR the gated action demands, as `CampaignBlueprint` names L2. */
   val stepUpAcr = "otp-level"
@@ -248,7 +248,8 @@ object ScenarioSut:
       Method.GET / "login" / string("presetId") -> handler: (_: String, request: Request) =>
         val forwarded = request.url.queryParams.getAll("acr_values").headOption
         val target = URL.decode(authorizeUrl).toOption.get
-        ZIO.succeed(Response.seeOther(forwarded.fold(target)(values => target.addQueryParam("acr_values", values)))),
+        ZIO.succeed(Response.seeOther(forwarded.fold(target)(values => target.addQueryParam("acr_values", values))))
+      ,
       Method.GET / "logout" / string("presetId") -> handler: (_: String, _: Request) =>
         ZIO.succeed(Response.seeOther(URL.decode(authLogoutUrl).toOption.get)),
       Method.GET / "logout" / "frontchannel" -> handler: (_: Request) =>

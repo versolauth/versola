@@ -19,4 +19,3 @@ object Claim:
   given Schema[Claim] = Schema.primitive[String].transformOrFail(from, Right(_))
   given JsonEncoder[Claim] = JsonEncoder.string.contramap(identity)
   given JsonDecoder[Claim] = JsonDecoder.string.mapOrFail(from)
-

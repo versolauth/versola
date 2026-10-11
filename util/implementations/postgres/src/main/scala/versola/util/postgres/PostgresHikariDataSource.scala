@@ -158,15 +158,13 @@ object PostgresHikariDataSource:
             // every rollback deploy fail validate() the moment a newer build's migration had been
             // applied (flagged in review).
             if migrate then flyway.migrate() else flyway.validate()
-
-        yield (dataSource, poolMetrics)
+        yield (dataSource, poolMetrics),
       )((dataSource, _) => ZIO.attemptBlocking(dataSource.close()).orDie)
         .flatMap: (dataSource, poolMetrics) =>
           ZIO
             .foreachDiscard(poolMetrics.toList): (interval, buckets) =>
               PoolMetrics.publishing(dataSource, buckets, interval)
             .as(dataSource)
-
 
   /** Validates pool-tuning values before they reach HikariCP.
     *
@@ -179,31 +177,41 @@ object PostgresHikariDataSource:
   private[postgres] def validate(postgres: PostgresConfig): Either[String, Unit] =
     val errors = List(
       Option.when(postgres.maximumPoolSize <= 0):
-        s"maximum-pool-size must be > 0, got ${postgres.maximumPoolSize}",
+        s"maximum-pool-size must be > 0, got ${postgres.maximumPoolSize}"
+      ,
       Option.when(postgres.minimumIdle < 0):
-        s"minimum-idle must be >= 0, got ${postgres.minimumIdle}",
+        s"minimum-idle must be >= 0, got ${postgres.minimumIdle}"
+      ,
       Option.when(postgres.minimumIdle > postgres.maximumPoolSize):
-        s"minimum-idle (${postgres.minimumIdle}) must be <= maximum-pool-size (${postgres.maximumPoolSize})",
+        s"minimum-idle (${postgres.minimumIdle}) must be <= maximum-pool-size (${postgres.maximumPoolSize})"
+      ,
       Option.when(postgres.connectionTimeout.toMillis < 250):
-        s"connection-timeout must be >= 250ms, got ${postgres.connectionTimeout}",
+        s"connection-timeout must be >= 250ms, got ${postgres.connectionTimeout}"
+      ,
       Option.when(postgres.maxLifetime.toMillis != 0 && postgres.maxLifetime.toMillis < 30000):
-        s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}",
+        s"max-lifetime must be 0 (disabled) or >= 30 seconds, got ${postgres.maxLifetime}"
+      ,
       Option.when(postgres.sslRootCert.exists(_.isBlank)):
-        "ssl-root-cert must be a file path when set, or absent to use the JVM trust store",
+        "ssl-root-cert must be a file path when set, or absent to use the JVM trust store"
+      ,
       Option.when(postgres.notificationsUrl.exists(_.isBlank)):
-        "notifications-url must be a JDBC URL when set, or absent to reuse url",
+        "notifications-url must be a JDBC URL when set, or absent to reuse url"
+      ,
       Option.when(postgres.leakDetectionThreshold.toMillis < 0):
-        s"leak-detection-threshold must be >= 0, got ${postgres.leakDetectionThreshold}",
+        s"leak-detection-threshold must be >= 0, got ${postgres.leakDetectionThreshold}"
+      ,
       Option.when(postgres.leakDetectionThreshold.toMillis > 0 && postgres.leakDetectionThreshold.toMillis < 2000):
         s"leak-detection-threshold must be 0 (disabled) or >= 2 seconds, got ${postgres.leakDetectionThreshold} " +
-          "(HikariCP silently disables values in between instead of failing)",
+          "(HikariCP silently disables values in between instead of failing)"
+      ,
       Option.when(
         postgres.leakDetectionThreshold.toMillis > 0 &&
           postgres.maxLifetime.toMillis > 0 &&
-          postgres.leakDetectionThreshold.toMillis > postgres.maxLifetime.toMillis
+          postgres.leakDetectionThreshold.toMillis > postgres.maxLifetime.toMillis,
       ):
         s"leak-detection-threshold (${postgres.leakDetectionThreshold}) must not exceed max-lifetime " +
-          s"(${postgres.maxLifetime}) when max-lifetime > 0 (HikariCP silently disables it otherwise)",
+          s"(${postgres.maxLifetime}) when max-lifetime > 0 (HikariCP silently disables it otherwise)"
+      ,
       // Not a HikariCP minimum -- this one is ours. A sub-second interval buys nothing (the gauges
       // are levels, read at a resolution no Prometheus scrape can see) and costs a wakeup per pool
       // per interval in every service on this pool, which is the overhead the metrics were made

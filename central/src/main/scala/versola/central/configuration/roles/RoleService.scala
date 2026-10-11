@@ -67,7 +67,7 @@ object RoleService:
       cache.get.map(
         _.filter(r => r.tenantId == tenantId && roleIds.contains(r.id))
           .flatMap(_.permissions)
-          .toSet
+          .toSet,
       )
 
     override def getRolesForSync(edgeId: Option[EdgeId]): Task[Vector[RoleRecord]] =

@@ -3,7 +3,18 @@ package versola.edge
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
 import versola.edge.model.*
-import versola.util.{Base64, ClientAssertion, EdgeAssertion, JWT, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, RequestObject, Secret, TestCertificates}
+import versola.util.{
+  Base64,
+  ClientAssertion,
+  EdgeAssertion,
+  JWT,
+  PrivateClientCertificate,
+  PrivateJsonWebKey,
+  RedirectUri,
+  RequestObject,
+  Secret,
+  TestCertificates,
+}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -87,7 +98,6 @@ object SSOClientSpec extends ZIOSpecDefault:
     refreshSuite,
     userInfoSuite,
   )
-
 
   /** The key edge is provisioned with for a client that authenticates by key, and the public
     * half auth would have registered as that client's `jwks`. */
@@ -812,7 +822,6 @@ object SSOClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(new RuntimeException("no request captured"))
       yield assertTrue(request.rawHeader(EdgeAssertion.HeaderName).isEmpty)
     },
-
     test("rejects a non-object JSON body") {
       for
         _ <- respondWith(Response.json("""["not","an","object"]"""))

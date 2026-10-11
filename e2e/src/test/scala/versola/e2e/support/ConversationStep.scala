@@ -9,12 +9,12 @@ import zio.*
   * the current set of steps continue to compile when new steps are added.
   */
 enum ConversationStep(val value: String):
-  case Credential   extends ConversationStep("credential")
-  case Password     extends ConversationStep("password")
-  case SetPassword  extends ConversationStep("set-password")
-  case Otp          extends ConversationStep("otp")
+  case Credential extends ConversationStep("credential")
+  case Password extends ConversationStep("password")
+  case SetPassword extends ConversationStep("set-password")
+  case Otp extends ConversationStep("otp")
   case PasskeyEnroll extends ConversationStep("passkey-enroll")
-  case Consent      extends ConversationStep("consent")
+  case Consent extends ConversationStep("consent")
   case AccessDenied extends ConversationStep("access-denied")
   case Unknown(override val value: String) extends ConversationStep(value)
 
@@ -34,5 +34,5 @@ extension (step: Option[ConversationStep])
   def assertIs(expected: ConversationStep): Task[ConversationStep] =
     step match
       case Some(s) if s == expected => ZIO.succeed(s)
-      case Some(s)                  => ZIO.fail(RuntimeException(s"Expected step='${expected.value}', got '${s.value}'"))
-      case None                     => ZIO.fail(RuntimeException(s"Expected step='${expected.value}', but no versola-step meta tag found"))
+      case Some(s) => ZIO.fail(RuntimeException(s"Expected step='${expected.value}', got '${s.value}'"))
+      case None => ZIO.fail(RuntimeException(s"Expected step='${expected.value}', but no versola-step meta tag found"))

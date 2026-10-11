@@ -13,8 +13,8 @@ import zio.json.JsonCodec
 import zio.schema.*
 
 import java.io.StringReader
-import java.nio.charset.StandardCharsets
 import java.net.InetAddress
+import java.nio.charset.StandardCharsets
 import java.security.KeyPairGenerator
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64

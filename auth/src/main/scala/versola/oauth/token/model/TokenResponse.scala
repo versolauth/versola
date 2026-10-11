@@ -22,4 +22,3 @@ case class TokenResponse(
     /** The authorization details granted, echoed back when the grant carries any. */
     @jsonField("authorization_details") authorizationDetails: Option[Json.Arr],
 ) derives Schema, JsonCodec
-

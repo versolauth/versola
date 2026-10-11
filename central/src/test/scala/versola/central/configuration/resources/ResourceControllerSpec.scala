@@ -2,24 +2,24 @@ package versola.central.configuration.resources
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
-import versola.central.configuration.clients.ClientId
-import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.*
-import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
+import versola.central.configuration.clients.ClientId
+import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeService}
+import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
+import versola.util.{Base64Url, JWT, RsaKeyPair, Secret, SecurityService}
 import zio.*
 import zio.http.*
 import zio.json.*
+import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-import zio.json.ast.Json
 
-import java.util.UUID
 import java.security.KeyPairGenerator
 import java.security.interfaces.{RSAPrivateKey, RSAPublicKey}
+import java.util.UUID
 
 object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
   private def endpointId(value: String): ResourceEndpointId = ResourceEndpointId(UUID.fromString(value))
@@ -41,8 +41,28 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resource = ResourceUri("https://api.example.com"),
     audience = audience,
     endpoints = Vector(
-      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None),
-      CreateResourceEndpointRequest(usersCreateEndpointId, "/users", "POST", false, denyAware, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None),
+      CreateResourceEndpointRequest(
+        usersListEndpointId,
+        "/users",
+        "GET",
+        true,
+        allow,
+        inject,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
+      CreateResourceEndpointRequest(
+        usersCreateEndpointId,
+        "/users",
+        "POST",
+        false,
+        denyAware,
+        Vector.empty,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
     ),
     internal = false,
   )
@@ -53,7 +73,17 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     resource = ResourceUri("https://api.example.com"),
     audience = audience,
     endpoints = Vector(
-      CreateResourceEndpointRequest(usersListEndpointId, "/users", "GET", true, numericAllow, Vector.empty, stepUpCondition = None, stepUpAcr = None, maxAge = None)
+      CreateResourceEndpointRequest(
+        usersListEndpointId,
+        "/users",
+        "GET",
+        true,
+        numericAllow,
+        Vector.empty,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
     ),
     internal = false,
   )
@@ -64,7 +94,17 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
     audience = PatchAudience(add = audience.toSet, remove = Set.empty),
     deleteEndpoints = Set(usersCreateEndpointId),
     createEndpoints = Vector(
-      CreateResourceEndpointRequest(usersMeEndpointId, "/users/me", "GET", true, allow, inject, stepUpCondition = None, stepUpAcr = None, maxAge = None)
+      CreateResourceEndpointRequest(
+        usersMeEndpointId,
+        "/users/me",
+        "GET",
+        true,
+        allow,
+        inject,
+        stepUpCondition = None,
+        stepUpAcr = None,
+        maxAge = None,
+      ),
     ),
   )
 
@@ -80,7 +120,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ),
       secret = None,
       previousSecret = None,
-    )
+    ),
   )
   private val syncSecret = Secret(Array.fill(32)(7.toByte))
   private val previousSyncSecret = Secret(Array.fill(32)(8.toByte))
@@ -108,10 +148,10 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       override def encryptRsa(data: Array[Byte], key: java.security.PublicKey) = ZIO.dieMessage("Unused in test")
       override def decryptRsa(data: Array[Byte], key: java.security.PrivateKey) = ZIO.dieMessage("Unused in test")
       override def mac(secret: versola.util.Secret, key: Array[Byte]) = ZIO.dieMessage("Unused in test")
-      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) = ZIO.dieMessage("Unused in test")
+      override def hashPassword(password: versola.util.Secret, salt: versola.util.Salt, pepper: versola.util.Secret.Bytes16) =
+        ZIO.dieMessage("Unused in test")
       override def generateRsaKeyPair = ZIO.dieMessage("Unused in test")
-      override def generateEcKeyPair = ZIO.dieMessage("Unused in test")
-    )
+      override def generateEcKeyPair = ZIO.dieMessage("Unused in test"))
 
   private def controllerTestCase(
       description: String,
@@ -131,15 +171,15 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         _ <- service.verifySecret.succeedsWith(true)
         _ <- setup(service)
         requestWithAuth = request.headers.header(Header.Authorization) match
           case None => request.addHeader(TestAdminAuth.basicAuthHeader)
-          case _    => request
+          case _ => request
         response <- client.batched(requestWithAuth.addHeader(Header.Accept(MediaType.application.json)))
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -155,7 +195,7 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "return tenant resources with pagination params",
       request = Request.get(
         (URL.empty / "configuration" / "resources")
-          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "1", "limit" -> "5"))
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "offset" -> "1", "limit" -> "5")),
       ),
       expectedStatus = Status.Ok,
       setup = service => service.getTenantResources.succeedsWith(resourceRecords),
@@ -175,8 +215,8 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 ),
                 internal = false,
                 secretRotation = false,
-              )
-            )
+              ),
+            ),
           ),
         ),
     ),
@@ -227,9 +267,10 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service => service.createResource.succeedsWith(Left(ResourceValidationError.ReservedResourceId)),
-      verify = (_, service) => ZIO.succeed(assertTrue(
-        service.createResource.calls == List(createRequestBody.copy(resourceId = ResourceId("edge"))),
-      )),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.createResource.calls == List(createRequestBody.copy(resourceId = ResourceId("edge"))),
+        )),
     ),
     controllerTestCase(
       description = "create internal resource returns the generated secret",
@@ -271,9 +312,10 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(createRequestBody.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
-      setup = service => service.createResource.succeedsWith(
-        Left(ResourceValidationError.InvalidAllowExpression(usersListEndpointId, "token.foo +", "Unexpected token: EOF")),
-      ),
+      setup = service =>
+        service.createResource.succeedsWith(
+          Left(ResourceValidationError.InvalidAllowExpression(usersListEndpointId, "token.foo +", "Unexpected token: EOF")),
+        ),
     ),
     controllerTestCase(
       description = "update resource with endpoint replacements",
@@ -323,16 +365,16 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.deletePreviousSecret.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.deletePreviousSecret.calls == List(resourceId))),
     ),
-      controllerTestCase(
-        description = "return conflict when resource secret rotation is already in progress",
-        request = Request(
-          method = Method.POST,
-          url = (URL.empty / "configuration" / "resources" / "rotate-secret")
-            .addQueryParam("resourceId", resourceId.toString),
-        ),
-        expectedStatus = Status.Conflict,
-        setup = service => service.rotateSecret.failsWith(ResourceService.SecretRotationInProgress),
+    controllerTestCase(
+      description = "return conflict when resource secret rotation is already in progress",
+      request = Request(
+        method = Method.POST,
+        url = (URL.empty / "configuration" / "resources" / "rotate-secret")
+          .addQueryParam("resourceId", resourceId.toString),
       ),
+      expectedStatus = Status.Conflict,
+      setup = service => service.rotateSecret.failsWith(ResourceService.SecretRotationInProgress),
+    ),
     test("sync returns encrypted resource secret") {
       for
         client <- ZIO.service[Client]
@@ -350,13 +392,13 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         response <- client.batched(
           Request.get(URL.empty / "configuration" / "resources" / "sync")
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesSyncResponse](response)
       yield assertTrue(
@@ -384,13 +426,13 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         response <- client.batched(
           Request.get(URL.empty / "configuration" / "resources" / "sync")
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesSyncResponse](response)
       yield assertTrue(
@@ -417,13 +459,13 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         response <- client.batched(
           Request.get(URL.empty / "configuration" / "resources" / "registry")
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
       yield assertTrue(
@@ -452,13 +494,13 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         response <- client.batched(
           Request.get(URL.empty / "configuration" / "resources" / "registry")
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
       yield assertTrue(
@@ -492,13 +534,13 @@ object ResourceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           Observability.handleErrors(
             ResourceController.routes.provideEnvironment(
               ZEnvironment[ResourceService](service) ++ ZEnvironment[CentralConfig](config) ++ tracing ++ security ++
-                ZEnvironment[EdgeService](edgeService)
-            )
-          )
+                ZEnvironment[EdgeService](edgeService),
+            ),
+          ),
         )
         response <- client.batched(
           Request.get(URL.empty / "configuration" / "resources" / "registry")
-            .addHeader(Header.Authorization.Bearer(token))
+            .addHeader(Header.Authorization.Bearer(token)),
         )
         payload <- decodeJsonBody[GetResourcesRegistryResponse](response)
       yield assertTrue(

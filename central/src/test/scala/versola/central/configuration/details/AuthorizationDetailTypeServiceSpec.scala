@@ -1,10 +1,10 @@
 package versola.central.configuration.details
 
 import org.scalamock.stubs.ZIOStubs
+import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.sync.SyncEvent
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateAuthorizationDetailTypeRequest, UpdateAuthorizationDetailTypeRequest}
-import versola.central.configuration.metadata.ServerMetadataService
 import versola.util.{JsonSchemaValidator, ReloadingCache}
 import zio.*
 import zio.json.*

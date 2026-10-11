@@ -10,7 +10,6 @@ import versola.loadgen.provision.FakeCentral.*
 import versola.loadgen.provision.{CampaignBlueprint, FakeCentral, ProvisionFixtures}
 import versola.util.{ClientAssertion, Dpop}
 import zio.*
-
 import zio.http.*
 import zio.json.ast.Json
 import zio.test.*

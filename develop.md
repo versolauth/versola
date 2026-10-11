@@ -103,6 +103,18 @@ The script first asks for the environment **Name** (default `local`):
     - enter admin/Admin1234!
     - enter otp code 123456
 
+### Formatting
+
+Scala code is formatted with scalafmt per `.scalafmt.conf` (CLI: `scalafmt`; it reads the pinned version from the config).
+Before a push run `scalafmt --mode diff --diff-branch origin/main` and commit the result; `scalafmt --test` checks without writing.
+
+The project-wide reformat commit is listed in `.git-blame-ignore-revs`, so it does not hide the real author of each line in `git blame`.
+GitHub honours that file on its own; for local `git blame` (and IDE annotate) run once per clone:
+
+```bash
+git config blame.ignoreRevsFile .git-blame-ignore-revs
+```
+
 ## Docker
 
 ### Build Locally

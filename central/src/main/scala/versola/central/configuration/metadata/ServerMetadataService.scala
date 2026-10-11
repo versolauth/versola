@@ -45,7 +45,7 @@ object ServerMetadataService:
         typesJson = Json.Arr(types.map(Json.Str(_)).toSeq*)
         fields = Json.Obj(
           (metadata.fields.filterNot(_._1 == authorizationDetailTypesKey) :+
-            (authorizationDetailTypesKey -> typesJson))*
+            (authorizationDetailTypesKey -> typesJson))*,
         )
         _ <- repository.upsert(fields)
       yield ()

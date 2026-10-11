@@ -10,7 +10,7 @@ object PkceHelper:
 
   /** Returns a pair of (code_verifier, code_challenge). */
   def generate(): (String, String) =
-    val verifier  = newVerifier()
+    val verifier = newVerifier()
     val challenge = s256(verifier)
     (verifier, challenge)
 

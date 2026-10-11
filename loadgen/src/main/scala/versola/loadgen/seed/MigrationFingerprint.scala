@@ -6,7 +6,6 @@ import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path}
 import java.security.MessageDigest
-
 import scala.jdk.CollectionConverters.*
 import scala.util.Using
 

@@ -67,7 +67,7 @@ object AccountSettingsEdgeSpec extends E2ESpec:
         result <- auth.edgeRevokeAccountSession(Some(caller.accessToken), caller.sessionId)
         remaining <- auth.edgeAccountPage(Some(caller.accessToken)).flatMap(_.formItems("sessions"))
       yield assertTrue(result.status == Status.Forbidden)
-          .label("the endpoint's access rule must reject revoking `token.sid`") &&
+        .label("the endpoint's access rule must reject revoking `token.sid`") &&
         assertTrue(remaining.exists(session => str(session, "id").contains(caller.sessionId)))
           .label("the caller's session must survive the refused revocation")
     },

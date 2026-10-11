@@ -10,11 +10,11 @@ import java.util.UUID
 
 object OutboxEventSpec extends ZIOSpecDefault:
 
-  private val userId   = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
-  private val version  = UUID.fromString("00000000-0000-0000-0000-000000000099")
+  private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
+  private val version = UUID.fromString("00000000-0000-0000-0000-000000000099")
   private val tenantId = TenantId("tenant-1")
-  private val roleId   = RoleId("role-1")
-  private val email    = Email("user@example.com")
+  private val roleId = RoleId("role-1")
+  private val email = Email("user@example.com")
 
   def spec = suite("OutboxEvent JSON")(
     test("UpsertUser round-trip") {

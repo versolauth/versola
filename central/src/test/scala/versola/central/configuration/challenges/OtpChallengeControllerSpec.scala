@@ -6,8 +6,8 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
-import versola.util.{JWT, Patch}
 import versola.util.http.Observability
+import versola.util.{JWT, Patch}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -656,7 +656,6 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "PUT challenge-settings falls back to existing settings when optional fields are omitted",
-
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "challenges" / "challenge-settings",

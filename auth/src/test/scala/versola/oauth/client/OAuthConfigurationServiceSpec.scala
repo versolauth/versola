@@ -308,10 +308,12 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getMtlsCertificateSource returns the header and encoding the tenant configured") {
       for
-        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
-          mtlsCertificateHeader = Some("ssl-client-cert"),
-          mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
-        )))
+        env <- makeEnv(challengeSettingsVec =
+          Vector(challengeSettings.copy(
+            mtlsCertificateHeader = Some("ssl-client-cert"),
+            mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+          )),
+        )
         result <- env.getMtlsCertificateSource(clientId1)
       yield assertTrue(
         result.contains(MtlsCertificateSource("ssl-client-cert", MtlsCertificateEncoding.urlEncodedPem)),
@@ -325,26 +327,31 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getMtlsCertificateSource returns None for a header stored without an encoding") {
       for
-        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
-          mtlsCertificateHeader = Some("ssl-client-cert"),
-          mtlsCertificateEncoding = None,
-        )))
+        env <- makeEnv(challengeSettingsVec =
+          Vector(challengeSettings.copy(
+            mtlsCertificateHeader = Some("ssl-client-cert"),
+            mtlsCertificateEncoding = None,
+          )),
+        )
         result <- env.getMtlsCertificateSource(clientId1)
       yield assertTrue(result.isEmpty)
     },
     test("getMtlsCertificateSource returns None for unknown client") {
       for
-        env <- makeEnv(challengeSettingsVec = Vector(challengeSettings.copy(
-          mtlsCertificateHeader = Some("ssl-client-cert"),
-          mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
-        )))
+        env <- makeEnv(challengeSettingsVec =
+          Vector(challengeSettings.copy(
+            mtlsCertificateHeader = Some("ssl-client-cert"),
+            mtlsCertificateEncoding = Some(MtlsCertificateEncoding.urlEncodedPem),
+          )),
+        )
         result <- env.getMtlsCertificateSource(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
     test("getClientAssertionMaxLifetime returns the window the client's tenant configured") {
       for
         env <- makeEnv(challengeSettingsVec =
-          Vector(challengeSettings.copy(clientAssertionMaxLifetimeSeconds = 120)))
+          Vector(challengeSettings.copy(clientAssertionMaxLifetimeSeconds = 120)),
+        )
         result <- env.getClientAssertionMaxLifetime(clientId1)
       yield assertTrue(result == 120.seconds)
     },
@@ -546,9 +553,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getDpopSigningAlgorithms narrows to what the document names") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+          ),
+        )
         served <- env.getMetadata
         enforced <- env.getDpopSigningAlgorithms
       yield assertTrue(
@@ -560,9 +569,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     // on arrival, which is worse than not offering it: the client picks a key it cannot use.
     test("getMetadata drops an algorithm it has no verifier for instead of advertising it") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("EdDSA")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("EdDSA")),
+          ),
+        )
         served <- env.getMetadata
         enforced <- env.getDpopSigningAlgorithms
       yield assertTrue(
@@ -575,9 +586,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     // went out of their way to exclude. DPoP goes unusable and says so in the document.
     test("getDpopSigningAlgorithms leaves the set empty when nothing the document names exists here") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("EdDSA")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("EdDSA")),
+          ),
+        )
         served <- env.getMetadata
         enforced <- env.getDpopSigningAlgorithms
       yield assertTrue(
@@ -612,9 +625,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getDpopKeyPolicy leaves the advertised set alone for a client that registered nothing") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("PS256")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            Dpop.Algorithm.MetadataField -> Json.Arr(Json.Str("ES256"), Json.Str("PS256")),
+          ),
+        )
         policy <- env.getDpopKeyPolicy(clientId1)
       yield assertTrue(
         policy.algorithms == Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),
@@ -669,9 +684,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getClientAssertionSigningAlgorithms narrows to what the document names") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          ClientAssertion.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            ClientAssertion.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+          ),
+        )
         served <- env.getMetadata
         enforced <- env.getClientAssertionSigningAlgorithms
       yield assertTrue(
@@ -694,9 +711,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     },
     test("getRequestObjectSigningAlgorithms narrows to what the document names") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          RequestObject.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            RequestObject.Algorithm.MetadataField -> Json.Arr(Json.Str("RS256")),
+          ),
+        )
         served <- env.getMetadata
         enforced <- env.getRequestObjectSigningAlgorithms
       yield assertTrue(
@@ -709,10 +728,12 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     // is a claim a stored document gets to contradict.
     test("getMetadata states the request parameter support this build actually has") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          "request_parameter_supported" -> Json.Bool(false),
-          "request_uri_parameter_supported" -> Json.Bool(true),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            "request_parameter_supported" -> Json.Bool(false),
+            "request_uri_parameter_supported" -> Json.Bool(true),
+          ),
+        )
         served <- env.getMetadata
       yield assertTrue(
         served.get("request_parameter_supported").contains(Json.Bool(true)),
@@ -724,9 +745,11 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     // server advertising no way to use a method it actually accepts.
     test("getMetadata advertises private_key_jwt even when the stored document omits it") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          "token_endpoint_auth_methods_supported" -> Json.Arr(Json.Str("client_secret_basic")),
-        ))
+        env <- makeEnv(metadata =
+          Json.Obj(
+            "token_endpoint_auth_methods_supported" -> Json.Arr(Json.Str("client_secret_basic")),
+          ),
+        )
         served <- env.getMetadata
       yield assertTrue(
         served.get("token_endpoint_auth_methods_supported").contains(
@@ -742,14 +765,16 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     // unchanged, whatever its shape, and an auth method it does not derive is not dropped.
     test("getMetadata passes a stored field it does not derive through untouched") {
       for
-        env <- makeEnv(metadata = Json.Obj(
-          "token_endpoint_auth_methods_supported" -> Json.Arr(
-            Json.Str("tls_client_auth"),
-            Json.Str("self_signed_tls_client_auth"),
+        env <- makeEnv(metadata =
+          Json.Obj(
+            "token_endpoint_auth_methods_supported" -> Json.Arr(
+              Json.Str("tls_client_auth"),
+              Json.Str("self_signed_tls_client_auth"),
+            ),
+            "tls_client_certificate_bound_access_tokens" -> Json.Bool(true),
+            "an_unknown_field" -> Json.Obj("nested" -> Json.Arr(Json.Num(1))),
           ),
-          "tls_client_certificate_bound_access_tokens" -> Json.Bool(true),
-          "an_unknown_field" -> Json.Obj("nested" -> Json.Arr(Json.Num(1))),
-        ))
+        )
         served <- env.getMetadata
       yield assertTrue(
         served.get("token_endpoint_auth_methods_supported").contains(

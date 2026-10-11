@@ -1,8 +1,8 @@
 package versola.loadgen.metrics
 
+import zio.ZIO
 import zio.json.*
 import zio.test.*
-import zio.ZIO
 
 /** What the SUT said about its own tokens, which is the only one of the three access-token TTLs
   * in this codebase that describes the system under test rather than the emulator's belief about

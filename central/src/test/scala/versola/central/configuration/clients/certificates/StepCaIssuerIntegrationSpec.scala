@@ -37,7 +37,8 @@ object StepCaIssuerIntegrationSpec extends ZIOSpecDefault:
         )).mapError(RuntimeException(_))
         generated <- ClientCertificateRequests.generate(subject, 14.days)
         chain <- issuer.sign(generated.request)
-        material <- ZIO.fromEither(versola.util.PrivateClientCertificate(chain + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
+        material <-
+          ZIO.fromEither(versola.util.PrivateClientCertificate(chain + "\n" + generated.privateKeyPem).material).mapError(RuntimeException(_))
       yield assertTrue(material.subjectValues("subject_dn") == Set("CN=mobile-app,O=Versola,C=KZ"))
     },
     test("signs a request for the subject mtlsAuth registers") {
@@ -63,4 +64,5 @@ object StepCaIssuerIntegrationSpec extends ZIOSpecDefault:
         material.leaf.getNotAfter.toInstant.isAfter(java.time.Instant.now().plusSeconds(13 * 24 * 3600L)),
       )
     },
-  ).provide(Client.default) @@ (if java.lang.System.getenv("STEP_CA_URL") == null then TestAspect.ignore else TestAspect.identity) @@ TestAspect.withLiveClock
+  ).provide(Client.default) @@ (if java.lang.System.getenv("STEP_CA_URL") == null then TestAspect.ignore
+                                else TestAspect.identity) @@ TestAspect.withLiveClock

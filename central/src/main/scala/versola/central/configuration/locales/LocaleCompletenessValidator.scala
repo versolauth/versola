@@ -16,9 +16,9 @@ object LocaleCompletenessValidator:
       override def missing(locale: String): Task[Vector[String]] = ZIO.succeed(Vector.empty)
 
   def live: ZLayer[
-      OAuthClientRepository & OAuthScopeRepository & FormRepository & OtpChallengeRepository,
-      Nothing,
-      LocaleCompletenessValidator,
+    OAuthClientRepository & OAuthScopeRepository & FormRepository & OtpChallengeRepository,
+    Nothing,
+    LocaleCompletenessValidator,
   ] = ZLayer.fromFunction(Impl(_, _, _, _))
 
   private final case class Impl(

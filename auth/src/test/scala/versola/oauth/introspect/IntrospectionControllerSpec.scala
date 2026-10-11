@@ -1,16 +1,16 @@
 package versola.oauth.introspect
 
-import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jose.crypto.RSASSASigner
+import com.nimbusds.jose.{JOSEObjectType, JWSAlgorithm, JWSHeader}
 import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ClientIdWithSecret, OAuthClientRecord}
-import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
-import versola.util.{Base64, Secret, UnitSpecBase}
+import versola.oauth.introspect.model.{IntrospectionError, IntrospectionResponse}
 import versola.util.http.{NoopTracing, Observability}
+import versola.util.{Base64, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.test.*
@@ -21,7 +21,7 @@ import java.util.Date
 
 object IntrospectionControllerSpec extends UnitSpecBase:
 
-  private val clientId     = ClientId("test-client")
+  private val clientId = ClientId("test-client")
   private val clientSecret = Secret(Array.fill(32)(4.toByte))
 
   def authHeader(id: ClientId, secret: Secret): Header.Authorization =
@@ -63,16 +63,16 @@ object IntrospectionControllerSpec extends UnitSpecBase:
   ) =
     test(description) {
       for
-        client              <- ZIO.service[Client]
+        client <- ZIO.service[Client]
         introspectionService = stub[IntrospectionService]
-        clientService        = stub[OAuthConfigurationService]
+        clientService = stub[OAuthConfigurationService]
         // The controller looks the client up only to decide whether reading a client
         // certificate could matter to it; an unknown client never needs one.
-        _                    = clientService.find.returnsWith(ZIO.none)
+        _ = clientService.find.returnsWith(ZIO.none)
         clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], TestEnvConfig.coreConfig)
-        jwksService          = TestEnvConfig.jwksService
-        config               = TestEnvConfig.coreConfig
-        tracing             <- NoopTracing.layer.build
+        jwksService = TestEnvConfig.jwksService
+        config = TestEnvConfig.coreConfig
+        tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
@@ -82,16 +82,16 @@ object IntrospectionControllerSpec extends UnitSpecBase:
                   ZEnvironment(clientAuthentication) ++
                   ZEnvironment(jwksService) ++
                   ZEnvironment(config) ++
-                  tracing
-              )
-          )
+                  tracing,
+              ),
+          ),
         )
         _ <- setup(introspectionService)
         _ <- configureClient(clientService)
 
-        response       <- client.batched(request)
-        verifyResult   <- verify(response)
-        serviceResult  <- verifyService(introspectionService)
+        response <- client.batched(request)
+        verifyResult <- verify(response)
+        serviceResult <- verifyService(introspectionService)
       yield assertTrue(response.status == expectedStatus) && verifyResult && serviceResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 

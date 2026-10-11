@@ -1,14 +1,14 @@
 package versola.configuration.forms
 
 import com.augustnagro.magnum.*
+import com.augustnagro.magnum.SqlException
 import com.augustnagro.magnum.magzio.TransactorZIO
+import org.postgresql.util.PSQLException
 import versola.central.configuration.forms.{BackendProperty, FormId, FormRecord, FormRepository}
 import versola.util.postgres.BasicCodecs
-import zio.json.*
-import zio.{Task, ZLayer, Schedule}
-import org.postgresql.util.PSQLException
-import com.augustnagro.magnum.SqlException
 import zio.durationInt
+import zio.json.*
+import zio.{Schedule, Task, ZLayer}
 
 class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCodecs:
 
@@ -63,7 +63,7 @@ class PostgresFormRepository(xa: TransactorZIO) extends FormRepository, BasicCod
             case cause: PSQLException => cause.getSQLState == "23505"
             case _ => false
         case _ => false
-      } && Schedule.recurs(10) && Schedule.exponential(10.millis).jittered
+      } && Schedule.recurs(10) && Schedule.exponential(10.millis).jittered,
     )
 
   override def setActiveVersion(id: FormId, version: Int): Task[Unit] =

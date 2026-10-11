@@ -5,9 +5,9 @@ import org.bouncycastle.crypto.generators.Argon2BytesGenerator
 import org.bouncycastle.crypto.params.Argon2Parameters
 import zio.{Clock, Semaphore, Task, UIO, URLayer, ZIO, ZLayer}
 
+import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.security.spec.ECGenParameterSpec
 import java.security.{KeyPairGenerator, PrivateKey, PublicKey}
-import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPrivateKey, RSAPublicKey}
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.crypto.spec.{GCMParameterSpec, SecretKeySpec}
@@ -76,14 +76,21 @@ object SecurityService:
     live(Argon2Config.default)
 
   def live(argon2Config: Argon2Config): URLayer[SecureRandom, SecurityService] =
+    live(argon2Config, AdmissionMetrics.default)
+
+  def live(argon2Config: Argon2Config, metrics: AdmissionMetrics): URLayer[SecureRandom, SecurityService] =
     ZLayer.fromZIO {
       for
         secureRandom <- ZIO.service[SecureRandom]
         hashingSemaphore <- Semaphore.make(argon2Config.maxConcurrent.toLong)
-      yield Impl(secureRandom, hashingSemaphore)
+        _ <- metrics.maxConcurrent.set(argon2Config.maxConcurrent.toDouble)
+        // Registered at zero now: a gauge nobody has touched is not in /metrics, and an autoscaler or an
+        // alert on `argon2_hashes_waiting` would see no series at all until the first login.
+        _ <- metrics.waiting.set(0.0) *> metrics.inFlight.set(0.0)
+      yield Impl(secureRandom, hashingSemaphore, metrics)
     }
 
-  class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore) extends SecurityService:
+  class Impl(secureRandom: SecureRandom, hashingSemaphore: Semaphore, metrics: AdmissionMetrics = AdmissionMetrics.default) extends SecurityService:
 
     private val Algorithm = "AES"
     private val Transformation = "AES/GCM/NoPadding"
@@ -169,7 +176,10 @@ object SecurityService:
       // concurrency (this runs on ZIO's unbounded blocking pool) is an OOM vector under login
       // load. The semaphore caps concurrent hashes; excess requests queue as cheap fibers
       // instead of each claiming 19 MiB up front.
-      hashingSemaphore.withPermit(hashEffect)
+      //
+      // Observed through AdmissionMetrics (queue, permits held, wait, hash time): CPU alone cannot
+      // tell a pod that has capacity from one whose permits are all taken.
+      metrics.admitted[Any, Throwable, MAC](effect => hashingSemaphore.withPermit(effect))(hashEffect)
 
     override def generateRsaKeyPair: UIO[RsaKeyPair] =
       for

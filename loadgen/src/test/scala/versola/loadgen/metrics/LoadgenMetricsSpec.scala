@@ -53,7 +53,12 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
     test("a step-up outcome is labelled stepup and never lands in a failure bucket") {
       for
         scenario <- unique("stepup")
-        _ <- LoadgenMetrics.stepCompleted(scenario, "pay-p2p", StepOutcome.Planned(PlannedOutcome.StepUp), IntendedLatency.unsafe(Duration.fromMillis(30)))
+        _ <- LoadgenMetrics.stepCompleted(
+          scenario,
+          "pay-p2p",
+          StepOutcome.Planned(PlannedOutcome.StepUp),
+          IntendedLatency.unsafe(Duration.fromMillis(30)),
+        )
         stepup <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "stepup")
         transport <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "transport")
         unexpected <- counter("loadgen_outcomes_total", "scenario" -> scenario, "outcome" -> "unexpected_status")
@@ -120,7 +125,13 @@ object LoadgenMetricsSpec extends ZIOSpecDefault:
         _ <- LoadgenMetrics.campaignInfo(campaign, Some("loadgen-fapi2"), Some("fapi2"), "dpop")
         _ <- LoadgenMetrics.campaignInfo(s"$campaign-legacy", None, None, "bearer")
         known <- gauge("loadgen_campaign_info", "campaign" -> campaign, "tenant" -> "loadgen-fapi2", "profile" -> "fapi2", "token_mode" -> "dpop")
-        unnamed <- gauge("loadgen_campaign_info", "campaign" -> s"$campaign-legacy", "tenant" -> "unspecified", "profile" -> "unspecified", "token_mode" -> "bearer")
+        unnamed <- gauge(
+          "loadgen_campaign_info",
+          "campaign" -> s"$campaign-legacy",
+          "tenant" -> "unspecified",
+          "profile" -> "unspecified",
+          "token_mode" -> "bearer",
+        )
       yield assertTrue(known == 1.0, unnamed == 1.0)
     },
     test("population is a gauge per state") {

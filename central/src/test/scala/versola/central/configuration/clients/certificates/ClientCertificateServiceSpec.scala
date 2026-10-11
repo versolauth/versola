@@ -7,11 +7,11 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 import org.bouncycastle.pkcs.PKCS10CertificationRequest
 import org.bouncycastle.pkcs.jcajce.JcaPKCS10CertificationRequest
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestCentralConfig}
-import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
 import versola.central.configuration.clients.*
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{CreateClientRequest, PatchClientRedirectUris, PatchClientScope, PatchPermissions, UpdateClientRequest}
+import versola.central.{CentralConfig, TestCentralConfig}
 import versola.util.CertificateSubject
 import versola.util.{Patch, PrivateClientCertificate, TestCertificates}
 import zio.*
@@ -156,9 +156,11 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private val config =
-    TestCentralConfig.config.copy(clientCertificates = Some(
-      CentralConfig.ClientCertificatesConfig(validity = 14.days, renewBefore = 4.days),
-    ))
+    TestCentralConfig.config.copy(clientCertificates =
+      Some(
+        CentralConfig.ClientCertificatesConfig(validity = 14.days, renewBefore = 4.days),
+      ),
+    )
 
   private def subjectOf(certificate: PrivateClientCertificate) =
     certificate.material.toOption.get.subjectValues("san_dns")
@@ -406,7 +408,9 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
         val clients = stub[OAuthClientService]
         val service = ClientCertificateService.Impl(FakeCa(), clients, Issuances(), Enrollments(), config)
         for exit <- service.register(createRequest.copy(
-            issueEdgeClientCertificate = false, enrollEdgeClientCertificate = true, applicationType = Some(ApplicationType.web),
+            issueEdgeClientCertificate = false,
+            enrollEdgeClientCertificate = true,
+            applicationType = Some(ApplicationType.web),
           )).exit
         yield assertTrue(exit.isFailure, exit.toString.contains("issueEdgeClientCertificate"), clients.registerClient.calls.isEmpty)
       },

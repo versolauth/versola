@@ -9,16 +9,16 @@ object SystemSettingsServiceSpec extends UnitSpecBase:
   private val baseSettings = SystemSettingsRecord.default
 
   class Env:
-    val cache      = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(baseSettings)))
+    val cache = ReloadingCache(Unsafe.unsafe(unsafe ?=> Ref.unsafe.make(baseSettings)))
     val repository = stub[SystemSettingsRepository]
-    val service    = SystemSettingsService.Impl(cache, repository)
+    val service = SystemSettingsService.Impl(cache, repository)
 
   def spec = suite("SystemSettingsService")(
     test("accepts and trims absolute HTTP(S) logo URLs") {
       val env = Env()
       val expected = baseSettings.copy(identityProviderLogo = Some("https://assets.example/logo.svg"))
       for
-        _      <- env.repository.upsert.succeedsWith(())
+        _ <- env.repository.upsert.succeedsWith(())
         result <- env.service.upsertSettings(expected.copy(identityProviderLogo = Some("  https://assets.example/logo.svg  ")))
       yield assertTrue(
         result == Right(()),
@@ -29,7 +29,7 @@ object SystemSettingsServiceSpec extends UnitSpecBase:
       val env = Env()
       val expected = baseSettings.copy(identityProviderLogo = None)
       for
-        _      <- env.repository.upsert.succeedsWith(())
+        _ <- env.repository.upsert.succeedsWith(())
         result <- env.service.upsertSettings(baseSettings.copy(identityProviderLogo = Some("  ")))
       yield assertTrue(
         result == Right(()),

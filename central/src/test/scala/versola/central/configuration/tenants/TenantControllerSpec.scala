@@ -2,9 +2,9 @@ package versola.central.configuration.tenants
 
 import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.central.configuration.*
 import versola.central.configuration.resources.ResourceService
+import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
 import zio.*
 import zio.http.*
@@ -52,24 +52,24 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ) =
     test(description) {
       for
-        client      <- ZIO.service[Client]
-        service     =  stub[TenantService]
+        client <- ZIO.service[Client]
+        service = stub[TenantService]
         resourceService = stub[ResourceService]
-        tracing     <- tracingLayer.build
+        tracing <- tracingLayer.build
         _ <- TestClient.addRoutes(
           Observability.handleErrors(
             TenantController.routes.provideEnvironment(
-      ZEnvironment(service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
-                ZEnvironment[ResourceService](resourceService)
-            )
-          )
+              ZEnvironment(service) ++ tracing ++ ZEnvironment[CentralConfig](config) ++
+                ZEnvironment[ResourceService](resourceService),
+            ),
+          ),
         )
         _ <- resourceService.verifySecret.succeedsWith(true)
         _ <- setup(service)
         response <- client.batched(
           request
             .addHeader(Header.Accept(MediaType.application.json))
-            .addHeader(TestAdminAuth.basicAuthHeader)
+            .addHeader(TestAdminAuth.basicAuthHeader),
         )
         verifyResult <- verify(response, service)
       yield assertTrue(response.status == expectedStatus) && verifyResult
@@ -90,8 +90,8 @@ object TenantControllerSpec extends ZIOSpecDefault, ZIOStubs:
             Vector(
               TenantResponse(tenantId1, "Tenant A", None),
               TenantResponse(tenantId2, "Tenant B", None),
-            )
-          )
+            ),
+          ),
         ),
     ),
     controllerTestCase(

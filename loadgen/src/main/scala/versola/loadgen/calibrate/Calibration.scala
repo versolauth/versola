@@ -1,6 +1,5 @@
 package versola.loadgen.calibrate
 
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{CalibrationConfig, CampaignConfig, LoadgenConfig}
 import versola.loadgen.coordinator.SnapshotMerge
@@ -9,6 +8,7 @@ import versola.loadgen.protocol.{AccessToken, ActionClient, EdgeActionClient, Ed
 import versola.loadgen.scenario.{BusinessActions, SnapshotPublisher}
 import versola.loadgen.scheduler.{ArrivalProcess, CampaignSchedule, RandomSource, ScheduleLag}
 import versola.loadgen.store.{LoadgenMigrations, MetricSnapshotRepository, PostgresMetricSnapshotRepository}
+import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
 import zio.*
 import zio.http.Client
@@ -246,7 +246,7 @@ object Calibration:
       .map(environment => PostgresMetricSnapshotRepository(environment.get[TransactorZIO]))
 
 case object MissingCalibrationConfig
-    extends RuntimeException("role = calibrate requires a 'calibration' configuration block")
+  extends RuntimeException("role = calibrate requires a 'calibration' configuration block")
 
 case class InvalidCalibration(reason: String) extends RuntimeException(reason)
 

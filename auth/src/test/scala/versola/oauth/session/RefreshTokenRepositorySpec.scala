@@ -275,10 +275,9 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
               .createRefreshToken(token, Some(refreshToken1), record1, None)
               .either,
           )
-
         yield assertTrue(
           results.count(_.isRight) == 1,
-          results.count(_.left.toOption.contains(())) == 5
+          results.count(_.left.toOption.contains(())) == 5,
         )
       },
       test("revokeFamily revokes the whole family when a token retired generations ago is replayed") {

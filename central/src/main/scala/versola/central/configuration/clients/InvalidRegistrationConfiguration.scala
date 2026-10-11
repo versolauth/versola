@@ -106,7 +106,7 @@ object InvalidRegistrationConfiguration:
 
     val validateKeys: Json.Obj => Either[String, JsonWebKeySet] = authMethod match
       case AuthMethod.self_signed_tls_client_auth => JsonWebKeySet.validateForCertificateMatching
-      case _                                      => JsonWebKeySet.validateForAssertions
+      case _ => JsonWebKeySet.validateForAssertions
 
     combination.orElse(
       jwks.flatMap(keySet => validateKeys(keySet.document).left.toOption)
@@ -375,7 +375,6 @@ object InvalidRegistrationConfiguration:
           invalid("registration allows only one of set-password or passkey enrollment")
         case Some(_) =>
           None
-
 
   // ── #353: the tenant's security profile ────────────────────────────────────────────────
   //

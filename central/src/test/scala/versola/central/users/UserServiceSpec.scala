@@ -1,6 +1,6 @@
 package versola.central.users
 
-import versola.central.configuration.clients.{AuthMethod, AuthFlow, ClientId, OAuthClientRecord, OAuthClientService}
+import versola.central.configuration.clients.{AuthFlow, AuthMethod, ClientId, OAuthClientRecord, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.{Email, Patch, Phone, RedirectUri, SecureRandom, UnitSpecBase}

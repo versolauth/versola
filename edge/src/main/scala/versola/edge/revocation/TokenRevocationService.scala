@@ -217,7 +217,7 @@ object TokenRevocationService:
           // beats any instant; between two instants the later one rejects more.
           issuedBefore = (held.issuedBefore, arriving.issuedBefore) match
             case (Some(current), Some(incoming)) => Some(if incoming.isAfter(current) then incoming else current)
-            case _                               => None,
+            case _ => None,
         )
 
     private[revocation] def entryCount: UIO[Int] =
@@ -302,7 +302,7 @@ object TokenRevocationService:
       repository.activeSince(from, config.batchSize).flatMap: page =>
         put(page.revocations) *> (page.last match
           case Some(last) if page.hasMore => drain(last, Ordering[RevocationCursor].max(highWater, last))
-          case Some(last)                 => ZIO.succeed(Ordering[RevocationCursor].max(highWater, last))
+          case Some(last) => ZIO.succeed(Ordering[RevocationCursor].max(highWater, last))
           // Nothing in range, so nothing has been written since the last catch-up and the
           // cursor stays where it was. Moving it to `from` would walk it backwards.
           case None => ZIO.succeed(highWater))

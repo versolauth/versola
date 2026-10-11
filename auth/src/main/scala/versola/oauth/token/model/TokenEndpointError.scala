@@ -4,7 +4,6 @@ import versola.oauth.client.model.ResourceUri
 import versola.oauth.model.GrantType
 import zio.http.Status
 
-
 sealed trait TokenEndpointError:
   def status: Status
   def error: String
@@ -49,10 +48,11 @@ object TokenEndpointError:
     val RefreshTokenClientMismatch = InvalidGrant("refresh token was issued to a different client")
     val RefreshTokenReplayed = InvalidGrant("refresh token already exchanged for a successor; the chain was revoked")
     val RefreshChainAlreadyExchanged = InvalidGrant("refresh token chain was already exchanged")
-    val RefreshTokenKeyMismatch      = InvalidGrant("refresh token is bound to a different DPoP key")
+    val RefreshTokenKeyMismatch = InvalidGrant("refresh token is bound to a different DPoP key")
+
     /** RFC 9449 §10.1: the code was committed to a key at `/authorize` and the proof on this
       * request is for a different one, or for none at all. */
-    val CodeKeyMismatch              = InvalidGrant("authorization code was committed to a different DPoP key")
+    val CodeKeyMismatch = InvalidGrant("authorization code was committed to a different DPoP key")
     val RefreshTokenCertificateMismatch = InvalidGrant("refresh token is bound to a different client certificate")
 
   case object UnsupportedGrantType extends TokenEndpointError:

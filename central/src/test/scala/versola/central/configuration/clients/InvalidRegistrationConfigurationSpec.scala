@@ -4,7 +4,7 @@ import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.RSAKey
 import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.roles.RoleId
-import versola.util.{RedirectUri, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, TestCertificates, UnitSpecBase}
+import versola.util.{JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri, TestCertificates, UnitSpecBase}
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*
@@ -295,8 +295,14 @@ object InvalidRegistrationConfigurationSpec extends UnitSpecBase:
       certificateBoundAccessTokens: Boolean = false,
       redirectUris: Set[String] = Set("https://app.example.com/callback"),
   ) = InvalidRegistrationConfiguration.validateEdgeFrontedNative(
-    clientId, applicationType, authMethod, hasEdgeClientCertificate, requirePushedAuthorizationRequests,
-    dpopBoundAccessTokens, certificateBoundAccessTokens, redirectUris,
+    clientId,
+    applicationType,
+    authMethod,
+    hasEdgeClientCertificate,
+    requirePushedAuthorizationRequests,
+    dpopBoundAccessTokens,
+    certificateBoundAccessTokens,
+    redirectUris,
   ).map(_.reason)
 
   private val edgeFrontedNativeSuite = suite("validateEdgeFrontedNative")(

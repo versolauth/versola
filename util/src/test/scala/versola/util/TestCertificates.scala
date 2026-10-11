@@ -2,14 +2,14 @@ package versola.util
 
 import org.bouncycastle.asn1.x509.{BasicConstraints, Extension, GeneralName, GeneralNames, KeyUsage}
 import org.bouncycastle.x509.X509V3CertificateGenerator
+import zio.json.*
+import zio.json.ast.Json
 
 import java.math.BigInteger
 import java.security.cert.X509Certificate
 import java.security.{KeyPair, KeyPairGenerator, PrivateKey}
 import java.util.Date
 import javax.security.auth.x500.X500Principal
-import zio.json.*
-import zio.json.ast.Json
 
 /** Client certificates for the specs that exercise RFC 8705 from the client's side, where the
   * private key is the point — `versola.oauth.mtls.ClientCertificate`'s fixtures are fixed PEM

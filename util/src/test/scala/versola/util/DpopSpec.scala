@@ -245,12 +245,14 @@ object DpopSpec extends ZIOSpecDefault:
     // collapse that distinction and let a proof made for one validate a request to the other.
     test("rejects an htu whose encoded slash would collapse into the request's literal one") {
       val token = proof(htu = "https://auth.example.com/a%2Fb")
-      for result <- Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a/b", now, leeway).either
+      for result <-
+          Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a/b", now, leeway).either
       yield assertTrue(result == Left(Dpop.Error.UriMismatch))
     },
     test("still accepts an htu whose encoded slash matches the request's own encoded slash") {
       val token = proof(htu = "https://auth.example.com/a%2Fb")
-      for result <- Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a%2Fb", now, leeway).either
+      for result <-
+          Dpop.verify(token, Dpop.KeyPolicy(AllAlgorithms, Dpop.KeyPolicy.MinRsaKeySize), Htm, "https://auth.example.com/a%2Fb", now, leeway).either
       yield assertTrue(result.isRight)
     },
     test("rejects an iat too far in the past") {

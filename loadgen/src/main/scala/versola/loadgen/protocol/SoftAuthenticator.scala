@@ -158,7 +158,7 @@ object SoftAuthenticator:
     out.write(Entropy.sha256(rpId))
     out.write(0x45)
     out.write(Array[Byte](0, 0, 0, 0)) // signature counter
-    out.write(Array.ofDim[Byte](16)) // all-zero AAGUID: this authenticator has no model identity
+    out.write(Array.ofDim[Byte](16))   // all-zero AAGUID: this authenticator has no model identity
     out.write(Array((credentialId.length >> 8).toByte, credentialId.length.toByte))
     out.write(credentialId)
     out.write(coseKey(publicKey))
@@ -167,7 +167,7 @@ object SoftAuthenticator:
   /** RFC 9052 §7: an EC2 key over P-256 with ES256, in CTAP2 canonical key order. */
   private def coseKey(publicKey: ECPublicKey): Array[Byte] =
     Cbor.map(
-      1 -> Cbor.int(2), // kty: EC2
+      1 -> Cbor.int(2),  // kty: EC2
       3 -> Cbor.int(-7), // alg: ES256
       -1 -> Cbor.int(1), // crv: P-256
       -2 -> Cbor.bytes(coordinate(publicKey.getW.getAffineX)),

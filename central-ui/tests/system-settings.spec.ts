@@ -21,7 +21,7 @@ test('shows and updates identity provider logo settings', async ({ page }) => {
   await page.locator('input[type="url"]').fill('https://assets.example/new.svg');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/system-settings').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toMatchObject({
     identityProviderLogo: 'https://assets.example/new.svg',
   });
   await expect(page.getByText('https://assets.example/new.svg')).toBeVisible();
@@ -45,7 +45,7 @@ test('sends null when the configured logo is cleared', async ({ page }) => {
   await page.locator('input[type="url"]').fill('');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
 
-  expect(findRequest(api.requests, 'PUT', '/configuration/system-settings').body).toMatchObject({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/system-settings')).body).toMatchObject({
     identityProviderLogo: null,
   });
 });

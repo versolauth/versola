@@ -1,15 +1,22 @@
 package versola.central.configuration.clients
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
-import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
 import versola.util.{RedirectUri, ReloadingCache}
 import zio.*
 import zio.durationInt
 import zio.test.*
+
 import java.time.Instant
 
 object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
@@ -24,7 +31,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private val edgeId = EdgeId("edge-1")
   private val tenantId = TenantId("tenant-a")
   private val clientId = ClientId("web-app")
-  
+
   private val client = OAuthClientRecord(
     id = clientId,
     tenantId = tenantId,

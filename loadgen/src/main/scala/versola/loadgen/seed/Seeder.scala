@@ -1,13 +1,13 @@
 package versola.loadgen.seed
 
-import versola.util.EnvName
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.loadgen.config.{LoadgenConfig, PopulationConfig, SeedConfig, SutDatabaseConfig}
 import versola.loadgen.model.VirtualUser
+import versola.loadgen.protocol.DpopKeyPool
 import versola.loadgen.seed.SutSchema.SchemaOwner
 import versola.loadgen.store.LoadgenMigrations
+import versola.util.EnvName
 import versola.util.postgres.PostgresHikariDataSource
-import versola.loadgen.protocol.DpopKeyPool
 import versola.util.{Argon2Config, Dpop, SecureRandom, SecurityService}
 import zio.*
 
@@ -373,18 +373,18 @@ case class SeedServices(
 )
 
 case object MissingSeedConfig
-    extends RuntimeException("role = seed requires a 'seed' configuration block")
+  extends RuntimeException("role = seed requires a 'seed' configuration block")
 
 case class InvalidPopulation(reason: String) extends RuntimeException(reason)
 
 case class SutSchemaDrifted(report: String) extends RuntimeException(report)
 
 case class ShortCopy(table: String, sent: Long, accepted: Long)
-    extends RuntimeException(s"COPY into $table accepted $accepted of $sent rows")
+  extends RuntimeException(s"COPY into $table accepted $accepted of $sent rows")
 
 case class PopulationLargerThanTarget(seeded: Long, target: Long)
-    extends RuntimeException(
-      s"vu_users already holds ids up to $seeded, beyond the configured population.target of $target. " +
-        "The seeder resumes, it does not shrink: raise the target back, or clear the emulator store and " +
-        "the SUT's seeded rows before seeding a smaller population.",
-    )
+  extends RuntimeException(
+    s"vu_users already holds ids up to $seeded, beyond the configured population.target of $target. " +
+      "The seeder resumes, it does not shrink: raise the target back, or clear the emulator store and " +
+      "the SUT's seeded rows before seeding a smaller population.",
+  )

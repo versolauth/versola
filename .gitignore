@@ -32,3 +32,7 @@ central/src/main/resources/forms/
 
 develop.txt
 .scala-semantic/
+
+# Claude Code: local state (settings.json, hooks/ and rules/ are shared)
+.claude/worktrees/
+.claude/settings.local.json

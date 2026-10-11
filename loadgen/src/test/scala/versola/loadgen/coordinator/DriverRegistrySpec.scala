@@ -1,8 +1,8 @@
 package versola.loadgen.coordinator
 
 import versola.loadgen.metrics.{ErrorTaxonomy, FailedOutcome, PlannedOutcome, StepOutcome, TokenObservations}
-import zio.test.*
 import zio.*
+import zio.test.*
 
 import java.time.Instant
 

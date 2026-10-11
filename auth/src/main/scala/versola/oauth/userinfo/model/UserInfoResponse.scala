@@ -24,4 +24,3 @@ object UserInfoResponse:
   given JsonDecoder[UserInfoResponse] = JsonDecoder[Json].mapOrFail:
     case Json.Obj(fields) => Right(UserInfoResponse(fields.toMap))
     case _ => Left("Expected JSON object for UserInfo response")
-

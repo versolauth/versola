@@ -13,7 +13,8 @@ Primary source files:
 
 ## Design principles
 
-- Dark-first admin UI
+- Two themes, `light` (the default) and `dark`, switched by `data-theme` on `<html>`; every screen must work in both
+- Never hardcode a colour: use the theme tokens
 - Clean, compact, utility-focused layout
 - One primary action per screen region
 - Prefer inline editing flows over modal stacks
@@ -23,7 +24,7 @@ Primary source files:
 
 The app uses a 2-column shell:
 
-- **Left sidebar**: fixed, `250px` wide, dark background, right border
+- **Left sidebar**: fixed, `250px` wide, themed background, right border
 - **Main content**: `margin-left: 250px`, `padding: 2rem`, `max-width: 1400px`
 - On small screens, main content drops to `margin-left: 0` and `padding: 1rem`
 
@@ -70,7 +71,7 @@ Rules:
 
 ### Cards
 
-- Background: `--bg-dark-card` (`#161b22`)
+- Background: `--bg-dark-card`
 - Border: `1px solid --border-dark`
 - Radius: `--radius-lg` (`12px`)
 - Standard padding: `--spacing-xl` (`2rem`)
@@ -94,28 +95,27 @@ For grouped details inside expanded cards:
 
 ## Color palette
 
-### Core palette
+### Tokens, not values
 
-- App background: `#0d1117`
-- Card background: `#161b22`
-- Accent blue: `#58a6ff`
-- Accent gradient: `linear-gradient(135deg, #58a6ff, #a371f7)`
-- Primary text: `#e6edf3`
-- Secondary text: `#8b949e`
-- Dark border: `#30363d`
+The colours are CSS custom properties defined once per theme in `index.html`
+(`:root[data-theme='dark']` and `:root[data-theme='light']`); components inherit them through the
+shadow DOM. Read the values there, and use only the tokens in components:
 
-### Semantic colors
+- Page background `--bg-dark`, card background `--bg-dark-card`. The `dark` in these names is
+  historical: in the light theme they hold the light surface colours.
+- Accent `--accent`, `--accent-gradient`, and `--accent-tint` for tinted backgrounds
+- Text `--text-primary`, `--text-secondary`
+- Borders `--border-dark`, `--border-light`
+- Semantic `--success`, `--warning`, `--danger` (+ `--danger-tint`, `--danger-strong`), `--info`
+- Overlay and inset surfaces `--surface-overlay`, `--surface-inset`; switches `--toggle-track-off`
 
-- Success: `#3fb950`
-- Warning: `#d29922`
-- Danger: `#f85149`
-- Info: `#58a6ff`
+A new colour is a new token with a value in **both** themes, not a literal in a component.
 
 ### Usage rules
 
 - Use accent color for focus, active state, selected state, and important links/labels
 - Use danger only for destructive actions/errors
-- Keep most surfaces dark and neutral; use color sparingly for hierarchy
+- Keep most surfaces neutral; use color sparingly for hierarchy
 - Prefer tinted backgrounds over fully solid fills except for primary buttons and destructive actions
 
 ## Typography
@@ -179,7 +179,7 @@ Use monospace for technical values like:
 
 ### Secondary buttons
 
-- Dark card-like background with border
+- Card-like background with border
 - Use for cancel, add-inline, or non-destructive secondary actions
 
 ### Icon actions
@@ -195,7 +195,7 @@ Use monospace for technical values like:
 
 - Wrap fields in a `.form-grid`
 - Each field group uses `.form-group`
-- Inputs/selects use dark background, dark border, and accent focus ring
+- Inputs/selects use the card background, a border, and an accent focus ring
 - Show helper text below fields when guidance is useful
 - Show inline error text below fields in danger color
 
@@ -225,7 +225,7 @@ Use the same visible width for related fields that should align vertically.
 
 ## Tags, chips, and selection groups
 
-- Tags use accent-tinted background, dark border, medium radius
+- Tags use accent-tinted background, border, medium radius
 - Tag remove actions use icon-only destructive affordance
 - Checkbox groups are grid-based with bordered items
 - Selected/unselected state should remain obvious without loud color fills

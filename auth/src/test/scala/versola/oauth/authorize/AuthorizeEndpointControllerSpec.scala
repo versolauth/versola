@@ -7,8 +7,8 @@ import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.conversation.model.AuthId
 import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMethod}
-import versola.util.http.{NoopTracing, Observability}
 import versola.util.UnitSpecBase
+import versola.util.http.{NoopTracing, Observability}
 import zio.*
 import zio.http.*
 import zio.prelude.NonEmptySet
@@ -18,33 +18,33 @@ import java.util.UUID
 
 object AuthorizeEndpointControllerSpec extends UnitSpecBase:
 
-  val clientId  = ClientId("test-client")
+  val clientId = ClientId("test-client")
   val redirectUri = URL.decode("https://example.com/callback").toOption.get
-  val authId    = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
-  val authCode  = AuthorizationCode(Array.fill(16)(1.toByte))
-  val config    = TestEnvConfig.coreConfig
+  val authId = AuthId(UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"))
+  val authCode = AuthorizationCode(Array.fill(16)(1.toByte))
+  val config = TestEnvConfig.coreConfig
 
   val baseRequest: AuthorizeRequest = AuthorizeRequest(
-    clientId           = clientId,
-    redirectUri        = redirectUri,
-    scope              = Set(ScopeToken("openid")),
-    state              = None,
-    codeChallenge      = Some(CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")),
+    clientId = clientId,
+    redirectUri = redirectUri,
+    scope = Set(ScopeToken("openid")),
+    state = None,
+    codeChallenge = Some(CodeChallenge("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")),
     codeChallengeMethod = Some(CodeChallengeMethod.S256),
-    responseType       = NonEmptySet(ResponseTypeEntry.Code),
+    responseType = NonEmptySet(ResponseTypeEntry.Code),
     responseMode = ResponseMode.Query,
-    requestedClaims    = None,
-    uiLocales          = None,
-    nonce              = None,
-    userAgent          = None,
-    userAgentCookie    = None,
-        prompt             = Set.empty,
-    maxAge             = None,
-    acrValues          = None,
-    sessionId          = None,
-    loginHint          = None,
-    idTokenHint        = None,
-    resources          = Nil,
+    requestedClaims = None,
+    uiLocales = None,
+    nonce = None,
+    userAgent = None,
+    userAgentCookie = None,
+    prompt = Set.empty,
+    maxAge = None,
+    acrValues = None,
+    sessionId = None,
+    loginHint = None,
+    idTokenHint = None,
+    resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
   )
@@ -64,14 +64,14 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
   ) =
     test(description) {
       for
-        client        <- ZIO.service[Client]
-        parser         = stub[AuthorizeRequestParser]
-        authService    = stub[AuthorizeEndpointService]
-        configService  = stub[OAuthConfigurationService]
+        client <- ZIO.service[Client]
+        parser = stub[AuthorizeRequestParser]
+        authService = stub[AuthorizeEndpointService]
+        configService = stub[OAuthConfigurationService]
         responseService = AuthorizationResponseService.Impl(config, configService, TestEnvConfig.jwksService)
-        tracing       <- NoopTracing.layer.build
-        services       = Services(parser, authService, configService)
-        _             <- TestClient.addRoutes(
+        tracing <- NoopTracing.layer.build
+        services = Services(parser, authService, configService)
+        _ <- TestClient.addRoutes(
           Observability.handleErrors(
             AuthorizeEndpointController.routes
               .provideEnvironment(
@@ -81,62 +81,62 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
                   ZEnvironment[AuthorizationResponseService](responseService) ++
                   ZEnvironment(config) ++
                   tracing,
-              )
-          )
+              ),
+          ),
         )
-        _             <- setup(services)
-        response      <- client.batched(request)
-        verifyResult  <- verify(response)
+        _ <- setup(services)
+        response <- client.batched(request)
+        verifyResult <- verify(response)
       yield assertTrue(response.status == expectedStatus) && verifyResult
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   val spec = suite("AuthorizeEndpointController")(
     suite("GET /authorize")(
       controllerTestCase(
-        description    = "returns BadRequest when parser fails with BadRequest",
-        request        = Request.get(URL.root / "authorize"),
+        description = "returns BadRequest when parser fails with BadRequest",
+        request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.BadRequest),
-        verify         = resp =>
+        setup = _.parser.parse.failsWith(Error.BadRequest),
+        verify = resp =>
           resp.body.asString.map(body => assertTrue(body.contains(Error.BadRequest.description))),
       ),
       controllerTestCase(
-        description    = "returns invalid_request_object in the body when the request object fails verification",
-        request        = Request.get(URL.root / "authorize"),
+        description = "returns invalid_request_object in the body when the request object fails verification",
+        request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
-        verify         = resp =>
+        setup = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
+        verify = resp =>
           resp.body.asString.map(body =>
             assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
           ),
       ),
       controllerTestCase(
-        description    = "redirects to /challenge and sets cookie on Initialize response",
-        request        = Request.get(URL.root / "authorize"),
+        description = "redirects to /challenge and sets cookie on Initialize response",
+        request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,
-        setup          = services =>
+        setup = services =>
           for
             _ <- services.parser.parse.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
-        verify         = resp =>
+        verify = resp =>
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.path.encode.contains("challenge")),
             resp.header(Header.SetCookie).isDefined,
           )),
       ),
       controllerTestCase(
-        description    = "redirects to redirect_uri with code on Authorized response",
-        request        = Request.get(URL.root / "authorize"),
+        description = "redirects to redirect_uri with code on Authorized response",
+        request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,
-        setup          = services =>
+        setup = services =>
           for
             _ <- services.parser.parse.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Authorized(authCode, None))
           yield (),
-        verify         = resp =>
+        verify = resp =>
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.encode.startsWith("https://example.com/callback")),
             resp.header(Header.Location).exists(_.url.encode.contains("code=")),
@@ -145,50 +145,50 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     ),
     suite("POST /authorize")(
       controllerTestCase(
-        description    = "returns BadRequest when parser fails with BadRequest",
-        request        = Request.post(URL.root / "authorize", Body.empty),
+        description = "returns BadRequest when parser fails with BadRequest",
+        request = Request.post(URL.root / "authorize", Body.empty),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.BadRequest),
-        verify         = resp =>
+        setup = _.parser.parse.failsWith(Error.BadRequest),
+        verify = resp =>
           resp.body.asString.map(body => assertTrue(body.contains(Error.BadRequest.description))),
       ),
       controllerTestCase(
-        description    = "returns invalid_request_object in the body when the request object fails verification",
-        request        = Request.post(URL.root / "authorize", Body.empty),
+        description = "returns invalid_request_object in the body when the request object fails verification",
+        request = Request.post(URL.root / "authorize", Body.empty),
         expectedStatus = Status.BadRequest,
-        setup          = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
-        verify         = resp =>
+        setup = _.parser.parse.failsWith(Error.InvalidRequestObject("jti replayed")),
+        verify = resp =>
           resp.body.asString.map(body =>
             assertTrue(body.contains(s"\"error\":\"${Error.InvalidRequestObject.error}\"")),
           ),
       ),
       controllerTestCase(
-        description    = "redirects to /challenge and sets cookie on Initialize response",
-        request        = Request.post(URL.root / "authorize", Body.empty),
+        description = "redirects to /challenge and sets cookie on Initialize response",
+        request = Request.post(URL.root / "authorize", Body.empty),
         expectedStatus = Status.SeeOther,
-        setup          = services =>
+        setup = services =>
           for
             _ <- services.parser.parse.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Initialize(authId))
           yield (),
-        verify         = resp =>
+        verify = resp =>
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.path.encode.contains("challenge")),
             resp.header(Header.SetCookie).isDefined,
           )),
       ),
       controllerTestCase(
-        description    = "redirects to redirect_uri with code on Authorized response",
-        request        = Request.post(URL.root / "authorize", Body.empty),
+        description = "redirects to redirect_uri with code on Authorized response",
+        request = Request.post(URL.root / "authorize", Body.empty),
         expectedStatus = Status.SeeOther,
-        setup          = services =>
+        setup = services =>
           for
             _ <- services.parser.parse.succeedsWith(baseRequest)
             _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
             _ <- services.authService.authorize.succeedsWith(AuthorizeResponse.Authorized(authCode, None))
           yield (),
-        verify         = resp =>
+        verify = resp =>
           ZIO.succeed(assertTrue(
             resp.header(Header.Location).exists(_.url.encode.startsWith("https://example.com/callback")),
             resp.header(Header.Location).exists(_.url.encode.contains("code=")),

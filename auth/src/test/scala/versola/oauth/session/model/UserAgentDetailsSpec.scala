@@ -26,7 +26,9 @@ object UserAgentDetailsSpec extends UnitSpecBase:
           TestCase("unknown for whitespace", Some("   "), UserAgentDetails(None, None, None, None)),
           TestCase(
             "ios for iPhone UA",
-            Some("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"),
+            Some(
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+            ),
             UserAgentDetails(Some("ios"), Some("iOS 17.0"), Some("Safari"), Some("17")),
           ),
           TestCase(
@@ -44,7 +46,7 @@ object UserAgentDetailsSpec extends UnitSpecBase:
             Some("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"),
             UserAgentDetails(Some("desktop"), Some("macOS 14.5"), Some("Safari"), Some("17")),
           ),
-        ).map(testCase)
+        ).map(testCase),
       ),
       suite("OS detection")(
         List(
@@ -83,7 +85,7 @@ object UserAgentDetailsSpec extends UnitSpecBase:
             Some("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Firefox/115.0"),
             UserAgentDetails(Some("desktop"), Some("Linux"), Some("Firefox"), Some("115")),
           ),
-        ).map(testCase)
+        ).map(testCase),
       ),
       suite("browser detection")(
         List(
@@ -117,7 +119,7 @@ object UserAgentDetailsSpec extends UnitSpecBase:
             Some("CustomBot/1.0"),
             UserAgentDetails(None, None, None, None),
           ),
-        ).map(testCase)
+        ).map(testCase),
       ),
-    )
+    ),
   )

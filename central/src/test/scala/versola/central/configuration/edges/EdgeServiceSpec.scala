@@ -68,7 +68,6 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           rotateCalls.head._1 == edgeId,
         )
     },
-
     test("deleteEdge calls repository deleteEdge") {
       val env = Env()
       for

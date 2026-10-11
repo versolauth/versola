@@ -21,7 +21,6 @@ enum RevocationError:
     case InvalidRequest => Status.BadRequest
     case UnsupportedTokenType => Status.BadRequest
 
-
 case class RevocationErrorResponse(
     error: String,
     errorDescription: Option[String],
@@ -29,7 +28,7 @@ case class RevocationErrorResponse(
 
 object RevocationErrorResponse:
   given JsonCodec[RevocationErrorResponse] = JsonCodec.derived
-  
+
   def fromError(error: RevocationError): RevocationErrorResponse =
     error match
       case RevocationError.InvalidClient | RevocationError.InvalidClientCertificate(_) =>
@@ -47,4 +46,3 @@ object RevocationErrorResponse:
           error = "unsupported_token_type",
           errorDescription = Some("The authorization server does not support the revocation of the presented token type"),
         )
-

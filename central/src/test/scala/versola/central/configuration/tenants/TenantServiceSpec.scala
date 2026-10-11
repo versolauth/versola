@@ -2,13 +2,19 @@ package versola.central.configuration.tenants
 
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.central.TestCentralConfig
-import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
-import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile, PasskeySettings, SubmissionLimits}
+import versola.central.configuration.challenges.{
+  ChallengeSettingsRecord,
+  ChallengeSettingsService,
+  PasskeySettings,
+  SecurityProfile,
+  SubmissionLimits,
+}
 import versola.central.configuration.jwks.{JwksRecord, JwksRepository}
-import versola.util.{ReloadingCache, Secret}
+import versola.central.configuration.{CreateTenantRequest, UpdateTenantRequest}
 import versola.util.http.BadRequest
-import zio.json.ast.Json
+import versola.util.{ReloadingCache, Secret}
 import zio.*
+import zio.json.ast.Json
 import zio.test.*
 
 object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:

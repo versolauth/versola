@@ -283,6 +283,28 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .load(loadgenConfigDescriptor)
         yield assertTrue(config.sutStats == None)
       },
+      // A campaign written before the refresh count existed must keep drawing none.
+      test("session.refresh-count defaults to no extra refreshes and reads a configured mean") {
+        for
+          absent <- loadConfig(hocon)
+          present <- loadConfig(hocon.replace("refresh-token-ttl = 30d", "refresh-token-ttl = 30d\n  refresh-count { mobile-mean = 2.4 }"))
+        yield assertTrue(
+          absent.session.refreshCount == RefreshCountConfig(0.0, 0.6),
+          present.session.refreshCount == RefreshCountConfig(2.4, 0.6),
+        )
+      },
+      test("decodes the environment block with its defaults, and its absence as no section") {
+        for
+          absent <- decodeSutStats("")
+          present <- decodeSutStats(
+            """environment { victoria-metrics-url = "http://vm:8428", namespace = versola }""",
+          )
+        yield assertTrue(
+          absent.environment == None,
+          present.environment.map(e => (e.victoriaMetricsUrl, e.namespace, e.step.getSeconds)) ==
+            Some(("http://vm:8428", "versola", 30L)),
+        )
+      },
       // An empty list boots a coordinator that reports no database section and says nothing about
       // why, which is indistinguishable from one configured without the block at all. Duplicate
       // names collide on `(campaign, database, phase)`, and the report then shows one database's
@@ -330,7 +352,10 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             "payment-amount-threshold = 1000000\n  namespace = fapi\n  edge-id = edge-1\n  mtls-certificate-header = x-client-cert",
           )
           .replace("shard-count      = 8", "shard-count      = 8\n  namespace         = fapi")
-          .replace("roles { retail-user = 0.90, retail-basic = 0.10 }", "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi")
+          .replace(
+            "roles { retail-user = 0.90, retail-basic = 0.10 }",
+            "roles { retail-user = 0.90, retail-basic = 0.10 }\n  phone-prefix = \"+49157\"\n  id-namespace = fapi",
+          )
         for
           config <- loadConfig(hoconFapi2)
           bad <- loadConfig(hocon.replace("security-profile = standard", "security-profile = fapi3")).exit
@@ -580,6 +605,15 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       // A target of zero makes the reported delta the measurement itself, which reads as a driver
       // fault rather than as the config error it is. A p99 below its own p50 is not a
       // distribution any sampler can have produced.
+      test("a phase is measured unless it says otherwise") {
+        for
+          explicit <- decodePhase("{ name = warmup, duration = 15m, scale = 0.1, measured = false }")
+          absent <- decodePhase("{ name = warmup,  duration = 15m, scale = 0.1 }")
+        yield assertTrue(
+          !explicit.campaign.phases.head.measured,
+          absent.campaign.phases.head.measured,
+        )
+      },
       test("rejects a non-positive target and a p99 below its own p50") {
         for
           zero <- decodeCalibration(calibration.replaceFirst("p-50 = 6298micros", "p-50 = 0micros")).exit

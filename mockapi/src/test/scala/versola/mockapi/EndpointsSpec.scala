@@ -147,14 +147,14 @@ object EndpointsSpec extends ZIOSpecDefault:
       if i >= n then false
       else
         input(i) match
-          case '{'          => parseObject()
-          case '['          => parseArray()
-          case '"'          => parseString()
-          case 't'          => parseLiteral("true")
-          case 'f'          => parseLiteral("false")
-          case 'n'          => parseLiteral("null")
+          case '{' => parseObject()
+          case '[' => parseArray()
+          case '"' => parseString()
+          case 't' => parseLiteral("true")
+          case 'f' => parseLiteral("false")
+          case 'n' => parseLiteral("null")
           case c if c == '-' || c.isDigit => parseNumber()
-          case _            => false
+          case _ => false
 
     val ok = parseValue()
     skipWs()

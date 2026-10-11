@@ -1,16 +1,16 @@
 package versola.edge
 
+import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.edge.dpop.DpopPolicyService
 import versola.edge.model.EdgeId
-import versola.util.{Base64Url, EnvName, Secret}
 import versola.util.http.Observability
+import versola.util.{Base64Url, EnvName, Secret}
 import zio.*
 import zio.http.*
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-import io.opentelemetry.api
 
 import java.security.KeyPairGenerator
 
@@ -68,8 +68,8 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup: Services => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Services)] =
     for
-      client  <- ZIO.service[Client]
-      services =  Services(
+      client <- ZIO.service[Client]
+      services = Services(
         stub[OAuthClientService],
         stub[ResourceService],
         stub[PermissionService],
@@ -89,7 +89,7 @@ object ServiceControllerSpec extends ZIOSpecDefault, ZIOStubs:
           ),
         ),
       )
-      _        <- setup(services)
+      _ <- setup(services)
       response <- client.batched(request)
     yield (response, services)
 

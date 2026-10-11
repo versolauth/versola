@@ -39,9 +39,9 @@ object LocaleService:
     override def setDefault(code: String): Task[Either[SetDefaultLocaleError, Unit]] =
       repository.getAll.flatMap: locales =>
         locales.find(_.code == code) match
-          case None                         => ZIO.left(SetDefaultLocaleError.NotFound)
+          case None => ZIO.left(SetDefaultLocaleError.NotFound)
           case Some(locale) if !locale.active => ZIO.left(SetDefaultLocaleError.Inactive)
-          case Some(_)                      => repository.setDefault(code).map(Right(_))
+          case Some(_) => repository.setDefault(code).map(Right(_))
 
 enum SetDefaultLocaleError derives Schema, JsonCodec:
   case NotFound

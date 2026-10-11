@@ -2,9 +2,9 @@ package versola.loadgen.store
 
 import com.augustnagro.magnum.magzio.TransactorZIO
 import com.augustnagro.magnum.sql
+import versola.loadgen.config.TargetsConfig
 import versola.loadgen.model.{DeviceSession, SessionKind}
 import versola.loadgen.protocol.*
-import versola.loadgen.config.TargetsConfig
 import versola.loadgen.protocol.Credentials
 import zio.*
 import zio.http.*

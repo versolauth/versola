@@ -19,15 +19,40 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
   private val t0 = Instant.parse("2026-03-01T00:00:00Z")
 
   private def record(id: ClientId) = OAuthClientRecord(
-    id = id, tenantId = TenantId("tenant-a"), clientName = Map("en" -> "App"),
-    redirectUris = Set(RedirectUri("https://example.com/callback")), scope = Set.empty, secret = None, previousSecret = None,
-    accessTokenTtl = 5.minutes, refreshTokenTtl = 7776000.seconds, permissions = Set.empty, theme = "default",
-    authFlow = None, registrationFlow = None, otpTemplateId = "default", frontChannelLogoutUri = None,
-    frontChannelLogoutSessionRequired = false, backChannelLogoutUri = None, logoUri = None, policyUri = None, tosUri = None,
-    consentFlow = None, dpopBoundAccessTokens = false, dpopSigningAlgs = Set.empty, dpopMinRsaKeySize = None,
-    authMethod = AuthMethod.none, mtlsAuth = None, certificateBoundAccessTokens = false, jwks = None,
-    requireSignedRequestObject = false, requirePushedAuthorizationRequests = false, edgeSigningKey = None,
-    edgeClientCertificate = None, template = None, createdAt = Instant.EPOCH,
+    id = id,
+    tenantId = TenantId("tenant-a"),
+    clientName = Map("en" -> "App"),
+    redirectUris = Set(RedirectUri("https://example.com/callback")),
+    scope = Set.empty,
+    secret = None,
+    previousSecret = None,
+    accessTokenTtl = 5.minutes,
+    refreshTokenTtl = 7776000.seconds,
+    permissions = Set.empty,
+    theme = "default",
+    authFlow = None,
+    registrationFlow = None,
+    otpTemplateId = "default",
+    frontChannelLogoutUri = None,
+    frontChannelLogoutSessionRequired = false,
+    backChannelLogoutUri = None,
+    logoUri = None,
+    policyUri = None,
+    tosUri = None,
+    consentFlow = None,
+    dpopBoundAccessTokens = false,
+    dpopSigningAlgs = Set.empty,
+    dpopMinRsaKeySize = None,
+    authMethod = AuthMethod.none,
+    mtlsAuth = None,
+    certificateBoundAccessTokens = false,
+    jwks = None,
+    requireSignedRequestObject = false,
+    requirePushedAuthorizationRequests = false,
+    edgeSigningKey = None,
+    edgeClientCertificate = None,
+    template = None,
+    createdAt = Instant.EPOCH,
   )
 
   private val setup =
@@ -57,7 +82,10 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
         (xa, _, repository) <- setup
         _ <- repository.enroll(clientId, t0)
         _ <- repository.recordIssued(clientId, "ab12", t0.plusSeconds(5), EdgeId("edge-1"))
-        row <- xa.connect(sql"SELECT last_serial, last_edge_id FROM edge_certificate_enrollment WHERE client_id = 'mobile-app'".query[(String, String)].run())
+        row <- xa.connect(sql"SELECT last_serial, last_edge_id FROM edge_certificate_enrollment WHERE client_id = 'mobile-app'".query[(
+            String,
+            String,
+        )].run())
       yield assertTrue(row == Vector(("ab12", "edge-1")))
     },
     test("deleting the client removes its enrolment") {

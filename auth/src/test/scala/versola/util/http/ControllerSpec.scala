@@ -47,7 +47,7 @@ abstract class ControllerSpec[C <: Controller](val controller: C) extends UnitSp
       yield assertTrue(
         response.status == expectedResponse.status,
         expectedResponse.headers.forall(header => response.headers.exists(_ == header)),
-        responseBody == expectedResponseBody
+        responseBody == expectedResponseBody,
       ) && verify(service)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 

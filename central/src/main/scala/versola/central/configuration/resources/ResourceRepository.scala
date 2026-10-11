@@ -1,8 +1,8 @@
 package versola.central.configuration.resources
 
-import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.central.configuration.clients.ClientId
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{PatchAudience, ResourceUri}
 import versola.util.CacheSource
 import zio.Task
 

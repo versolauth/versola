@@ -24,7 +24,7 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       ),
       central = EdgeConfig.CentralConfig(url = URL.decode("https://central.example").toOption.get),
       versolaUrl = URL.decode("https://idp.example").toOption.get,
-    edgeUrl = URL.decode("https://edge.example").toOption.get,
+      edgeUrl = URL.decode("https://edge.example").toOption.get,
       configurationCacheRefreshInterval = 5.minutes,
     )
 
@@ -138,7 +138,12 @@ object PermissionServiceSpec extends ZIOSpecDefault:
     suite("getAllowedEndpointsForClient")(
       test("returns endpoints composed from the client's permissions") {
         val client =
-          OAuthClient(id = serviceClient, credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
+          OAuthClient(
+            id = serviceClient,
+            credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
+            permissions = Set(writePerm),
+            accessTokenTtl = 15.minutes,
+          )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints == Set(createUserEndpoint))
@@ -149,7 +154,12 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         yield assertTrue(endpoints.isEmpty)
       },
       test("returns empty set when client has no permissions") {
-        val client = OAuthClient(id = serviceClient, credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+        val client = OAuthClient(
+          id = serviceClient,
+          credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
+          permissions = Set.empty,
+          accessTokenTtl = 15.minutes,
+        )
         val service = buildService(clients = Map(serviceClient -> client))
         for endpoints <- service.getAllowedEndpointsForClient(serviceClient)
         yield assertTrue(endpoints.isEmpty)
@@ -170,29 +180,29 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns permissions whose endpoint IDs intersect with the provided set") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          defaultTenant,
-          List(adminRole),
-          Set(listUsersEndpoint),
-        )
+            defaultTenant,
+            List(adminRole),
+            Set(listUsersEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm))
       },
       test("returns multiple permissions when several intersect") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          defaultTenant,
-          List(adminRole),
-          Set(listUsersEndpoint, createUserEndpoint),
-        )
+            defaultTenant,
+            List(adminRole),
+            Set(listUsersEndpoint, createUserEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm, writePerm))
       },
       test("returns empty set when no permission endpoint IDs intersect") {
         val service = buildService()
         val unrelatedEndpoint = ResourceEndpointId(java.util.UUID.fromString("018f0f2a-1c7b-7000-8000-000000000099"))
         for permissions <- service.getPermissionsForRoles(
-          defaultTenant,
-          List(adminRole),
-          Set(unrelatedEndpoint),
-        )
+            defaultTenant,
+            List(adminRole),
+            Set(unrelatedEndpoint),
+          )
         yield assertTrue(permissions.isEmpty)
       },
       test("returns empty set when role list is empty") {
@@ -203,10 +213,10 @@ object PermissionServiceSpec extends ZIOSpecDefault:
       test("returns empty set when endpointIds is empty") {
         val service = buildService()
         for permissions <- service.getPermissionsForRoles(
-          defaultTenant,
-          List(adminRole),
-          Set.empty,
-        )
+            defaultTenant,
+            List(adminRole),
+            Set.empty,
+          )
         yield assertTrue(permissions.isEmpty)
       },
       test("does not leak permissions granted to the same role in a different tenant") {
@@ -217,16 +227,21 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         )
         val service = buildService(roles = multiTenantRoles)
         for permissions <- service.getPermissionsForRoles(
-          defaultTenant,
-          List(viewerRole, editorRole),
-          Set(listUsersEndpoint, createUserEndpoint),
-        )
+            defaultTenant,
+            List(viewerRole, editorRole),
+            Set(listUsersEndpoint, createUserEndpoint),
+          )
         yield assertTrue(permissions == Set(readPerm))
       },
     ),
     test("refreshNow replaces every cache with what central serves") {
       val client =
-        OAuthClient(id = serviceClient, credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))), permissions = Set(writePerm), accessTokenTtl = 15.minutes)
+        OAuthClient(
+          id = serviceClient,
+          credential = ClientCredential.ClientSecret(Secret(Array.fill(8)(1.toByte))),
+          permissions = Set(writePerm),
+          accessTokenTtl = 15.minutes,
+        )
       val service = buildService(
         roles = Map.empty,
         permissions = Map.empty,
@@ -235,11 +250,11 @@ object PermissionServiceSpec extends ZIOSpecDefault:
         clientsFromCentral = Map(serviceClient -> client),
       )
       for
-        beforeRoles  <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        beforeRoles <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
         beforeClient <- service.getAllowedEndpointsForClient(serviceClient)
-        _            <- service.refreshNow
-        afterRoles   <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
-        afterClient  <- service.getAllowedEndpointsForClient(serviceClient)
+        _ <- service.refreshNow
+        afterRoles <- service.getAllowedEndpointsForRoles(defaultTenant, List(editorRole))
+        afterClient <- service.getAllowedEndpointsForClient(serviceClient)
       yield assertTrue(
         beforeRoles.isEmpty,
         beforeClient.isEmpty,

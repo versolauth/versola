@@ -119,7 +119,7 @@ object ClientApiSpec extends CentralApiSpec:
         record <- withClient(central, body)(_ => read(central, id))
         template = record.flatMap(_.obj("template"))
       yield assertTrue(template.flatMap(_.str("kind")).contains("device"))
-          .label("the console shows the client's settings against this, so it has to survive the round trip") &&
+        .label("the console shows the client's settings against this, so it has to survive the round trip") &&
         assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
     },
     test("a template that still names the retired tier is accepted and read back without it") {
@@ -307,7 +307,8 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Fixtures.client(id, authMethod = "self_signed_tls_client_auth", mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth)))
+        rejected <-
+          central.post(path, Fixtures.client(id, authMethod = "self_signed_tls_client_auth", mtlsAuth = Some(Fixtures.selfSignedTlsClientAuth)))
         _ <- central.delete(path, "clientId" -> id)
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("§2.2 has nothing to compare a certificate against without jwks")

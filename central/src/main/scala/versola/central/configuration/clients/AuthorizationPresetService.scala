@@ -1,11 +1,11 @@
 package versola.central.configuration.clients
 
 import versola.central.CentralConfig
-import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
 import versola.central.configuration.challenges.ChallengeSettingsService
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{AuthorizationPresetInput, SaveAuthorizationPresetsRequest}
 import versola.util.ReloadingCache
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
@@ -95,9 +95,11 @@ object AuthorizationPresetService:
           _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(presets.map(_.id).distinct.size != presets.size)
           existing <- repository.getAll
           _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(
-            presets.exists(preset => existing.exists(existingPreset =>
-              existingPreset.id == preset.id && existingPreset.clientId != clientId
-            )),
+            presets.exists(preset =>
+              existing.exists(existingPreset =>
+                existingPreset.id == preset.id && existingPreset.clientId != clientId,
+              ),
+            ),
           )
         yield ()
 
@@ -148,8 +150,8 @@ sealed trait PresetValidationError
 
 object PresetValidationError:
   case object DuplicatePresetId
-      extends RuntimeException("Authorization preset ID is already used by another client")
-      with PresetValidationError
+    extends RuntimeException("Authorization preset ID is already used by another client")
+       with PresetValidationError
   case object ClientNotFound extends PresetValidationError
   case object InvalidRedirectUri extends PresetValidationError
   case object InvalidPostLogoutRedirectUri extends PresetValidationError

@@ -94,7 +94,8 @@ object DpopKeysSpec extends ZIOSpecDefault:
           pool <- DpopKeyPool.derive(seed, 1, Dpop.Algorithm.PS256)
           serialized <- pool.keyFor(0L).proof(Method.POST, Token)
           now <- zio.Clock.instant
-          result <- Dpop.verify(serialized, Dpop.KeyPolicy(Set(Dpop.Algorithm.ES256), Dpop.KeyPolicy.MinRsaKeySize), Method.POST, Token, now, Leeway).either
+          result <-
+            Dpop.verify(serialized, Dpop.KeyPolicy(Set(Dpop.Algorithm.ES256), Dpop.KeyPolicy.MinRsaKeySize), Method.POST, Token, now, Leeway).either
         yield assertTrue(result == Left(Dpop.Error.UnsupportedAlgorithm))
       },
       // RS256 parses as a name but is not a drivable choice: FAPI disallows it outright, so no
@@ -118,7 +119,14 @@ object DpopKeysSpec extends ZIOSpecDefault:
           serialized <- key.proof(Method.POST, "https://auth.example.test/token")
           now <- zio.Clock.instant
           proof <- Dpop
-            .verify(serialized, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), Method.POST, "https://auth.example.test/token", now, Leeway)
+            .verify(
+              serialized,
+              Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize),
+              Method.POST,
+              "https://auth.example.test/token",
+              now,
+              Leeway,
+            )
             .mapError(error => RuntimeException(error.toString))
         yield assertTrue(proof.jkt == key.jkt, proof.nonce.isEmpty, proof.ath.isEmpty)
       },
@@ -160,7 +168,8 @@ object DpopKeysSpec extends ZIOSpecDefault:
           pool <- DpopKeyPool.derive(seed, 1)
           serialized <- pool.keyFor(0L).proof(Method.POST, Token)
           now <- zio.Clock.instant
-          result <- Dpop.verify(serialized, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), Method.POST, Resource, now, Leeway).either
+          result <-
+            Dpop.verify(serialized, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), Method.POST, Resource, now, Leeway).either
         yield assertTrue(result == Left(Dpop.Error.UriMismatch))
       },
       test("is refused against a different method") {
@@ -168,7 +177,8 @@ object DpopKeysSpec extends ZIOSpecDefault:
           pool <- DpopKeyPool.derive(seed, 1)
           serialized <- pool.keyFor(0L).proof(Method.POST, Token)
           now <- zio.Clock.instant
-          result <- Dpop.verify(serialized, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), Method.GET, Token, now, Leeway).either
+          result <-
+            Dpop.verify(serialized, Dpop.KeyPolicy(Dpop.Algorithm.Default, Dpop.KeyPolicy.MinRsaKeySize), Method.GET, Token, now, Leeway).either
         yield assertTrue(result == Left(Dpop.Error.MethodMismatch))
       },
     ),

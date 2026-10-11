@@ -347,7 +347,10 @@ object NativeServiceSpec extends ZIOSpecDefault:
       for
         h <- harness(requireNonce = true)
         nonce <- Clock.instant.map(DpopNonce.issue(nonceSalt, _))
-        start <- h.service.start(NativeClientId, request(path, Map("scope" -> "openid offline_access"), Some(device.proof(s"$EdgeUrl$path", nonce = Some(nonce)))))
+        start <- h.service.start(
+          NativeClientId,
+          request(path, Map("scope" -> "openid offline_access"), Some(device.proof(s"$EdgeUrl$path", nonce = Some(nonce)))),
+        )
           .flatMap(_.body.asString)
           .flatMap(body => ZIO.fromEither(body.fromJson[NativeService.StartResponse]))
         response <- h.service.complete(NativeClientId, completeRequest(start, Some(device.proof(TokenHtu))))

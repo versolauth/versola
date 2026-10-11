@@ -1,11 +1,11 @@
 package versola.edge
 
 import versola.edge.model.{ApplicationType, ClientCredential, ClientId, OAuthClient, PermissionId}
-import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
 import versola.util.http.Observability
-import zio.json.ast.Json
+import versola.util.{Base64, CacheSource, CertificateSubject, PrivateClientCertificate, PrivateJsonWebKey, Secret, SecurityService}
 import zio.http.{Client, Header, Request}
-import zio.json.{JsonCodec, DecoderOps}
+import zio.json.ast.Json
+import zio.json.{DecoderOps, JsonCodec}
 import zio.schema.codec.JsonCodec.zioJsonBinaryCodec
 import zio.{Duration, Task, URLayer, ZIO, ZLayer}
 

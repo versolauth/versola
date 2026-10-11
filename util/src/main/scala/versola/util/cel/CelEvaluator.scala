@@ -1,7 +1,7 @@
 package versola.util.cel
 
-import dev.cel.common.{CelErrorCode, CelException}
 import dev.cel.common.types.{CelType, SimpleType}
+import dev.cel.common.{CelErrorCode, CelException}
 import dev.cel.compiler.CelCompilerFactory
 import dev.cel.optimizer.CelOptimizerFactory
 import dev.cel.optimizer.optimizers.ConstantFoldingOptimizer
@@ -104,7 +104,7 @@ object CelEvaluator:
     override def validate(expression: String, expectedType: Option[CelType]): IO[CompileError, Program] =
       compileCached(expression, expectedType, strict = true).flatMap:
         case Right(program) => ZIO.succeed(program)
-        case Left(err)      => ZIO.fail(err)
+        case Left(err) => ZIO.fail(err)
 
     private def compileCached(
         expression: String,
@@ -151,17 +151,17 @@ object CelEvaluator:
 
         (ProgramImpl(runtime.createProgram(preparedAst)): Program, dynAccepted)
       .either
-      .flatMap:
-        case Right((program, true)) =>
-          ZIO.logWarning(
-            s"CEL expression '$expression' has a dynamic return type; " +
-            s"the expected type could not be verified at compile time. " +
-            s"A wrong-typed result will silently evaluate to false at runtime."
-          ).as(Right(program))
-        case Right((program, false)) =>
-          ZIO.succeed(Right(program))
-        case Left(ex) =>
-          ZIO.succeed(Left(CompileError(expression, Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName))))
+        .flatMap:
+          case Right((program, true)) =>
+            ZIO.logWarning(
+              s"CEL expression '$expression' has a dynamic return type; " +
+                s"the expected type could not be verified at compile time. " +
+                s"A wrong-typed result will silently evaluate to false at runtime.",
+            ).as(Right(program))
+          case Right((program, false)) =>
+            ZIO.succeed(Right(program))
+          case Left(ex) =>
+            ZIO.succeed(Left(CompileError(expression, Option(ex.getMessage).getOrElse(ex.getClass.getSimpleName))))
 
   /** A failure is returned to the caller rather than degraded to `false`/no value here: the
     * caller is the only one that knows what an unevaluated expression means for the request it
@@ -171,15 +171,15 @@ object CelEvaluator:
     override def evaluateBoolean(context: Map[String, AnyRef]): IO[EvaluationError, Boolean] =
       evaluate(context).flatMap:
         case b: java.lang.Boolean => ZIO.succeed(b.booleanValue)
-        case _                    => ZIO.fail(EvaluationError.Broken)
+        case _ => ZIO.fail(EvaluationError.Broken)
 
     override def evaluateString(context: Map[String, AnyRef]): IO[EvaluationError, Option[String]] =
       evaluate(context).map:
-        case null      => None
+        case null => None
         case s: String => Some(s)
-        case other     => Some(other.toString)
+        case other => Some(other.toString)
 
     private def evaluate(context: Map[String, AnyRef]): IO[EvaluationError, AnyRef] =
       ZIO.attempt(program.eval(context.asJava)).mapError:
         case ex: CelException if ex.getErrorCode == CelErrorCode.ATTRIBUTE_NOT_FOUND => EvaluationError.DataMissing
-        case _                                                                      => EvaluationError.Broken
+        case _ => EvaluationError.Broken

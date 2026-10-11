@@ -1,8 +1,8 @@
 package versola.edge
 
 import versola.edge.model.ClientId
-import versola.util.{CertificateSubject, PrivateClientCertificate}
 import versola.util.http.Observability
+import versola.util.{CertificateSubject, PrivateClientCertificate}
 import zio.*
 import zio.http.{Body, Client, Header, MediaType, Request, URL}
 import zio.json.*

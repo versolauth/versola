@@ -34,8 +34,8 @@ object UserInfoService:
   ] = ZLayer.fromFunction(Impl(_, _))
 
   class Impl(
-              userRepository: UserRepository,
-              clientService: OAuthConfigurationService,
+      userRepository: UserRepository,
+      clientService: OAuthConfigurationService,
   ) extends UserInfoService:
 
     override def getUserInfo(

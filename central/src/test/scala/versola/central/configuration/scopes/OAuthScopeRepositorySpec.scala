@@ -1,8 +1,8 @@
 package versola.central.configuration.scopes
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.central.configuration.{CreateClaim, PatchClaim, PatchDescription, PatchScope}
 import versola.central.configuration.tenants.TenantId
+import versola.central.configuration.{CreateClaim, PatchClaim, PatchDescription, PatchScope}
 import versola.util.DatabaseSpecBase
 import zio.prelude.EqualOps
 import zio.test.*
@@ -37,8 +37,8 @@ trait OAuthScopeRepositorySpec extends DatabaseSpecBase[OAuthScopeRepositorySpec
                 ClaimRecord(nameClaim, Map("en" -> "Name")),
                 ClaimRecord(emailClaim, Map("en" -> "Email")),
               ),
-            )
-          )
+            ),
+          ),
         )
       },
       test("update scope should add, update and delete claims") {
@@ -55,7 +55,7 @@ trait OAuthScopeRepositorySpec extends DatabaseSpecBase[OAuthScopeRepositorySpec
                 add = Map("ru" -> "Имя"),
                 delete = Set.empty,
               ),
-            )
+            ),
           ),
           delete = Set(emailClaim),
           description = PatchDescription(
@@ -78,8 +78,8 @@ trait OAuthScopeRepositorySpec extends DatabaseSpecBase[OAuthScopeRepositorySpec
                 ClaimRecord(nameClaim, Map("en" -> "Name", "ru" -> "Имя")),
                 ClaimRecord(usernameClaim, Map("en" -> "Username")),
               ),
-            )
-          )
+            ),
+          ),
         )
       },
       test("delete scope") {

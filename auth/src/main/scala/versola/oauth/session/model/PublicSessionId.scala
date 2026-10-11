@@ -14,4 +14,3 @@ type PublicSessionId = PublicSessionId.Type
 
 object PublicSessionId extends StringNewType.Base64Url:
   given JsonDecoder[PublicSessionId] = JsonDecoder.string.map(PublicSessionId(_))
-

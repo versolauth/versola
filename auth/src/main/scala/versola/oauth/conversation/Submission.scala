@@ -35,7 +35,7 @@ case class PasskeyEnrollSubmission(response: String, name: PasskeyName, csrf: St
 
 case class PasskeySkipSubmission(csrf: String)
   extends Submission derives Schema
-  
+
 case class SetPasswordSubmission(password: Password, csrf: String)
   extends Submission derives Schema
 

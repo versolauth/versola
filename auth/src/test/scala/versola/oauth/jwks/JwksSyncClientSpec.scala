@@ -14,15 +14,15 @@ import javax.crypto.spec.SecretKeySpec
 object JwksSyncClientSpec extends ZIOSpecDefault:
   private case class SignedClaims(iss: String, sub: String, aud: List[String]) derives JsonDecoder
 
-  private val secretKey   = SecretKeySpec(Array.fill(32)(12.toByte), "AES")
+  private val secretKey = SecretKeySpec(Array.fill(32)(12.toByte), "AES")
   private val configLayer = ZLayer.succeed(
-    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey))
+    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
   )
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
       client <- ZIO.service[Client]
-      token  <- JWT.serialize(
+      token <- JWT.serialize(
         JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         10.minutes,
         JWT.Signature.Symmetric(secretKey),
@@ -30,7 +30,7 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
-        client.request(request.addHeader(Header.Authorization.Bearer(token)))
+        client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
 
   /** Central publishes the private halves encrypted under the shared sync secret, so the
@@ -55,18 +55,18 @@ object JwksSyncClientSpec extends ZIOSpecDefault:
   def spec = suite("JwksSyncClient")(
     test("fetches JWKS from central /configuration/jwks/sync with a bearer sync token") {
       for
-        seen   <- Ref.make(List.empty[Request])
-        keys   <- signingKeysResponse("test-key-id")
-        _      <- routes(seen, keys)
-        client  <- ZIO.service[JwksSyncClient]
-        result  <- client.getAll
+        seen <- Ref.make(List.empty[Request])
+        keys <- signingKeysResponse("test-key-id")
+        _ <- routes(seen, keys)
+        client <- ZIO.service[JwksSyncClient]
+        result <- client.getAll
         requests <- seen.get
         request <- ZIO.fromOption(requests.find(_.url.encode.contains("configuration/jwks/sync")))
           .orElseFail(RuntimeException("No JWKS request captured"))
-        token   <- ZIO
+        token <- ZIO
           .fromOption(request.header(Header.Authorization).collect { case Header.Authorization.Bearer(v) => v.stringValue })
           .orElseFail(new RuntimeException("Missing bearer token"))
-        claims  <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
+        claims <- JWT.deserialize[SignedClaims](token, secretKey, JWT.Type.JWT).mapError(e => new RuntimeException(e.toString))
       yield assertTrue(
         request.method == Method.GET,
         claims.iss == "auth",

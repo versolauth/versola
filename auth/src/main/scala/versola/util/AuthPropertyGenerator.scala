@@ -44,7 +44,3 @@ object AuthPropertyGenerator:
     // sense that it must not be enumerable.
     override def nextRefreshTokenFamilyId: UIO[RefreshTokenFamilyId] =
       secureRandom.nextBytes(16).map(RefreshTokenFamilyId.fromBytes)
-
-
-
-

@@ -16,12 +16,12 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
 
   private val secretKey = SecretKeySpec(Array.fill(32)(12.toByte), "AES")
   private val configLayer = ZLayer.succeed(
-    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey))
+    TestEnvConfig.coreConfig.copy(central = CoreConfig.CentralSyncConfig(URL.empty, secretKey)),
   )
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
     for
       client <- ZIO.service[Client]
-      token  <- JWT.serialize(
+      token <- JWT.serialize(
         claims = JWT.Claims("auth", "internal-auth", List("central"), Json.Obj()),
         ttl = 10.minutes,
         signature = JWT.Signature.Symmetric(secretKey),
@@ -29,7 +29,7 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
     yield new CentralSyncTokenService:
       override def getToken: UIO[String] = ZIO.succeed(token)
       override def syncRequest(request: Request): ZIO[Scope, Throwable, Response] =
-        client.request(request.addHeader(Header.Authorization.Bearer(token)))
+        client.request(request.addHeader(Header.Authorization.Bearer(token))),
   )
 
   def spec = suite("OAuthScopesClient")(
@@ -42,7 +42,7 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
             ClaimRecord(Claim("email"), Map("en" -> "Email address")),
             ClaimRecord(Claim("name"), Map("en" -> "Full name")),
           ),
-        )
+        ),
       )
       // Wrap in the response object that matches what the client expects
       val responseBody = s"""{"scopes":${expectedScopes.toJson}}"""
@@ -51,8 +51,8 @@ object OAuthScopeSyncClientSpec extends ZIOSpecDefault:
         seen <- Ref.make(Option.empty[Request])
         _ <- TestClient.addRoutes(
           Handler.fromFunctionZIO[Request](request =>
-            seen.set(Some(request)).as(Response.text(responseBody).addHeader(Header.ContentType(zio.http.MediaType.application.json)))
-          ).toRoutes
+            seen.set(Some(request)).as(Response.text(responseBody).addHeader(Header.ContentType(zio.http.MediaType.application.json))),
+          ).toRoutes,
         )
         service <- ZIO.service[OAuthScopeSyncClient]
         scopes <- service.getAll

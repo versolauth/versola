@@ -1,10 +1,10 @@
 package versola.central.configuration.details
 
 import versola.central.CentralConfig
+import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{CreateAuthorizationDetailTypeRequest, UpdateAuthorizationDetailTypeRequest}
-import versola.central.configuration.metadata.ServerMetadataService
 import versola.util.{JsonSchemaValidator, ReloadingCache}
 import zio.json.JsonCodec
 import zio.json.ast.Json
@@ -48,8 +48,7 @@ object AuthorizationDetailTypeService:
   ] =
     (ZLayer.fromZIO:
       ZIO.serviceWithZIO[CentralConfig](config =>
-        ReloadingCache.make[Vector[AuthorizationDetailTypeRecord]](config.configurationCacheRefreshInterval,
-        ),
+        ReloadingCache.make[Vector[AuthorizationDetailTypeRecord]](config.configurationCacheRefreshInterval),
       )
     )
       >>> ZLayer.fromFunction(Impl(_, _, _, _))

@@ -99,4 +99,3 @@ object RevocationController extends Controller:
   private def classify(token: String): Option[Either[RefreshToken, String]] =
     if token.isJWT then Some(Right(token))
     else RefreshToken.fromBase64Url(token).toOption.map(Left(_))
-

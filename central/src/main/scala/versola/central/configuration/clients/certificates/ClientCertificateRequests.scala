@@ -39,18 +39,24 @@ object ClientCertificateRequests:
           case MutualTlsSubjectType.subject_dn =>
             scala.util.Try(X500Principal(value)).toEither.left
               .map(error => s"mtlsAuth subject_dn '$value' is not an RFC 4514 distinguished name: ${error.getMessage}")
-              .map(principal => CertificateSubject(
-                distinguishedName = principal.getName(X500Principal.RFC2253),
-                commonName = CertificateSubject.commonNameOf(principal).getOrElse(clientId),
-                dnsNames = Nil,
-                uris = Nil,
-                emailAddresses = Nil,
-                ipAddresses = Nil,
-              ))
-          case MutualTlsSubjectType.san_dns => Right(CertificateSubject(own, clientId, dnsNames = List(value), uris = Nil, emailAddresses = Nil, ipAddresses = Nil))
-          case MutualTlsSubjectType.san_uri => Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = List(value), emailAddresses = Nil, ipAddresses = Nil))
-          case MutualTlsSubjectType.san_email => Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = Nil, emailAddresses = List(value), ipAddresses = Nil))
-          case MutualTlsSubjectType.san_ip => Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = Nil, emailAddresses = Nil, ipAddresses = List(value)))
+              .map(principal =>
+                CertificateSubject(
+                  distinguishedName = principal.getName(X500Principal.RFC2253),
+                  commonName = CertificateSubject.commonNameOf(principal).getOrElse(clientId),
+                  dnsNames = Nil,
+                  uris = Nil,
+                  emailAddresses = Nil,
+                  ipAddresses = Nil,
+                ),
+              )
+          case MutualTlsSubjectType.san_dns =>
+            Right(CertificateSubject(own, clientId, dnsNames = List(value), uris = Nil, emailAddresses = Nil, ipAddresses = Nil))
+          case MutualTlsSubjectType.san_uri =>
+            Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = List(value), emailAddresses = Nil, ipAddresses = Nil))
+          case MutualTlsSubjectType.san_email =>
+            Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = Nil, emailAddresses = List(value), ipAddresses = Nil))
+          case MutualTlsSubjectType.san_ip =>
+            Right(CertificateSubject(own, clientId, dnsNames = Nil, uris = Nil, emailAddresses = Nil, ipAddresses = List(value)))
 
   def generate(subject: CertificateSubject, validity: Duration): Task[Generated] =
     CertificateSubject.generate(subject).map: generated =>

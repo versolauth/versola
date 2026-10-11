@@ -2,7 +2,7 @@ package versola.loadgen.scenario
 
 import versola.loadgen.config.SessionConfig
 import versola.loadgen.model.Platform
-import versola.loadgen.scheduler.{ActionCount, RandomSource}
+import versola.loadgen.scheduler.{ActionCount, RandomSource, RefreshCount}
 
 /** The shape one session will take, drawn before its first hop (design doc §2.3, dev spec §7.4).
   *
@@ -18,6 +18,10 @@ import versola.loadgen.scheduler.{ActionCount, RandomSource}
   *   index of the one action that requires L2, or `None` for a session with no payment in it.
   *   Never index 0: that slot is the `GET /accounts` the app issues on open
   *   ([[ActionCount.mandatoryActions]]), which is machine-driven and cannot be the user's payment.
+  * @param refreshesBefore
+  *   `refreshesBefore(i)` refresh exchanges to perform before action `i`
+  *   ([[versola.loadgen.scheduler.RefreshCount]]); empty for a session that adds none. Independent
+  *   of [[extraRefresh]], which is the TTL-gated one.
   * @param extraRefresh
   *   whether this session outlives its access token and refreshes mid-run. Whether it *actually*
   *   refreshes also depends on the session reaching `session.access-token-ttl`, which the runner
@@ -28,6 +32,7 @@ final case class SessionPlan(
     paymentAction: Option[Int],
     extraRefresh: Boolean,
     logout: Boolean,
+    refreshesBefore: Vector[Int] = Vector.empty,
 )
 
 object SessionPlan:
@@ -39,6 +44,7 @@ object SessionPlan:
       paymentAction = drawPaymentAction(config, actionCount, random),
       extraRefresh = random.nextDouble() < config.extraRefreshProbability,
       logout = random.nextDouble() < logoutProbability(config, platform),
+      refreshesBefore = RefreshCount.place(RefreshCount.sample(config.refreshCount, platform, random), actionCount, random),
     )
 
   /** §2.3's "has a live credential?" branch: a session resumes when one is available and the

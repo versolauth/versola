@@ -56,7 +56,7 @@ object SecurityHeadersSpec extends ZIOSpecDefault:
         proxied.rawHeader("Strict-Transport-Security").contains(SecurityHeaders.StrictTransportSecurity),
       )
     },
-      test("a response a handler failed with is decorated like a returned one") {
+    test("a response a handler failed with is decorated like a returned one") {
       for response <- get("/failed")
       yield assertTrue(
         response.status == Status.Forbidden,

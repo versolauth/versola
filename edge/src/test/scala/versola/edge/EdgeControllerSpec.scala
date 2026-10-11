@@ -1,6 +1,7 @@
 package versola.edge
 
 import com.nimbusds.jose.jwk.{JWKSet, RSAKey}
+import io.opentelemetry.api
 import org.scalamock.stubs.{Stub, ZIOStubs}
 import versola.edge.model.{
   AccessToken,
@@ -27,7 +28,6 @@ import zio.json.ast.Json
 import zio.telemetry.opentelemetry.OpenTelemetry
 import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.test.*
-import io.opentelemetry.api
 
 import java.security.KeyPairGenerator
 import java.security.interfaces.RSAPublicKey
@@ -92,14 +92,14 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       revoked: Boolean = false,
       // Only the `logout` endpoint reads presets directly (every other route goes through
       // EdgeService), so it is left unconfigured by default and opted into per test.
-      presetsSetup: Stub[AuthorizationPresetsSyncClient] => UIO[Unit] = _ => ZIO.unit,
+      presetsSetup: Stub[OAuthClientService] => UIO[Unit] = _ => ZIO.unit,
       dpopSetup: Stub[versola.edge.dpop.DpopVerifier] => UIO[Unit] = _ => ZIO.unit,
   ): ZIO[TestClient & Client & Scope, Throwable, (Response, Stub[EdgeService], Stub[JwksService])] =
     for
-      client  <- ZIO.service[Client]
-      service =  stub[EdgeService]
-      jwks    =  stub[JwksService]
-      presets =  stub[AuthorizationPresetsSyncClient]
+      client <- ZIO.service[Client]
+      service = stub[EdgeService]
+      jwks = stub[JwksService]
+      presets = stub[OAuthClientService]
       revocation = stub[TokenRevocationService]
       dpopVerifier = stub[versola.edge.dpop.DpopVerifier]
       tracing <- tracingLayer.build
@@ -109,18 +109,18 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ZEnvironment[EdgeService](service) ++
               ZEnvironment[JwksService](jwks) ++
               ZEnvironment[TokenRevocationService](revocation) ++
-              ZEnvironment[AuthorizationPresetsSyncClient](presets) ++
+              ZEnvironment[OAuthClientService](presets) ++
               ZEnvironment[EdgeConfig](edgeConfig) ++
               ZEnvironment[versola.edge.dpop.DpopVerifier](dpopVerifier) ++
               tracing,
           ),
         ),
       )
-      _        <- jwks.getPublicKeys.succeedsWith(publicKeys)
-      _        <- revocation.isRevoked.succeedsWith(revoked)
-      _        <- setup(service, jwks)
-      _        <- presetsSetup(presets)
-      _        <- dpopSetup(dpopVerifier)
+      _ <- jwks.getPublicKeys.succeedsWith(publicKeys)
+      _ <- revocation.isRevoked.succeedsWith(revoked)
+      _ <- setup(service, jwks)
+      _ <- presetsSetup(presets)
+      _ <- dpopSetup(dpopVerifier)
       response <- client.batched(request)
     yield (response, service, jwks)
 
@@ -255,7 +255,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         request = Request
           .get(URL.decode("/permissions/me").toOption.get)
           .addCookie(Cookie.Request(EdgeSessionCookie.name, s"web-app:$accessToken"))
-          emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
+        emptyResponse = EdgeService.PermissionsResponse(resources = Map.empty, isProd = false)
         (response, service, _) <- run(request, (s, _) => s.getMyPermissions.succeedsWith(emptyResponse))
       yield assertTrue(
         response.status == Status.Ok,
@@ -373,7 +373,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
-  // The endpoint reads AuthorizationPresetsSyncClient directly (not through EdgeService),
+  // The endpoint reads the preset cache (OAuthClientService) directly (not through EdgeService),
   // so every case here is driven via `presetsSetup` rather than the `setup` callback.
   private val logoutSuite = suite("GET /logout/{presetId}")(
     test("redirects to /logout with post_logout_redirect_uri appended when the preset has one") {
@@ -396,7 +396,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+          presetsSetup = presets => presets.findPreset.succeedsWith(Some(preset)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -422,7 +422,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map(preset.id -> preset)),
+          presetsSetup = presets => presets.findPreset.succeedsWith(Some(preset)),
         )
       yield assertTrue(
         response.status == Status.SeeOther,
@@ -436,18 +436,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       for
         (response, _, _) <- run(
           Request.get(URL.decode("/logout/missing").toOption.get),
-          presetsSetup = presets => presets.getAll.succeedsWith(Map.empty),
-        )
-      yield assertTrue(response.status == Status.InternalServerError)
-    },
-    // Distinct from the missing-preset case above: here presets.getAll itself fails, so the
-    // `mapError` on `someOrFail` takes its `case error: Throwable => error` branch and
-    // re-raises the original error unchanged, rather than wrapping a RuntimeException.
-    test("returns 500 when presets.getAll itself fails") {
-      for
-        (response, _, _) <- run(
-          Request.get(URL.decode("/logout/preset-1").toOption.get),
-          presetsSetup = presets => presets.getAll.failsWith(RuntimeException("sync client unreachable")),
+          presetsSetup = presets => presets.findPreset.succeedsWith(None),
         )
       yield assertTrue(response.status == Status.InternalServerError)
     },
@@ -518,7 +507,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       )
       for
         (response, service, _) <- run(
-          Request.get(URL.decode("/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1").toOption.get),
+          Request.get(URL.decode(
+            "/complete?error=access_denied&error_description=User%20cancelled&error_uri=https%3A%2F%2Fidp.example%2Ferrors%2Faccess_denied&state=s-1",
+          ).toOption.get),
           (s, _) => s.completeError.succeedsWith(redirectUrl),
         )
         location = response.header(Header.Location).map(_.url)

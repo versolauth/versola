@@ -1,10 +1,10 @@
 package versola.util.http
 
 import versola.util.{Base64Url, FormDecoder, Secret}
-import zio.{IO, ZIO}
 import zio.http.*
 import zio.json.JsonDecoder
 import zio.schema.Schema
+import zio.{IO, ZIO}
 
 trait Controller:
   type Env >: Nothing
@@ -33,9 +33,9 @@ trait Controller:
     def isJWT =
       val segments = s.split("\\.", -1)
       (segments.length == 3 || segments.length == 5) &&
-        scala.util.Try(Base64Url.decodeStr(segments.head)).toOption.exists(_.startsWith("{"))
+      scala.util.Try(Base64Url.decodeStr(segments.head)).toOption.exists(_.startsWith("{"))
 
   given Schema[URL] = Schema.primitive[String].transformOrFail(
     string => URL.decode(string).left.map(_.getMessage),
-    url => Right(url.encode)
+    url => Right(url.encode),
   )

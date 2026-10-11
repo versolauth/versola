@@ -1,6 +1,6 @@
 package versola.central.configuration.jwks
 
-import versola.util.{JWT, SecurityService, Secret}
+import versola.util.{JWT, Secret, SecurityService}
 import zio.json.ast.Json
 import zio.{Task, ZIO}
 

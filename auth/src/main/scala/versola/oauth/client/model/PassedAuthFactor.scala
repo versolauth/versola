@@ -27,6 +27,6 @@ object PassedAuthFactor:
 
   def fromFactorType(factorType: AuthFactorType): Option[PassedAuthFactor] =
     factorType match
-      case AuthFactorType.otp           => Some(PassedAuthFactor.otp)
-      case AuthFactorType.password      => Some(PassedAuthFactor.password)
+      case AuthFactorType.otp => Some(PassedAuthFactor.otp)
+      case AuthFactorType.password => Some(PassedAuthFactor.password)
       case AuthFactorType.passkeyEnroll => None

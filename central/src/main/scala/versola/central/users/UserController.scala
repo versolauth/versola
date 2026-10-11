@@ -1,9 +1,9 @@
 package versola.central.users
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
@@ -111,7 +111,7 @@ object UserController extends Controller:
       yield Response.json(RegisteredUserResponse(userId).toJson))
         .catchAll:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
-          case error: Throwable  => ZIO.fail(error)
+          case error: Throwable => ZIO.fail(error)
     }
 
   val patchUserEndpoint =
@@ -210,7 +210,7 @@ object UserController extends Controller:
           else
             service.resetPassword(body).map:
               case Some(password) => Response.json(ResetPasswordResponse(password).toJson)
-              case None           => Response.status(Status.NoContent)
+              case None => Response.status(Status.NoContent)
       yield response
     }
 
@@ -218,10 +218,11 @@ object UserController extends Controller:
     Method.POST / "users" / "password" / "set" -> handler { (request: Request) =>
       ZIO.service[EnvName].flatMap: env =>
         if env.isProd then ZIO.succeed(Response.status(Status.NotFound))
-        else for
-          _ <- authorizeBasic(request)
-          service <- ZIO.service[UserService]
-          body <- request.bodyAs[SetPasswordRequest]
-          _ <- service.setPassword(body.userId, body.password)
-        yield Response.status(Status.NoContent)
+        else
+          for
+            _ <- authorizeBasic(request)
+            service <- ZIO.service[UserService]
+            body <- request.bodyAs[SetPasswordRequest]
+            _ <- service.setPassword(body.userId, body.password)
+          yield Response.status(Status.NoContent)
     }

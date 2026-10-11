@@ -155,7 +155,6 @@ object MutualTlsSpec extends E2ESpec:
           )
 
   def spec = suite("Mutual TLS (RFC 8705)")(
-
     // ── §2.1 Client authentication ────────────────────────────────────────
 
     test("a client with no secret authenticates at /token with its certificate") {
@@ -173,7 +172,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("RFC 8705 §2.1: the registered subject is the credential, so no secret is needed")
     },
-
     test("a registered dNSName authenticates as readily as a subject DN") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -181,7 +179,6 @@ object MutualTlsSpec extends E2ESpec:
         token <- auth.clientCredentials(clientId, "", useBasicAuth = false, certificate = Some(header)).success
       yield assertTrue(token.accessToken.nonEmpty)
     },
-
     test("a client that registered a certificate is refused without one") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -194,7 +191,6 @@ object MutualTlsSpec extends E2ESpec:
         .label("a secret must not authenticate a client that registered a certificate") &&
         assertTrue(status == Status.Unauthorized)
     },
-
     test("another client's certificate does not authenticate this one") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -209,7 +205,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client")
         .label(s"${impostor.subjectDn} must not pass for ${certificate.subjectDn}")
     },
-
     test("a certificate header the proxy mangled fails the request") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -226,7 +221,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(error == "invalid_client")
         .label("an unreadable certificate must fail rather than fall back to the secret")
     },
-
     test("a `+` left unescaped by the proxy is still read as base64") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -241,7 +235,6 @@ object MutualTlsSpec extends E2ESpec:
         ).success
       yield assertTrue(token.accessToken.nonEmpty)
     },
-
     test("/introspect authenticates the caller by certificate") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -269,7 +262,6 @@ object MutualTlsSpec extends E2ESpec:
         introspection.cnf.flatMap(_.get("x5t#S256")).contains(Json.Str(certificate.thumbprint)),
       ).label(s"RFC 8705 §3.2: expected cnf.x5t#S256=${certificate.thumbprint}, got ${introspection.cnf}")
     },
-
     test("/revoke authenticates the caller by certificate") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -281,7 +273,6 @@ object MutualTlsSpec extends E2ESpec:
         assertTrue(withoutCertificate.status == Status.Unauthorized)
           .label("the same call without the certificate must not be accepted")
     },
-
     test("/par authenticates the pushing client by certificate") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -308,7 +299,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("RFC 8705 §2.2: the registered key is the credential -- no CA, no subject comparison")
     },
-
     test("a self-signed client is refused a certificate carrying a key it never registered") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -319,7 +309,6 @@ object MutualTlsSpec extends E2ESpec:
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
     },
-
     test("a self-signed client is refused without a certificate, secret or no secret") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -330,7 +319,6 @@ object MutualTlsSpec extends E2ESpec:
         assertTrue(status == Status.Unauthorized)
           .label("the secret central issued must not stand in for the certificate")
     },
-
     test("a self-signed client's registered keys do not also authenticate an assertion") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -344,7 +332,6 @@ object MutualTlsSpec extends E2ESpec:
         (_, error) <- rejection(result)
       yield assertTrue(error == "invalid_client")
     },
-
     test("a token issued to a self-signed client is bound to the certificate it presented") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -366,7 +353,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(thumbprint.contains(certificate.thumbprint))
         .label(s"RFC 8705 §3.1: expected cnf.x5t#S256=${certificate.thumbprint}, got $thumbprint")
     },
-
     test("a secret-authenticating client that asked for binding gets it too") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -378,7 +364,6 @@ object MutualTlsSpec extends E2ESpec:
         thumbprint <- thumbprintOf(token.accessToken)
       yield assertTrue(thumbprint.contains(certificate.thumbprint))
     },
-
     test("a client that binds nothing gets no confirmation, certificate or not") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -392,7 +377,6 @@ object MutualTlsSpec extends E2ESpec:
       yield assertTrue(cnf.isEmpty)
         .label(s"expected no cnf for a client that binds nothing, got $cnf")
     },
-
     test("refreshing a bound grant requires the same certificate") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -459,7 +443,6 @@ object MutualTlsSpec extends E2ESpec:
         assertTrue(thumbprint.contains(certificate.thumbprint))
           .label("the renewed token must carry the same binding")
     },
-
     test("/userinfo honours a certificate-bound token only over the certificate it is bound to") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)
@@ -508,7 +491,6 @@ object MutualTlsSpec extends E2ESpec:
         assertTrue(mismatched match { case f: UserinfoResult.Failure => f.response.status == Status.Unauthorized; case _ => false })
           .label("and another client's certificate is no better than none")
     },
-
     test("/userinfo leaves an unbound token alone though the tenant forwards certificates") {
       for
         (_, auth) <- setup(Flows.Id.LoginPassword)

@@ -82,7 +82,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
     java.util.Base64.getUrlEncoder.withoutPadding.encodeToString(bytes)
 
   def spec = suite("Refresh token grant")(
-
     test("redeeming a refresh token issues a new access token that works") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -116,7 +115,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(!spent.active)
           .label("the refresh token that was spent must introspect as inactive")
     },
-
     test("the refreshed access token is a new one and keeps the original subject") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -137,7 +135,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(userinfo.sub == original.sub)
           .label(s"'sub' must survive the refresh: expected ${original.sub}, got ${userinfo.sub}")
     },
-
     test("a refresh token is single-use: replaying a spent token revokes the whole rotation family") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -209,7 +206,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(live.active)
           .label("the token the repeat handed back must be the family's live tip")
     },
-
     test("a spent refresh token repeated under a different Idempotency-Key is still a replay") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -282,8 +278,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(introspected.count(identity) == 1)
           .label(s"exactly one generation may be left live, got ${introspected.count(identity)} of $copies")
     },
-
-
     test("a refresh may narrow the granted scope") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -302,7 +296,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(userinfo.email.isEmpty)
           .label("dropping 'email' from the scope must drop the email claim from /userinfo")
     },
-
     test("a refresh may not widen the granted scope") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -318,7 +311,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
       yield assertTrue(status == Status.BadRequest && error == "invalid_scope")
         .label(s"asking for a scope the grant never carried must be 400 invalid_scope, got $status/$error")
     },
-
     test("a refresh token invalidated by re-auth without offline_access is rejected at /token") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -361,7 +353,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
       yield assertTrue(status == Status.BadRequest && error == "invalid_grant")
         .label(s"an invalidated refresh token must be refused by /token, got $status/$error")
     },
-
     test("a refresh token revoked at /revoke is rejected at /token") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -379,7 +370,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(status == Status.BadRequest && error == "invalid_grant")
           .label(s"a revoked refresh token must be refused by /token, got $status/$error")
     },
-
     test("an unissued refresh token is rejected as an invalid grant") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -392,7 +382,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
       yield assertTrue(status == Status.BadRequest && error == "invalid_grant")
         .label(s"a refresh token that was never issued must be 400 invalid_grant, got $status/$error")
     },
-
     test("another client's refresh token is rejected as an invalid grant") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -408,7 +397,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
       yield assertTrue(status == Status.BadRequest && error == "invalid_grant")
         .label(s"a refresh token belonging to another client must be 400 invalid_grant, got $status/$error")
     },
-
     test("a refresh with the wrong client secret is rejected as an invalid client") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -431,7 +419,6 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(after.accessToken.nonEmpty)
           .label("a failed client authentication must not spend the refresh token")
     },
-
     test("a login without offline_access yields no refresh token") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -439,5 +426,4 @@ object RefreshTokenFlowSpec extends E2ESpec:
       yield assertTrue(first.tokens.refreshToken.isEmpty)
         .label(s"no offline_access means no refresh token, got ${first.tokens.refreshToken.isDefined}")
     },
-
   ) @@ TestAspect.sequential @@ TestAspect.timeout(120.seconds)

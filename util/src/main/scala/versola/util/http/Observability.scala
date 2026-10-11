@@ -248,53 +248,53 @@ object Observability:
             // mid-flow annotate every log line of this request and no other
             logContext.locallyWith(identity)(
               routeLabel.locally(None)(
-              routePath.locally(None)(
-              for
-                startTime <- Clock.instant
-                now <- Clock.nanoTime
-                baseTags = Set(
-                  MetricLabel("method", request.method.name),
-                  MetricLabel("route", pattern),
-                )
-                response <- activeRequests.tagged(baseTags).increment
-                  .zipRight(handler(request))
-                  .ensuring(activeRequests.tagged(baseTags).decrement)
-                masking <- serverLogging.get
-                (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
-                after <- Clock.nanoTime
-                status = response.status.code
-                statusClass = s"${status / 100}xx"
-                label <- routeLabel.get
-                path <- routePath.get.map(_.getOrElse(pattern))
-                route = label.fold(path)(l => s"$path?$l")
-                tags = Set(
-                  MetricLabel("method", request.method.name),
-                  MetricLabel("route", route),
-                )
-                _ <- requestsCount
-                  .tagged(tags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
-                  .increment
-                _ <- requestDuration
-                  .tagged(tags + MetricLabel("status_class", statusClass))
-                  .update((after - now) / 1e9)
-                log = receiveHttp(
-                  ReceiveHttpLog(
-                    request = requestLog,
-                    response = responseLog,
-                    startTime = startTime,
-                    elapsedMillis = (after - now) / 1000000,
-                  ),
-                )
-                loggerName = logging.loggerName("versola.http.HttpServer")
-                cause <- cause.get
-                _ <- cause match
-                  case Some(cause) =>
-                    ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
-                  case None =>
-                    ZIO.logInfo("receive-http") @@ log @@ loggerName
-                _ <- Observability.cause.set(None)
-              yield response,
-              ),
+                routePath.locally(None)(
+                  for
+                    startTime <- Clock.instant
+                    now <- Clock.nanoTime
+                    baseTags = Set(
+                      MetricLabel("method", request.method.name),
+                      MetricLabel("route", pattern),
+                    )
+                    response <- activeRequests.tagged(baseTags).increment
+                      .zipRight(handler(request))
+                      .ensuring(activeRequests.tagged(baseTags).decrement)
+                    masking <- serverLogging.get
+                    (requestLog, responseLog) <- toLog(request, masking) <&> toLog(request, response, masking)
+                    after <- Clock.nanoTime
+                    status = response.status.code
+                    statusClass = s"${status / 100}xx"
+                    label <- routeLabel.get
+                    path <- routePath.get.map(_.getOrElse(pattern))
+                    route = label.fold(path)(l => s"$path?$l")
+                    tags = Set(
+                      MetricLabel("method", request.method.name),
+                      MetricLabel("route", route),
+                    )
+                    _ <- requestsCount
+                      .tagged(tags + MetricLabel("status", status.toString) + MetricLabel("status_class", statusClass))
+                      .increment
+                    _ <- requestDuration
+                      .tagged(tags + MetricLabel("status_class", statusClass))
+                      .update((after - now) / 1e9)
+                    log = receiveHttp(
+                      ReceiveHttpLog(
+                        request = requestLog,
+                        response = responseLog,
+                        startTime = startTime,
+                        elapsedMillis = (after - now) / 1000000,
+                      ),
+                    )
+                    loggerName = logging.loggerName("versola.http.HttpServer")
+                    cause <- cause.get
+                    _ <- cause match
+                      case Some(cause) =>
+                        ZIO.logErrorCause("receive-http", cause) @@ log @@ loggerName
+                      case None =>
+                        ZIO.logInfo("receive-http") @@ log @@ loggerName
+                    _ <- Observability.cause.set(None)
+                  yield response,
+                ),
               ),
             ) @@ tracing.aspects.extractSpan(
               TraceContextPropagator.default,

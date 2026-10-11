@@ -37,7 +37,7 @@ test('creates a tenant, selects it, and refreshes the selector choices', async (
   await expect(page).toHaveURL(/tenant=tenant-gamma/);
   await expect(tenantSelectorButton(page)).toContainText('tenant-gamma');
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('selectedTenantId'))).toBe('tenant-gamma');
-  expect(findRequest(api.requests, 'POST', '/configuration/tenants').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/tenants')).body).toEqual({
     id: 'tenant-gamma',
     description: 'Gamma Workspace',
     edgeId: null,
@@ -58,7 +58,7 @@ test('creates a standard tenant and offers the profile only at creation', async 
   await page.getByRole('button', { name: 'Create Tenant', exact: true }).click();
 
   await expect(page.locator('.tenant-card').filter({ hasText: 'Delta Workspace' }).first()).toBeVisible();
-  expect(findRequest(api.requests, 'POST', '/configuration/tenants').body).toEqual({
+  expect((await findRequest(api.requests, 'POST', '/configuration/tenants')).body).toEqual({
     id: 'tenant-delta',
     description: 'Delta Workspace',
     edgeId: null,
@@ -103,7 +103,7 @@ test('edits a tenant description and keeps the id secondary on the card', async 
   await openTenantDropdown(page);
   await expect(page.locator('tenant-selector .dropdown').getByRole('button', { name: 'tenant-alpha' })).toBeVisible();
   await expect(page.locator('tenant-selector .dropdown').getByText('Alpha Platform')).toHaveCount(0);
-  expect(findRequest(api.requests, 'PUT', '/configuration/tenants').body).toEqual({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/tenants')).body).toEqual({
     id: 'tenant-alpha',
     description: 'Alpha Platform',
     edgeId: null,
@@ -121,7 +121,7 @@ test('deletes a tenant through the confirm dialog and removes it from the select
   await dialog.getByRole('button', { name: 'Delete' }).click();
 
   await expect(page.locator('.tenant-card').filter({ hasText: 'Bravo Workspace' })).toHaveCount(0);
-  expect(findRequest(api.requests, 'DELETE', '/configuration/tenants').searchParams.tenantId).toBe('tenant-bravo');
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/tenants')).searchParams.tenantId).toBe('tenant-bravo');
 
   await openTenantDropdown(page);
   await expect(page.locator('tenant-selector .dropdown').getByRole('button', { name: 'tenant-bravo' })).toHaveCount(0);

@@ -16,4 +16,3 @@ object GrantType:
     case "client_credentials" => Right(GrantType.ClientCredentials)
     case "refresh_token" => Right(GrantType.RefreshToken)
     case other => Left(s"Unsupported grant type: $other")
-

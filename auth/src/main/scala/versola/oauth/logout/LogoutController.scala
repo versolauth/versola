@@ -3,10 +3,10 @@ package versola.oauth.logout
 import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{SessionCookie, State}
-import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.oauth.session.SessionService
-import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
+import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.util.http.{Controller, Observability}
+import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -43,11 +43,13 @@ object LogoutController extends Controller:
           .map(_.map(_.split(' ').toList.filter(_.nonEmpty)))
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
-        _ <- Observability.setRouteLabel("flow", (sessionId, idTokenHint) match
-          case (Some(_), Some(_)) => "hint"
-          case (Some(_), None)    => "cookie"
-          case (None, Some(_))    => "hint"
-          case (None, None)       => "anonymous"
+        _ <- Observability.setRouteLabel(
+          "flow",
+          (sessionId, idTokenHint) match
+            case (Some(_), Some(_)) => "hint"
+            case (Some(_), None) => "cookie"
+            case (None, Some(_)) => "hint"
+            case (None, None) => "anonymous",
         )
         renderService <- ZIO.service[ConversationRenderService]
         hint <- resolveHint(idTokenHint)
@@ -85,11 +87,13 @@ object LogoutController extends Controller:
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
-        _ <- Observability.setRouteLabel("flow", (sessionId, idTokenHint) match
-          case (Some(_), Some(_)) => "hint"
-          case (Some(_), None)    => "confirm"
-          case (None, Some(_))    => "hint"
-          case (None, None)       => "anonymous"
+        _ <- Observability.setRouteLabel(
+          "flow",
+          (sessionId, idTokenHint) match
+            case (Some(_), Some(_)) => "hint"
+            case (Some(_), None) => "confirm"
+            case (None, Some(_)) => "hint"
+            case (None, None) => "anonymous",
         )
         renderService <- ZIO.service[ConversationRenderService]
         hint <- resolveHint(idTokenHint)
@@ -103,13 +107,13 @@ object LogoutController extends Controller:
               submission =>
                 val expected = csrfToken(rawId, submission.postLogoutRedirectUri, submission.state, config)
                 if matches(submission.csrfToken, expected) then
-                    ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
-                      case Some(info) =>
-                        setSessionAuth(info) *>
-                          performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
-                      case None =>
+                  ZIO.serviceWithZIO[SessionService](_.find(rawId)).flatMap {
+                    case Some(info) =>
+                      setSessionAuth(info) *>
                         performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
-                    }
+                    case None =>
+                      performLogout(Right(rawId), submission.postLogoutRedirectUri.flatMap(URL.decode(_).toOption), submission.state, renderService)
+                  }
                 else
                   Observability.setError("csrf_mismatch").as(Response.forbidden),
             )
@@ -128,7 +132,12 @@ object LogoutController extends Controller:
     request.cookie(SessionCookie.name)
       .flatMap(cookie => SessionCookie.parse(cookie.content, config.security.sessionCookieSecret).toOption)
 
-  private def performLogout(identifier: Either[PublicSessionId, SessionId], redirect: Option[URL], state: Option[State], render: ConversationRenderService): RIO[LogoutService, Response] =
+  private def performLogout(
+      identifier: Either[PublicSessionId, SessionId],
+      redirect: Option[URL],
+      state: Option[State],
+      render: ConversationRenderService,
+  ): RIO[LogoutService, Response] =
     for
       result <- ZIO.serviceWithZIO[LogoutService](_.logout(identifier, redirect, state))
       rendered <- render.renderLogout(result.logoutUris, result.postLogoutRedirectUri, result.state)
@@ -160,8 +169,8 @@ object LogoutController extends Controller:
   private given FormDecoder[LogoutConfirmSubmission] = (form: Form) =>
     for
       csrfToken <- FormDecoder.single(form, "csrf_token", Right(_))
-      redirect  <- FormDecoder.optional(form, "post_logout_redirect_uri", Right(_))
-      state     <- FormDecoder.optional(form, "state", s => Right(State(s)))
+      redirect <- FormDecoder.optional(form, "post_logout_redirect_uri", Right(_))
+      state <- FormDecoder.optional(form, "state", s => Right(State(s)))
     yield LogoutConfirmSubmission(csrfToken, redirect, state)
 
   /** Binds the confirmation token to the logout parameters, so the form can resubmit them without

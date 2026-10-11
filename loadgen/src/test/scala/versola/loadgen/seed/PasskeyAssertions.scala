@@ -1,9 +1,9 @@
 package versola.loadgen.seed
 
-import java.security.spec.{ECPoint, ECPublicKeySpec, PKCS8EncodedKeySpec}
-import java.security.{AlgorithmParameters, KeyFactory, Signature}
 import java.security.interfaces.ECPublicKey
 import java.security.spec.{ECGenParameterSpec, ECParameterSpec}
+import java.security.spec.{ECPoint, ECPublicKeySpec, PKCS8EncodedKeySpec}
+import java.security.{AlgorithmParameters, KeyFactory, Signature}
 
 /** Reconstructs a P-256 public key from the COSE bytes [[PasskeyMaterial]] writes into
   * `passkeys.public_key`, and checks it against a signature made with the matching private key.

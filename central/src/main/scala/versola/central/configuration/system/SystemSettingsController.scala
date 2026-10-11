@@ -1,8 +1,8 @@
 package versola.central.configuration.system
 
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.Controller
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -20,7 +20,7 @@ object SystemSettingsController extends Controller:
   val getSystemSettingsEndpoint =
     Method.GET / "configuration" / "system-settings" -> handler { (request: Request) =>
       for
-        _       <- authorizeBasic(request)
+        _ <- authorizeBasic(request)
         service <- ZIO.service[SystemSettingsService]
         settings <- service.getSettings
       yield Response.json(settings.toJson)
@@ -29,8 +29,8 @@ object SystemSettingsController extends Controller:
   val syncSystemSettingsEndpoint =
     Method.GET / "configuration" / "system-settings" / "sync" -> handler { (request: Request) =>
       for
-        _        <- authorizeInternal(request)
-        service  <- ZIO.service[SystemSettingsService]
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[SystemSettingsService]
         settings <- service.getSettings
       yield Response.json(settings.toJson)
     }
@@ -38,11 +38,11 @@ object SystemSettingsController extends Controller:
   val upsertSystemSettingsEndpoint =
     Method.PUT / "configuration" / "system-settings" -> handler { (request: Request) =>
       for
-        _       <- authorizeBasic(request)
+        _ <- authorizeBasic(request)
         service <- ZIO.service[SystemSettingsService]
-        body    <- request.bodyAs[SystemSettingsRecord]
-        result  <- service.upsertSettings(body)
+        body <- request.bodyAs[SystemSettingsRecord]
+        result <- service.upsertSettings(body)
       yield result match
-        case Right(_)    => Response.status(Status.NoContent)
+        case Right(_) => Response.status(Status.NoContent)
         case Left(error) => Response.text(error.message).status(Status.BadRequest)
     }

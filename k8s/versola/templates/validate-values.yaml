@@ -4,3 +4,4 @@ render, before any resource is produced -- Helm evaluates a directory's
 templates in reverse alphabetical order, and this file sorts last.
 */}}
 {{- include "versola.checkTopLevelPlacement" . -}}
+{{- include "versola.checkAvailability" . -}}

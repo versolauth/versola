@@ -62,4 +62,3 @@ object LocalCaIssuerSpec extends ZIOSpecDefault:
       assertTrue(auth.subjectType == MutualTlsSubjectType.subject_dn, auth.subjectValue == "CN=mobile-app,OU=tenant-a,O=Versola")
     },
   ) @@ TestAspect.withLiveClock
-

@@ -11,4 +11,3 @@ case class TenantRecord(
 
 object TenantRecord:
   given Schema[TenantRecord] = DeriveSchema.gen
-

@@ -2,7 +2,16 @@ package versola.oauth.session
 
 import versola.oauth.client.model.{ClientId, ScopeToken}
 import versola.oauth.model.RefreshToken
-import versola.oauth.session.model.{PriorSession, PublicSessionId, RefreshAlreadyExchanged, RefreshTokenFamilyId, RefreshTokenRecord, RevokedFamily, SessionId, SessionRecord}
+import versola.oauth.session.model.{
+  PriorSession,
+  PublicSessionId,
+  RefreshAlreadyExchanged,
+  RefreshTokenFamilyId,
+  RefreshTokenRecord,
+  RevokedFamily,
+  SessionId,
+  SessionRecord,
+}
 import versola.user.model.UserId
 import versola.util.MAC
 import zio.*

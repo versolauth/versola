@@ -1,6 +1,17 @@
 package versola.oauth.client
 
-import versola.oauth.client.model.{ApplicationType, AuthFlow, AuthMethod, ClientId, ConsentFlow, MutualTlsAuth, OAuthClientRecord, RegistrationFlow, ScopeToken, TenantId}
+import versola.oauth.client.model.{
+  ApplicationType,
+  AuthFlow,
+  AuthMethod,
+  ClientId,
+  ConsentFlow,
+  MutualTlsAuth,
+  OAuthClientRecord,
+  RegistrationFlow,
+  ScopeToken,
+  TenantId,
+}
 import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec

@@ -16,6 +16,7 @@ import zio.*
 import zio.http.*
 import zio.json.ast.Json
 import zio.json.{DecoderOps, EncoderOps}
+import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
 import java.security.KeyPairGenerator
@@ -30,6 +31,7 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
   private val clientId = ClientId("web-app")
   private val backendUrl = URL.decode("http://backend.local").toOption.get
   private val centralUrl = URL.decode("https://central.example").toOption.get
+
   /** The origin clients reach the edge on, and so the base of every `htu` a proof is
     * checked against. Deliberately neither the upstream's nor auth's. */
   private val edgePublicUrl = URL.decode("https://edge.example").toOption.get
@@ -50,8 +52,18 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
     cookiePath = Some("/"),
   )
 
-  private val oauthClient = OAuthClient(id = clientId, credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
-  private val svcClient = OAuthClient(id = ClientId("svc-1"), credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))), permissions = Set.empty, accessTokenTtl = 15.minutes)
+  private val oauthClient = OAuthClient(
+    id = clientId,
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(1.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
+  private val svcClient = OAuthClient(
+    id = ClientId("svc-1"),
+    credential = ClientCredential.ClientSecret(Secret(Array.fill(48)(3.toByte))),
+    permissions = Set.empty,
+    accessTokenTtl = 15.minutes,
+  )
 
   /** A client that authenticates by certificate (RFC 8705 §2), which is what makes the tokens
     * auth issues it certificate-bound (§3). */
@@ -70,6 +82,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(versola.util.Dpop.Algorithm.Default)
       override def requireNonce: UIO[Boolean] = ZIO.succeed(true)
       override def refreshNow: Task[Unit] = ZIO.unit
+
+  private def overheadCount(resource: ResourceId): UIO[Long] =
+    Metric.histogram("edge_proxy_overhead_seconds", ProxyMetrics.boundaries)
+      .tagged(MetricLabel("resource", resource.toString)).value.map(_.count)
 
   class Env:
     val secureRandom = stub[SecureRandom]
@@ -646,6 +662,39 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         upstream.exists(_.headers.get("x-user").contains("user-1")),
         upstream.exists(_.headers.get(Header.Cookie.name).isEmpty),
       )
+    },
+    test("records the time edge spent before handing a request to the resource") {
+      val env = new Env
+      val resource = ResourceId("users-api")
+      for
+        _ <- env.setupDefaults()
+        _ <- env.withClients()
+        _ <- captureUpstream(body = "users-payload")
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = None)))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        before <- overheadCount(resource)
+        response <- env.buildService(client, security).proxy(resource, Path.decode("/users"), request)
+        after <- overheadCount(resource)
+      yield assertTrue(response.status == Status.Ok, after - before == 1L)
+    },
+    test("records no overhead for a request refused before it reached the resource") {
+      val env = new Env
+      val resource = ResourceId("users-api")
+      for
+        _ <- env.setupDefaults()
+        _ <- env.withClients()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint(allow = Some("false"))))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        before <- overheadCount(resource)
+        response <- env.buildService(client, security).proxy(resource, Path.decode("/users"), request)
+        after <- overheadCount(resource)
+      yield assertTrue(response.status == Status.Forbidden, after == before)
     },
     test("refuses the request when an injected header's CEL expression reads an absent claim") {
       val env = new Env
