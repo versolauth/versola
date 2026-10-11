@@ -333,9 +333,32 @@ fixed replica count.
 
 Check what the chart renders with `.github/scripts/check-chart-availability.sh`.
 
-### Outbound connections: `HTTP_CLIENT_POOL_SIZE`
+### Outbound connections: `HTTP_CLIENT_POOL_*`
 
-auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool keeps `HTTP_CLIENT_POOL_SIZE` connections **per target** (default 128; zio-http's own default is 10). An HTTP/1.1 connection serves one request at a time, so the pool bounds a pod's throughput towards one backend at `size / backend latency`: with 10 connections and a 13 ms backend, ~780 requests/s however idle the CPU, and past that the requests queue (seen in the step-load test as a ~1 s p99 on one edge pod). Size it for `peak requests/s per pod x backend p99 latency`, with headroom; set it through `services.<name>.extraEnv`. `http_client_active_requests{peer}` is the number of outbound requests in flight, queued ones included: it climbs first where a pool is too small.
+auth, central and edge share one outbound HTTP client (calls to each other, and edge's calls to the resource backends it proxies). Its pool is per **target**: zio-http 3.11.6 keeps one pool per (scheme, host, port, proxy, SSL and timeout settings), so every backend gets its own pool of the configured size, not one pool shared by all. Set the variables through `services.<name>.extraEnv`; the resolved pool is logged once at startup (`outbound HTTP client pool: ...`), so an A/B run can check what a pod runs with. An invalid value falls back to its default.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `HTTP_CLIENT_POOL_KIND` | `fixed` or `dynamic` | `fixed` |
+| `HTTP_CLIENT_POOL_SIZE` | connections per target; for `dynamic` the maximum | `128` (zio-http's own default is 10) |
+| `HTTP_CLIENT_POOL_MIN` | `dynamic` only: connections kept open when idle (not above the maximum) | `0` |
+| `HTTP_CLIENT_POOL_TTL` | `dynamic` only: how long the pool must be unused before it shrinks to the minimum, a duration such as `30s` or `2m` | `30s` |
+
+An HTTP/1.1 connection serves one request at a time, so the pool bounds a pod's throughput towards one backend at `size / backend latency`: with 10 connections and a 13 ms backend, ~780 requests/s however idle the CPU, and past that the requests queue (seen in the step-load test as a ~1 s p99 on one edge pod). Size it for `peak requests/s per pod x backend p99 latency`, with headroom. Neither kind fails when it is exhausted: the request waits for a free connection with no timeout of its own, so a pool that is too small shows as latency, never as errors. `http_client_active_requests{peer}` is the number of outbound requests in flight, queued ones included: it climbs first where a pool is too small.
+
+What the kinds do (read from zio-http 3.11.6 and zio 2.1.26):
+
+- `fixed`: exactly `size` connections per target, all opened when the target is first used (the first request waits for them) and kept for good. The default, unchanged from before this variable existed.
+- `dynamic`: between `min` and `size` connections per target. `min` are opened on first use, more on demand up to `size`. The pool shrinks back to `min` only after it has seen no checkout or return for `TTL`; this is a pool-wide idle time, not a per-connection one, so under steady traffic the extra connections stay open. A connection that closed while pooled is discarded on checkout and another is tried.
+- zio-http also has per-host sizes (`FixedPerHost`, `DynamicPerHost`); they are not exposed here.
+
+Which to pick (provisional: this is reasoning from how pools behave, to be replaced by the A/B on the cluster, which is the point of the switch):
+
+- Edge to many resource backends, long-lived keep-alive (reverse-proxy shape): `fixed 128` opens 128 connections to every backend it touches, idle or not. With many backends that is a lot of sockets, and memory in the pod and on the backends, and a rarely used backend holds them indefinitely. `dynamic` with a low `MIN` and a `SIZE` at the ceiling you would have used for `fixed` pays only for the backends in use. It costs a connection set-up when a burst arrives.
+- Service-to-service (edge to auth, auth to central): few targets, steady traffic, usually in-cluster and often plain HTTP. `fixed` keeps warm connections ready for a burst, with no handshake on the request path; with so few targets the idle-socket cost is small. A TLS handshake (or mTLS through a mesh) makes a connection expensive to open, which favours a high `MIN` or `fixed` here.
+- Stale idle connections: a backend, load balancer or mesh sidecar that closes idle connections after its own timeout leaves the client with dead sockets. zio-http only discovers this on checkout, and retries on another. A `fixed` pool under low traffic holds idle connections the longest, so it is more exposed. `dynamic` only helps once the whole pool has been idle for `TTL`, so keep `TTL` below the shortest idle timeout on the path.
+- Burst cost: `dynamic` with `MIN=0` turns a burst into a burst of connects (TCP, plus TLS where used), visible as a latency step at the start of the burst; raise `MIN` to the steady-state concurrency to avoid it.
+- Memory: each connection holds a socket and Netty channel buffers (and TLS state), small per connection but multiplied by targets x pods; compare pod memory and the backends' connection counts between the two kinds.
 
 ---
 
