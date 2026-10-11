@@ -298,14 +298,14 @@ case class RefreshCountConfig(mobileMean: Double = 0.0, dispersion: Double = 0.6
 case class LogoutProbabilityConfig(mobile: Double, web: Double)
 
 /** @param refreshTokenTtl
-  *   how long a rotated refresh token stays usable. Not in dev spec §5, and required rather than
-  *   inferred: the token response carries `expires_in` for the *access* token only, while
+  *   how long a refresh token chain stays usable, counted from login: the SUT fixes the expiry at
+  *   issuance and a rotation inherits it. Not in dev spec §5, and required rather than inferred:
+  *   the token response carries `expires_in` for the *access* token only, while
   *   `vu_sessions.refresh_expires_at` is what `listLive` resumes a mobile session on after a
-  *   restart. Carrying the previous row's expiry forward instead would make every rotation
-  *   shorten the session's remaining life, and guessing it long would have a driver resume on
-  *   tokens the SUT has already expired and report the 401s as the SUT's. It has to match the
+  *   restart; guessing it long would have a driver resume on tokens the SUT has already expired
+  *   and report the 401s as the SUT's. It has to match the
   *   client's provisioned `refreshTokenTtlSeconds`
-  *   ([[versola.loadgen.provision.CampaignBlueprint]]'s 30 days).
+  *   ([[versola.loadgen.provision.CampaignBlueprint]]'s 180 days).
   */
 case class SessionConfig(
     fullLoginProbability: FullLoginProbabilityConfig,

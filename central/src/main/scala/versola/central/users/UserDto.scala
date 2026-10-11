@@ -130,7 +130,7 @@ case class SessionResponse(
 
 case class RefreshTokenResponse(
     /** The session this token was issued under. May no longer resolve to a live session:
-     *  a refresh token's expiry slides forward on every use while a session's does not,
+     *  a refresh token's expiry is fixed at issuance and independent of a session's,
      *  so a token routinely outlives it. */
     sessionId: String,
     clientId: ClientId,

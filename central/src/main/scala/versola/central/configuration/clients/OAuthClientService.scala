@@ -335,7 +335,7 @@ object OAuthClientService:
           secret = encryptedSecret,
           previousSecret = None,
           accessTokenTtl = Duration.fromSeconds(request.accessTokenTtl),
-          refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(7776000)),
+          refreshTokenTtl = Duration.fromSeconds(request.refreshTokenTtl.getOrElse(15552000)),
           permissions = request.permissions,
           theme = request.theme,
           authFlow = request.authFlow,

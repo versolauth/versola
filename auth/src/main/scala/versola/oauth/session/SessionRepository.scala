@@ -48,7 +48,7 @@ trait SessionRepository:
 
   /** Every currently-live refresh token issued to a user, for admin-panel display. Looked up
     * directly by `user_id` rather than through the user's sessions: a refresh token's expiry
-    * slides forward on every use while a session's does not, so a token routinely outlives the
+    * is fixed at issuance (180 days by default) while a session's is not tied to it, so a token routinely outlives the
     * session it was issued under, and one whose session has already expired (or been swept)
     * must still show up here.
     */
@@ -140,7 +140,8 @@ trait SessionRepository:
   ): Task[Option[RevokedFamily]]
 
   /** Refreshes a sender-constrained (DPoP-bound) token in place: narrows `scope` to what this
-    * refresh was granted and slides the expiry, without rotating. Rotation exists to detect a
+    * refresh was granted, without rotating. The expiry is fixed at issuance and is never
+    * touched here, so a refresh that does not narrow the grant writes nothing. Rotation exists to detect a
     * stolen token being used; a bound token cannot be used by whoever copied it, so the chain,
     * its retained generations and the idempotency key that makes rotation retryable are all
     * unnecessary here.
@@ -152,12 +153,13 @@ trait SessionRepository:
     * the request named no scope, or named the one already stored, the stored value is already
     * correct and writing it buys a row version for nothing.
     *
-    * Returns false when the token is gone, expired or retired.
+    * Returns false when the token is gone, expired or retired. That is checked on every call,
+    * including the one that writes nothing, because revocation works by setting `expires_at`
+    * to now: the caller's earlier read can be stale by the time it gets here.
     */
   def renewBoundToken(
       token: MAC.Of[RefreshToken],
       scope: Option[Set[ScopeToken]],
-      expiresAt: Instant,
   ): Task[Boolean]
 
   def delete(token: MAC.Of[RefreshToken]): Task[Unit]

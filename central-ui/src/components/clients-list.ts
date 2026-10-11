@@ -1208,7 +1208,7 @@ export class VersolaClientsList extends LitElement {
                       ${client.scope.includes('offline_access') ? html`
                         <div class="detail-section">
                           <div class="detail-label">Refresh Token TTL</div>
-                          <div class="detail-value">${formatDuration(client.refreshTokenTtl ?? 90 * 24 * 60 * 60)}</div>
+                          <div class="detail-value">${formatDuration(client.refreshTokenTtl ?? 180 * 24 * 60 * 60)}</div>
                         </div>
                       ` : ''}
 

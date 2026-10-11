@@ -88,8 +88,8 @@ object CampaignBlueprint:
     */
   val fapi2AccessTokenTtlSeconds = 3600
 
-  /** 30 days, per §2.2's "refresh token in the app, rotating, 30 d". */
-  private val refreshTokenTtlSeconds = 2592000
+  /** 180 days, the product default: a refresh token's lifetime is fixed at issuance and not extended by use. */
+  private val refreshTokenTtlSeconds = 15552000
 
   /** Step-up ACRs, in the two combinations the ten actions require.
     *

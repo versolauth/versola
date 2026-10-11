@@ -258,16 +258,16 @@ test('shows refresh token TTL only after selecting offline_access when creating 
   await fillBasics(page, 'offline-client', 'Offline Client');
   await continueToThirdStep(page);
 
-  // Creation asks for the scope, not the lifetime - a new client takes the 90-day default and
+  // Creation asks for the scope, not the lifetime - a new client takes the 180-day default and
   // the edit page is where that is changed.
   await page.getByRole('button', { name: 'offline_access', exact: true }).click();
   await continueToReview(page);
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Refresh token' }))
-    .toContainText('90 days');
+    .toContainText('180 days');
   await submitCreate(page);
 
   expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
-    refreshTokenTtl: 90 * 24 * 60 * 60,
+    refreshTokenTtl: 180 * 24 * 60 * 60,
   });
 
   await clientCard(page, 'Offline Client').getByRole('button', { name: 'Edit client offline-client' }).click();

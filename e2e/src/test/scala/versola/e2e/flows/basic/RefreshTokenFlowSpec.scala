@@ -278,6 +278,32 @@ object RefreshTokenFlowSpec extends E2ESpec:
         assertTrue(introspected.count(identity) == 1)
           .label(s"exactly one generation may be left live, got ${introspected.count(identity)} of $copies")
     },
+    test("a refresh token's lifetime is fixed at login: rotating does not extend it") {
+      for
+        auth <- ZIO.serviceWith[Flows.Setups](_.client)
+        // Six seconds: long enough to log in and refresh once, short enough to outwait.
+        s <- Flows.setupEmailOtp(refreshTokenTtl = Some(6)).provideEnvironment(ZEnvironment(auth))
+        first <- login(s, auth)
+        original <- refreshTokenOf(first.tokens)
+        _ <- ZIO.sleep(3.seconds)
+        refreshed <- auth.refresh(
+          original,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+        ).success
+        rotated <- refreshTokenOf(refreshed)
+        // Past the six seconds counted from login, but inside the six counted from the refresh
+        // above, which is where a sliding expiry would have put this token.
+        _ <- ZIO.sleep(4.seconds)
+        late <- auth.refresh(
+          rotated,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+        )
+        outcome <- rejection(late)
+      yield assertTrue(outcome._2 == "invalid_grant")
+        .label(s"a rotated token must not outlive the expiry fixed at login, got $outcome")
+    },
     test("a refresh may narrow the granted scope") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
