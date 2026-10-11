@@ -189,8 +189,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
   /** Atomically expires all active sessions and refresh tokens for the given user.
     *
     * Reaches refresh_tokens by user_id directly rather than through the session ids just
-    * expired above: a refresh token's expiry slides forward on every use while a session's
-    * does not, so a token can still be live long after its session expired on its own, and
+    * expired above: a refresh token's expiry is fixed at issuance rather than tied to its
+    * session's, so a token can still be live long after its session expired on its own, and
     * force-logout has to revoke those too, not only the ones under a still-active session.
     */
   override def invalidateByUserId(userId: UserId): Task[List[SessionRecord]] =
@@ -364,6 +364,8 @@ class PostgresSessionRepository(xa: TransactorZIO)
             // against a revocation is the family lock's job (see `lockFamily`), not this row's.
             // Nothing here has to be kept alive to be lockable -- which is why the root needs
             // no expiry bump and is retained on the same terms as any other retired generation.
+            // The successor's `expires_at` is whatever `record` carries: the caller passes the
+            // predecessor's absolute expiry, so rotating never extends a family's lifetime.
             //
             // `expires_at` on the retired row is not "when this token stops working" --
             // rotated_at already means that -- it is how long the row survives the cleanup
@@ -519,38 +521,40 @@ class PostgresSessionRepository(xa: TransactorZIO)
   override def renewBoundToken(
       token: MAC.Of[RefreshToken],
       scope: Option[Set[ScopeToken]],
-      expiresAt: Instant,
   ): Task[Boolean] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("renew-bound-refresh-token"):
         // A sender-constrained token is not rotated: a copy of it is inert without the private
-        // key, so there is no chain to advance and no predecessor to retire. What is left to
-        // write is the slid expiry, which `GREATEST` keeps idempotent under a retry -- the row
-        // no longer has to be re-pointed at the access token just issued, since revocation
-        // reaches that token through the family this row already names.
+        // key, so there is no chain to advance and no predecessor to retire. Its expiry is
+        // fixed at issuance and is not written here -- extending it on every use was the
+        // single largest source of WAL for a bound grant, and never HOT.
         //
         // `scope` is carried only when this refresh narrowed the grant: this row is the
         // grant's only record, so a narrowing that is not persisted here is one the next
-        // refresh silently undoes -- but a refresh that named no scope leaves the stored
-        // value already correct, and rewriting it costs a row version per refresh to store
-        // what the row already holds.
-        val renewed = scope match
+        // refresh silently undoes. A refresh that named no scope leaves the stored value
+        // already correct, so nothing is written at all.
+        //
+        // Both branches still test `rotated_at IS NULL AND expires_at > now`: revocation works
+        // by setting `expires_at` to now, so the row the caller read a moment ago may have been
+        // revoked since. The writing branch gets that from its WHERE clause (a concurrent
+        // revocation holds the row lock, and the UPDATE re-evaluates the predicate after it).
+        // The read-only branch repeats the check as a plain SELECT, deliberately not
+        // FOR SHARE/FOR UPDATE, which would dirty the page and WAL-log a lock. What remains is
+        // the instant between this read and the response, which no check can close and which
+        // only affects an access token that is short-lived and denied by family on revocation.
+        scope match
           case Some(narrowed) =>
             sql"""
               UPDATE refresh_tokens
-              SET scope = $narrowed,
-                  expires_at = GREATEST(expires_at, $expiresAt)
+              SET scope = $narrowed
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
-            """.update.run()
+            """.update.run() > 0
 
           case None =>
             sql"""
-              UPDATE refresh_tokens
-              SET expires_at = GREATEST(expires_at, $expiresAt)
+              SELECT 1 FROM refresh_tokens
               WHERE id = $token AND rotated_at IS NULL AND expires_at > $now
-            """.update.run()
-
-        renewed > 0
+            """.query[Int].run().nonEmpty
 
   override def delete(token: MAC.Of[RefreshToken]): Task[Unit] =
     Clock.instant.flatMap: now =>
@@ -608,8 +612,8 @@ object PostgresSessionRepository:
     *     detection still works is however long the cleanup sweep takes to physically delete the
     *     row, not a value this code promises.
     *
-    * Independent of refresh_token_ttl on purpose: that value governs how long an *unused* token
-    * stays valid, not how far back a replay has to be detectable. Once the row is gone, both
+    * Independent of refresh_token_ttl on purpose: that value fixes how long a token chain can
+    * live in total, not how far back a replay has to be detectable. Once the row is gone, both
     * callers fall back to a plain invalid_grant with no revocation -- the pre-fix behavior --
     * which is an accepted trade-off for keeping the table's steady-state size bounded by
     * rotation frequency times this window rather than times the (typically much longer)

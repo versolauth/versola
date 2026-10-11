@@ -4,6 +4,7 @@ import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpCodecError
+import zio.http.netty.NettyConfig
 import zio.json.*
 import zio.logging.{LogAnnotation, logContext}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
@@ -14,6 +15,8 @@ import zio.telemetry.opentelemetry.tracing.propagation.TraceContextPropagator
 
 import java.time.Instant
 import scala.collection.mutable
+import scala.concurrent.duration.Duration as ScalaDuration
+import scala.util.Try
 
 object Observability:
   val receiveHttp = LogAnnotation[ReceiveHttpLog]("http", (_, r) => r, _.toJson)
@@ -157,6 +160,13 @@ object Observability:
 
   private val clientRequestDuration =
     Metric.histogram("http_client_request_duration_seconds", clientDurationBoundaries)
+
+  /** Outbound requests in flight per target, queued for a pooled connection included. Where the
+    * pool is too small this is what climbs (a request waiting for a connection is in flight from its
+    * caller's side), long before any CPU or latency average moves.
+    */
+  private val clientActiveRequests =
+    Metric.gauge("http_client_active_requests")
 
   /** Masks an `Authorization` header value while preserving its scheme, e.g. `Bearer secret`
     * becomes `Bearer ***` and `Basic secret` becomes `Basic ***`, so logs stay useful for
@@ -305,8 +315,88 @@ object Observability:
               SpanKind.SERVER,
             )
 
+  /** Outbound connection pool of the shared client, chosen by environment (all optional, an invalid
+    * value falls back to its default):
+    *
+    *   - `HTTP_CLIENT_POOL_KIND`: `fixed` (default) or `dynamic`.
+    *   - `HTTP_CLIENT_POOL_SIZE`: connections per target, default [[defaultClientPoolSize]]. For `dynamic` this is the maximum.
+    *   - `HTTP_CLIENT_POOL_MIN`: `dynamic` only, connections kept open when idle, default 0.
+    *   - `HTTP_CLIENT_POOL_TTL`: `dynamic` only, how long the pool must be unused before it shrinks back to the minimum,
+    *     e.g. `30s`, default [[defaultClientPoolTtl]].
+    *
+    * What zio-http 3.11.6 does with them (read from `NettyConnectionPool` and zio 2.1.26's `ZKeyedPool`/`ZPool`):
+    *
+    *   - Both `Fixed` and `Dynamic` are per target, not global. Pools are keyed by `PoolKey` (scheme, host and port, plus proxy,
+    *     SSL config, header limits and timeouts), and each key gets its own `ZPool` with the configured size. `FixedPerHost` and
+    *     `DynamicPerHost` differ only in that they can override the size per URL; they are not exposed here.
+    *   - `Fixed(n)` is a pool of exactly `n..n` and `Dynamic(min, max, ttl)` of `min..max`. A pool opens its `min` connections
+    *     when its target is first used (the first request waits for them), so `Fixed(128)` opens 128 connections to every
+    *     backend on first use, whereas `Dynamic` with `min = 0` opens one per concurrent request, up to `max`.
+    *   - A `Dynamic` pool shrinks to `min` only when nothing has been taken from or returned to it for `ttl`. It is a pool-wide
+    *     idle time, not a per-connection one: under steady traffic the extra connections stay open.
+    *   - Neither kind fails when the pool is exhausted: the caller waits on the pool's queue, without a timeout, until a
+    *     connection is released. So a too small `max` shows as latency and as `http_client_active_requests`, never as errors.
+    *   - A pooled channel that has closed is discarded on checkout and another is tried, up to `max` times.
+    *
+    * `Fixed` is the pre-existing behaviour. zio-http's own default is `Fixed(10)`, and an HTTP/1.1 connection serves one request
+    * at a time, so ten of them cap a pod at `10 / latency` requests per second towards each target: ~780/s at
+    * 13 ms, 200/s at 50 ms, however idle its CPU is. Seen on the Yandex Cloud step-load test: one edge
+    * pod, at 780 rps to a backend answering in 13 ms, tipped over that line, queued 486 requests and
+    * answered the resource proxy with a p99 of ~1 s while the other pod and every CPU were fine; both held
+    * exactly ten established connections to each backend (`/proc/net/tcp`).
+    */
+  final val defaultClientPoolSize: Int = 128
+
+  final val defaultClientPoolMin: Int = 0
+
+  final val defaultClientPoolTtl: Duration = 30.seconds
+
+  /** Resolves the pool settings from their raw values (`None` when unset). Pure, so it can be tested without the environment. */
+  def poolConfig(
+      kind: Option[String],
+      size: Option[String],
+      min: Option[String],
+      ttl: Option[String],
+  ): ConnectionPoolConfig =
+    val maximum = size.flatMap(_.trim.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
+    kind.map(_.trim.toLowerCase) match
+      case Some("dynamic") =>
+        val minimum = min.flatMap(_.trim.toIntOption).filter(m => m >= 0 && m <= maximum).getOrElse(defaultClientPoolMin.min(maximum))
+        val keepAlive = ttl.flatMap(parseDuration).getOrElse(defaultClientPoolTtl)
+        ConnectionPoolConfig.Dynamic(minimum, maximum, keepAlive)
+      case _ =>
+        ConnectionPoolConfig.Fixed(maximum)
+
+  private def parseDuration(value: String): Option[Duration] =
+    Try(ScalaDuration(value.trim)).toOption
+      .filter(d => d.isFinite && d > ScalaDuration.Zero)
+      .map(Duration.fromScala)
+
+  private def env(name: String): Option[String] = Option(java.lang.System.getenv(name))
+
+  val clientPoolConfig: ConnectionPoolConfig =
+    poolConfig(env("HTTP_CLIENT_POOL_KIND"), env("HTTP_CLIENT_POOL_SIZE"), env("HTTP_CLIENT_POOL_MIN"), env("HTTP_CLIENT_POOL_TTL"))
+
+  /** Size of a `fixed` pool, the maximum of a `dynamic` one. */
+  val clientPoolSize: Int = clientPoolConfig match
+    case ConnectionPoolConfig.Dynamic(_, maximum, _) => maximum
+    case ConnectionPoolConfig.Fixed(size) => size
+    case _ => defaultClientPoolSize
+
+  def clientConfig(pool: ConnectionPoolConfig): ZClient.Config =
+    ZClient.Config.default.copy(connectionPool = pool)
+
+  def clientConfig(poolSize: Int): ZClient.Config = clientConfig(ConnectionPoolConfig.Fixed(poolSize))
+
+  /** `Client.default` with the given pool per target instead of zio-http's `Fixed(10)`. */
+  def pooledClient(pool: ConnectionPoolConfig): ZLayer[Any, Throwable, Client] =
+    (ZLayer.succeed(clientConfig(pool)) ++ ZLayer.succeed(NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default) >>> ZClient.live
+
+  def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] = pooledClient(ConnectionPoolConfig.Fixed(poolSize))
+
   val client: ZLayer[Tracing, Throwable, Client] =
-    (Client.default ++ ZLayer.service[Tracing]).map: env =>
+    (ZLayer.fromZIO(ZIO.logInfo(s"outbound HTTP client pool: $clientPoolConfig (per target)")) ++
+      pooledClient(clientPoolConfig) ++ ZLayer.service[Tracing]).map: env =>
       ZEnvironment(env.get[Client] @@ clientMiddleware(env.get[Tracing]))
 
   def clientMiddleware(tracing: Tracing): ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
@@ -333,8 +423,13 @@ object Observability:
                   _ <- tracing.injectSpan(TraceContextPropagator.default, carrier)
                   tracedHeaders = headers ++ Headers.fromIterable(carrier.kernel.map((k, v) => Header.Custom(k, v)))
                   startTime <- Clock.instant
-                  result <- client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
-                    .sandbox.exit.timed
+                  peerTag = url.kind match
+                    case loc: URL.Location.Absolute => Set(MetricLabel("peer", s"${loc.host}:${loc.port}"))
+                    case URL.Location.Relative => Set(MetricLabel("peer", "unknown"))
+                  result <- clientActiveRequests.tagged(peerTag).increment *>
+                    client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
+                      .sandbox.exit.timed
+                      .ensuring(clientActiveRequests.tagged(peerTag).decrement)
                   (duration, exit) = result
                   masking <- clientLogging.get
                   route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))

@@ -140,7 +140,9 @@ object RefreshDiscipline:
               id = session.id,
               expectedGeneration = generation,
               refreshToken = rotated,
-              refreshExpiresAt = now.plusSeconds(refreshTokenTtl.toSeconds),
+              // Fixed at login: the SUT's successor inherits the predecessor's expiry, so a
+              // rotation does not push it out. Only a row with no recorded expiry falls back.
+              refreshExpiresAt = session.refreshExpiresAt.getOrElse(now.plusSeconds(refreshTokenTtl.toSeconds)),
               accessExpiresAt = now.plusSeconds(tokens.expiresInSeconds),
               // The token response says nothing about assurance and a refresh cannot raise it, so
               // the stored value stands -- see `storeRotatedRefresh`'s COALESCE.

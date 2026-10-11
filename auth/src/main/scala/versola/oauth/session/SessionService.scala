@@ -41,8 +41,8 @@ trait SessionService:
   def invalidateAllByUser(userId: UserId): Task[List[SessionRecord]]
 
   /** Every currently-live refresh token issued to a user, for admin-panel display. Not
-   *  derived from [[listByUser]]'s sessions: a refresh token's expiry slides forward on
-   *  every use while a session's does not, so a token routinely outlives the session it
+   *  derived from [[listByUser]]'s sessions: a refresh token's expiry is fixed at issuance
+   *  and independent of a session's, so a token routinely outlives the session it
    *  was issued under and must still be listed once that session is gone. */
   def listRefreshTokensByUser(userId: UserId): Task[List[RefreshTokenRecord]]
 

@@ -1177,6 +1177,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** #463: the edge fronting this client generates its own key and enrols for a certificate;
         * central stores neither. Leaves out `mtlsAuth` and `edgeClientCertificate`. */
       enrollEdgeClientCertificate: Boolean = false,
+      /** Seconds; absent takes central's default (180 days). */
+      refreshTokenTtl: Option[Int] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1187,7 +1189,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       audience = List.empty,
       permissions = Set.empty,
       accessTokenTtl = 3600,
-      refreshTokenTtl = None,
+      refreshTokenTtl = refreshTokenTtl,
       theme = "default",
       authFlow = authFlow,
       registrationFlow = registrationFlow,

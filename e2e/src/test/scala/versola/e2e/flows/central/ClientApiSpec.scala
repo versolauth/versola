@@ -103,12 +103,12 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.int("accessTokenTtl")).contains(120)) &&
         assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(3600))
     },
-    test("an omitted refresh token lifetime falls back to ninety days") {
+    test("an omitted refresh token lifetime falls back to 180 days") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         record <- withClient(central, Fixtures.client(id))(_ => read(central, id))
-      yield assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(7776000))
+      yield assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(15552000))
         .label("clients registered without a refresh lifetime must still get a usable default")
     },
     test("a client registered from a console template reads it back, and a registration time") {

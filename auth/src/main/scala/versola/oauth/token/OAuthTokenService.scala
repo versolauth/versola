@@ -384,7 +384,9 @@ object OAuthTokenService:
           record = tokenRecord.copy(
             scope = scope.getOrElse(tokenRecord.scope),
             issuedAt = now,
-            expiresAt = now.plusSeconds(client.refreshTokenTtl.toSeconds),
+            // Fixed at issuance (code exchange) and never extended: a successor inherits the
+            // predecessor's absolute expiry, so a family cannot outlive it by refreshing.
+            expiresAt = tokenRecord.expiresAt,
           ),
           previousRefreshToken = Some(resolved.previousToken),
           idempotencyKey = idempotencyKeyMac,
@@ -644,11 +646,11 @@ object OAuthTokenService:
         refreshToken <- ZIO.when(record.scope.contains(ScopeToken.OfflineAccess))(
           boundRenewal match
             // Sender-constrained: nothing is rotated, so the client keeps the token it already
-            // has and the row is only re-pointed at the access token just issued. The single
-            // failure mode is the grant having been revoked between the read and this write.
+            // has and the row keeps the expiry it was issued with. The single failure mode is
+            // the grant having been revoked or expired between the read and this call.
             case Some(renewal) =>
               Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
-                sessionRepository.renewBoundToken(renewal.mac, renewal.narrowedScope, record.expiresAt)
+                sessionRepository.renewBoundToken(renewal.mac, renewal.narrowedScope)
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)
 

@@ -57,6 +57,26 @@
 # report (`GET /report/{campaign}`) states `run.tenantId` and
 # `run.securityProfile`; join the first onto any panel to split two campaigns.
 
+# Refresh:code ratio (versolauth/versola#591). The target profile wants 5-10 refresh exchanges per
+# authorization-code exchange. Resumes alone give about 2x (a mobile arrival resumes with probability
+# 1 - session.full-login-probability.mobile and every resume is one refresh), so the campaign's env.conf
+# adds a count of refreshes per mobile session between its actions:
+#
+#   session { refresh-count { mobile-mean = 1.1, dispersion = 0.6 } }
+#
+# Absent (or mobile-mean = 0) draws none, as before. The mean depends on the profile it sits in, because
+# the code exchanges are the logins plus the step-ups and the refreshes are the resumes plus this count,
+# per mobile session:
+#
+#   ratio = ((1 - full-login-probability.mobile) + mobile-mean) / (full-login-probability.mobile + step-ups)
+#
+# with step-ups = payment-probability x P(session has a user-driven action) = 0.25 x 0.90 = 0.225 for the
+# default action-count. The worked example in LoadgenConfigSpec (full-login 0.033) therefore wants 1.1 for
+# 8x (checked by RefreshRatioSpec, a seeded simulation within +-10%); a profile that logs in fully on 20% of
+# arrivals wants about 2.6 for 8x, and the 2.4 used on such campaigns gives about 7.5x. Web sessions add none
+# (edge refreshes behind the cookie). The observed ratio is in the report, `refreshToCodeRatio`
+# ({refreshes, codes, ratio}, the measured phases only), and on dashboards/grafana/loadgen.json.
+
 nameOverride: ""
 fullnameOverride: ""
 

@@ -367,6 +367,10 @@ jobs:
 
       - name: Start central service
         if: github.event_name != 'release'
+        # The e2e stack runs with the pool size zio-http used before the default became 128: it never needs more, and a
+        # pool opens its connections up front, once per target and TLS configuration.
+        env:
+          HTTP_CLIENT_POOL_SIZE: "10"
         run: |
           # RUN_MIGRATIONS=true: VersolaApp's default flipped to false (schema changes should be
           # a deliberate `versola migrate` step, not an implicit side effect of starting a
@@ -397,6 +401,10 @@ jobs:
 
       - name: Start auth service
         if: github.event_name != 'release'
+        # The e2e stack runs with the pool size zio-http used before the default became 128: it never needs more, and a
+        # pool opens its connections up front, once per target and TLS configuration.
+        env:
+          HTTP_CLIENT_POOL_SIZE: "10"
         run: |
           # See "Start auth service" above for why RUN_MIGRATIONS=true is required here now.
           PORT=9003 DPORT=9004 APORT=9007 MPORT=9008 RUN_MIGRATIONS=true \
@@ -454,6 +462,10 @@ jobs:
       # browser does -- through edge -- so edge has to be up alongside auth.
       - name: Start edge service
         if: github.event_name != 'release'
+        # The e2e stack runs with the pool size zio-http used before the default became 128: it never needs more, and a
+        # pool opens its connections up front, once per target and TLS configuration.
+        env:
+          HTTP_CLIENT_POOL_SIZE: "10"
         run: |
           PORT=9005 DPORT=9006 \
             edge/implementations/postgres/target/universal/stage/bin/edge-postgres-impl \

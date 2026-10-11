@@ -156,7 +156,10 @@ object Flows:
     yield Setup(clientId, clientResult.secret, redirectUri, userId, Some(login), None, None, password)
 
   /** Register a client (email + OTP) and a matching user with a permanent password. */
-  def setupEmailOtp(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+  def setupEmailOtp(
+      redirectUri: String = "http://localhost:3000",
+      refreshTokenTtl: Option[Int] = None,
+  ): RIO[OAuthClient, Setup] =
     val uid = UUID.randomUUID().toString.replace("-", "").take(8)
     val email = s"otp-$uid@example.test"
     val password = s"Pass-$uid-1!"
@@ -169,6 +172,7 @@ object Flows:
         Set(redirectUri),
         allowedScopes = Set("openid", "email", "offline_access"),
         authFlow = Some(emailOtpAuthFlow),
+        refreshTokenTtl = refreshTokenTtl,
       ).success
       userId <- oauthClient.registerUser(email = Some(email))
       _ <- oauthClient.flushUserOutbox()

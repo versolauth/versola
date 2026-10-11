@@ -80,6 +80,28 @@ object CampaignReportSpec extends ZIOSpecDefault:
         report.map(_.latency.map(_.count)) == Right(List(100L, 100L, 100L)),
       )
     },
+    test("states the observed refresh:code ratio over every scenario's token-refresh and token-code steps") {
+      val reports = List(
+        driverReport(
+          "c3",
+          "driver-0",
+          sample(MeasurementId.Step("refresh", "token-refresh"), 30_000L, 80L),
+          sample(MeasurementId.Step("mobile-otp", "token-code"), 90_000L, 6L),
+          sample(MeasurementId.Step("step-up", "token-code"), 90_000L, 4L),
+          sample(MeasurementId.Step("mobile-otp", "authorize"), 20_000L, 500L),
+        ),
+        driverReport("c3", "driver-1", sample(MeasurementId.Step("refresh", "token-refresh"), 30_000L, 80L)),
+      )
+      val report = CampaignReport.assemble("c3", reports, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None, None, None)
+      assertTrue(
+        report.map(_.refreshToCodeRatio) == Right(Some(RefreshToCodeRatio(160L, 10L, Some(16.0)))),
+        report.map(_.toJson.contains("\"refreshToCodeRatio\":{\"refreshes\":160,\"codes\":10,\"ratio\":16")) == Right(true),
+      )
+    },
+    test("the ratio is absent, not infinite, when no code exchange was measured") {
+      val report = CampaignReport.assemble("c3-10m-steady", allMeasured, ErrorTaxonomy.empty, healthyRun, campaignRun, thresholds, None, None, None)
+      assertTrue(report.map(_.refreshToCodeRatio) == Right(Some(RefreshToCodeRatio(100L, 0L, None))))
+    },
     test("the window is the oldest and newest snapshot actually merged, not this process's clock") {
       val reports = List(
         HistogramWire.report("c3", "driver-0", Instant.parse("2026-09-10T18:00:00Z"), Chunk(sample(tokenRefresh, 90_000L, 10L))),

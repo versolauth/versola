@@ -35,7 +35,7 @@ import type {
 
 export const DEFAULT_PAGE_SIZE = 30;
 const READ_CACHE_TTL_MS = 60_000;
-const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 90 * 24 * 60 * 60;
+const DEFAULT_REFRESH_TOKEN_TTL_SECONDS = 180 * 24 * 60 * 60;
 
 // Where to send the browser when a request comes back 401 without a Location
 // header — i.e. there is no session for the edge to reauthenticate, so it can't

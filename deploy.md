@@ -418,6 +418,19 @@ file under `postgres/migrations` is new. An edited one fails Flyway's checksum v
 and leaves no safe way forward except recreating that schema
 ([6](#6-recreating-the-database-from-scratch)).
 
+**Migration `auth` V0014: login state becomes UNLOGGED.** `auth_conversations`,
+`authorization_codes` and `pushed_authorization_requests` stop being written to the write-ahead
+log (WAL), like `dpop_proofs`. They only hold minutes-old login state, and logging them made the
+auth database wait on WAL commits. The trade-off, in plain words: a clean restart of PostgreSQL
+keeps their rows, but a crash of PostgreSQL (kill -9, host failure, power loss) empties them, a
+standby never receives them (after a failover they are empty), and a restore from a backup brings
+them back empty. What is lost is only in-flight state: users in the middle of a multi-step login
+start over, and an authorization code or pushed request that was not yet used is rejected and the
+client retries. Sessions, tokens, consents and users are unaffected. The migration runs
+`ALTER TABLE ... SET UNLOGGED`, which takes an **ACCESS EXCLUSIVE** lock and rewrites each table:
+logins on the still-running previous version wait while it runs. The tables are small, so it is
+short, but run `versola migrate` at low traffic.
+
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
 matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database
@@ -444,6 +457,27 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 `ci-cd.yml`, no normalisation). Versola's releases carry **no** `v` prefix (`0.6.2`), and that is
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
+
+#### Behaviour change: refresh tokens have a fixed lifetime
+
+Refresh tokens are **no longer extended on use**. A token's expiry is fixed when it is issued
+(authorization-code exchange: now + the client's `refreshTokenTtl`) and every later refresh keeps
+it: a rotated successor inherits its predecessor's absolute expiry, and a DPoP/mTLS-bound token
+renewed in place keeps the expiry already on its row. After that instant the grant is dead and the
+user has to authorize again. This removes the per-refresh write of `refresh_tokens.expires_at`
+(about 14% of auth's WAL on the load test).
+
+- **Default for new clients is 180 days** (`refreshTokenTtl` omitted at `POST /configuration/clients`,
+  and the admin console's form), was 90. Existing clients keep the value stored in
+  `oauth_clients.refresh_token_ttl`; there is no data migration, and no schema change.
+- **Tokens issued before the upgrade** keep the `expires_at` they were last written with and stop
+  sliding from the moment the new `auth` runs. A token that was in daily use for months can
+  therefore now expire within at most its client's TTL of its last slide. Clients must handle
+  `invalid_grant` on refresh by re-authorizing. To give such clients more room, raise the
+  client's `refreshTokenTtl` -- this only affects tokens issued afterwards.
+- The comment in migration `V0004` ("expiry slides forward on every use") is now out of date;
+  released migrations are immutable, so it is left as it is.
+- Rolling back to the previous version restores sliding, from the then-current `expires_at`.
 
 ### `RUN_MIGRATIONS`
 

@@ -75,8 +75,8 @@ object UserController extends Controller:
       yield Response.json(sessions.toJson)
     }
 
-  /** Independent of getUserSessionsEndpoint: a refresh token's expiry slides forward on every
-    * use while a session's does not, so a token routinely outlives the session it was issued
+  /** Independent of getUserSessionsEndpoint: a refresh token's expiry is fixed at issuance and
+    * independent of a session's, so a token routinely outlives the session it was issued
     * under and would be invisible to an admin working from the session list alone. */
   val getUserRefreshTokensEndpoint =
     Method.GET / "users" / "refresh-tokens" -> handler { (request: Request) =>

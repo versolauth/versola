@@ -550,7 +550,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           permissions: [...payload.permissions],
           secretRotation: false,
           authMethod: payload.authMethod ?? 'client_secret',
-          refreshTokenTtl: payload.refreshTokenTtl ?? 90 * 24 * 60 * 60,
+          refreshTokenTtl: payload.refreshTokenTtl ?? 180 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
           template: payload.template ?? null,
