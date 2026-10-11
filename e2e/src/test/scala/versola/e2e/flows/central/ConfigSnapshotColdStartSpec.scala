@@ -54,7 +54,7 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
           .redirectOutput(log.toFile)
         ports.foreach((name, port) => builder.environment().nn.put(name, port))
         builder.environment().nn.put("RUN_MIGRATIONS", "false")
-        (builder.start().nn, conf, log)
+        (builder.start().nn, conf, log),
     )((process, conf, log) =>
       ZIO.attemptBlocking {
         process.destroy()

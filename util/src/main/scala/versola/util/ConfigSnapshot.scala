@@ -41,17 +41,17 @@ object ConfigSnapshot:
     def save(record: Record): Task[Unit]
 
   final case class Missing(key: String)
-      extends RuntimeException(s"No configuration snapshot of '$key'")
+    extends RuntimeException(s"No configuration snapshot of '$key'")
 
   final case class Rejected(key: String)
-      extends RuntimeException(s"The configuration snapshot of '$key' failed verification")
+    extends RuntimeException(s"The configuration snapshot of '$key' failed verification")
 
   /** A request that failed after the snapshot has already been served in this process: the
     * source is known to be down, so a cache starting now goes to the snapshot without waiting
     * for it again.
     */
   final case class SourceDown(key: String, cause: Throwable)
-      extends RuntimeException(s"'$key' is unreachable and the configuration snapshot is being served", cause)
+    extends RuntimeException(s"'$key' is unreachable and the configuration snapshot is being served", cause)
 
   /** An unchanged body is written again once this old, so that the age of a record stays a
     * bound on how long ago central last confirmed it, not on when it last changed.

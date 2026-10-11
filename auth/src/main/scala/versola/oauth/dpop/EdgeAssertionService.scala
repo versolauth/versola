@@ -1,8 +1,8 @@
 package versola.oauth.dpop
 
-import versola.util.SequentialLayers.*
 import versola.oauth.client.model.TenantId
 import versola.oauth.client.{CentralSyncTokenService, EdgeRegistrySyncClient}
+import versola.util.SequentialLayers.*
 import versola.util.{CacheSource, ConfigSnapshot, CoreConfig, EdgeAssertion, ReloadingCache}
 import zio.http.Client
 import zio.metrics.Metric

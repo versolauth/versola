@@ -13,7 +13,7 @@ object ConfigSnapshotSpec extends ZIOSpecDefault:
   private val scopesRequest = Request.get(URL.decode("https://central.example/configuration/scopes/sync").toOption.get)
 
   private class InMemoryRepository(records: Ref[Map[String, ConfigSnapshot.Record]], writes: Ref[Int])
-      extends ConfigSnapshot.Repository:
+    extends ConfigSnapshot.Repository:
     override def find(key: String): Task[Option[ConfigSnapshot.Record]] = records.get.map(_.get(key))
     override def save(record: ConfigSnapshot.Record): Task[Unit] =
       writes.update(_ + 1) *> records.update(_.updated(record.key, record))
