@@ -89,6 +89,8 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       |  logout-probability { mobile = 0.05, web = 0.35 }
       |  access-token-ttl = 15m
       |  refresh-token-ttl = 30d
+      |  # About 8 refresh exchanges per authorization-code exchange (versolauth/versola#591), see RefreshRatioSpec
+      |  refresh-count { mobile-mean = 1.1 }
       |}
       |
       |campaign {
@@ -286,10 +288,12 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       // A campaign written before the refresh count existed must keep drawing none.
       test("session.refresh-count defaults to no extra refreshes and reads a configured mean") {
         for
-          absent <- loadConfig(hocon)
-          present <- loadConfig(hocon.replace("refresh-token-ttl = 30d", "refresh-token-ttl = 30d\n  refresh-count { mobile-mean = 2.4 }"))
+          absent <- loadConfig(hocon.replace("refresh-count { mobile-mean = 1.1 }", ""))
+          shipped <- loadConfig(hocon)
+          present <- loadConfig(hocon.replace("mobile-mean = 1.1", "mobile-mean = 2.4"))
         yield assertTrue(
           absent.session.refreshCount == RefreshCountConfig(0.0, 0.6),
+          shipped.session.refreshCount == RefreshCountConfig(1.1, 0.6),
           present.session.refreshCount == RefreshCountConfig(2.4, 0.6),
         )
       },
