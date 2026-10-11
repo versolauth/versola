@@ -47,6 +47,8 @@ trait ConfigSnapshotRepositorySpec extends DatabaseSpecBase[ConfigSnapshotReposi
         for
           snapshot <- ConfigSnapshot.make(env.repository, Array.fill[Byte](32)(7))
           _ <- ZIO.scoped(snapshot.through(request)(ZIO.succeed(Response.text("""{"clients":[]}"""))))
+          // the record is written in the background, so that it does not delay the sync it belongs to
+          _ <- env.repository.find(clientsKey).repeatUntil(_.isDefined)
           // A fresh instance remembers nothing it saved, which is the state of a service after
           // a restart: what is replayed has come back from the repository.
           restarted <- ConfigSnapshot.make(env.repository, Array.fill[Byte](32)(7))
