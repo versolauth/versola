@@ -1802,6 +1802,12 @@ object SecretSchema:
        |
        |id = "edge-default"
        |
+       |# What this edge is to the installation (EdgeConfig.mode, #555): "first-party" -- the
+       |# operator's own edge, configuration synced from central, EdgeAssertion to auth, the
+       |# internal /service surface mounted -- or "partner" (#564, not available yet). Absent
+       |# means first-party.
+       |mode = "first-party"
+       |
        |# Placeholdered together with EDGE_PRIVATE_KEY below, not left as a
        |# plain literal: edgeKey.kid is derived from *today's* date (see
        |# genRsaKey's caller above), so a literal here would silently drift to

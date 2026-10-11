@@ -2,8 +2,9 @@ package versola.edge
 
 import versola.edge.model.EdgeId
 import versola.util.{EnvName, JWT, RsaKeyPair, Secret}
+import zio.config.magnolia.DeriveConfig
 import zio.http.{ClientSSLConfig, URL}
-import zio.{Duration, Task, ZIO, ZLayer}
+import zio.{Config, Duration, Task, ZIO, ZLayer}
 
 import java.io.FileInputStream
 import java.nio.charset.StandardCharsets
@@ -73,8 +74,51 @@ case class EdgeConfig(
     // The `/native/*` back channel for mobile apps under FAPI 2.0 (#420). Absent leaves those
     // endpoints answering 404 for every client -- nothing else about this edge changes.
     native: Option[EdgeConfig.Native] = None,
+    // What this edge is to the operator's installation (#555): see [[EdgeMode]]. Defaults to
+    // the only mode that existed before the key did, so every configuration written without
+    // it keeps running as the first-party edge it always was.
+    mode: EdgeMode = EdgeMode.FirstParty,
 ):
   def internalUrl: URL = versolaInternalUrl.getOrElse(versolaUrl)
+
+/** How this edge relates to the operator's installation, and so where it gets its
+  * configuration from and how it proves itself to auth (#555). The mode selects an
+  * implementation at each of three boundaries -- [[ConfigurationSource]], [[EdgeIdentity]]
+  * and [[InternalSurface]] -- and nothing that consumes configuration, calls auth or serves a
+  * route looks at it otherwise.
+  */
+enum EdgeMode(
+    /** The spelling the `mode` key takes, kebab-case like every other key and value in the file. */
+    val name: String,
+):
+  /** The operator's own edge, an internal component of the installation: configuration synced
+    * from central, authenticated to auth by [[versola.util.EdgeAssertion]] under the key
+    * central registered for it, and an internal surface reachable from inside the cell. */
+  case FirstParty extends EdgeMode("first-party")
+
+  /** An edge run by a partner on infrastructure the operator does not control (#564): an
+    * ordinary OAuth client of the operator's tenant, configured from a local file and the
+    * operator issuer's public discovery, with no central sync, no `EdgeAssertion` and no
+    * internal surface. Not implemented yet: refused at startup by [[EdgeConfig.validated]]. */
+  case Partner extends EdgeMode("partner")
+
+object EdgeMode:
+  given DeriveConfig[EdgeMode] = DeriveConfig[String].mapOrFail: value =>
+    values.find(_.name == value)
+      .toRight(Config.Error.InvalidData(message = s"mode must be one of ${values.map(_.name).mkString(", ")}, not '$value'"))
+
+  /** What startup fails with for a mode this version does not implement. One error for the
+    * three boundaries, so a wiring that somehow bypasses [[EdgeConfig.validated]] still fails
+    * naming the same cause.
+    */
+  case class NotImplemented(mode: EdgeMode)
+    extends IllegalArgumentException(
+      s"mode = ${mode.name} is not implemented yet (#564): " +
+        "a partner edge reads its configuration from a local file and the operator issuer's discovery " +
+        "document and authenticates to auth as an ordinary client, none of which this version provides. " +
+        "Leave `mode` out, or set it to first-party, to run the edge as an internal component of the " +
+        "installation.",
+    )
 
 object EdgeConfig:
 
@@ -98,8 +142,24 @@ object EdgeConfig:
             ),
         )
         _ <- refuseNativeWithoutDpop(config)
+        _ <- refuseUnimplementedMode(config)
       yield config,
     )
+
+  /** `Partner` is a mode in name only until #564: it names a configuration source, an auth
+    * identity and an internal surface none of which exists yet. Refused here, at the one
+    * place every mode is read, rather than wherever the first boundary happens to be built.
+    *
+    * This is also, for now, the whole of #564's "startup fails if partner mode is combined
+    * with central sync settings": `central` is a required block, so there is no partner
+    * configuration that is not also a central-sync configuration, and refusing the mode
+    * refuses the combination. The finer check -- partner with a `central` block, partner with
+    * a `security.internal-secret` -- belongs with the change that makes those blocks optional.
+    */
+  private def refuseUnimplementedMode(config: EdgeConfig): Task[Unit] =
+    config.mode match
+      case EdgeMode.FirstParty => ZIO.unit
+      case EdgeMode.Partner => ZIO.fail(EdgeMode.NotImplemented(config.mode))
 
   /** The native flow is DPoP end to end -- every client it serves is registered
     * `dpopBoundAccessTokens`, `/native/start` verifies and replay-guards the device's proof,

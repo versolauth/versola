@@ -62,7 +62,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
   // Also throwaway — Secret.Bytes32 just needs 32 raw bytes, base64url-encoded.
   private val secret32 = Base64.getUrlEncoder.withoutPadding.encodeToString(Array.fill(32)(7.toByte))
 
-  private def hocon(includeInternalUrl: Boolean, dpopBlock: String = ""): String =
+  private def hocon(includeInternalUrl: Boolean, dpopBlock: String = "", modeLine: String = ""): String =
     val internalLine = if includeInternalUrl then """versola-internal-url = "http://auth:8080"""" else ""
     s"""id = "edge-default"
        |key-id = "test-key"
@@ -84,6 +84,7 @@ object EdgeConfigSpec extends ZIOSpecDefault:
        |configuration-cache-refresh-interval = 5 minutes
        |$internalLine
        |$dpopBlock
+       |$modeLine
        |""".stripMargin
 
   private def baseConfig(trustPath: Option[Path]): EdgeConfig = EdgeConfig(
@@ -167,6 +168,30 @@ object EdgeConfigSpec extends ZIOSpecDefault:
           config.internalUrl == config.versolaUrl,
           config.versolaUrl == URL.decode("http://localhost:8080").toOption.get,
         )
+      },
+      // Every configuration written before `mode` existed -- which is every one there is -- has
+      // no such key, and each of them is the first-party edge it always was (#555).
+      test("a file without a mode key parses as the first-party edge") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.mode == EdgeMode.FirstParty)
+      },
+      test("parses mode = partner") {
+        for config <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, modeLine = """mode = "partner""""))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+        yield assertTrue(config.mode == EdgeMode.Partner)
+      },
+      test("refuses a mode it does not know, naming the ones it does") {
+        for error <- TypesafeConfigProvider
+            .fromHoconString(hocon(includeInternalUrl = false, modeLine = """mode = "Partner""""))
+            .kebabCase
+            .load(edgeConfigDescriptor)
+            .flip
+        yield assertTrue(error.getMessage.contains("first-party, partner"), error.getMessage.contains("'Partner'"))
       },
     ),
     // The gap #401's own trust-anchor fix could not close by itself: nothing in zio-http's
@@ -282,6 +307,24 @@ object EdgeConfigSpec extends ZIOSpecDefault:
         for
           config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None)) >>> EdgeConfig.validated)
         yield assertTrue(config.versolaInternalTrustedCertificates.isEmpty)
+      },
+      // #555 names the mode before #564 implements it: an edge told to be a partner must say
+      // so at startup, not sync from central and vouch to auth as the first-party edge it was
+      // not configured to be.
+      test("refuses partner mode as not implemented, at startup") {
+        for
+          error <- ZIO.service[EdgeConfig]
+            .provideLayer(ZLayer.succeed(baseConfig(None).copy(mode = EdgeMode.Partner)) >>> EdgeConfig.validated)
+            .flip
+        yield assertTrue(
+          error == EdgeMode.NotImplemented(EdgeMode.Partner),
+          error.getMessage.contains("mode = partner is not implemented yet"),
+        )
+      },
+      test("passes the first-party mode through, as the mode every existing edge runs in") {
+        for
+          config <- ZIO.service[EdgeConfig].provideLayer(ZLayer.succeed(baseConfig(None)) >>> EdgeConfig.validated)
+        yield assertTrue(config.mode == EdgeMode.FirstParty)
       },
     ),
   )
