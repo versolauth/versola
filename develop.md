@@ -291,7 +291,7 @@ Central stores **neither a certificate nor a key** -- only that the client is en
 (`edge_certificate_enrollment`, with when and for which edge the last certificate was signed). Each edge
 replica generates its own EC P-256 key (held in the process and sent nowhere; the TLS stack needs a file, so it is written to the owner-only directory `ClientCertificateFiles` removes on a graceful shutdown), and the client sync tells it
 what the certificate must say (`edgeCertificateSubject`); it sends a PKCS#10 request for exactly that to
-`POST /configuration/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
+`POST /edge/clients/edge-certificate/sign`, authenticated as the edge itself (the signed token it
 syncs with -- only a registered edge may call it, and it is not on the admin API). Central checks the client
 is enrolled and that the request is signed by its own key and names exactly the registered subject and
 alternative names, has the CA sign it (below), checks the result carries what `mtlsAuth` expects, and

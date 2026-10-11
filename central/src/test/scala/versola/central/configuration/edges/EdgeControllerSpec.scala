@@ -244,23 +244,4 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.find.succeedsWith(None) *> service.setRequireDpopNonce.succeedsWith(()),
       verify = (_, service) => ZIO.succeed(assertTrue(service.setRequireDpopNonce.calls.isEmpty)),
     ),
-    internalTestCase(
-      description = "an edge syncing its DPoP policy is served its own row",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = edgeSyncToken,
-      expectedStatus = Status.Ok,
-      setup = service => service.find.succeedsWith(Some(edgeRecord.copy(requireDpopNonce = false))),
-      verify = response =>
-        for body <- response.body.asJson[EdgeDpopSyncResponse]
-        yield assertTrue(!body.requireDpopNonce),
-    ),
-    // auth has no proxied calls to check proofs on, and an edge id is how this route knows
-    // whose policy to answer with -- a caller that is not an edge has no answer here.
-    internalTestCase(
-      description = "DPoP policy sync refuses auth, which is not an edge",
-      url = URL.root / "configuration" / "edges" / "dpop" / "sync",
-      token = authSyncToken,
-      expectedStatus = Status.Unauthorized,
-      setup = service => service.find.succeedsWith(Some(edgeRecord)),
-    ),
   )

@@ -317,7 +317,7 @@ object OAuthClientsSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.path.encode.contains("configuration/clients/sync"),
+        request.url.path.encode.contains("edge/sync/clients"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(syncToken)),
         clients.keySet == Set(ClientId("with-secret")),
         clients(ClientId("with-secret")).credential == ClientCredential.ClientSecret(Secret(decryptedSecretA)),

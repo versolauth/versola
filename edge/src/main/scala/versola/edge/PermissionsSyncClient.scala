@@ -22,7 +22,7 @@ object PermissionsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends PermissionsSyncClient:
-    private val PermissionsURL = config.central.url / "configuration" / "permissions" / "sync"
+    private val PermissionsURL = config.central.url / "edge" / "sync" / "permissions"
 
     override def getAll: Task[Map[PermissionId, Set[ResourceEndpointId]]] =
       for

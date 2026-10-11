@@ -18,7 +18,7 @@ import java.util.UUID
   * an endpoint reacts to the wrong secret changes one thing ([[withCredentials]]) instead of
   * every request it makes.
   */
-final class CentralApi(client: Client, val config: E2EConfig, credentials: Option[(String, String)]):
+final class CentralApi(client: Client, val config: E2EConfig, credentials: Option[(String, String)], bearer: Option[String] = None):
 
   /** The same API as seen by a caller presenting different Basic credentials. */
   def withCredentials(user: String, secret: String): CentralApi =
@@ -27,6 +27,12 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
   /** The same API as seen by a caller presenting no credentials at all. */
   def anonymous: CentralApi =
     CentralApi(client, config, None)
+
+  /** The same API as seen by a caller presenting a bearer token instead of the admin
+    * credential -- an edge's own sync token (#554), which is what the `/edge` surface wants and what
+    * every other route refuses. */
+  def withBearer(token: String): CentralApi =
+    CentralApi(client, config, None, Some(token))
 
   def get(path: String, query: (String, String)*): Task[ApiResult] =
     send(Method.GET, path, query, None)
@@ -92,7 +98,8 @@ final class CentralApi(client: Client, val config: E2EConfig, credentials: Optio
         body = body.fold(Body.empty)(Body.fromString(_)),
       )
       withType = body.fold(request)(_ => request.addHeader(Header.ContentType(MediaType.application.json)))
-      authorized = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
+      withBasic = credentials.fold(withType)((user, secret) => withType.addHeader(Authorization.Basic(user, secret)))
+      authorized = bearer.fold(withBasic)(token => withBasic.addHeader(Authorization.Bearer(token)))
       response <- Client.batched(authorized).provide(ZLayer.succeed(client))
       result <- ApiResult.of(response)
     yield result

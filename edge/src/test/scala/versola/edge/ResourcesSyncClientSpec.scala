@@ -81,7 +81,7 @@ object ResourcesSyncClientSpec extends ZIOSpecDefault:
         request <- seen.get.someOrFail(RuntimeException("Central sync request was not captured"))
       yield assertTrue(
         request.method == Method.GET,
-        request.url.encode.contains("configuration/resources/sync"),
+        request.url.encode.contains("edge/sync/resources"),
         request.header(Header.Authorization).contains(Header.Authorization.Bearer(token)),
         resources(ResourceId("central")).secret.exists(_.sameElements(decryptedSecret)),
       )

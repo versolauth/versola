@@ -12,13 +12,15 @@ info:
     traffic — only to the admin console (`central-ui`).
 
     This reference covers the admin console surface. Central also exposes internal
-    endpoints that auth and edge call, authenticated with a bearer token those services sign
-    rather than with the HTTP Basic credentials below; they are not part of this document:
-    the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
-    `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
-    who registered themselves so that central can index them) and `POST
-    /configuration/clients/edge-certificate/sign` (an edge asks for a certificate for a client
-    whose key it generated).
+    replication endpoints that are not part of this document:
+
+    * `/configuration/*/sync`, `/configuration/*/registry`, `/configuration/jwks/signing-keys/sync`
+      and `POST /users/registrations`, which auth reads with its shared-secret token. Every
+      route outside `/edge/*` refuses a token that authenticates an edge (`403`).
+    * `/edge/sync/*` (`clients`, `resources`, `roles`, `permissions`, `jwks`, `dpop`,
+      `auth-request-presets`, `server-metadata`) and `POST /edge/clients/edge-certificate/sign`,
+      the surface an edge reads with the key it was registered with. An edge is served only the
+      tenants bound to it; the admin credential and auth's token are refused there (`401`).
 
     ## Authentication
 
