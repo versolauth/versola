@@ -36,8 +36,13 @@ object ClientPoolSpec extends ZIOSpecDefault:
         Observability.defaultClientPoolSize == 128,
         // The value the layer is built with. It was 0 once: the default was declared below the val that reads it.
         Observability.clientPoolSize == 128,
-        Observability.clientConfig(Observability.defaultClientPoolSize).connectionPool == ConnectionPoolConfig.Fixed(128),
-        Observability.clientConfig(7).connectionPool == ConnectionPoolConfig.Fixed(7),
+        Observability.clientConfig(Observability.defaultClientPoolSize).connectionPool.isInstanceOf[ConnectionPoolConfig.Dynamic],
+        Observability.clientConfig(128).connectionPool match
+          case ConnectionPoolConfig.Dynamic(min, max, _) => min == 0 && max == 128
+          case _ => false,
+        Observability.clientConfig(7).connectionPool match
+          case ConnectionPoolConfig.Dynamic(_, max, _) => max == 7
+          case _ => false,
       )
     },
     // 40 requests of 200 ms: ten connections need four rounds, 64 need one. The gap is the queueing the

@@ -328,8 +328,15 @@ object Observability:
   val clientPoolSize: Int =
     Option(java.lang.System.getenv("HTTP_CLIENT_POOL_SIZE")).flatMap(_.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
 
+  /** `Fixed(n)` opens all `n` connections of a pool as soon as the pool exists, and there is one pool for
+    * every target and TLS configuration: a call with its own client certificate (edge's, to auth) would
+    * open 128 mutual-TLS handshakes at once and have the terminator close some of them. `Dynamic` opens
+    * a connection when a request needs one, up to the same bound, and closes idle ones.
+    */
+  private val ClientPoolIdleTtl: Duration = 5.minutes
+
   def clientConfig(poolSize: Int): ZClient.Config =
-    ZClient.Config.default.copy(connectionPool = ConnectionPoolConfig.Fixed(poolSize))
+    ZClient.Config.default.copy(connectionPool = ConnectionPoolConfig.Dynamic(minimum = 0, maximum = poolSize, ttl = ClientPoolIdleTtl))
 
   /** `Client.default` with [[clientPoolSize]] connections per target instead of ten. */
   def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] =
