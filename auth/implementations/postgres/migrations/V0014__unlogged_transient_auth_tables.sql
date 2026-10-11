@@ -1,0 +1,43 @@
+-- Take the short-lived login tables out of the write-ahead log.
+--
+-- `auth_conversations`, `authorization_codes` and `pushed_authorization_requests` hold state
+-- that is written, updated and deleted within minutes: a conversation lives for the tenant's
+-- `authConversationTtlSeconds` (15 minutes unless configured), an authorization code for 5
+-- minutes, a pushed request for `requestUriTtl` (60 seconds unless configured). On a 1M-user
+-- step-load they produced about 63% of the WAL bytes and about 40% of the WAL-writing
+-- statements, and the auth database was limited by commits waiting for the WAL, not by
+-- statement time (versolauth/versola#598). `dpop_proofs` and `client_assertions` are already
+-- UNLOGGED for the same reason (V0012, V0013).
+--
+-- What UNLOGGED costs, in the order it can happen:
+--   * A clean stop or restart of PostgreSQL keeps the rows.
+--   * Crash recovery (kill -9 of PostgreSQL, host failure, power loss) EMPTIES the tables.
+--   * An UNLOGGED table is not replicated: a standby, and so a failover to one, sees it empty.
+--     Today's deployment is a single host, so only crash recovery applies.
+--   * A restore from a base backup or a point-in-time recovery brings the tables back empty.
+-- What is lost in each case is only in-flight state, minutes old at most: a user in the middle
+-- of a multi-step login (OTP, passkey, registration) starts again from /authorize; an
+-- authorization code not yet exchanged, or a pushed request not yet used, is rejected as
+-- invalid and the client retries. An authorization code that was already exchanged has already
+-- done its work (the session and refresh token are in logged tables); losing its `used` row
+-- only means a later replay of that code is rejected as an unknown code instead of also
+-- revoking the refresh-token family the first exchange issued, and the code's own lifetime
+-- is 5 minutes. No credential, session, token or consent is stored in these tables.
+--
+-- There is no foreign key to or from any of the three (the only ones in the auth schema are
+-- user_roles and user_consents, both to `users`), which is what would otherwise block this:
+-- PostgreSQL rejects a logged table referencing an UNLOGGED one.
+--
+-- Operators: ALTER TABLE ... SET UNLOGGED takes an ACCESS EXCLUSIVE lock and rewrites the table
+-- and its indexes, so every statement on the table waits for it, and with the services still
+-- serving during `versola migrate` that is logins queuing for the duration of the rewrite.
+-- The tables are small (minutes of data), so it is short, but run it at low traffic. The
+-- rewrite itself is WAL-logged once, as a full copy of what the tables hold at that moment.
+--
+-- Persistence is a property of the table: a table created later as a copy of one of these
+-- (or by recreating it) is logged again, which nothing else would notice;
+-- PostgresTransientTablesSpec asserts the three stay UNLOGGED.
+
+ALTER TABLE auth_conversations SET UNLOGGED;
+ALTER TABLE authorization_codes SET UNLOGGED;
+ALTER TABLE pushed_authorization_requests SET UNLOGGED;
