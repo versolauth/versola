@@ -1,6 +1,5 @@
 package versola
 
-import versola.util.SequentialLayers.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.cleanup.PostgresCleanupManager
 import versola.oauth.account.AccountSettingsController
@@ -43,8 +42,9 @@ import versola.oauth.userinfo.{UserInfoController, UserInfoService}
 import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
 import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
 import versola.util.*
+import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
-import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource}
+import versola.util.postgres.{PostgresConfig, PostgresHikariDataSource, PostgresWalMetrics}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.http.*
@@ -183,7 +183,8 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     )
 
   val repositories = PostgresHikariDataSource.transactor(serviceName = Some("auth"), migrate = runMigrations) >++> (
-    PostgresUserRepository.live >++>
+    PostgresWalMetrics.live() >++>
+      PostgresUserRepository.live >++>
       PostgresConversationRepository.live >++>
       PostgresConsentRepository.live >++>
       PostgresAuthorizationCodeRepository.live >++>

@@ -3232,6 +3232,613 @@
     {
       "id": 61,
       "type": "row",
+      "title": "auth — Database write-ahead log (WAL)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 122
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL headroom",
+      "description": "The WAL rate the checkpoint settings allow, divided by the rate now. Below 1× WAL is written faster than max_wal_size / checkpoint_timeout allows: checkpoints start from volume instead of the timer, which writes more full-page images, which is more WAL. 99× means idle. The 1× line is the documented boundary; Postgres can start a checkpoint a little before it, so treat 1–2× as close.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:×",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 1), 99)",
+          "instant": false
+        }
+      ],
+      "id": 62,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 0,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Checkpoints on request",
+      "description": "Share of checkpoints in the selected time range that were started by WAL volume rather than the timer. The aim is 0%; anything else means max_wal_size is too small for the write rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", type=\"requested\"}[$__range])) / clamp_min(max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", type=\"timed\"}[$__range])) + max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", type=\"requested\"}[$__range])), 1)",
+          "instant": false
+        }
+      ],
+      "id": 63,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 4,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size now",
+      "description": "The database's current setting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "instant": false
+        }
+      ],
+      "id": 64,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 8,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size suggested",
+      "description": "2 × the peak WAL rate of the last hour × checkpoint_timeout: the rule of thumb in loadgen-runbook/docs/07-wal-tuning.md. Compare with the setting on the left. It is a starting point; it needs disk for that much pg_wal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "2 * max(max_over_time(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[5m])[1h:])) * max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "instant": false
+        }
+      ],
+      "id": 65,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 12,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Idle replication slots",
+      "description": "Replication slots nothing is reading from. WAL is kept for them without limit, which is the usual way pg_wal fills a disk. Must be 0. Red as soon as there is one; which one and how much it holds is in the graph below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (slot) (db_replication_slot_active{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) == bool 0) or (max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) * 0)",
+          "instant": false
+        }
+      ],
+      "id": 66,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 16,
+        "y": 123
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL held by slots",
+      "description": "The most WAL any one replication slot is holding back from being recycled.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "instant": false
+        }
+      ],
+      "id": 67,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 20,
+        "y": 123
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL written against what checkpoints allow",
+      "description": "WAL rate against the rate this database's own settings allow. Above the dashed line checkpoints come from volume, not the timer. Raise max_wal_size (see the suggested value above) or checkpoint_timeout.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: max_wal_size / checkpoint_timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "WAL written / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "limit: max_wal_size / checkpoint_timeout"
+        }
+      ],
+      "id": 68,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoints per minute",
+      "description": "timed = started by checkpoint_timeout, requested = started because WAL reached max_wal_size. Mostly timed is healthy; a rising 'requested' is the same problem as the headroom tile, seen from the other side.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (type) (rate(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "id": 69,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 126
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Full-page images in the WAL",
+      "description": "Approximate share of WAL that is whole 8 KiB pages (images x 8 KiB, before compression). A large share is what wal_compression and fewer checkpoints reduce; see loadgen-runbook/docs/07-wal-tuning.md.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(rate(db_wal_fpi_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) * 8192 / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 1), 1)",
+          "legendFormat": "share of WAL"
+        }
+      ],
+      "id": 70,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 134
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL held back by replication slots",
+      "description": "Per slot. A line that only climbs for a slot with nothing reading it is the disk filling. Drop the slot if its consumer is gone. Empty when the database has no slots.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (slot) (db_replication_slot_retained_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{slot}}"
+        }
+      ],
+      "id": 71,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 134
+      }
+    },
+    {
+      "id": 72,
+      "type": "row",
       "title": "auth — Database and dependencies",
       "collapsed": true,
       "panels": [
@@ -3296,12 +3903,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 62,
+          "id": 73,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 123
+            "y": 143
           }
         },
         {
@@ -3356,12 +3963,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 63,
+          "id": 74,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 123
+            "y": 143
           }
         },
         {
@@ -3407,12 +4014,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 64,
+          "id": 75,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 131
+            "y": 151
           }
         },
         {
@@ -3458,12 +4065,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 65,
+          "id": 76,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 131
+            "y": 151
           }
         },
         {
@@ -3509,12 +4116,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 66,
+          "id": 77,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 139
+            "y": 159
           }
         },
         {
@@ -3560,12 +4167,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 67,
+          "id": 78,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 139
+            "y": 159
           }
         }
       ],
@@ -3573,11 +4180,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 142
       }
     },
     {
-      "id": 68,
+      "id": 79,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3625,12 +4232,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 69,
+          "id": 80,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 124
+            "y": 144
           }
         },
         {
@@ -3686,12 +4293,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 70,
+          "id": 81,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 124
+            "y": 144
           }
         },
         {
@@ -3738,12 +4345,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 71,
+          "id": 82,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 132
+            "y": 152
           }
         },
         {
@@ -3789,12 +4396,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 72,
+          "id": 83,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 132
+            "y": 152
           }
         }
       ],
@@ -3802,11 +4409,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 123
+        "y": 143
       }
     },
     {
-      "id": 73,
+      "id": 84,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3815,7 +4422,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 124
+        "y": 144
       }
     },
     {
@@ -3865,12 +4472,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 74,
+      "id": 85,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 125
+        "y": 145
       }
     },
     {
@@ -3920,12 +4527,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 75,
+      "id": 86,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 125
+        "y": 145
       }
     },
     {
@@ -3989,12 +4596,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 76,
+      "id": 87,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 133
+        "y": 153
       }
     },
     {
@@ -4040,12 +4647,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 77,
+      "id": 88,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 133
+        "y": 153
       }
     },
     {
@@ -4095,12 +4702,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 78,
+      "id": 89,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 141
+        "y": 161
       }
     },
     {
@@ -4146,16 +4753,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 79,
+      "id": 90,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 141
+        "y": 161
       }
     },
     {
-      "id": 80,
+      "id": 91,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4164,7 +4771,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 149
+        "y": 169
       }
     },
     {
@@ -4214,12 +4821,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 81,
+      "id": 92,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 150
+        "y": 170
       }
     },
     {
@@ -4265,12 +4872,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 82,
+      "id": 93,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 150
+        "y": 170
       }
     },
     {
@@ -4320,12 +4927,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 83,
+      "id": 94,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 158
+        "y": 178
       }
     },
     {
@@ -4375,16 +4982,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 84,
+      "id": 95,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 158
+        "y": 178
       }
     },
     {
-      "id": 85,
+      "id": 96,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4393,7 +5000,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 166
+        "y": 186
       }
     },
     {
@@ -4441,12 +5048,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 86,
+      "id": 97,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 167
+        "y": 187
       }
     },
     {
@@ -4492,12 +5099,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 87,
+      "id": 98,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 167
+        "y": 187
       }
     },
     {
@@ -4561,16 +5168,623 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 88,
+      "id": 99,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 175
+        "y": 195
       }
     },
     {
-      "id": 89,
+      "id": 100,
+      "type": "row",
+      "title": "central — Database write-ahead log (WAL)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 203
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL headroom",
+      "description": "The WAL rate the checkpoint settings allow, divided by the rate now. Below 1× WAL is written faster than max_wal_size / checkpoint_timeout allows: checkpoints start from volume instead of the timer, which writes more full-page images, which is more WAL. 99× means idle. The 1× line is the documented boundary; Postgres can start a checkpoint a little before it, so treat 1–2× as close.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:×",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}) / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])), 1), 99)",
+          "instant": false
+        }
+      ],
+      "id": 101,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 0,
+        "y": 204
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Checkpoints on request",
+      "description": "Share of checkpoints in the selected time range that were started by WAL volume rather than the timer. The aim is 0%; anything else means max_wal_size is too small for the write rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\", type=\"requested\"}[$__range])) / clamp_min(max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\", type=\"timed\"}[$__range])) + max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\", type=\"requested\"}[$__range])), 1)",
+          "instant": false
+        }
+      ],
+      "id": 102,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 4,
+        "y": 204
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size now",
+      "description": "The database's current setting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+          "instant": false
+        }
+      ],
+      "id": 103,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 8,
+        "y": 204
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size suggested",
+      "description": "2 × the peak WAL rate of the last hour × checkpoint_timeout: the rule of thumb in loadgen-runbook/docs/07-wal-tuning.md. Compare with the setting on the left. It is a starting point; it needs disk for that much pg_wal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "2 * max(max_over_time(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[5m])[1h:])) * max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+          "instant": false
+        }
+      ],
+      "id": 104,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 12,
+        "y": 204
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Idle replication slots",
+      "description": "Replication slots nothing is reading from. WAL is kept for them without limit, which is the usual way pg_wal fills a disk. Must be 0. Red as soon as there is one; which one and how much it holds is in the graph below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (slot) (db_replication_slot_active{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}) == bool 0) or (max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}) * 0)",
+          "instant": false
+        }
+      ],
+      "id": 105,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 16,
+        "y": 204
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL held by slots",
+      "description": "The most WAL any one replication slot is holding back from being recycled.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+          "instant": false
+        }
+      ],
+      "id": 106,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 20,
+        "y": 204
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL written against what checkpoints allow",
+      "description": "WAL rate against the rate this database's own settings allow. Above the dashed line checkpoints come from volume, not the timer. Raise max_wal_size (see the suggested value above) or checkpoint_timeout.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: max_wal_size / checkpoint_timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+          "legendFormat": "WAL written / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+          "legendFormat": "limit: max_wal_size / checkpoint_timeout"
+        }
+      ],
+      "id": 107,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 207
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoints per minute",
+      "description": "timed = started by checkpoint_timeout, requested = started because WAL reached max_wal_size. Mostly timed is healthy; a rising 'requested' is the same problem as the headroom tile, seen from the other side.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (type) (rate(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "id": 108,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 207
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Full-page images in the WAL",
+      "description": "Approximate share of WAL that is whole 8 KiB pages (images x 8 KiB, before compression). A large share is what wal_compression and fewer checkpoints reduce; see loadgen-runbook/docs/07-wal-tuning.md.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(rate(db_wal_fpi_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])) * 8192 / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])), 1), 1)",
+          "legendFormat": "share of WAL"
+        }
+      ],
+      "id": 109,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 215
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL held back by replication slots",
+      "description": "Per slot. A line that only climbs for a slot with nothing reading it is the disk filling. Drop the slot if its consumer is gone. Empty when the database has no slots.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (slot) (db_replication_slot_retained_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+          "legendFormat": "{{slot}}"
+        }
+      ],
+      "id": 110,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 215
+      }
+    },
+    {
+      "id": 111,
       "type": "row",
       "title": "central — Database and dependencies",
       "collapsed": true,
@@ -4636,12 +5850,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 90,
+          "id": 112,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 184
+            "y": 224
           }
         },
         {
@@ -4696,12 +5910,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 91,
+          "id": 113,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 184
+            "y": 224
           }
         },
         {
@@ -4747,12 +5961,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 92,
+          "id": 114,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 192
+            "y": 232
           }
         },
         {
@@ -4798,12 +6012,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 93,
+          "id": 115,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 192
+            "y": 232
           }
         },
         {
@@ -4849,12 +6063,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 94,
+          "id": 116,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 200
+            "y": 240
           }
         },
         {
@@ -4900,12 +6114,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 95,
+          "id": 117,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 200
+            "y": 240
           }
         }
       ],
@@ -4913,11 +6127,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 183
+        "y": 223
       }
     },
     {
-      "id": 96,
+      "id": 118,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -4965,12 +6179,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 97,
+          "id": 119,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 185
+            "y": 225
           }
         },
         {
@@ -5026,12 +6240,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 98,
+          "id": 120,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 185
+            "y": 225
           }
         },
         {
@@ -5078,12 +6292,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 99,
+          "id": 121,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 193
+            "y": 233
           }
         },
         {
@@ -5129,12 +6343,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 100,
+          "id": 122,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 193
+            "y": 233
           }
         }
       ],
@@ -5142,11 +6356,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 184
+        "y": 224
       }
     },
     {
-      "id": 101,
+      "id": 123,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -5155,7 +6369,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 185
+        "y": 225
       }
     },
     {
@@ -5205,12 +6419,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 102,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 186
+        "y": 226
       }
     },
     {
@@ -5260,12 +6474,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 103,
+      "id": 125,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 186
+        "y": 226
       }
     },
     {
@@ -5329,12 +6543,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 104,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 194
+        "y": 234
       }
     },
     {
@@ -5380,12 +6594,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 105,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 194
+        "y": 234
       }
     },
     {
@@ -5435,12 +6649,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 106,
+      "id": 128,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 202
+        "y": 242
       }
     },
     {
@@ -5490,12 +6704,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 107,
+      "id": 129,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 202
+        "y": 242
       }
     },
     {
@@ -5564,12 +6778,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 108,
+      "id": 130,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 210
+        "y": 250
       }
     },
     {
@@ -5640,12 +6854,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 109,
+      "id": 131,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 210
+        "y": 250
       }
     },
     {
@@ -5716,16 +6930,16 @@
           "legendFormat": "proxy mean − backend mean"
         }
       ],
-      "id": 110,
+      "id": 132,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 218
+        "y": 258
       }
     },
     {
-      "id": 111,
+      "id": 133,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5734,7 +6948,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 226
+        "y": 266
       }
     },
     {
@@ -5784,12 +6998,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 112,
+      "id": 134,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 227
+        "y": 267
       }
     },
     {
@@ -5839,12 +7053,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 113,
+      "id": 135,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 227
+        "y": 267
       }
     },
     {
@@ -5908,12 +7122,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 114,
+      "id": 136,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 235
+        "y": 275
       }
     },
     {
@@ -5959,12 +7173,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 115,
+      "id": 137,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 235
+        "y": 275
       }
     },
     {
@@ -6014,12 +7228,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 116,
+      "id": 138,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 243
+        "y": 283
       }
     },
     {
@@ -6065,16 +7279,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 117,
+      "id": 139,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 243
+        "y": 283
       }
     },
     {
-      "id": 118,
+      "id": 140,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -6083,7 +7297,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 251
+        "y": 291
       }
     },
     {
@@ -6133,12 +7347,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 119,
+      "id": 141,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 252
+        "y": 292
       }
     },
     {
@@ -6188,12 +7402,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 120,
+      "id": 142,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 252
+        "y": 292
       }
     },
     {
@@ -6257,12 +7471,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 121,
+      "id": 143,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 260
+        "y": 300
       }
     },
     {
@@ -6308,12 +7522,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 122,
+      "id": 144,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 260
+        "y": 300
       }
     },
     {
@@ -6363,12 +7577,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 123,
+      "id": 145,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 268
+        "y": 308
       }
     },
     {
@@ -6414,16 +7628,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 124,
+      "id": 146,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 268
+        "y": 308
       }
     },
     {
-      "id": 125,
+      "id": 147,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6432,7 +7646,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 276
+        "y": 316
       }
     },
     {
@@ -6478,12 +7692,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 126,
+      "id": 148,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 277
+        "y": 317
       }
     },
     {
@@ -6546,12 +7760,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 127,
+      "id": 149,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 277
+        "y": 317
       }
     },
     {
@@ -6613,12 +7827,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 128,
+      "id": 150,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 285
+        "y": 325
       }
     },
     {
@@ -6673,16 +7887,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 129,
+      "id": 151,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 285
+        "y": 325
       }
     },
     {
-      "id": 130,
+      "id": 152,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -6691,7 +7905,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 293
+        "y": 333
       }
     },
     {
@@ -6740,12 +7954,12 @@
           "instant": false
         }
       ],
-      "id": 131,
+      "id": 153,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 294
+        "y": 334
       }
     },
     {
@@ -6794,12 +8008,12 @@
           "instant": false
         }
       ],
-      "id": 132,
+      "id": 154,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 294
+        "y": 334
       }
     },
     {
@@ -6848,12 +8062,12 @@
           "instant": false
         }
       ],
-      "id": 133,
+      "id": 155,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 294
+        "y": 334
       }
     },
     {
@@ -6965,12 +8179,12 @@
           "instant": true
         }
       ],
-      "id": 134,
+      "id": 156,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 297
+        "y": 337
       }
     },
     {
@@ -7017,12 +8231,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 135,
+      "id": 157,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 306
+        "y": 346
       }
     },
     {
@@ -7078,12 +8292,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 136,
+      "id": 158,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 306
+        "y": 346
       }
     },
     {
@@ -7130,16 +8344,623 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 137,
+      "id": 159,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 306
+        "y": 346
       }
     },
     {
-      "id": 138,
+      "id": 160,
+      "type": "row",
+      "title": "edge — Database write-ahead log (WAL)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 355
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL headroom",
+      "description": "The WAL rate the checkpoint settings allow, divided by the rate now. Below 1× WAL is written faster than max_wal_size / checkpoint_timeout allows: checkpoints start from volume instead of the timer, which writes more full-page images, which is more WAL. 99× means idle. The 1× line is the documented boundary; Postgres can start a checkpoint a little before it, so treat 1–2× as close.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix:×",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "#EAB839",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 2
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])), 1), 99)",
+          "instant": false
+        }
+      ],
+      "id": 161,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 0,
+        "y": 356
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Checkpoints on request",
+      "description": "Share of checkpoints in the selected time range that were started by WAL volume rather than the timer. The aim is 0%; anything else means max_wal_size is too small for the write rate.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", type=\"requested\"}[$__range])) / clamp_min(max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", type=\"timed\"}[$__range])) + max(increase(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", type=\"requested\"}[$__range])), 1)",
+          "instant": false
+        }
+      ],
+      "id": 162,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 4,
+        "y": 356
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size now",
+      "description": "The database's current setting.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "instant": false
+        }
+      ],
+      "id": 163,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 8,
+        "y": 356
+      }
+    },
+    {
+      "type": "stat",
+      "title": "max_wal_size suggested",
+      "description": "2 × the peak WAL rate of the last hour × checkpoint_timeout: the rule of thumb in loadgen-runbook/docs/07-wal-tuning.md. Compare with the setting on the left. It is a starting point; it needs disk for that much pg_wal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "2 * max(max_over_time(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[5m])[1h:])) * max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "instant": false
+        }
+      ],
+      "id": 164,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 12,
+        "y": 356
+      }
+    },
+    {
+      "type": "stat",
+      "title": "Idle replication slots",
+      "description": "Replication slots nothing is reading from. WAL is kept for them without limit, which is the usual way pg_wal fills a disk. Must be 0. Red as soon as there is one; which one and how much it holds is in the graph below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(max by (slot) (db_replication_slot_active{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) == bool 0) or (max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) * 0)",
+          "instant": false
+        }
+      ],
+      "id": 165,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 16,
+        "y": 356
+      }
+    },
+    {
+      "type": "stat",
+      "title": "WAL held by slots",
+      "description": "The most WAL any one replication slot is holding back from being recycled.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_retained_by_slots_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "instant": false
+        }
+      ],
+      "id": 166,
+      "gridPos": {
+        "h": 3,
+        "w": 4,
+        "x": 20,
+        "y": 356
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL written against what checkpoints allow",
+      "description": "WAL rate against the rate this database's own settings allow. Above the dashed line checkpoints come from volume, not the timer. Raise max_wal_size (see the suggested value above) or checkpoint_timeout.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "limit: max_wal_size / checkpoint_timeout"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "WAL written / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(db_wal_max_size_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}) / max(db_checkpoint_timeout_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "limit: max_wal_size / checkpoint_timeout"
+        }
+      ],
+      "id": 167,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 359
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Checkpoints per minute",
+      "description": "timed = started by checkpoint_timeout, requested = started because WAL reached max_wal_size. Mostly timed is healthy; a rising 'requested' is the same problem as the headroom tile, seen from the other side.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 25,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (type) (rate(db_checkpoints_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])) * 60",
+          "legendFormat": "{{type}}"
+        }
+      ],
+      "id": 168,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 359
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Full-page images in the WAL",
+      "description": "Approximate share of WAL that is whole 8 KiB pages (images x 8 KiB, before compression). A large share is what wal_compression and fewer checkpoints reduce; see loadgen-runbook/docs/07-wal-tuning.md.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "clamp_max(max(rate(db_wal_fpi_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])) * 8192 / clamp_min(max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])), 1), 1)",
+          "legendFormat": "share of WAL"
+        }
+      ],
+      "id": 169,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 367
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL held back by replication slots",
+      "description": "Per slot. A line that only climbs for a slot with nothing reading it is the disk filling. Drop the slot if its consumer is gone. Empty when the database has no slots.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (slot) (db_replication_slot_retained_bytes{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{slot}}"
+        }
+      ],
+      "id": 170,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 367
+      }
+    },
+    {
+      "id": 171,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -7205,12 +9026,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 139,
+          "id": 172,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 316
+            "y": 376
           }
         },
         {
@@ -7265,12 +9086,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 140,
+          "id": 173,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 316
+            "y": 376
           }
         },
         {
@@ -7316,12 +9137,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 141,
+          "id": 174,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 324
+            "y": 384
           }
         },
         {
@@ -7367,12 +9188,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 142,
+          "id": 175,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 324
+            "y": 384
           }
         },
         {
@@ -7418,12 +9239,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 143,
+          "id": 176,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 332
+            "y": 392
           }
         },
         {
@@ -7469,12 +9290,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 144,
+          "id": 177,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 332
+            "y": 392
           }
         }
       ],
@@ -7482,11 +9303,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 315
+        "y": 375
       }
     },
     {
-      "id": 145,
+      "id": 178,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -7534,12 +9355,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 146,
+          "id": 179,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 317
+            "y": 377
           }
         },
         {
@@ -7595,12 +9416,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 147,
+          "id": 180,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 317
+            "y": 377
           }
         },
         {
@@ -7647,12 +9468,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 148,
+          "id": 181,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 325
+            "y": 385
           }
         },
         {
@@ -7698,12 +9519,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 149,
+          "id": 182,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 325
+            "y": 385
           }
         }
       ],
@@ -7711,7 +9532,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 316
+        "y": 376
       }
     }
   ]
