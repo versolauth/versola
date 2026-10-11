@@ -15,7 +15,9 @@ One board, so nobody switches between dashboards to follow a request across serv
 
 The board is generated, not hand-edited: edit this script, re-run it, commit the JSON.
 
-Deliberately absent: anything about the load generator. The board describes the system under test.
+A second board, loadgen.json, covers the load generator itself (the campaign's rates, the refresh:code ratio,
+instrument health, the mock backend). It is kept apart on purpose: versola.json describes the system under test and
+must read the same with or without a campaign running.
 
 Every series is selected by `namespace` and `app_kubernetes_io_component` (the pod label the chart
 sets and the vmagent job in k8s/monitoring/vmagent-values.yaml copies onto every series). All three
@@ -40,8 +42,10 @@ def steps(*pairs: tuple[float | None, str]) -> dict:
 
 
 class Board:
-    def __init__(self, uid: str, title: str, description: str):
+    def __init__(self, uid: str, title: str, description: str, namespace_query: str | None = None, tags: list[str] | None = None):
         self.uid, self.title, self.description = uid, title, description
+        self.namespace_query = namespace_query or 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, namespace)'
+        self.tags = tags or ["versola", "versola-service"]
         self.panels: list[dict] = []
         self._id = 1
         self._x = 0
@@ -173,7 +177,7 @@ class Board:
             "uid": self.uid,
             "title": self.title,
             "description": self.description,
-            "tags": ["versola", "versola-service"],
+            "tags": self.tags,
             "editable": True,
             "graphTooltip": 1,
             "schemaVersion": 39,
@@ -186,7 +190,7 @@ class Board:
                 {"name": "datasource", "label": "Data source", "type": "datasource", "query": "prometheus", "current": {}, "hide": 0},
                 {
                     "name": "namespace", "label": "Environment", "type": "query", "datasource": DS,
-                    "query": 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, namespace)',
+                    "query": self.namespace_query,
                     "refresh": 1, "multi": False, "includeAll": False, "hide": 0,
                 },
             ]},
@@ -287,8 +291,8 @@ def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
     (db_table_rows_estimate); expired counts come from cleanup_expired_rows, which is capped. Every replica
     reports the same database, hence max by (table) throughout.
 
-    Deliberately not drawn, though the metrics exist: removal rate (the backlog already shows it), time
-    since last cleaned (a stalled table shows as a growing overdue age), batch duration and failures.
+    Also drawn: the removal rate (cleanup_rows_deleted_total) and the time since each table was last cleaned
+    (cleanup_last_success_timestamp_seconds), the two that tell "keeping up" from "idle" from "stalled".
     """
     b.row(f"{b.component} — Data volume and cleanup of expired rows")
     s = b.sel
@@ -314,6 +318,10 @@ def cleanup(b: Board, volume: list[tuple[str, str]], expiring: str) -> None:
          desc="How fast is the data growing? Rows still valid against rows past their expiry and not yet removed. Live is the size estimate minus expired, so it is approximate too.")
     b.ts("How overdue the oldest expired row is", [(f"max by (table) (cleanup_oldest_expired_age_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0, w=8, h=9,
          desc="How long ago the oldest row that should already be gone expired. Unlike the count it has no cap. With cleanup keeping up it stays within about one cleanup interval of the table; a line that keeps climbing is a table whose cleanup has stopped.")
+    b.ts("Rows removed / s", [(f"max by (table) (rate(cleanup_rows_deleted_total{{{s}}}[$__rate_interval]))", "{{table}}")], unit="ops", minimum=0, w=12, h=8,
+         desc="How fast cleanup deletes expired rows, per table. Compare with the growth of the table: removal below the expiry rate is a backlog building.")
+    b.ts("Time since the last successful cleanup", [(f"time() - max by (table) (cleanup_last_success_timestamp_seconds{{{s}}})", "{{table}}")], unit="s", minimum=0, w=12, h=8,
+         desc="Per table, how long ago a cleanup batch last succeeded. Resets at each run; a line that keeps climbing past a few cleanup intervals is cleanup stalled or failing (see the service's log).")
 
 
 def wal(b: Board) -> None:
@@ -362,8 +370,33 @@ def wal(b: Board) -> None:
          desc="timed = started by checkpoint_timeout, requested = started because WAL reached max_wal_size. Mostly timed is healthy; a rising 'requested' is the same problem as the headroom tile, seen from the other side.")
     b.ts("Full-page images in the WAL", [(f"clamp_max(max(rate(db_wal_fpi_total{{{s}}}[$__rate_interval])) * 8192 / clamp_min({rate}, 1), 1)", "share of WAL")], unit="percentunit", minimum=0, maximum=1,
          desc="Approximate share of WAL that is whole 8 KiB pages (images x 8 KiB, before compression). A large share is what wal_compression and fewer checkpoints reduce; see loadgen-runbook/docs/07-wal-tuning.md.")
+    b.ts("WAL records / s and bytes per record", [
+        (f"max(rate(db_wal_records_total{{{s}}}[$__rate_interval]))", "records / s"),
+        (f"{rate} / clamp_min(max(rate(db_wal_records_total{{{s}}}[$__rate_interval])), 1)", "bytes per record"),
+    ], unit="short", minimum=0,
+         desc="Record rate from pg_stat_wal and the average record size. Bytes per record rises with full-page images and falls with wal_compression; the rate follows the write load (logins, token rotations). The services publish no per-commit wait metric; the cost of a commit shows in the `Slowest queries` p99 of the database row below.")
     b.ts("WAL held back by replication slots", [(f"max by (slot) (db_replication_slot_retained_bytes{{{s}}})", "{{slot}}")], unit="bytes", minimum=0,
          desc="Per slot. A line that only climbs for a slot with nothing reading it is the disk filling. Drop the slot if its consumer is gone. Empty when the database has no slots.")
+
+
+def argon2(b: Board) -> None:
+    """Password hashing admission (AdmissionMetrics): CPU stops following demand once all permits are held, so the
+    queue and the permits in use are what to read, and what to scale on."""
+    b.row("auth — Password hashing (Argon2id)")
+    s = b.sel
+    b.ts("Hashes waiting for a permit", [(f"sum by (pod) (argon2_hashes_waiting{{{s}}})", "{{pod}}")], unit="short", minimum=0,
+         desc="Hashes queued behind the admission semaphore. Non-zero means logins arrive faster than this pod admits them (`argon2.max-concurrent`): add replicas or permits.")
+    b.ts("Permits in use", [
+        (f"sum by (pod) (argon2_hashes_in_flight{{{s}}}) / clamp_min(max by (pod) (argon2_max_concurrent{{{s}}}), 1)", "{{pod}}"),
+    ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.9, RED)),
+         desc="Hashes being computed over the permits the pod has. At 100% CPU no longer follows demand and the queue on the left starts to grow.")
+    b.ts("Hash wait and hash time (p99)", [
+        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_wait_seconds_bucket{{{s}}}[$__rate_interval])))", "waiting for a permit"),
+        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "hashing"),
+    ], unit="s", minimum=0,
+         desc="The wait is the part of a login's latency that more replicas remove; the hash itself is the cost of the parameters.")
+    b.ts("Hashes / s", [(f"sum(rate(argon2_hash_duration_seconds_count{{{s}}}[$__rate_interval]))", "hashes")], unit="ops", minimum=0,
+         desc="Password hashes and verifications completed.")
 
 
 def dependencies(b: Board) -> None:
@@ -376,12 +409,16 @@ def dependencies(b: Board) -> None:
         (f"histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", "wait p99"),
         (f"sum(db_client_connection_pending_requests{{{sel}}})", "threads waiting"),
     ], unit="s", desc="Time a request spends queued before it even reaches the database (seconds), and how many are queued. Should be ~0; anything visible is added straight to user latency.")
+    b.ts("DB connection timeouts / s", [(f"sum by (pool_name) (rate(db_client_connection_timeouts_total{{{sel}}}[$__rate_interval]))", "{{pool_name}}")], unit="ops", minimum=0,
+         desc="Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout." + NO_POOL_DATA)
     b.ts("Slowest queries (p99)", [(f"topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
          desc="The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.")
     b.ts("Failed queries / s", [(f'sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{{{sel}, outcome!="success"}}[$__rate_interval]))', "{{repository}}.{{operation}}")], unit="ops",
          desc="Database operations that did not succeed. Empty is healthy.")
     b.ts("Calls to other services — latency p99", [(f"histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}}")], unit="s",
          desc="How long this service waits for each service it calls. Part of our own latency.")
+    b.ts("Calls to other services — in flight", [(f"sum by (peer) (http_client_active_requests{{{sel}}})", "{{peer}}")], unit="short", minimum=0,
+         desc="Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.")
     b.ts("Calls to other services — failures / s", [(f'sum by (peer) (rate(http_client_requests_total{{{sel}, status_class=~"error|5xx"}}[$__rate_interval]))', "{{peer}}")], unit="reqps",
          desc="Calls that failed: connection errors or a 5xx from the other side. Empty is healthy.")
 
@@ -447,8 +484,16 @@ def add_auth(b: Board, phase: str) -> None:
          unit="percentunit", minimum=0, maximum=1, desc="Share of started sign-ins that completed. A drop with no traffic change means users are getting stuck -- check the step failures next.")
     b.ts("Failed attempts by step", [(f'sum by (step) (rate(auth_conversation_step_total{{{s}, result="failed"}}[$__rate_interval])) / clamp_min(sum by (step) (rate(auth_conversation_step_total{{{s}}}[$__rate_interval])), 0.001)', "{{step}}")],
          unit="percentunit", minimum=0, desc="For each sign-in step (password, OTP, passkey, …), the share of attempts that failed. Points at the factor users trip over.")
-    b.ts("Edge assertions rejected (DPoP)", [(f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"), (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "exempted")], unit="ops",
-         desc="Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.")
+    b.ts("Edge assertions (DPoP): accepted and rejected", [
+        (f"sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval]))", "accepted (bound token honoured on edge's word)"),
+        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval]))", "rejected"),
+    ], unit="ops", minimum=0,
+         desc="Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.")
+    b.ts("Edge assertions rejected, share", [
+        (f"sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{{{s}}}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{{{s}}}[$__rate_interval])), 0.001)", "rejected / (rejected + accepted)"),
+    ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.01, RED)),
+         desc="Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.")
+    argon2(b)
     cleanup(b, volume=[("Users", "users"), ("Sessions", "sso_sessions"), ("Refresh tokens", "refresh_tokens")], expiring="sso_sessions|refresh_tokens")
     wal(b)
     dependencies(b)
@@ -557,6 +602,90 @@ def add_central(b: Board, phase: str) -> None:
     runtime(b)
 
 
+def build_loadgen() -> Board:
+    """The load generator's own board: loadgen_* from the coordinator and drivers, mockapi_* from the mock backend.
+    Selected by `namespace` only (the loadgen chart has its own release and namespace; its pods carry no
+    versola component label). `loadgen_step_duration_seconds` is read through its `_count`, which counts every
+    recorded step whatever its outcome, the way the campaign report's refreshToCodeRatio does."""
+    b = Board(
+        "versola-loadgen", "Versola load generator",
+        "The campaign as the emulator sees it: arrival and exchange rates, the refresh:code ratio against the target profile, the emulator's own health, and the mock backend. Read the Versola board for the system under test.",
+        namespace_query="label_values(loadgen_campaign_info, namespace)", tags=["versola", "versola-loadgen"],
+    )
+    sel = 'namespace="$namespace"'
+
+    def step(name: str) -> str:
+        return f'loadgen_step_duration_seconds_count{{{sel}, step="{name}"}}'
+
+    code_rate = f"sum(rate({step('token-code')}[$__rate_interval]))"
+    refresh_rate = f"sum(rate({step('token-refresh')}[$__rate_interval]))"
+    code_range = f"sum(increase({step('token-code')}[$__range]))"
+    refresh_range = f"sum(increase({step('token-refresh')}[$__range]))"
+    ratio_target = steps((None, RED), (5, GREEN), (10, YELLOW))
+
+    b.row("Campaign")
+    b.text("`loadgen_campaign_info` carries `campaign`, `tenant`, `profile` and `token_mode`. The report (`GET /report/<campaign>`) states the same ratio as `refreshToCodeRatio`, counted over the measured phases only.", h=2)
+    b.stat("Refresh : code ratio", f"{refresh_range} / clamp_min({code_range}, 1)", decimals=1, w=6,
+           desc="Refresh exchanges per authorization-code exchange over the selected time range (token-refresh steps over token-code steps, every scenario, every outcome). The target profile is 5 to 10 (versolauth/versola#591); below 5 is red, above 10 yellow. The range includes warm-up and ramp phases; the report's refreshToCodeRatio is the measured phases only.",
+           thresholds=ratio_target)
+    b.stat("Code exchanges / s", code_rate, unit="reqps", decimals=1, w=4, desc="token-code steps: mobile logins, step-ups and the native-via-edge exchange.")
+    b.stat("Refresh exchanges / s", refresh_rate, unit="reqps", decimals=1, w=4, desc="token-refresh steps: a resumed mobile session, the planned `session.refresh-count` refreshes and the TTL-gated one.")
+    b.stat("Arrivals / s", f"sum(rate(loadgen_arrivals_total{{{sel}}}[$__rate_interval]))", unit="reqps", decimals=1, w=4, desc="Sessions started, all scenarios.")
+    b.stat("Schedule lag", f"max(loadgen_schedule_lag_seconds{{{sel}}})", unit="s", decimals=2, w=3,
+           desc="How far behind its schedule the slowest driver is. Above 250 ms the emulator, not the system, is adding to the latencies.",
+           thresholds=steps((None, GREEN), (0.25, RED)))
+    b.stat("Driver CPU", f"max(loadgen_driver_cpu_ratio{{{sel}}})", unit="percentunit", decimals=0, w=3,
+           desc="The busiest driver's CPU as a share of its allocation. Above 40% the client's own queueing starts to show in the latencies.",
+           thresholds=steps((None, GREEN), (0.4, RED)))
+    b.ts("Refresh and code exchanges / s", [(refresh_rate, "token-refresh"), (code_rate, "token-code")], unit="reqps", minimum=0,
+         desc="The two rates the ratio is made of. At the target profile the refresh line sits 5 to 10 times above the code line.")
+    b.ts("Refresh : code ratio", [(f"{refresh_rate} / clamp_min({code_rate}, 0.001)", "refresh / code")], unit="suffix:×", minimum=0, line=ratio_target,
+         desc="The same ratio over time. A campaign below 5 does not exercise the refresh path at the target profile: raise `session.refresh-count.mobile-mean`. The dashed lines mark 5 and 10.")
+    b.ts("Exchanges / s by scenario", [(f'sum by (scenario, step) (rate(loadgen_step_duration_seconds_count{{{sel}, step=~"token-code|token-refresh"}}[$__rate_interval]))', "{{scenario}} {{step}}")],
+         unit="reqps", stack=True, minimum=0, desc="Where the code and refresh exchanges come from: the mobile logins, step-up, and the refresh scenario.")
+    b.ts("Refresh rejected / s", [(f"sum by (reason) (rate(loadgen_refresh_rejected_total{{{sel}}}[$__rate_interval]))", "{{reason}}")], unit="ops", minimum=0,
+         desc="Refreshes the system refused (token revoked, expired or replayed). The report allows none; each ends the session.")
+
+    b.row("Load")
+    b.ts("Arrivals / s by scenario", [(f"sum by (scenario) (rate(loadgen_arrivals_total{{{sel}}}[$__rate_interval]))", "{{scenario}}")], unit="reqps", stack=True, minimum=0,
+         desc="Sessions started per scenario, the open-model schedule the campaign was asked to hold.")
+    b.ts("Steps / s by outcome", [(f"sum by (outcome) (rate(loadgen_outcomes_total{{{sel}}}[$__rate_interval]))", "{{outcome}}")], unit="ops", stack=True, minimum=0,
+         desc="Every step by its taxonomy bucket. ok, stepup, forbidden and unauthorized are planned branches; transport, unexpected_status and malformed consume the error budget.")
+    b.ts("Step latency p99", [(f'histogram_quantile(0.99, sum by (le, step) (rate(loadgen_step_duration_seconds_bucket{{{sel}, step=~"token-code|token-refresh|action"}}[$__rate_interval])))', "{{step}}")], unit="s", minimum=0,
+         desc="Measured from the intended start of the step, so a driver that falls behind shows it. The /token p99 target is 120 ms.")
+    b.ts("Flow latency p99", [(f"histogram_quantile(0.99, sum by (le, flow) (rate(loadgen_flow_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{flow}}")], unit="s", minimum=0,
+         desc="Whole flows (a login, a refresh, a step-up, a business action) rather than single hops.")
+    b.ts("Users busy and requests in flight", [
+        (f"sum(loadgen_busy_users{{{sel}}})", "users in a session"),
+        (f"sum(loadgen_inflight_requests{{{sel}}})", "requests in flight"),
+    ], unit="short", minimum=0, desc="Concurrency the emulator is holding against the system.")
+    b.ts("Population", [(f"max by (state) (loadgen_population{{{sel}}})", "{{state}}")], unit="short", minimum=0,
+         desc="Virtual users by state, as the store counts them.")
+
+    b.row("Emulator health")
+    b.ts("Schedule lag", [(f"max by (scenario) (loadgen_schedule_lag_seconds{{{sel}}})", "{{scenario}}")], unit="s", minimum=0, line=steps((None, GREEN), (0.25, RED)),
+         desc="Per scenario, the worst driver's lag behind the schedule. The dashed line is the 250 ms ceiling.")
+    b.ts("Driver CPU", [(f"loadgen_driver_cpu_ratio{{{sel}}}", "{{pod}}")], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.4, RED)),
+         desc="Per driver pod, share of its CPU allocation. The dashed line is the 40% ceiling.")
+    b.ts("DPoP nonce and transport retries / s", [
+        (f"sum(rate(loadgen_dpop_nonce_retried_total{{{sel}}}[$__rate_interval]))", "DPoP nonce"),
+        (f"sum(rate(loadgen_transport_retried_total{{{sel}}}[$__rate_interval]))", "closed connection"),
+    ], unit="ops", minimum=0,
+         desc="Calls repeated once: a nonce the driver did not yet hold (flat in steady state; rising means the system rotates nonces faster than the fleet reuses them), and a connection the far side closed before answering (a proxy retiring connections).")
+    b.ts("Emulator faults", [
+        (f"sum(increase(loadgen_latency_clamped_total{{{sel}}}[$__rate_interval]))", "latencies clamped"),
+        (f"sum(increase(loadgen_store_flush_dropped_total{{{sel}}}[$__rate_interval]))", "store rows dropped"),
+    ], unit="short", minimum=0, line=steps((None, GREEN), (1, RED)),
+         desc="Both must stay 0: a clamped latency makes the reported tail a floor, a dropped write-behind row loses a session's state.")
+
+    b.row("Mock backend")
+    b.ts("Requests / s by endpoint", [(f"sum by (endpoint) (rate(mockapi_requests_total{{{sel}}}[$__rate_interval]))", "{{endpoint}}")], unit="reqps", stack=True, minimum=0,
+         desc="What the protected resources behind edge are asked for.")
+    b.ts("Sampled delay p99 by profile", [(f"histogram_quantile(0.99, sum by (le, profile) (rate(mockapi_delay_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{profile}}")], unit="s", minimum=0,
+         desc="The backend's configured latency, which every measurement is taken against. It must sit within its configured 1 to 50 ms.")
+    return b
+
+
 def build() -> Board:
     b = Board(
         "versola", "Versola",
@@ -574,10 +703,10 @@ def build() -> Board:
 
 
 def main() -> None:
-    board = build()
-    out = OUT_DIR / "versola.json"
-    out.write_text(json.dumps(board.render(), indent=2, ensure_ascii=False) + "\n")
-    print(f"wrote {out}")
+    for name, board in (("versola.json", build()), ("loadgen.json", build_loadgen())):
+        out = OUT_DIR / name
+        out.write_text(json.dumps(board.render(), indent=2, ensure_ascii=False) + "\n")
+        print(f"wrote {out}")
 
 
 if __name__ == "__main__":

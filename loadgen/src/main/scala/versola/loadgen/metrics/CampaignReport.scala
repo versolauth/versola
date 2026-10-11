@@ -161,6 +161,29 @@ case class CampaignRun(
     accessTokenTtls: List[ObservedAccessTokenTtl],
 ) derives JsonCodec
 
+/** How many refresh exchanges the measured window held against how many authorization-code
+  * exchanges, counted off the same merged histograms as [[CampaignReport.latency]] (so a
+  * `measured = false` phase is not in it).
+  *
+  * `refreshes` is every `token-refresh` step and `codes` every `token-code` step, across all
+  * scenarios -- the mobile logins, `step-up` and the native-via-edge exchange; a web login
+  * completes through edge's `edge-complete` and has neither. `ratio` is `refreshes / codes`, absent
+  * when no code exchange was recorded. The target profile wants 5 to 10 (versolauth/versola#591): a
+  * campaign that misses it says so here rather than leaving it to a sum over Grafana series.
+  */
+case class RefreshToCodeRatio(refreshes: Long, codes: Long, ratio: Option[Double]) derives JsonCodec
+
+object RefreshToCodeRatio:
+
+  val refreshStep: String = "token-refresh"
+  val codeStep: String = "token-code"
+
+  def fromCounts(counts: Iterable[(MeasurementId, Long)]): RefreshToCodeRatio =
+    def total(step: String): Long = counts.collect { case (MeasurementId.Step(_, name), count) if name == step => count }.sum
+    val refreshes = total(refreshStep)
+    val codes = total(codeStep)
+    RefreshToCodeRatio(refreshes, codes, Option.when(codes > 0L)(refreshes.toDouble / codes.toDouble))
+
 /** The body of `GET /report/{campaign}` (§12): merged quantiles, the error taxonomy, and the
   * verdict.
   *
@@ -227,6 +250,11 @@ case class CampaignReport(
       * block, or when the monitoring stack could not be reached at all.
       */
     environment: Option[EnvironmentStats] = None,
+    /** Observed `token-refresh` : `token-code` over the merged (measured) window. Outside `checks`:
+      * the target is a property of the load profile, not an acceptance threshold. Absent in a report
+      * written before it existed.
+      */
+    refreshToCodeRatio: Option[RefreshToCodeRatio] = None,
 ) derives JsonCodec
 
 object CampaignReport:
@@ -274,6 +302,7 @@ object CampaignReport:
         poolers = poolers,
         poolerQueue = poolerQueue,
         measuredDatabases = measuredDatabases,
+        refreshToCodeRatio = Some(RefreshToCodeRatio.fromCounts(merged.view.mapValues(_.getTotalCount))),
       )
 
   private def evaluate(

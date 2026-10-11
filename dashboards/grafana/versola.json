@@ -2660,8 +2660,8 @@
     },
     {
       "type": "timeseries",
-      "title": "Edge assertions rejected (DPoP)",
-      "description": "Requests from edge whose proof-of-possession check failed. Any rejection is a misconfigured edge or an attack.",
+      "title": "Edge assertions (DPoP): accepted and rejected",
+      "description": "Accepted: auth honoured a DPoP-bound token without a proof because an edge vouched for it (the only such path). Rejected: an assertion that did not check out. A few during an edge key rotation are normal; sustained, it is a misconfigured edge or an attack. Accepted should track edge's userinfo calls.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -2675,6 +2675,85 @@
             "fillOpacity": 0,
             "showPoints": "never",
             "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(dpop_edge_assertion_exemptions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "accepted (bound token honoured on edge's word)"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "rejected"
+        }
+      ],
+      "id": 51,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 92
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Edge assertions rejected, share",
+      "description": "Share of edge assertions refused. Empty when there are none. Above 1% for more than a rotation is worth a look.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
           }
         },
         "overrides": []
@@ -2697,8 +2776,194 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
-          "legendFormat": "rejected"
+          "expr": "sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) / clamp_min(sum(rate(dpop_edge_assertion_rejections_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) + sum(rate(dpop_edge_assertion_exemptions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 0.001)",
+          "legendFormat": "rejected / (rejected + accepted)"
+        }
+      ],
+      "id": 52,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 100
+      }
+    },
+    {
+      "id": 53,
+      "type": "row",
+      "title": "auth — Password hashing (Argon2id)",
+      "collapsed": false,
+      "panels": [],
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 108
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Hashes waiting for a permit",
+      "description": "Hashes queued behind the admission semaphore. Non-zero means logins arrive faster than this pod admits them (`argon2.max-concurrent`): add replicas or permits.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pod) (argon2_hashes_waiting{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 54,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Permits in use",
+      "description": "Hashes being computed over the permits the pod has. At 100% CPU no longer follows demand and the queue on the left starts to grow.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "thresholdsStyle": {
+              "mode": "dashed"
+            }
+          },
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.9
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (pod) (argon2_hashes_in_flight{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}) / clamp_min(max by (pod) (argon2_max_concurrent{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}), 1)",
+          "legendFormat": "{{pod}}"
+        }
+      ],
+      "id": 55,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Hash wait and hash time (p99)",
+      "description": "The wait is the part of a login's latency that more replicas remove; the hash itself is the cost of the parameters.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(argon2_hash_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "legendFormat": "waiting for a permit"
         },
         {
           "refId": "B",
@@ -2706,20 +2971,72 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(dpop_edge_assertion_exemptions_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
-          "legendFormat": "exempted"
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(argon2_hash_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "legendFormat": "hashing"
         }
       ],
-      "id": 51,
+      "id": 56,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 117
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Hashes / s",
+      "description": "Password hashes and verifications completed.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(rate(argon2_hash_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "hashes"
+        }
+      ],
+      "id": 57,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 92
+        "y": 117
       }
     },
     {
-      "id": 52,
+      "id": 58,
       "type": "row",
       "title": "auth — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -2728,7 +3045,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 100
+        "y": 125
       }
     },
     {
@@ -2777,12 +3094,12 @@
           "instant": false
         }
       ],
-      "id": 53,
+      "id": 59,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 0,
-        "y": 101
+        "y": 126
       }
     },
     {
@@ -2831,12 +3148,12 @@
           "instant": false
         }
       ],
-      "id": 54,
+      "id": 60,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 6,
-        "y": 101
+        "y": 126
       }
     },
     {
@@ -2885,12 +3202,12 @@
           "instant": false
         }
       ],
-      "id": 55,
+      "id": 61,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 12,
-        "y": 101
+        "y": 126
       }
     },
     {
@@ -2939,12 +3256,12 @@
           "instant": false
         }
       ],
-      "id": 56,
+      "id": 62,
       "gridPos": {
         "h": 3,
         "w": 6,
         "x": 18,
-        "y": 101
+        "y": 126
       }
     },
     {
@@ -3056,12 +3373,12 @@
           "instant": true
         }
       ],
-      "id": 57,
+      "id": 63,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 104
+        "y": 129
       }
     },
     {
@@ -3108,12 +3425,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 58,
+      "id": 64,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 113
+        "y": 138
       }
     },
     {
@@ -3169,12 +3486,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 59,
+      "id": 65,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 113
+        "y": 138
       }
     },
     {
@@ -3221,16 +3538,120 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 60,
+      "id": 66,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 113
+        "y": 138
       }
     },
     {
-      "id": 61,
+      "type": "timeseries",
+      "title": "Rows removed / s",
+      "description": "How fast cleanup deletes expired rows, per table. Compare with the growth of the table: removal below the expiry rate is a backlog building.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (rate(cleanup_rows_deleted_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 67,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 147
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time since the last successful cleanup",
+      "description": "Per table, how long ago a cleanup batch last succeeded. Resets at each run; a line that keeps climbing past a few cleanup intervals is cleanup stalled or failing (see the service's log).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max by (table) (cleanup_last_success_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 68,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 147
+      }
+    },
+    {
+      "id": 69,
       "type": "row",
       "title": "auth — Database write-ahead log (WAL)",
       "collapsed": false,
@@ -3239,7 +3660,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 122
+        "y": 155
       }
     },
     {
@@ -3297,12 +3718,12 @@
           "instant": false
         }
       ],
-      "id": 62,
+      "id": 70,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 0,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3352,12 +3773,12 @@
           "instant": false
         }
       ],
-      "id": 63,
+      "id": 71,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 4,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3407,12 +3828,12 @@
           "instant": false
         }
       ],
-      "id": 64,
+      "id": 72,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 8,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3462,12 +3883,12 @@
           "instant": false
         }
       ],
-      "id": 65,
+      "id": 73,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 12,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3521,12 +3942,12 @@
           "instant": false
         }
       ],
-      "id": 66,
+      "id": 74,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 16,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3576,12 +3997,12 @@
           "instant": false
         }
       ],
-      "id": 67,
+      "id": 75,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 20,
-        "y": 123
+        "y": 156
       }
     },
     {
@@ -3667,12 +4088,12 @@
           "legendFormat": "limit: max_wal_size / checkpoint_timeout"
         }
       ],
-      "id": 68,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 126
+        "y": 159
       }
     },
     {
@@ -3723,12 +4144,12 @@
           "legendFormat": "{{type}}"
         }
       ],
-      "id": 69,
+      "id": 77,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 126
+        "y": 159
       }
     },
     {
@@ -3776,12 +4197,73 @@
           "legendFormat": "share of WAL"
         }
       ],
-      "id": 70,
+      "id": 78,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 134
+        "y": 167
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL records / s and bytes per record",
+      "description": "Record rate from pg_stat_wal and the average record size. Bytes per record rises with full-page images and falls with wal_compression; the rate follows the write load (logins, token rotations). The services publish no per-commit wait metric; the cost of a commit shows in the `Slowest queries` p99 of the database row below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+          "legendFormat": "records / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])) / clamp_min(max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])), 1)",
+          "legendFormat": "bytes per record"
+        }
+      ],
+      "id": 79,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 167
       }
     },
     {
@@ -3828,16 +4310,16 @@
           "legendFormat": "{{slot}}"
         }
       ],
-      "id": 71,
+      "id": 80,
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 134
+        "x": 0,
+        "y": 175
       }
     },
     {
-      "id": 72,
+      "id": 81,
       "type": "row",
       "title": "auth — Database and dependencies",
       "collapsed": true,
@@ -3903,12 +4385,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 73,
+          "id": 82,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 143
+            "y": 184
           }
         },
         {
@@ -3963,12 +4445,64 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 74,
+          "id": 83,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 143
+            "y": 184
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "DB connection timeouts / s",
+          "description": "Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout. Empty if `postgres.pool-metrics-interval` is not set for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pool_name) (rate(db_client_connection_timeouts_total{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))",
+              "legendFormat": "{{pool_name}}"
+            }
+          ],
+          "id": 84,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 192
           }
         },
         {
@@ -4014,12 +4548,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 75,
+          "id": 85,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 0,
-            "y": 151
+            "x": 12,
+            "y": 192
           }
         },
         {
@@ -4065,12 +4599,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 76,
+          "id": 86,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 151
+            "x": 0,
+            "y": 200
           }
         },
         {
@@ -4116,12 +4650,64 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 77,
+          "id": 87,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 200
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Calls to other services — in flight",
+          "description": "Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer) (http_client_active_requests{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 88,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 159
+            "y": 208
           }
         },
         {
@@ -4167,12 +4753,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 78,
+          "id": 89,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 159
+            "y": 208
           }
         }
       ],
@@ -4180,11 +4766,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 142
+        "y": 183
       }
     },
     {
-      "id": 79,
+      "id": 90,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -4232,12 +4818,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 80,
+          "id": 91,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 144
+            "y": 185
           }
         },
         {
@@ -4293,12 +4879,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 81,
+          "id": 92,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 144
+            "y": 185
           }
         },
         {
@@ -4345,12 +4931,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 82,
+          "id": 93,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 152
+            "y": 193
           }
         },
         {
@@ -4396,12 +4982,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 83,
+          "id": 94,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 152
+            "y": 193
           }
         }
       ],
@@ -4409,11 +4995,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 143
+        "y": 184
       }
     },
     {
-      "id": 84,
+      "id": 95,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -4422,7 +5008,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 144
+        "y": 185
       }
     },
     {
@@ -4472,12 +5058,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 85,
+      "id": 96,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 145
+        "y": 186
       }
     },
     {
@@ -4527,12 +5113,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 86,
+      "id": 97,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 145
+        "y": 186
       }
     },
     {
@@ -4596,12 +5182,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 87,
+      "id": 98,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 194
       }
     },
     {
@@ -4647,12 +5233,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 88,
+      "id": 99,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 153
+        "y": 194
       }
     },
     {
@@ -4702,12 +5288,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 89,
+      "id": 100,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 161
+        "y": 202
       }
     },
     {
@@ -4753,16 +5339,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 90,
+      "id": 101,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 161
+        "y": 202
       }
     },
     {
-      "id": 91,
+      "id": 102,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4771,7 +5357,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 169
+        "y": 210
       }
     },
     {
@@ -4821,12 +5407,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 92,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 170
+        "y": 211
       }
     },
     {
@@ -4872,12 +5458,12 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 93,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 170
+        "y": 211
       }
     },
     {
@@ -4927,12 +5513,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 94,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 178
+        "y": 219
       }
     },
     {
@@ -4982,16 +5568,16 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 95,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 178
+        "y": 219
       }
     },
     {
-      "id": 96,
+      "id": 107,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -5000,7 +5586,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 186
+        "y": 227
       }
     },
     {
@@ -5048,12 +5634,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 97,
+      "id": 108,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 187
+        "y": 228
       }
     },
     {
@@ -5099,12 +5685,12 @@
           "legendFormat": "received"
         }
       ],
-      "id": 98,
+      "id": 109,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 187
+        "y": 228
       }
     },
     {
@@ -5168,16 +5754,16 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 99,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 195
+        "y": 236
       }
     },
     {
-      "id": 100,
+      "id": 111,
       "type": "row",
       "title": "central — Database write-ahead log (WAL)",
       "collapsed": false,
@@ -5186,7 +5772,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 203
+        "y": 244
       }
     },
     {
@@ -5244,12 +5830,12 @@
           "instant": false
         }
       ],
-      "id": 101,
+      "id": 112,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 0,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5299,12 +5885,12 @@
           "instant": false
         }
       ],
-      "id": 102,
+      "id": 113,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 4,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5354,12 +5940,12 @@
           "instant": false
         }
       ],
-      "id": 103,
+      "id": 114,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 8,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5409,12 +5995,12 @@
           "instant": false
         }
       ],
-      "id": 104,
+      "id": 115,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 12,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5468,12 +6054,12 @@
           "instant": false
         }
       ],
-      "id": 105,
+      "id": 116,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 16,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5523,12 +6109,12 @@
           "instant": false
         }
       ],
-      "id": 106,
+      "id": 117,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 20,
-        "y": 204
+        "y": 245
       }
     },
     {
@@ -5614,12 +6200,12 @@
           "legendFormat": "limit: max_wal_size / checkpoint_timeout"
         }
       ],
-      "id": 107,
+      "id": 118,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 207
+        "y": 248
       }
     },
     {
@@ -5670,12 +6256,12 @@
           "legendFormat": "{{type}}"
         }
       ],
-      "id": 108,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 207
+        "y": 248
       }
     },
     {
@@ -5723,12 +6309,73 @@
           "legendFormat": "share of WAL"
         }
       ],
-      "id": 109,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 215
+        "y": 256
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL records / s and bytes per record",
+      "description": "Record rate from pg_stat_wal and the average record size. Bytes per record rises with full-page images and falls with wal_compression; the rate follows the write load (logins, token rotations). The services publish no per-commit wait metric; the cost of a commit shows in the `Slowest queries` p99 of the database row below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+          "legendFormat": "records / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])) / clamp_min(max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])), 1)",
+          "legendFormat": "bytes per record"
+        }
+      ],
+      "id": 121,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 256
       }
     },
     {
@@ -5775,16 +6422,16 @@
           "legendFormat": "{{slot}}"
         }
       ],
-      "id": 110,
+      "id": 122,
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 215
+        "x": 0,
+        "y": 264
       }
     },
     {
-      "id": 111,
+      "id": 123,
       "type": "row",
       "title": "central — Database and dependencies",
       "collapsed": true,
@@ -5850,12 +6497,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 112,
+          "id": 124,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 224
+            "y": 273
           }
         },
         {
@@ -5910,12 +6557,64 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 113,
+          "id": 125,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 224
+            "y": 273
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "DB connection timeouts / s",
+          "description": "Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout. Empty if `postgres.pool-metrics-interval` is not set for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pool_name) (rate(db_client_connection_timeouts_total{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))",
+              "legendFormat": "{{pool_name}}"
+            }
+          ],
+          "id": 126,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 281
           }
         },
         {
@@ -5961,12 +6660,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 114,
+          "id": 127,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 0,
-            "y": 232
+            "x": 12,
+            "y": 281
           }
         },
         {
@@ -6012,12 +6711,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 115,
+          "id": 128,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 232
+            "x": 0,
+            "y": 289
           }
         },
         {
@@ -6063,12 +6762,64 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 116,
+          "id": 129,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 289
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Calls to other services — in flight",
+          "description": "Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer) (http_client_active_requests{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 130,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 240
+            "y": 297
           }
         },
         {
@@ -6114,12 +6865,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 117,
+          "id": 131,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 240
+            "y": 297
           }
         }
       ],
@@ -6127,11 +6878,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 223
+        "y": 272
       }
     },
     {
-      "id": 118,
+      "id": 132,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -6179,12 +6930,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 119,
+          "id": 133,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 225
+            "y": 274
           }
         },
         {
@@ -6240,12 +6991,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 120,
+          "id": 134,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 225
+            "y": 274
           }
         },
         {
@@ -6292,12 +7043,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 121,
+          "id": 135,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 233
+            "y": 282
           }
         },
         {
@@ -6343,12 +7094,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 122,
+          "id": 136,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 233
+            "y": 282
           }
         }
       ],
@@ -6356,11 +7107,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 224
+        "y": 273
       }
     },
     {
-      "id": 123,
+      "id": 137,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -6369,7 +7120,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 225
+        "y": 274
       }
     },
     {
@@ -6419,12 +7170,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 124,
+      "id": 138,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 226
+        "y": 275
       }
     },
     {
@@ -6474,12 +7225,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 125,
+      "id": 139,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 226
+        "y": 275
       }
     },
     {
@@ -6543,12 +7294,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 126,
+      "id": 140,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 234
+        "y": 283
       }
     },
     {
@@ -6594,12 +7345,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 127,
+      "id": 141,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 234
+        "y": 283
       }
     },
     {
@@ -6649,12 +7400,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 128,
+      "id": 142,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 242
+        "y": 291
       }
     },
     {
@@ -6704,12 +7455,12 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 129,
+      "id": 143,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 242
+        "y": 291
       }
     },
     {
@@ -6778,12 +7529,12 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 130,
+      "id": 144,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 250
+        "y": 299
       }
     },
     {
@@ -6854,12 +7605,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 131,
+      "id": 145,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 250
+        "y": 299
       }
     },
     {
@@ -6930,16 +7681,16 @@
           "legendFormat": "proxy mean − backend mean"
         }
       ],
-      "id": 132,
+      "id": 146,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 258
+        "y": 307
       }
     },
     {
-      "id": 133,
+      "id": 147,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -6948,7 +7699,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 266
+        "y": 315
       }
     },
     {
@@ -6998,12 +7749,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 134,
+      "id": 148,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 267
+        "y": 316
       }
     },
     {
@@ -7053,12 +7804,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 135,
+      "id": 149,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 267
+        "y": 316
       }
     },
     {
@@ -7122,12 +7873,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 136,
+      "id": 150,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 275
+        "y": 324
       }
     },
     {
@@ -7173,12 +7924,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 137,
+      "id": 151,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 275
+        "y": 324
       }
     },
     {
@@ -7228,12 +7979,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 138,
+      "id": 152,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 283
+        "y": 332
       }
     },
     {
@@ -7279,16 +8030,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 139,
+      "id": 153,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 283
+        "y": 332
       }
     },
     {
-      "id": 140,
+      "id": 154,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -7297,7 +8048,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 291
+        "y": 340
       }
     },
     {
@@ -7347,12 +8098,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 141,
+      "id": 155,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 292
+        "y": 341
       }
     },
     {
@@ -7402,12 +8153,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 142,
+      "id": 156,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 292
+        "y": 341
       }
     },
     {
@@ -7471,12 +8222,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 143,
+      "id": 157,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 300
+        "y": 349
       }
     },
     {
@@ -7522,12 +8273,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 144,
+      "id": 158,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 300
+        "y": 349
       }
     },
     {
@@ -7577,12 +8328,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 145,
+      "id": 159,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 308
+        "y": 357
       }
     },
     {
@@ -7628,16 +8379,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 146,
+      "id": 160,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 308
+        "y": 357
       }
     },
     {
-      "id": 147,
+      "id": 161,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -7646,7 +8397,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 316
+        "y": 365
       }
     },
     {
@@ -7692,12 +8443,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 148,
+      "id": 162,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 317
+        "y": 366
       }
     },
     {
@@ -7760,12 +8511,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 149,
+      "id": 163,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 317
+        "y": 366
       }
     },
     {
@@ -7827,12 +8578,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 150,
+      "id": 164,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 325
+        "y": 374
       }
     },
     {
@@ -7887,16 +8638,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 151,
+      "id": 165,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 325
+        "y": 374
       }
     },
     {
-      "id": 152,
+      "id": 166,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -7905,7 +8656,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 333
+        "y": 382
       }
     },
     {
@@ -7954,12 +8705,12 @@
           "instant": false
         }
       ],
-      "id": 153,
+      "id": 167,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 334
+        "y": 383
       }
     },
     {
@@ -8008,12 +8759,12 @@
           "instant": false
         }
       ],
-      "id": 154,
+      "id": 168,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 334
+        "y": 383
       }
     },
     {
@@ -8062,12 +8813,12 @@
           "instant": false
         }
       ],
-      "id": 155,
+      "id": 169,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 334
+        "y": 383
       }
     },
     {
@@ -8179,12 +8930,12 @@
           "instant": true
         }
       ],
-      "id": 156,
+      "id": 170,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 337
+        "y": 386
       }
     },
     {
@@ -8231,12 +8982,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 157,
+      "id": 171,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 346
+        "y": 395
       }
     },
     {
@@ -8292,12 +9043,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 158,
+      "id": 172,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 346
+        "y": 395
       }
     },
     {
@@ -8344,16 +9095,120 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 159,
+      "id": 173,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 346
+        "y": 395
       }
     },
     {
-      "id": 160,
+      "type": "timeseries",
+      "title": "Rows removed / s",
+      "description": "How fast cleanup deletes expired rows, per table. Compare with the growth of the table: removal below the expiry rate is a backlog building.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max by (table) (rate(cleanup_rows_deleted_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 174,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 404
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Time since the last successful cleanup",
+      "description": "Per table, how long ago a cleanup batch last succeeded. Resets at each run; a line that keeps climbing past a few cleanup intervals is cleanup stalled or failing (see the service's log).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "time() - max by (table) (cleanup_last_success_timestamp_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+          "legendFormat": "{{table}}"
+        }
+      ],
+      "id": 175,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 404
+      }
+    },
+    {
+      "id": 176,
       "type": "row",
       "title": "edge — Database write-ahead log (WAL)",
       "collapsed": false,
@@ -8362,7 +9217,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 355
+        "y": 412
       }
     },
     {
@@ -8420,12 +9275,12 @@
           "instant": false
         }
       ],
-      "id": 161,
+      "id": 177,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 0,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8475,12 +9330,12 @@
           "instant": false
         }
       ],
-      "id": 162,
+      "id": 178,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 4,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8530,12 +9385,12 @@
           "instant": false
         }
       ],
-      "id": 163,
+      "id": 179,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 8,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8585,12 +9440,12 @@
           "instant": false
         }
       ],
-      "id": 164,
+      "id": 180,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 12,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8644,12 +9499,12 @@
           "instant": false
         }
       ],
-      "id": 165,
+      "id": 181,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 16,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8699,12 +9554,12 @@
           "instant": false
         }
       ],
-      "id": 166,
+      "id": 182,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 20,
-        "y": 356
+        "y": 413
       }
     },
     {
@@ -8790,12 +9645,12 @@
           "legendFormat": "limit: max_wal_size / checkpoint_timeout"
         }
       ],
-      "id": 167,
+      "id": 183,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 359
+        "y": 416
       }
     },
     {
@@ -8846,12 +9701,12 @@
           "legendFormat": "{{type}}"
         }
       ],
-      "id": 168,
+      "id": 184,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 359
+        "y": 416
       }
     },
     {
@@ -8899,12 +9754,73 @@
           "legendFormat": "share of WAL"
         }
       ],
-      "id": 169,
+      "id": 185,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 367
+        "y": 424
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "WAL records / s and bytes per record",
+      "description": "Record rate from pg_stat_wal and the average record size. Bytes per record rises with full-page images and falls with wal_compression; the rate follows the write load (logins, token rotations). The services publish no per-commit wait metric; the cost of a commit shows in the `Slowest queries` p99 of the database row below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 0,
+            "showPoints": "never",
+            "spanNulls": false
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+          "legendFormat": "records / s"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "max(rate(db_wal_bytes_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])) / clamp_min(max(rate(db_wal_records_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])), 1)",
+          "legendFormat": "bytes per record"
+        }
+      ],
+      "id": 186,
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 424
       }
     },
     {
@@ -8951,16 +9867,16 @@
           "legendFormat": "{{slot}}"
         }
       ],
-      "id": 170,
+      "id": 187,
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 367
+        "x": 0,
+        "y": 432
       }
     },
     {
-      "id": 171,
+      "id": 188,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -9026,12 +9942,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 172,
+          "id": 189,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 376
+            "y": 441
           }
         },
         {
@@ -9086,12 +10002,64 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 173,
+          "id": 190,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 376
+            "y": 441
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "DB connection timeouts / s",
+          "description": "Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout. Empty if `postgres.pool-metrics-interval` is not set for this service.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (pool_name) (rate(db_client_connection_timeouts_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))",
+              "legendFormat": "{{pool_name}}"
+            }
+          ],
+          "id": 191,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 0,
+            "y": 449
           }
         },
         {
@@ -9137,12 +10105,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 174,
+          "id": 192,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 0,
-            "y": 384
+            "x": 12,
+            "y": 449
           }
         },
         {
@@ -9188,12 +10156,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 175,
+          "id": 193,
           "gridPos": {
             "h": 8,
             "w": 12,
-            "x": 12,
-            "y": 384
+            "x": 0,
+            "y": 457
           }
         },
         {
@@ -9239,12 +10207,64 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 176,
+          "id": 194,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 457
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Calls to other services — in flight",
+          "description": "Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "sum by (peer) (http_client_active_requests{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{peer}}"
+            }
+          ],
+          "id": 195,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 392
+            "y": 465
           }
         },
         {
@@ -9290,12 +10310,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 177,
+          "id": 196,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 392
+            "y": 465
           }
         }
       ],
@@ -9303,11 +10323,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 375
+        "y": 440
       }
     },
     {
-      "id": 178,
+      "id": 197,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -9355,12 +10375,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 179,
+          "id": 198,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 377
+            "y": 442
           }
         },
         {
@@ -9416,12 +10436,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 180,
+          "id": 199,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 377
+            "y": 442
           }
         },
         {
@@ -9468,12 +10488,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 181,
+          "id": 200,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 385
+            "y": 450
           }
         },
         {
@@ -9519,12 +10539,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 182,
+          "id": 201,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 385
+            "y": 450
           }
         }
       ],
@@ -9532,7 +10552,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 376
+        "y": 441
       }
     }
   ]
