@@ -4,6 +4,7 @@ import io.opentelemetry.api.trace.{SpanKind, StatusCode}
 import zio.*
 import zio.http.*
 import zio.http.codec.HttpCodecError
+import zio.http.netty.NettyConfig
 import zio.json.*
 import zio.logging.{LogAnnotation, logContext}
 import zio.metrics.MetricKeyType.Histogram.Boundaries
@@ -158,6 +159,13 @@ object Observability:
   private val clientRequestDuration =
     Metric.histogram("http_client_request_duration_seconds", clientDurationBoundaries)
 
+  /** Outbound requests in flight per target, queued for a pooled connection included. Where the
+    * pool is too small this is what climbs (a request waiting for a connection is in flight from its
+    * caller's side), long before any CPU or latency average moves.
+    */
+  private val clientActiveRequests =
+    Metric.gauge("http_client_active_requests")
+
   /** Masks an `Authorization` header value while preserving its scheme, e.g. `Bearer secret`
     * becomes `Bearer ***` and `Basic secret` becomes `Basic ***`, so logs stay useful for
     * distinguishing auth schemes without leaking credentials. Falls back to `***` when no
@@ -305,8 +313,30 @@ object Observability:
               SpanKind.SERVER,
             )
 
+  /** Pooled connections the outbound client keeps per target (`HTTP_CLIENT_POOL_SIZE`, default
+    * [[defaultClientPoolSize]]).
+    *
+    * zio-http's own default is `Fixed(10)`, and an HTTP/1.1 connection serves one request at a time,
+    * so ten of them cap a pod at `10 / latency` requests per second towards each target: ~780/s at
+    * 13 ms, 200/s at 50 ms, however idle its CPU is. Seen on the Yandex Cloud step-load test: one edge
+    * pod, at 780 rps to a backend answering in 13 ms, tipped over that line, queued 486 requests and
+    * answered the resource proxy with a p99 of ~1 s while the other pod and every CPU were fine; both held
+    * exactly ten established connections to each backend (`/proc/net/tcp`).
+    */
+  final val defaultClientPoolSize: Int = 128
+
+  val clientPoolSize: Int =
+    Option(java.lang.System.getenv("HTTP_CLIENT_POOL_SIZE")).flatMap(_.toIntOption).filter(_ > 0).getOrElse(defaultClientPoolSize)
+
+  def clientConfig(poolSize: Int): ZClient.Config =
+    ZClient.Config.default.copy(connectionPool = ConnectionPoolConfig.Fixed(poolSize))
+
+  /** `Client.default` with [[clientPoolSize]] connections per target instead of ten. */
+  def pooledClient(poolSize: Int): ZLayer[Any, Throwable, Client] =
+    (ZLayer.succeed(clientConfig(poolSize)) ++ ZLayer.succeed(NettyConfig.defaultWithFastShutdown) ++ DnsResolver.default) >>> ZClient.live
+
   val client: ZLayer[Tracing, Throwable, Client] =
-    (Client.default ++ ZLayer.service[Tracing]).map: env =>
+    (pooledClient(clientPoolSize) ++ ZLayer.service[Tracing]).map: env =>
       ZEnvironment(env.get[Client] @@ clientMiddleware(env.get[Tracing]))
 
   def clientMiddleware(tracing: Tracing): ZClientAspect[Nothing, Any, Nothing, Body, Nothing, Any, Nothing, Response] =
@@ -333,8 +363,13 @@ object Observability:
                   _ <- tracing.injectSpan(TraceContextPropagator.default, carrier)
                   tracedHeaders = headers ++ Headers.fromIterable(carrier.kernel.map((k, v) => Header.Custom(k, v)))
                   startTime <- Clock.instant
-                  result <- client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
-                    .sandbox.exit.timed
+                  peerTag = url.kind match
+                    case loc: URL.Location.Absolute => Set(MetricLabel("peer", s"${loc.host}:${loc.port}"))
+                    case URL.Location.Relative => Set(MetricLabel("peer", "unknown"))
+                  result <- clientActiveRequests.tagged(peerTag).increment *>
+                    client.driver.request(version, method, url, tracedHeaders, body, sslConfig, proxy)
+                      .sandbox.exit.timed
+                      .ensuring(clientActiveRequests.tagged(peerTag).decrement)
                   (duration, exit) = result
                   masking <- clientLogging.get
                   route <- clientRoute.get.map(_.getOrElse(url.path.encode.stripPrefix("/")))
