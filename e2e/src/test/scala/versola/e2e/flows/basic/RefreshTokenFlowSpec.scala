@@ -305,7 +305,7 @@ object RefreshTokenFlowSpec extends E2ESpec:
         outcome <- rejection(late)
       yield assertTrue(outcome._2 == "invalid_grant")
         .label(s"a rotated token must not outlive the expiry fixed at login, got $outcome")
-    },
+    } @@ TestAspect.withLiveClock, // real sleeps: the TestClock would never advance them
     test("a refresh may narrow the granted scope") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
