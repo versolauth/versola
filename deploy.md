@@ -418,6 +418,19 @@ file under `postgres/migrations` is new. An edited one fails Flyway's checksum v
 and leaves no safe way forward except recreating that schema
 ([6](#6-recreating-the-database-from-scratch)).
 
+**Migration `auth` V0014: login state becomes UNLOGGED.** `auth_conversations`,
+`authorization_codes` and `pushed_authorization_requests` stop being written to the write-ahead
+log (WAL), like `dpop_proofs`. They only hold minutes-old login state, and logging them made the
+auth database wait on WAL commits. The trade-off, in plain words: a clean restart of PostgreSQL
+keeps their rows, but a crash of PostgreSQL (kill -9, host failure, power loss) empties them, a
+standby never receives them (after a failover they are empty), and a restore from a backup brings
+them back empty. What is lost is only in-flight state: users in the middle of a multi-step login
+start over, and an authorization code or pushed request that was not yet used is rejected and the
+client retries. Sessions, tokens, consents and users are unaffected. The migration runs
+`ALTER TABLE ... SET UNLOGGED`, which takes an **ACCESS EXCLUSIVE** lock and rewrites each table:
+logins on the still-running previous version wait while it runs. The tables are small, so it is
+short, but run `versola migrate` at low traffic.
+
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
 matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database
