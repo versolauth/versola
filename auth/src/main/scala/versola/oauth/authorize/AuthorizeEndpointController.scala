@@ -3,9 +3,9 @@ package versola.oauth.authorize
 import versola.oauth.AuthMetrics
 import versola.oauth.authorize.model.{AuthorizeErrorResponse, AuthorizeRequest, AuthorizeResponse, Error, ResponseTypeEntry}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.model.ConversationCookie
+import versola.oauth.model.{AuthorizationCode, ConversationCookie}
+import versola.util.CoreConfig
 import versola.util.http.{Controller, Observability}
-import versola.util.{Base64Url, CoreConfig}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -78,7 +78,7 @@ object AuthorizeEndpointController extends Controller:
             request.clientId,
             request.redirectUri,
             request.responseMode,
-            AuthorizeRedirect.successParams(Base64Url.encode(code), request.state, idToken, config.jwt.issuer),
+            AuthorizeRedirect.successParams(AuthorizationCode.present(code), request.state, idToken, config.jwt.issuer),
           ).map(Response.seeOther)
 
         case AuthorizeResponse.Initialize(authId) =>

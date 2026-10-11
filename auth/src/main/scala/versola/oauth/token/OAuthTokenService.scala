@@ -20,7 +20,7 @@ import versola.oauth.session.model.{RefreshAlreadyExchanged, RefreshTokenRecord,
 import versola.oauth.token.model.{ClientCredentialsRequest, CodeExchangeRequest, IssuedTokens, RefreshTokenRequest, TokenEndpointError}
 import versola.user.UserRepository
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
 import zio.prelude.These
 import zio.{Duration, IO, Task, ZIO, ZLayer}
 
@@ -267,7 +267,7 @@ object OAuthTokenService:
     ): IO[Throwable | TokenEndpointError, IssuedTokens] =
       import refreshTokenRequest.{authorizationDetails, refreshToken, resources, scope}
       for
-        _ <- Observability.setPreviousRefreshToken(Base64.urlEncode(refreshToken))
+        _ <- Observability.setPreviousRefreshToken(RefreshToken.present(refreshToken))
 
         client <- authenticateClient(tokenCredentials, certificate)
 
@@ -649,7 +649,7 @@ object OAuthTokenService:
             // has and the row keeps the expiry it was issued with. The single failure mode is
             // the grant having been revoked or expired between the read and this call.
             case Some(renewal) =>
-              Observability.setRefreshToken(Base64.urlEncode(renewal.token)) *>
+              Observability.setRefreshToken(RefreshToken.present(renewal.token)) *>
                 sessionRepository.renewBoundToken(renewal.mac, renewal.narrowedScope)
                   .filterOrFail(identity)(TokenEndpointError.InvalidGrant.RefreshTokenNotFound)
                   .as(renewal.token)
@@ -657,7 +657,7 @@ object OAuthTokenService:
             case None =>
               for
                 token <- authPropertyGenerator.nextRefreshToken
-                _ <- Observability.setRefreshToken(Base64.urlEncode(token))
+                _ <- Observability.setRefreshToken(RefreshToken.present(token))
                 mac <- securityService.mac(Secret(token), config.security.refreshTokensSecret)
                 _ <- sessionRepository.createRefreshToken(mac, previousRefreshToken, record, idempotencyKey)
                   .mapError:

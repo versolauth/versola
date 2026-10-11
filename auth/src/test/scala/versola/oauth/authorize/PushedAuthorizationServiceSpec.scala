@@ -7,7 +7,17 @@ import versola.oauth.client.model.*
 import versola.oauth.client.model.SecurityProfile
 import versola.oauth.clientauth.{ClientAssertionService, ClientAuthentication}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, RequestUri}
-import versola.util.{ClientAssertion, JsonSchemaValidator, JsonWebKeySet, RequestObject, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{
+  ClientAssertion,
+  CoreConfig,
+  JsonSchemaValidator,
+  JsonWebKeySet,
+  RequestObject,
+  Secret,
+  SecureRandom,
+  SecurityService,
+  UnitSpecBase,
+}
 import zio.*
 import zio.http.{Request, URL}
 import zio.json.*
@@ -91,7 +101,7 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       "code_challenge_method" -> Chunk("S256"),
     ) ++ extra
 
-  private class Env:
+  private class Env(config: CoreConfig = TestEnvConfig.coreConfig):
     val parser = stub[AuthorizeRequestParser]
     val repository = stub[PushedAuthorizationRepository]
     val configuration = stub[OAuthConfigurationService]
@@ -333,6 +343,28 @@ object PushedAuthorizationServiceSpec extends UnitSpecBase:
       yield assertTrue(
         !created.params.contains("client_secret"),
         !validated.contains("client_secret"),
+      )
+    },
+    // versolauth/versola#547 §6.2 and RFC 9126 §9.3: the cell goes inside the reference, so
+    // the value keeps the registered namespace in front; what is stored is keyed on the whole
+    // routed reference, so a reference presented under another key matches nothing.
+    test("writes the cell inside the request_uri reference and keys the record on the routed reference") {
+      val cellConfig = TestEnvConfig.cellCoreConfig
+      val env = Env(cellConfig)
+      for
+        _ <- env.happyPath
+        secureRandom <- SecureRandom.live.build.map(_.get[SecureRandom]).provideLayer(zio.Scope.default)
+        service <- env.service
+        response <- service.push(validParams(), credentials, None, request)
+        reference <- ZIO.fromEither(RequestUri.parse(response.requestUri)).mapError(RuntimeException(_))
+        hashingSemaphore <- Semaphore.make(1)
+        expected <- SecurityService.Impl(secureRandom, hashingSemaphore).mac(Secret(reference), cellConfig.security.parRequestsSecret)
+        stored = env.repository.create.calls.head._1
+        routedReference = response.requestUri.stripPrefix(RequestUri.Prefix)
+      yield assertTrue(
+        routedReference.startsWith(s"v1.${TestEnvConfig.cellId}."),
+        reference.sameElements(routedReference.getBytes(java.nio.charset.StandardCharsets.UTF_8)),
+        stored.toSeq == expected.toSeq,
       )
     },
     test("stores the request_uri as a MAC rather than the reference handed to the client") {

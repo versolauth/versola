@@ -89,12 +89,16 @@ object BackChannelDispatcher:
         customClaims: Json.Obj,
         signingKey: JWT.Signature.Asymmetric,
     ): Task[String] =
+      // The cell the event comes from (versolauth/versola#547 §6.2), on every event alike --
+      // a logout and a revocation both name state this cell holds. Absent on a deployment
+      // that is not a cell, which leaves its events exactly as they were.
+      val cellClaim = config.cellId.map(cell => "cell" -> Json.Str(cell)).toList
       JWT.serialize(
         claims = JWT.Claims(
           issuer = config.jwt.issuer,
           subject = subject,
           audience = audience.toList,
-          custom = customClaims,
+          custom = Json.Obj(customClaims.fields ++ cellClaim*),
         ),
         ttl = TokenTtl,
         signature = signingKey,

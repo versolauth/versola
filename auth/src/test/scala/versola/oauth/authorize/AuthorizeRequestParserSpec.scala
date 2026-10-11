@@ -151,7 +151,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     """.fromJson[Json.Obj].toOption.get,
   )
 
-  class Env:
+  class Env(config: CoreConfig = TestEnvConfig.coreConfig):
     val configuration = stub[OAuthConfigurationService]
     configuration.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
     configuration.getIpHeader.returnsWith(ZIO.succeed("X-Real-IP"))
@@ -160,12 +160,12 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     // Real rather than stubbed: what a request object resolves to is the parser's input, so
     // a stub would leave every assertion about it asserting on the stub's own answer.
     val requestObjectService = RequestObjectService.Impl(
-      TestEnvConfig.coreConfig,
+      config,
       configuration,
       versola.oauth.clientauth.InMemoryClientAssertionRepository.make,
     )
     val parser = AuthorizeRequestParser.Impl(
-      TestEnvConfig.coreConfig,
+      config,
       configuration,
       pushedAuthorizationRepository,
       requestObjectService,
@@ -1256,6 +1256,58 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           _ <- env.pushedAuthorizationRepository.consume.succeedsWith(None)
           result <- env.parser.parse(request).either
         yield assertTrue(result == Left(Error.BadRequest))
+      },
+      // versolauth/versola#547 §6.2: a reference issued under a cell is looked up by the MAC of
+      // the whole routed reference, and one issued before the deployment became a cell by the
+      // MAC of its bare bytes -- both redeem, each the way it was stored.
+      test("resolves a request_uri whose reference carries a routing key") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val routedReference = RequestUriReference.issue(Some(TestEnvConfig.cellId), Array.fill(32)(6.toByte))
+        val routedRequestUri = RequestUri(routedReference)
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> routedRequestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          routedRequestUri.startsWith(s"${RequestUri.Prefix}v1.${TestEnvConfig.cellId}."),
+          result.clientId == clientId,
+          env.securityService.mac.calls.map(_._1.toSeq) == List(routedReference.toSeq),
+          env.pushedAuthorizationRepository.consume.calls.map(_.toSeq) == List(requestUriMac.toSeq),
+        )
+      },
+      test("still resolves a request_uri issued without a routing key once the deployment is a cell") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> requestUri,
+        )))
+        for
+          _ <- env.securityService.mac.succeedsWith(requestUriMac)
+          _ <- env.pushedAuthorizationRepository.consume.succeedsWith(Some(pushedRecord))
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          result <- env.parser.parse(request)
+        yield assertTrue(
+          result.clientId == clientId,
+          env.securityService.mac.calls.map(_._1.toSeq) == List(requestUriReference.toSeq),
+        )
+      },
+      test("fails when the request_uri announces a routing key it does not spell") {
+        val env = Env(TestEnvConfig.cellCoreConfig)
+        val request = Request.get(URL.root.addQueryParams(Map(
+          "client_id" -> clientId.toString,
+          "request_uri" -> s"${RequestUri.Prefix}v1.KZ-1.${versola.util.Base64.urlEncode(requestUriReference)}",
+        )))
+        for
+          result <- env.parser.parse(request).either
+        yield assertTrue(
+          result == Left(Error.BadRequest),
+          env.pushedAuthorizationRepository.consume.calls.isEmpty,
+        )
       },
       test("fails when the request_uri is not a pushed request reference") {
         val env = Env()
