@@ -431,6 +431,24 @@ client retries. Sessions, tokens, consents and users are unaffected. The migrati
 logins on the still-running previous version wait while it runs. The tables are small, so it is
 short, but run `versola migrate` at low traffic.
 
+**Migrations `auth` V0015 and `edge` V2005: configuration snapshot tables.** `auth_config_snapshots`
+and `edge_config_snapshots` keep the body of each configuration sync response the service last
+received from central, one row per request path (#566). A service that restarts while central is
+unreachable starts from these rows once its first load has given up on central, keeps retrying
+central in the background, logs a warning and reports `config_snapshot_age_seconds`; while central
+answers, the rows are only written, never read. #566 asked for a snapshot signed by central. Instead
+each row carries an HMAC-SHA256 under a key derived from material the node already holds —
+`central.secret-key` in auth, `private-key` in edge. Whoever holds those keys can already read the
+same configuration from central, so a central signature would add a key to generate and roll out
+and no protection; what the signature was for (a forged, truncated, moved or back-dated row is
+refused) is kept. In operation: the tables are empty right after `versola migrate` and fill on the
+first successful sync, so the first start on this release still needs central; the secrets in the
+stored bodies are the ones central encrypted for that node, so database access alone reads nothing;
+and after `central.secret-key` or the edge `private-key` is rotated the rows stop verifying and are
+refused — until the next successful sync, a cold start without central fails as it did before this
+release. Certificates an edge issued for itself through enrollment (#463) are not in the snapshot:
+after a cold start without central, clients using them are not served until central is back.
+
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
 matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database
