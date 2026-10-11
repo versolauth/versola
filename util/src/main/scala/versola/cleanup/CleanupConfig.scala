@@ -1,6 +1,6 @@
 package versola.cleanup
 
-import zio.Duration
+import zio.*
 
 /** Configuration for the cleanup manager.
  *
@@ -8,10 +8,18 @@ import zio.Duration
  *   Maximum number of concurrent cleanup operations (recommended: 1-2)
  * @param tables
  *   List of table cleanup configurations
+ * @param statsInterval
+ *   How often to measure what is left to clean (expired rows, oldest expired row) and how big the
+ *   tables are. Defaults to one minute.
+ * @param expiredCountCap
+ *   Expired rows are counted up to this many, so measuring a table that is badly behind stays cheap.
+ *   Defaults to 100000.
  */
 case class CleanupConfig(
     maxThreads: Int,
     tables: List[TableCleanupConfig],
+    statsInterval: Duration = 1.minute,
+    expiredCountCap: Int = 100_000,
 )
 
 /** Configuration for a single table cleanup job.
