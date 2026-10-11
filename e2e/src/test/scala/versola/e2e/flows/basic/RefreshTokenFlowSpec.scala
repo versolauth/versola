@@ -283,6 +283,8 @@ object RefreshTokenFlowSpec extends E2ESpec:
         auth <- ZIO.serviceWith[Flows.Setups](_.client)
         // Six seconds: long enough to log in and refresh once, short enough to outwait.
         s <- Flows.setupEmailOtp(refreshTokenTtl = Some(6)).provideEnvironment(ZEnvironment(auth))
+        // A client registered mid-run is unknown to auth until its configuration is pulled.
+        _ <- auth.syncConfiguration()
         first <- login(s, auth)
         original <- refreshTokenOf(first.tokens)
         _ <- ZIO.sleep(3.seconds)
