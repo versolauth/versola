@@ -23,7 +23,6 @@ object EdgeController extends Controller:
     deleteEdgeEndpoint,
     edgesRegistryEndpoint,
     setEdgeDpopEndpoint,
-    edgeDpopSyncEndpoint,
   )
 
   val getAllEdgesEndpoint =
@@ -102,25 +101,6 @@ object EdgeController extends Controller:
           if edge.isEmpty then ZIO.succeed(Response.status(Status.NotFound))
           else service.setRequireDpopNonce(edgeId, body.requireDpopNonce).as(Response.status(Status.NoContent))
       yield response
-    }
-
-  /** What the named edge is to do about RFC 9449 §9 on the calls it proxies, for the edge
-    * itself -- the resource-server half of the same decision a tenant's `require_dpop_nonce`
-    * makes for `auth`'s endpoints.
-    *
-    * Restricted to edges, and an edge is served only its own row: an edge has no use for a
-    * peer's policy, and `authorizeInternal` has already proven which edge is asking by the key
-    * it signed the call with, so the id is not taken from the request.
-    */
-  val edgeDpopSyncEndpoint =
-    Method.GET / "configuration" / "edges" / "dpop" / "sync" -> handler { (request: Request) =>
-      for
-        callerEdgeId <- authorizeInternal(request)
-        edgeId <- ZIO.fromOption(callerEdgeId).orElseFail(Unauthorized)
-        service <- ZIO.service[EdgeService]
-        edge <- service.find(edgeId).someOrFail(Unauthorized)
-        response = EdgeDpopSyncResponse(requireDpopNonce = edge.requireDpopNonce)
-      yield Response.json(response.toJson)
     }
 
   /** The registered signing keys of every edge, for auth to authenticate the edges that call

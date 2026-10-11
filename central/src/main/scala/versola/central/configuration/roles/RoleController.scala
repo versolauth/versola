@@ -1,11 +1,10 @@
 package versola.central.configuration.roles
 
-import versola.central.configuration.edges.EdgeService
+import versola.central.authorizeBasic
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, GetRolesSyncResponse, RoleResponse, RoleSyncResponse, UpdateRoleRequest}
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.{CreateRoleRequest, GetAllRolesResponse, RoleResponse, UpdateRoleRequest}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
@@ -14,14 +13,13 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object RoleController extends Controller:
-  type Env = Tracing & RoleService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & RoleService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     createRoleEndpoint,
     updateRoleEndpoint,
     deleteRoleEndpoint,
     getAllRolesEndpoint,
-    syncRolesEndpoint,
   )
 
   val createRoleEndpoint =
@@ -74,21 +72,4 @@ object RoleController extends Controller:
           )
         })
       yield Response.json(GetAllRolesResponse(roles).toJson)
-    }
-
-  val syncRolesEndpoint =
-    Method.GET / "configuration" / "roles" / "sync" -> handler { (request: Request) =>
-      for
-        service <- ZIO.service[RoleService]
-        edgeId <- authorizeInternal(request)
-        roles <- service.getRolesForSync(edgeId)
-        response = GetRolesSyncResponse(roles.map { role =>
-          RoleSyncResponse(
-            tenantId = role.tenantId,
-            id = role.id,
-            permissions = role.permissions,
-            active = role.active,
-          )
-        })
-      yield Response.json(response.toJson)
     }

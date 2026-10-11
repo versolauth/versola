@@ -17,7 +17,7 @@ object JwksSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends JwksSyncClient:
-    private val JwksURL = config.central.url / "configuration" / "jwks" / "sync"
+    private val JwksURL = config.central.url / "edge" / "sync" / "jwks"
 
     override def getAll: Task[JWT.PublicKeys] =
       for
