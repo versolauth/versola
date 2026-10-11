@@ -183,34 +183,26 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           newTokenFound.isDefined,
         )
       },
-      test("a bound token is renewed in place: same token, slid expiry") {
+      test("a bound token is renewed in place: same token, same expiry, no write") {
         for
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          versionBefore <- env.rowVersion(refreshToken1)
 
-          renewed <- env.repository.renewBoundToken(refreshToken1, None, now.plus(60.days))
+          renewed <- env.repository.renewBoundToken(refreshToken1, None)
           found <- env.repository.findToken(refreshToken1)
+          versionAfter <- env.rowVersion(refreshToken1)
         yield assertTrue(
           renewed,
           // Still the same token -- nothing was rotated, so the client keeps what it has.
           found.isDefined,
-          found.exists(_.expiresAt == now.plus(60.days)),
-          found.exists(_.cnf.flatMap(_.jkt).contains("thumbprint-1")),
-        )
-      },
-      test("renewing a bound token never shortens its expiry") {
-        for
-          now <- Clock.instant
-          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
-          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
-
-          // A retry arriving late must not pull the expiry back in.
-          renewed <- env.repository.renewBoundToken(refreshToken1, None, now)
-          found <- env.repository.findToken(refreshToken1)
-        yield assertTrue(
-          renewed,
+          // The lifetime is fixed at issuance: using the token does not move it.
           found.exists(_.expiresAt == record1.expiresAt),
+          found.exists(_.cnf.flatMap(_.jkt).contains("thumbprint-1")),
+          // A no-write renewal leaves the row untouched: same tuple version, so no WAL.
+          versionBefore.isDefined,
+          versionAfter == versionBefore,
         )
       },
       test("renewing reports failure once the grant is revoked") {
@@ -220,10 +212,25 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
           _ <- env.repository.delete(refreshToken1)
 
-          renewed <- env.repository.renewBoundToken(refreshToken1, None, now.plus(60.days))
-        yield assertTrue(!renewed)
+          // The no-write path still has to refuse: revocation is an `expires_at` write, and the
+          // caller's own read can be older than it.
+          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None)
+          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)))
+        yield assertTrue(!renewedWithoutScope, !renewedNarrowing)
       },
-      test("renewing a bound token in place persists a narrowed scope") {
+      test("renewing reports failure once the token has passed its fixed expiry") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- TestClock.adjust(refreshTtl + 1.second)
+
+          foundAfterExpiry <- env.repository.findToken(refreshToken1)
+          renewedWithoutScope <- env.repository.renewBoundToken(refreshToken1, None)
+          renewedNarrowing <- env.repository.renewBoundToken(refreshToken1, Some(record1.scope.take(1)))
+        yield assertTrue(foundAfterExpiry.isEmpty, !renewedWithoutScope, !renewedNarrowing)
+      },
+      test("renewing a bound token in place persists a narrowed scope and nothing else") {
         for
           now <- Clock.instant
           record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
@@ -233,12 +240,14 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           // rotates: the next refresh names no scope, so an unpersisted narrowing would be
           // silently undone and hand back what the client dropped.
           narrowed = record1.scope.take(1)
-          renewed <- env.repository.renewBoundToken(refreshToken1, Some(narrowed), now.plus(60.days))
+          renewed <- env.repository.renewBoundToken(refreshToken1, Some(narrowed))
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
           narrowed.size < record1.scope.size,
           found.exists(_.scope == narrowed),
+          // Only `scope` changes: the expiry stays what the token was issued with.
+          found.exists(_.expiresAt == record1.expiresAt),
         )
       },
       test("renewing a bound token without a scope leaves the stored one alone") {
@@ -247,13 +256,35 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
           record1 = tokenRecord1(now, refreshTtl).copy(cnf = Some(Cnf.dpop("thumbprint-1")))
           _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
 
-          // RFC 6749 §6: a refresh naming no scope means "unchanged", so the row is already
-          // right and the column is left out of the statement rather than rewritten.
-          renewed <- env.repository.renewBoundToken(refreshToken1, None, now.plus(60.days))
+          // RFC 6749 §6: a refresh naming no scope means "unchanged", so the row is already right.
+          renewed <- env.repository.renewBoundToken(refreshToken1, None)
           found <- env.repository.findToken(refreshToken1)
         yield assertTrue(
           renewed,
           found.exists(_.scope == record1.scope),
+        )
+      },
+      test("a rotated successor keeps the expiry the caller hands it, so the family's lifetime is fixed") {
+        for
+          now <- Clock.instant
+          record1 = tokenRecord1(now, refreshTtl)
+          _ <- env.repository.createRefreshToken(refreshToken1, None, record1, None)
+          _ <- TestClock.adjust(10.days)
+          later <- Clock.instant
+          // What the service passes: the predecessor's absolute expiry, not `later + ttl`.
+          _ <- env.repository.createRefreshToken(
+            refreshToken2,
+            Some(refreshToken1),
+            record1.copy(issuedAt = later, expiresAt = record1.expiresAt),
+            None,
+          )
+          tip <- env.repository.findToken(refreshToken2)
+          _ <- TestClock.adjust(refreshTtl)
+          tipAfterOriginalExpiry <- env.repository.findToken(refreshToken2)
+        yield assertTrue(
+          tip.exists(_.expiresAt == record1.expiresAt),
+          tip.exists(_.issuedAt == later),
+          tipAfterOriginalExpiry.isEmpty,
         )
       },
       test("refresh token rotation: fail when old token already used") {
@@ -566,4 +597,8 @@ trait RefreshTokenRepositorySpec extends DatabaseSpecBase[RefreshTokenRepository
     )
 
 object RefreshTokenRepositorySpec:
-  case class Env(repository: SessionRepository)
+  /** @param rowVersion
+    *   the row's physical tuple version (`xmin`): it changes on any UPDATE, so equal values
+    *   before and after a call prove the call wrote nothing.
+    */
+  case class Env(repository: SessionRepository, rowVersion: MAC => Task[Option[String]])

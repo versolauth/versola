@@ -72,7 +72,7 @@ export class VersolaClientForm extends LitElement {
     redirectUris: [],
     scope: [],
     accessTokenTtl: 3600,
-    refreshTokenTtl: daysToSeconds(90),
+    refreshTokenTtl: daysToSeconds(180),
     permissions: [],
     theme: 'default',
     clientType: 'web',
@@ -95,7 +95,7 @@ export class VersolaClientForm extends LitElement {
   @state() private jwksInput = '';
   @state() private ttlValue = 1;
   @state() private ttlUnit: 'minutes' | 'hours' = 'hours';
-  @state() private refreshTokenTtlDays = 90;
+  @state() private refreshTokenTtlDays = 180;
   @state() private redirectUriError = '';
   @state() private logoutMode: 'none' | 'front' | 'back' = 'none';
   @state() private logoutOpen = false;
@@ -1374,7 +1374,7 @@ export class VersolaClientForm extends LitElement {
       const { value, unit } = secondsToTtl(this.client.accessTokenTtl);
       this.ttlValue = value;
       this.ttlUnit = unit;
-      this.refreshTokenTtlDays = secondsToDays(this.client.refreshTokenTtl ?? daysToSeconds(90));
+      this.refreshTokenTtlDays = secondsToDays(this.client.refreshTokenTtl ?? daysToSeconds(180));
       this.logoutMode = this.client.frontChannelLogoutUri
         ? 'front'
         : this.client.backChannelLogoutUri
@@ -1406,7 +1406,7 @@ export class VersolaClientForm extends LitElement {
       // Defaults: 1 hour, pre-select first available OTP template
       this.ttlValue = 1;
       this.ttlUnit = 'hours';
-      this.refreshTokenTtlDays = 90;
+      this.refreshTokenTtlDays = 180;
       if (this.otpTemplateOptions.length > 0) {
         this.formData = { ...this.formData, otpTemplateId: this.otpTemplateOptions[0].id };
       }
@@ -3861,7 +3861,7 @@ export class VersolaClientForm extends LitElement {
                   min="1"
                   step="1"
                 />
-                <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds</div>
+                <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds. Fixed from login: using the token does not extend it, and the user must sign in again after it ends.</div>
               </div>
             ` : ''}
     `;

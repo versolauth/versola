@@ -84,7 +84,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
           strings(body, "redirectUris").toSet == webClient.redirectUris,
           strings(body, "allowedScopes").toSet == webClient.allowedScopes,
           num(body, "accessTokenTtl").contains(BigDecimal(900)),
-          num(body, "refreshTokenTtl").contains(BigDecimal(2592000)),
+          num(body, "refreshTokenTtl").contains(BigDecimal(15552000)),
           field(body, "authFlow").contains(webClient.authFlow),
           field(body, "registrationFlow") == webClient.registrationFlow,
           optionalStr(body, "backChannelLogoutUri") == webClient.backChannelLogoutUri,

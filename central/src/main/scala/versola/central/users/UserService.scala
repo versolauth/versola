@@ -23,8 +23,8 @@ trait UserService:
   def invalidateSession(userId: UserId): Task[Unit]
 
   /** Every currently-live refresh token issued to the user, independent of
-    * [[getSessions]]: a refresh token's expiry slides forward on every use while a
-    * session's does not, so a token routinely outlives the session it was issued under. */
+    * [[getSessions]]: a refresh token's expiry is fixed at issuance and independent of a
+    * session's, so a token routinely outlives the session it was issued under. */
   def getRefreshTokens(id: UserId): Task[List[RefreshTokenResponse]]
 
   def create(request: CreateUserRequest): IO[UserConflict | Throwable, UserId]

@@ -1704,6 +1704,93 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
           env.tokenRepo.createRefreshToken.calls.head._3.cnf.isEmpty,
         )
       },
+      test("a code exchange issues a refresh token that expires one client TTL from now") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(codeMac1)
+          _ <- env.authCodeRepo.find.succeedsWith(Some(authorizationCodeRecord.copy(scope = scope1)))
+          _ <- env.authCodeRepo.markAsUsed.succeedsWith(Right(()))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(refreshToken1)
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = CodeExchangeRequest(authCode1, redirectUri1, Some(codeVerifier1))
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          _ <- env.service.exchangeAuthorizationCode(request, credentials, None, None)
+        yield assertTrue(
+          env.tokenRepo.createRefreshToken.calls.head._3.expiresAt == now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+        )
+      },
+      test("a rotated successor inherits the predecessor's expiry instead of getting a fresh TTL") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          // Issued 20 days ago with a 90-day TTL: 70 days remain, which is neither `now` nor `now + ttl`.
+          original = now.plusSeconds(70.days.toSeconds)
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(8.toByte)))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, None).copy(expiresAt = original)))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.propertyGenerator.nextRefreshToken.succeedsWith(RefreshToken(Array.fill(32)(7.toByte)))
+          _ <- env.tokenRepo.createRefreshToken.succeedsWith(())
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          _ <- env.service.refreshAccessToken(request, credentials, None, None, None)
+        yield assertTrue(
+          original != now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+          env.tokenRepo.createRefreshToken.calls.head._3.expiresAt == original,
+        )
+      },
+      test("a bound refresh does not carry an expiry to the repository, so none can be extended") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(
+            Some(boundRecord(now, Some(Cnf.dpop(jkt1))).copy(expiresAt = now.plusSeconds(70.days.toSeconds))),
+          )
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(true)
+          _ <- env.userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          _ <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None, None)
+        yield assertTrue(
+          // (mac, scope) is the whole signature: there is no expiry argument left to slide.
+          env.tokenRepo.renewBoundToken.calls.length == 1,
+          env.tokenRepo.renewBoundToken.calls.head._2.isEmpty,
+        )
+      },
+      test("a bound refresh is rejected when the repository finds the token expired or revoked since the read") {
+        val env = new Env
+        for
+          now <- Clock.instant
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.securityService.mac.succeedsWith(refreshTokenMac1)
+          _ <- env.securityService.mac.succeedsWith(MAC(Array.fill(32)(11.toByte)))
+          _ <- env.tokenRepo.findToken.succeedsWith(Some(boundRecord(now, Some(Cnf.dpop(jkt1)))))
+          _ <- env.propertyGenerator.nextAccessToken.succeedsWith(accessToken1)
+          _ <- env.tokenRepo.renewBoundToken.succeedsWith(false)
+
+          request = RefreshTokenRequest(refreshToken1, None, None, None)
+          credentials = ClientIdWithSecret(clientId1, Some(clientSecret1))
+
+          result <- env.service.refreshAccessToken(request, credentials, Some(jkt1), None, None).either
+        yield assertTrue(result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound))
+      },
       test("refreshes a bound grant when the proof carries the same thumbprint") {
         val env = new Env
         for

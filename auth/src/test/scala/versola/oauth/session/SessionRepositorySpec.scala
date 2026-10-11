@@ -284,7 +284,7 @@ trait SessionRepositorySpec extends DatabaseSpecBase[SessionRepositorySpec.Env]:
         yield assertTrue(sessionAfter.isEmpty, tokenAfter.isEmpty)
       },
       test("invalidateByUserId revokes a refresh token whose own session already expired") {
-        // A refresh token's expiry slides forward on every use while a session's does not,
+        // A refresh token's expiry is fixed at issuance and not tied to its session's,
         // so a live token routinely outlives the session it was issued under. Force-logout
         // has to reach that token too, not only ones under a still-active session.
         for

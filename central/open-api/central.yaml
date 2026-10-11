@@ -875,8 +875,8 @@ paths:
       tags: [Users]
       summary: List a user's refresh tokens
       description: |
-        Independent of `GET /users/sessions`: a refresh token's expiry slides forward on every
-        use while a session's does not, so a token routinely outlives the session it was issued
+        Independent of `GET /users/sessions`: a refresh token's expiry is fixed at issuance and
+        independent of a session's, so a token routinely outlives the session it was issued
         under and would be invisible to an admin working from the session list alone.
       operationId: getUserRefreshTokens
       parameters:
@@ -2295,7 +2295,7 @@ components:
           description: Seconds.
         refreshTokenTtl:
           type: [integer, 'null']
-          description: Seconds. `null` or omitted uses the default of 7776000 (90 days).
+          description: Seconds. `null` or omitted uses the default of 15552000 (180 days).
         theme:
           type: string
         authFlow:
@@ -3490,7 +3490,7 @@ components:
           type: string
           description: |
             The session this token was issued under. May no longer resolve to a live session:
-            a refresh token's expiry slides forward on every use while a session's does not,
+            a refresh token's expiry is fixed at issuance and independent of a session's,
             so a token routinely outlives it.
         clientId:
           $ref: '#/components/schemas/ClientId'
