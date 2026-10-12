@@ -105,14 +105,15 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       test("no redirect URI is refused") {
         assertTrue(registration(ClientKind.web, web.copy(redirectUris = Set.empty).toCreateClientRequest).exists(_.contains("redirect URI")))
       },
-      test("fronted by edge it is bound to the certificate and pushes its requests, and cannot also use DPoP or a request object") {
+      test("fronted by edge it is bound to the certificate and pushes its requests, and cannot require a request object") {
         val edge = web.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true)
         val written = edge.toCreateClientRequest
         assertTrue(
           written.certificateBoundAccessTokens,
           written.requirePushedAuthorizationRequests,
           registration(ClientKind.web, written).isEmpty,
-          registration(ClientKind.web, edge.copy(dpopBoundAccessTokens = true).toCreateClientRequest).exists(_.contains("dpopBoundAccessTokens")),
+          // DPoP beside the certificate is left to the runtime, which refuses a token bound to both.
+          registration(ClientKind.web, edge.copy(dpopBoundAccessTokens = true).toCreateClientRequest).isEmpty,
           registration(
             ClientKind.web,
             edge.copy(requireSignedRequestObject = true).toCreateClientRequest,
@@ -221,11 +222,9 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
           check(update.copy(certificateBoundAccessTokens = Some(true), requirePushedAuthorizationRequests = Some(true))).isEmpty,
           check(update.copy(certificateBoundAccessTokens = Some(false))).exists(_.reason.contains("certificateBoundAccessTokens")),
           check(update.copy(requirePushedAuthorizationRequests = Some(false))).exists(_.reason.contains("requirePushedAuthorizationRequests")),
-          check(update.copy(dpopBoundAccessTokens = Some(true))).exists(_.reason.contains("dpopBoundAccessTokens")),
           check(update.copy(requireSignedRequestObject = Some(true))).exists(_.reason.contains("requireSignedRequestObject")),
           fixed.certificateBoundAccessTokens == Some(true),
           fixed.requirePushedAuthorizationRequests == Some(true),
-          fixed.dpopBoundAccessTokens == Some(false),
           // Held to nothing on a client no edge fronts.
           InvalidRegistrationConfiguration.validateKindUpdate(
             ClientKind.web,

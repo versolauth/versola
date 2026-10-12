@@ -2436,7 +2436,7 @@ components:
         Fronted by edge (`issueEdgeClientCertificate`, `enrollEdgeClientCertificate` or a supplied
         certificate) its tokens are bound to edge's certificate and its authorization requests are
         pushed: `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests` are set on
-        whatever is sent. It cannot set `dpopBoundAccessTokens` or `requireSignedRequestObject`.
+        whatever is sent. It cannot set `requireSignedRequestObject`.
 
         Recorded as a `web` client. `frontChannelLogoutUri` and `backChannelLogoutUri` are never both
         set, and `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
@@ -2837,8 +2837,7 @@ components:
 
         A client's method and kind are fixed when it is registered. For a web client fronted by edge,
         `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests` are fixed on and
-        `dpopBoundAccessTokens` and `requireSignedRequestObject` off: an update may restate them, not
-        ask for the opposite, and central writes them onto the client whatever it was stored as. No
+        `requireSignedRequestObject` off: an update may restate them, not ask for the opposite, and central writes them onto the client whatever it was stored as. No
         patch may leave the client without a redirect URI.
         Members that are not listed here are refused, not ignored.
       properties:

@@ -61,7 +61,7 @@ case class CreateWebClientRequest(
 ) derives Schema, JsonCodec:
   /** Fronted by edge, edge's certificate is what binds the tokens and its pushed request is what is
     * trusted: both are written on rather than asked for, since a flag left at its default cannot be told
-    * from one asked off. The opposite -- DPoP, a signed request object -- is refused by
+    * from one asked off. The opposite -- a signed request object -- is refused by
     * [[InvalidRegistrationConfiguration.validateKindRegistration]]. */
   private def edgeFronted: Boolean =
     issueEdgeClientCertificate || enrollEdgeClientCertificate || edgeClientCertificate.nonEmpty

@@ -569,7 +569,7 @@ object InvalidRegistrationConfiguration:
   /** A client fronted by edge presents edge's certificate, which is shared by every user it
     * serves -- so its tokens are bound to that certificate and its authorization requests are
     * pushed over the authenticated channel (both written on by the typed request), and it holds no
-    * key to sign a request object or prove DPoP with (refused here). */
+    * key to sign a request object (refused here). */
   private def edgeFronted(request: CreateClientRequest): Boolean =
     request.issueEdgeClientCertificate || request.enrollEdgeClientCertificate || request.edgeClientCertificate.nonEmpty
 
@@ -582,8 +582,6 @@ object InvalidRegistrationConfiguration:
           invalid(s"is confidential: authMethod must be $ConfidentialAuthMethods, not none")
         else if request.redirectUris.isEmpty then
           invalid("needs at least one redirect URI - users sign in through it")
-        else if edgeFronted(request) && request.dpopBoundAccessTokens then
-          invalid("fronted by edge cannot set dpopBoundAccessTokens - the certificate is its sender constraint")
         else if edgeFronted(request) && request.requireSignedRequestObject then
           invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
         else None
@@ -628,8 +626,6 @@ object InvalidRegistrationConfiguration:
         invalid("fronted by edge needs certificateBoundAccessTokens - edge's certificate is what binds its tokens")
       case ClientKind.web if edgeFronted && request.requirePushedAuthorizationRequests.contains(false) =>
         invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request is trustworthy")
-      case ClientKind.web if edgeFronted && request.dpopBoundAccessTokens.contains(true) =>
-        invalid("fronted by edge cannot set dpopBoundAccessTokens - the certificate is its sender constraint")
       case ClientKind.web if edgeFronted && request.requireSignedRequestObject.contains(true) =>
         invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
       case _ => None
@@ -638,7 +634,7 @@ object InvalidRegistrationConfiguration:
     * client stored below its kind (registered before the kinds had endpoints) is brought up by
     * the first update rather than left to a member no request has. Only values the kind itself
     * decides: for a device fronted by edge, its DPoP binding and PAR; for a web client fronted by
-    * edge, its certificate binding and PAR and no DPoP; and no signed request object for any of
+    * edge, its certificate binding and PAR; and no signed request object for any of
     * them, nor a certificate binding for a device. */
   def withKindFixed(kind: ClientKind, request: UpdateClientRequest, current: OAuthClientRecord, edgeFronted: Boolean): UpdateClientRequest =
     kind match
@@ -656,7 +652,6 @@ object InvalidRegistrationConfiguration:
         request.copy(
           certificateBoundAccessTokens = Some(true),
           requirePushedAuthorizationRequests = Some(true),
-          dpopBoundAccessTokens = Some(false),
           requireSignedRequestObject = Some(false),
         )
       case ClientKind.web => request
