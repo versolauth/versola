@@ -2,6 +2,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
+import {accessSectionTitle} from '../utils/client-presets';
 import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
 import {
   createClient,
@@ -1759,9 +1760,9 @@ export class VersolaClientsList extends LitElement {
           ? html`<div class="uri-list">${client.redirectUris.map(uri => html`<div class="uri-item">${uri}</div>`)}</div>` : '—') : ''}
       `)}
 
-      ${this.viewSection('Scopes and permissions', '', 'access', client, html`
+      ${this.viewSection(accessSectionTitle(kind), '', 'access', client, html`
         ${signsUsersIn ? this.viewRow('Scopes', client.scope.length ? html`<div class="tag-list">${client.scope.map(scope => html`<span class="tag">${scope}</span>`)}</div>` : '—') : ''}
-        ${this.viewRow('Permissions', client.permissions.length ? html`<div class="tag-list">${client.permissions.map(permission => html`<span class="tag">${permission}</span>`)}</div>` : '—')}
+        ${signsUsersIn ? '' : this.viewRow('Permissions', client.permissions.length ? html`<div class="tag-list">${client.permissions.map(permission => html`<span class="tag">${permission}</span>`)}</div>` : '—')}
       `)}
 
       ${signsUsersIn ? this.viewSection('Sign-in', '', 'signin', client, html`

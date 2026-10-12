@@ -263,7 +263,7 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
       // The multi-value fields are patched, not replaced, so a redirect URI or scope the
       // blueprint narrowed away stays active on central unless the update names it -- an
       // obsolete OAuth redirect target surviving every re-run.
-      test("takes away a redirect URI, scope and permission the blueprint no longer wants") {
+      test("takes away a redirect URI and a scope the blueprint no longer wants") {
         val widened = webClient.copy(
           redirectUris = webClient.redirectUris + "https://bank.example.test/stale",
           allowedScopes = webClient.allowedScopes + "stale:scope",
@@ -271,7 +271,6 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         for
           (admin, fake) <- fakeAdmin()
           _ <- admin.registerClient(widened)
-          _ <- fake.grantClientPermissions(webClient.clientId, Set("stale:permission"))
           _ <- admin.registerClient(webClient)
           state <- fake.snapshot
           update = parse(state.clientCalls(Method.PUT).head.body)
@@ -279,10 +278,10 @@ object HttpAdminClientSpec extends ZIOSpecDefault:
         yield assertTrue(
           strings(obj(update, "redirectUris"), "remove") == List("https://bank.example.test/stale"),
           strings(obj(update, "scope"), "remove") == List("stale:scope"),
-          strings(obj(update, "permissions"), "remove") == List("stale:permission"),
+          // A web or mobile client has no permissions of its own: users bring theirs through their roles.
+          field(update, "permissions").isEmpty,
           stored.redirectUris == webClient.redirectUris,
           stored.scopes == webClient.allowedScopes,
-          stored.permissions.isEmpty,
         )
       },
       // Central validates the roles a registration flow grants while saving the client, so a

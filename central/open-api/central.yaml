@@ -2456,11 +2456,6 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/ScopeToken'
-        permissions:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/Permission'
         accessTokenTtl:
           type: integer
           description: Seconds.
@@ -2630,11 +2625,6 @@ components:
           uniqueItems: true
           items:
             $ref: '#/components/schemas/ScopeToken'
-        permissions:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/Permission'
         accessTokenTtl:
           type: integer
           description: Seconds.
@@ -2848,8 +2838,6 @@ components:
           $ref: '#/components/schemas/PatchClientRedirectUris'
         scope:
           $ref: '#/components/schemas/PatchClientScope'
-        permissions:
-          $ref: '#/components/schemas/PatchPermissions'
         accessTokenTtl:
           type: [integer, 'null']
           format: int64
@@ -2972,8 +2960,6 @@ components:
           $ref: '#/components/schemas/PatchClientRedirectUris'
         scope:
           $ref: '#/components/schemas/PatchClientScope'
-        permissions:
-          $ref: '#/components/schemas/PatchPermissions'
         accessTokenTtl:
           type: [integer, 'null']
           format: int64

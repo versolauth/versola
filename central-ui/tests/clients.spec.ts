@@ -114,7 +114,7 @@ async function openClientPage(page: Page, id: string) {
 const SECTION_TITLES: Record<string, string> = {
   'Token lifetimes': 'Tokens',
   'How users sign in': 'Sign-in',
-  'Scopes and permissions': 'Scopes and permissions',
+  'Scopes and permissions': 'Scopes',
   'Registration and consent': 'Registration and consent',
   'Branding and logout': 'Branding and logout',
   'Client credential and binding': 'Type',
@@ -218,7 +218,10 @@ test('renders client details and filters by client id', async ({ page }) => {
   const alpha = page.locator('versola-clients-list');
   await expect(alpha).toContainText('https://alpha.example/callback');
   await expect(alpha).toContainText('openid');
-  await expect(alpha).toContainText('alpha.read');
+  // A web client has scopes; permissions are a service client's alone, so the page does not list any.
+  await expect(alpha.getByRole('region', { name: 'Scopes' })).toBeVisible();
+  await expect(alpha.getByRole('region', { name: 'Permissions' })).toHaveCount(0);
+  await expect(alpha).not.toContainText('alpha.read');
   await expect(alpha).toContainText('1h');
   await expect(alpha.getByRole('region', { name: 'Sign-in' })).toBeVisible();
   await expect(alpha.getByRole('region', { name: 'Branding and logout' })).toContainText('Forms theme');
@@ -1429,22 +1432,21 @@ test('sends the name and redirect URIs as a patch when General is saved', async 
   await expect(page.locator('versola-clients-list .view-title')).toHaveText('Alpha Console');
 });
 
-test('sends scopes and permissions as a patch when they are saved', async ({ page }) => {
+test('sends scopes as a patch when they are saved, with no permissions for a web client', async ({ page }) => {
   const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
 
   await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
-  await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
-  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
+  await expect(page.locator('.checkbox-item', { hasText: 'alpha.read' })).toHaveCount(0);
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     clientId: 'alpha-web',
     scope: { add: ['email'], remove: ['openid'] },
-    permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
   });
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('permissions');
 });
 
 test('sends the access token lifetime when Tokens is saved, and nothing else about the client', async ({ page }) => {
@@ -1654,7 +1656,6 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     clientName: { en: 'Duplicate Client' },
     redirectUris: ['https://duplicate.example/callback'],
     allowedScopes: ['openid'],
-    permissions: [],
     accessTokenTtl: 3600,
     authFlow: {
       primary: {
@@ -1887,3 +1888,28 @@ for (const width of [375, 320]) {
     expect(review.small).toEqual([]);
   });
 }
+
+test('lists the permissions of a service client, and sends them when they are saved', async ({ page }) => {
+  const batch = { ...alphaClient, id: 'batch-job', clientName: { en: 'Batch Job' }, redirectUris: [], authFlow: null,
+    scope: [], permissions: ['alpha.read'], template: { kind: 'service' } };
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [batch] },
+      permissions: { 'tenant-alpha': [
+        { permission: 'alpha.read', description: { en: 'Read' }, endpointIds: [101] },
+        { permission: 'alpha.write', description: { en: 'Write' }, endpointIds: [101] },
+      ] },
+    },
+  });
+  await openClientPage(page, 'batch-job');
+  await expect(page.getByRole('region', { name: 'Permissions' })).toContainText('alpha.read');
+  await expect(page.getByRole('region', { name: 'Scopes' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Edit permissions', exact: true }).click();
+  await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
+  await saveEdit(page);
+  const update = await findClientWrite(api.requests, 'PUT');
+  expect(update.pathname).toBe('/configuration/clients/service');
+  expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha.write'], remove: [] } });
+});
