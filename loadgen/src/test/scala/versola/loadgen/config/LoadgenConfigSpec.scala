@@ -1,6 +1,6 @@
 package versola.loadgen.config
 
-import versola.util.Dpop
+import versola.util.{Dpop, SecretConfigChecks}
 import zio.config.magnolia.deriveConfig
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
@@ -433,6 +433,24 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
             .load(loadgenConfigDescriptor)
             .exit
         yield assertTrue(tooShort.isFailure, notBase64.isFailure)
+      },
+      // The error goes to the coordinator's log; the pepper is the one secret here that a
+      // collaborator may have pasted by hand.
+      test("a rejected seed pepper is not quoted in the error") {
+        def load(source: String) =
+          TypesafeConfigProvider.fromHoconString(source).kebabCase.load(loadgenConfigDescriptor).either
+        val forbidden = List(SecretConfigChecks.marker, "Illegal base64")
+        for
+          tooLong <- load(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", SecretConfigChecks.longMarker))
+          illegal <- load(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", SecretConfigChecks.marker + "+/"))
+        yield
+          def texts(result: Either[Config.Error, LoadgenConfig]) =
+            result.left.toOption.toList.flatMap(SecretConfigChecks.rendered)
+          // The failure has to come from the pepper, or the absence of the marker proves nothing.
+          val fromPepper = texts(tooLong).exists(t => t.contains("passwords-secret") && t.contains("expected 16 bytes")) &&
+            texts(illegal).exists(t => t.contains("passwords-secret") && t.contains("not valid base64url"))
+          val leaked = (texts(tooLong) ++ texts(illegal)).exists(text => forbidden.exists(text.contains))
+          assertTrue(tooLong.isLeft, illegal.isLeft, fromPepper, !leaked)
       },
       // Absent by default (`hocon` above has no such block, and "decodes a full campaign
       // config" already proves that decodes clean), so this is the positive path: present, it

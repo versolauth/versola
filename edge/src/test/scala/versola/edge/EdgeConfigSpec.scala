@@ -1,7 +1,7 @@
 package versola.edge
 
 import versola.edge.model.EdgeId
-import versola.util.{PrivateKeyUtil, Secret, TestCertificates}
+import versola.util.{PrivateKeyUtil, Secret, SecretConfig, TestCertificates}
 import zio.*
 import zio.config.magnolia.{DeriveConfig, deriveConfig}
 import zio.config.typesafe.TypesafeConfigProvider
@@ -28,26 +28,16 @@ object EdgeConfigSpec extends ZIOSpecDefault:
   private given DeriveConfig[EdgeId] = DeriveConfig[String].map(EdgeId(_))
 
   private given DeriveConfig[Secret] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
+    .mapOrFail(SecretConfig.secret)
 
   private given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.Bytes32.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
-        .filterOrElse(
-          _.length == 32,
-          zio.Config.Error.InvalidData(message = s"Base64-encoded string must be 32 bytes. '$str' is not."),
-        )
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   private given DeriveConfig[URL] = DeriveConfig[String]
     .mapOrFail(URL.decode(_).left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage)))
 
   private given DeriveConfig[java.security.PrivateKey] = DeriveConfig[String]
-    .mapOrFail: str =>
-      PrivateKeyUtil.parse(str, "RSA")
-        .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
+    .mapOrFail(SecretConfig.rsaPrivateKey)
 
   private val edgeConfigDescriptor = deriveConfig[EdgeConfig]
 
