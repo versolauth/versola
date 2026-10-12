@@ -42,6 +42,7 @@ import zio.{Chunk, Clock, Duration, IO, NonEmptyChunk, Task, UIO, ZIO, ZLayer, d
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.time.Instant
+import javax.crypto.AEADBadTagException
 import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.{MapHasAsJava, SeqHasAsJava}
 
@@ -829,7 +830,21 @@ object EdgeService:
           .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
         encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
           .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
-        decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken)
+        decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
+          // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
+          // (lost or replaced key) or altered in the store fails the tag check; a value shorter
+          // than IV + tag is rejected before that. Both mean this row can never be read again:
+          // send the caller to log in, which overwrites the row. Any other failure of the
+          // decryption itself -- a key that is not an AES key, say -- is not the session's fault
+          // and stays a failure.
+          // Neither the token, the ciphertext, the key nor the exception text is logged.
+          case e @ (_: AEADBadTagException | _: IllegalArgumentException) =>
+            ZIO.logWarning(
+              s"Stored refresh token of preset '${record.presetId}' cannot be decrypted " +
+                s"(${e.getClass.getSimpleName}); the caller is sent to re-authenticate",
+            ) *>
+              Observability.setError("refresh_token_undecryptable") *>
+              failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
         session <- rotate(decryptedRefreshToken, preset, record.presetId)
       yield session
 

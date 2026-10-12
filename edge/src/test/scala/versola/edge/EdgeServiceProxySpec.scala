@@ -11,7 +11,7 @@ import versola.edge.model.*
 import versola.edge.revocation.{RevocationKey, TokenRevocationService}
 import versola.util.cel.CelEvaluator
 import versola.util.http.Observability
-import versola.util.{DpopNonce, EnvName, JWT, PrivateClientCertificate, ReloadingCache, Secret, SecureRandom, SecurityService, TestCertificates}
+import versola.util.{DpopNonce, EcKeyPair, EnvName, JWT, MAC, PrivateClientCertificate, ReloadingCache, RsaKeyPair, Salt, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
 import zio.json.ast.Json
@@ -19,9 +19,10 @@ import zio.json.{DecoderOps, EncoderOps}
 import zio.metrics.{Metric, MetricLabel}
 import zio.test.*
 
-import java.security.KeyPairGenerator
+import java.security.{InvalidKeyException, KeyPairGenerator, PrivateKey, PublicKey}
 import java.security.interfaces.{ECPrivateKey, ECPublicKey, RSAPublicKey}
 import java.util.{Date, UUID}
+import javax.crypto.SecretKey
 import javax.crypto.spec.SecretKeySpec
 import scala.jdk.CollectionConverters.SeqHasAsJava
 
@@ -221,6 +222,69 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         verifier,
         EnvName.Test("test"),
       )
+
+  /** Real crypto, except that opening an AES-GCM value fails with `failure`: the one way to make
+    * the decryption itself break for a reason other than the stored value, since a key built from
+    * the 32 configured bytes is always a valid AES key.
+    */
+  private final class FailingDecrypt(delegate: SecurityService, failure: Throwable) extends SecurityService:
+    override def decryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]] = ZIO.fail(failure)
+    override def encryptAes256(data: Array[Byte], key: SecretKey): Task[Array[Byte]] = delegate.encryptAes256(data, key)
+    override def encryptRsa(data: Array[Byte], key: PublicKey): Task[Array[Byte]] = delegate.encryptRsa(data, key)
+    override def decryptRsa(data: Array[Byte], key: PrivateKey): Task[Array[Byte]] = delegate.decryptRsa(data, key)
+    override def mac(secret: Secret, key: Array[Byte]): Task[MAC] = delegate.mac(secret, key)
+    override def hashPassword(password: Secret, salt: Salt, pepper: Secret.Bytes16): Task[MAC] =
+      delegate.hashPassword(password, salt, pepper)
+    override def generateRsaKeyPair: UIO[RsaKeyPair] = delegate.generateRsaKeyPair
+    override def generateEcKeyPair: UIO[EcKeyPair] = delegate.generateEcKeyPair
+
+  private val unreadableRefreshTokenPlaintext = "rt-secret-do-not-log"
+
+  /** An expired session whose stored refresh token edge can no longer open -- sealed under another
+    * `EDGE_TOKEN_ENC_KEY`, altered, truncated or empty -- sends the caller to log in instead of
+    * failing the request, never calls the SSO with it, and logs nothing of the token.
+    * `stored` builds the stored bytes from a real [[SecurityService]] and the key edge is configured with.
+    */
+  private def unreadableRefreshTokenTest(name: String, failureClass: String)(stored: (SecurityService, SecretKey) => Task[Array[Byte]]) =
+    test(name) {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        storedBytes <- stored(security, encryptionKey)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(storedBytes)),
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, security)
+        response <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request)
+        logged <- ZTestLogger.logOutput.map(_.map(_.message()))
+      yield assertTrue(
+        response.status == Status.Unauthorized,
+        response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
+        response.header(Header.SetCookie).map(_.value) ==
+          Some(EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath)),
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
+        env.sessionRepository.create.calls.isEmpty,
+        logged.exists(message =>
+          message.contains("cannot be decrypted") && message.contains(s"${presetId}") && message.contains(failureClass),
+        ),
+        !logged.exists(_.contains(unreadableRefreshTokenPlaintext)),
+      )
+    }
 
   private val securityServiceLayer: ULayer[SecurityService] =
     SecureRandom.live >>> SecurityService.live
@@ -1708,6 +1772,57 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response.header(Header.Location).exists(_.url.encode == s"/login/${presetId}"),
         setCookieHeader.exists(c => c.name == EdgeSessionCookie.name && c.content.isEmpty),
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
+      )
+    },
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key", "AEADBadTagException")(
+      (security, _) =>
+        security.encryptAes256(
+          unreadableRefreshTokenPlaintext.getBytes("UTF-8"),
+          SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
+        ),
+    ),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was altered", "AEADBadTagException")(
+      (security, key) =>
+        security.encryptAes256(unreadableRefreshTokenPlaintext.getBytes("UTF-8"), key)
+          .map(bytes => bytes.updated(bytes.length - 1, (bytes.last ^ 1).toByte)),
+    ),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is too short to be sealed", "IllegalArgumentException")(
+      (_, _) => ZIO.succeed(Array.fill(16)(1.toByte)),
+    ),
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is empty", "IllegalArgumentException")(
+      (_, _) => ZIO.succeed(Array.empty[Byte]),
+    ),
+    // Only an unreadable *value* means "log in again". A decryption that breaks for any other
+    // reason is not the session's fault and must stay a failure, not be turned into a re-login.
+    test("propagates a decryption failure that is not an unreadable value") {
+      val env = new Env
+      val failure = InvalidKeyException("not an AES key")
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        record = session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+        )
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(record))
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        service = env.buildService(client, FailingDecrypt(security, failure))
+        result <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either
+      yield assertTrue(
+        result == Left(failure),
+        env.ssoClient.exchangeRefreshToken.calls.isEmpty,
       )
     },
     test("returns 401 with Location /login/<preset> from cookie when no refresh token record exists") {
