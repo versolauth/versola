@@ -39,13 +39,15 @@ trait UserRepository:
   /** Atomically patches index columns and enqueues a UpsertUser outbox event.
     * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,
     * `Some(Patch.Deleted)` sets it to NULL, `Some(Patch.Modified(v))` sets it to `v`.
+    * Fails with [[UserNotFound]] when no such user is indexed, or [[UserConflict]] when an
+    * identifier is already held by another user.
     */
   def patch(
       id: UserId,
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-  ): Task[Unit]
+  ): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   /** Enqueues an UpdateUserRoles outbox event, dispatched to auth in per-user FIFO order.
     * Ordering behind [[create]]/[[patch]] events guarantees the user exists in auth before roles are applied.

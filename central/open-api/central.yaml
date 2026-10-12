@@ -907,8 +907,9 @@ paths:
       tags: [Users]
       summary: Patch a user's identifiers
       description: |
-        Applied asynchronously through the user outbox, so the change is not yet visible to
-        `GET /users` when this returns.
+        The central index is updated in the request transaction, so an unknown `id` or an
+        identifier held by another user is rejected synchronously. Propagation to auth runs
+        asynchronously through the user outbox.
       operationId: patchUser
       requestBody:
         required: true
@@ -921,6 +922,10 @@ paths:
           description: Patch accepted.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No user with this `id`.
+        '409':
+          description: One of the identifiers is already taken by another user.
 
   /users/claims:
     patch:

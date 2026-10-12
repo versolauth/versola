@@ -32,7 +32,7 @@ trait UserService:
   /** Claim credentials and return the canonical ID for self-service registration. */
   def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId]
 
-  def patch(request: PatchUserRequest): Task[Unit]
+  def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
@@ -138,7 +138,7 @@ object UserService:
     override def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId] =
       userRepository.indexFromAuth(request.email, request.phone, request.login)
 
-    override def patch(request: PatchUserRequest): Task[Unit] =
+    override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
       userRepository.patch(request.id, request.email, request.phone, request.login)
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =

@@ -116,12 +116,16 @@ object UserController extends Controller:
 
   val patchUserEndpoint =
     Method.PATCH / "users" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[PatchUserRequest]
         _ <- service.patch(body)
-      yield Response.status(Status.Accepted)
+      yield Response.status(Status.Accepted))
+        .catchAll:
+          case UserNotFound => ZIO.succeed(Response.status(Status.NotFound))
+          case UserConflict => ZIO.succeed(Response.status(Status.Conflict))
+          case error: Throwable => ZIO.fail(error)
     }
 
   val patchUserClaimsEndpoint =
