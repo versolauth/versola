@@ -345,6 +345,13 @@ describe('profilePosture', () => {
     ]);
   });
 
+  it('admits a loopback http redirect for a web client too: central admits it only outside production', () => {
+    const checks = profilePosture({ ...ok, redirectUris: ['http://localhost:2821/cb'], requirePushedAuthorizationRequests: true }, 'fapi2');
+    expect(checks.every(check => check.ok)).toBe(true);
+    expect(profilePosture({ ...ok, redirectUris: ['http://example.com/cb'], requirePushedAuthorizationRequests: true }, 'fapi2')
+      .some(check => !check.ok)).toBe(true);
+  });
+
   it('admits a native loopback http redirect', () => {
     const checks = profilePosture(
       { ...ok, clientType: 'native', redirectUris: ['http://127.0.0.1:8123/cb'], requirePushedAuthorizationRequests: true },

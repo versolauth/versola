@@ -61,7 +61,9 @@ export class VersolaClientKindStep extends LitElement {
         cursor: pointer;
         display: grid;
         gap: 0.4rem;
-        align-content: start;
+        /* icon, name, blurb, bullets, examples: the bullets take the slack, so the examples line of
+           every card sits on the same baseline however many bullets a card has. */
+        grid-template-rows: auto auto auto 1fr auto;
         font-family: inherit;
         transition: border-color var(--transition-fast);
       }
@@ -85,6 +87,7 @@ export class VersolaClientKindStep extends LitElement {
         margin: 0.25rem 0 0;
         padding: 0;
         display: grid;
+        align-content: start;
         gap: 0.25rem;
         font-size: 0.8125rem;
         color: var(--text-primary);
