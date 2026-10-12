@@ -10,7 +10,7 @@ import zio.test.*
 
 import java.util.UUID
 
-object IdentifierChangeSyncClientSpec extends ZIOSpecDefault:
+object UserContactSyncClientSpec extends ZIOSpecDefault:
   private val userId = UserId(UUID.fromString("00000000-0000-0000-0000-000000000001"))
   private val version = UUID.fromString("018f0000-0000-7000-8000-000000000002")
 
@@ -25,49 +25,51 @@ object IdentifierChangeSyncClientSpec extends ZIOSpecDefault:
         Handler.fromFunctionZIO[Request](request => seen.set(Some(request)).as(response)).toRoutes,
       )
       client <- ZIO.service[Client]
-    yield (seen, IdentifierChangeSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client)))
+    yield (seen, UserContactSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client)))
 
-  def spec = suite("IdentifierChangeSyncClient")(
-    test("moves a phone in central and returns the version of the change") {
+  def spec = suite("UserContactSyncClient")(
+    test("sets a phone in central and returns the version of the change") {
       for
         (seen, service) <- answering(Response.json(s"""{"version":"$version"}"""))
-        result <- service.change(userId, Right(Phone("+77011234567")))
+        result <- service.set(userId, Right(Phone("+77011234567")))
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
         body <- request.body.asString
       yield assertTrue(
-        result == IdentifierChangeResult.Changed(version),
-        request.method == Method.POST,
-        request.url.path.encode.endsWith("users/identifier-changes"),
+        result == UserContactResult.Updated(version),
+        request.method == Method.PUT,
+        request.url.path.encode.endsWith("users/phone"),
         body == s"""{"userId":"$userId","phone":"+77011234567"}""",
       )
     },
-    test("moves an email in central") {
+    test("sets an email in central") {
       for
         (seen, service) <- answering(Response.json(s"""{"version":"$version"}"""))
-        result <- service.change(userId, Left(Email("new@example.com")))
+        result <- service.set(userId, Left(Email("new@example.com")))
         request <- seen.get.someOrFail(RuntimeException("no request captured"))
         body <- request.body.asString
       yield assertTrue(
-        result == IdentifierChangeResult.Changed(version),
+        result == UserContactResult.Updated(version),
         body == s"""{"userId":"$userId","email":"new@example.com"}""",
+        request.method == Method.PUT,
+        request.url.path.encode.endsWith("users/email"),
       )
     },
     test("reports an identifier another user holds") {
       for
         (_, service) <- answering(Response.status(Status.Conflict))
-        result <- service.change(userId, Right(Phone("+77011234567")))
-      yield assertTrue(result == IdentifierChangeResult.AlreadyInUse)
+        result <- service.set(userId, Right(Phone("+77011234567")))
+      yield assertTrue(result == UserContactResult.AlreadyInUse)
     },
     test("reports a user central does not know") {
       for
         (_, service) <- answering(Response.status(Status.NotFound))
-        result <- service.change(userId, Right(Phone("+77011234567")))
-      yield assertTrue(result == IdentifierChangeResult.UserNotFound)
+        result <- service.set(userId, Right(Phone("+77011234567")))
+      yield assertTrue(result == UserContactResult.UserNotFound)
     },
     test("fails, rather than guesses, when central answers with an error") {
       for
         (_, service) <- answering(Response.status(Status.InternalServerError))
-        exit <- service.change(userId, Right(Phone("+77011234567"))).exit
+        exit <- service.set(userId, Right(Phone("+77011234567"))).exit
       yield assertTrue(exit.isFailure)
     },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

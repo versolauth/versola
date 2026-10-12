@@ -35,8 +35,11 @@ trait UserService:
 
   def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
 
-  /** Replaces one identifier of an indexed user and enqueues the auth upsert; returns the outbox event version. */
-  def changeIdentifier(request: ChangeIdentifierRequest): IO[UserNotFound | UserConflict | Throwable, UUID]
+  /** Replaces the email of an indexed user and enqueues the auth upsert; returns the outbox event version. */
+  def setEmail(userId: UserId, email: Email): IO[UserNotFound | UserConflict | Throwable, UUID]
+
+  /** Replaces the phone of an indexed user and enqueues the auth upsert; returns the outbox event version. */
+  def setPhone(userId: UserId, phone: Phone): IO[UserNotFound | UserConflict | Throwable, UUID]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
@@ -145,13 +148,11 @@ object UserService:
     override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
       userRepository.patch(request.id, request.email, request.phone, request.login).unit
 
-    override def changeIdentifier(request: ChangeIdentifierRequest): IO[UserNotFound | UserConflict | Throwable, UUID] =
-      userRepository.patch(
-        request.userId,
-        request.email.map(Patch.Modified(_)),
-        request.phone.map(Patch.Modified(_)),
-        None,
-      )
+    override def setEmail(userId: UserId, email: Email): IO[UserNotFound | UserConflict | Throwable, UUID] =
+      userRepository.patch(userId, Some(Patch.Modified(email)), None, None)
+
+    override def setPhone(userId: UserId, phone: Phone): IO[UserNotFound | UserConflict | Throwable, UUID] =
+      userRepository.patch(userId, None, Some(Patch.Modified(phone)), None)
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)

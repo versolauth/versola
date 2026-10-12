@@ -72,7 +72,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val identifierChangeSyncClient = stub[versola.oauth.identifier.IdentifierChangeSyncClient]
+    val userContactSyncClient = stub[versola.oauth.identifier.UserContactSyncClient]
     val service = ConversationService.Impl(
       otpService,
       passwordService,
@@ -93,7 +93,7 @@ object PasswordConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
-      identifierChangeSyncClient,
+      userContactSyncClient,
     )
 
   val baseRecord = ConversationRecord(

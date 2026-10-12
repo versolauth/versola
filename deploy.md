@@ -447,7 +447,7 @@ version keeps running on the new schema. Two things to know when upgrading:
   other entries, see `scripts/gen-env.scala`) is added to `cleanup.tables`. They are one row per
   user at most and expire after five minutes whether or not they are purged.
 
-`central` also gains the internal `POST /users/identifier-changes` (called by `auth`, authorised like
+`central` also gains the internal `PUT /users/email` and `PUT /users/phone` (called by `auth`, authorised like
 `/users/registrations`) and the account endpoint `POST /settings/identifier/intent` is added to the
 `auth` resource on the next start.
 

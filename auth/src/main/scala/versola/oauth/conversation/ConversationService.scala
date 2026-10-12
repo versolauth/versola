@@ -25,7 +25,7 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
-import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeResult, IdentifierChangeStage, IdentifierChangeSyncClient}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage, UserContactResult, UserContactSyncClient}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, UserAgentData}
 import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, SessionId, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
@@ -241,7 +241,7 @@ object ConversationService:
       secureRandom: SecureRandom,
       userService: UserService,
       consentService: ConsentService,
-      identifierChangeSyncClient: IdentifierChangeSyncClient,
+      userContactSyncClient: UserContactSyncClient,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -688,15 +688,15 @@ object ConversationService:
       (conversation.userId, conversation.identifierChange) match
         case (Some(userId), Some(change))
             if conversation.priorSessionUserId.contains(userId) && change.stage == IdentifierChangeStage.VerifyNew =>
-          identifierChangeSyncClient.change(userId, change.credential).flatMap:
-            case IdentifierChangeResult.Changed(version) =>
+          userContactSyncClient.set(userId, change.credential).flatMap:
+            case UserContactResult.Updated(version) =>
               applyIdentifierChange(authId, conversation, userId, change, version)
-            case IdentifierChangeResult.AlreadyInUse =>
+            case UserContactResult.AlreadyInUse =>
               // The account page asked central's index through auth before redirecting, so reaching
               // this means the identifier was taken in between: not a state a user is meant to see.
               Observability.setError("illegal_state", Some("identifier taken while a change was in progress")) *>
                 accessDenied(authId, conversation)
-            case IdentifierChangeResult.UserNotFound =>
+            case UserContactResult.UserNotFound =>
               Observability.setError("user_not_found") *> accessDenied(authId, conversation)
         case _ =>
           Observability.setError("illegal_state", Some("identifier change committed in the wrong state")) *>

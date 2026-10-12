@@ -260,13 +260,13 @@ object UserServiceSpec extends UnitSpecBase:
         env.userRepository.patch.calls == List((userId, Some(Patch.Modified(email)), None, None)),
       )
     },
-    test("changeIdentifier patches only the supplied identifier and returns the event version") {
+    test("setEmail and setPhone patch only the value they name and return the event version") {
       val env = Env()
       val version = UUID.fromString("00000000-0000-7000-8000-0000000000aa")
       for
         _ <- env.userRepository.patch.succeedsWith(version)
-        byEmail <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None))
-        byPhone <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, None, Some(Phone("+77000000098"))))
+        byEmail <- env.service.setEmail(userId, email)
+        byPhone <- env.service.setPhone(userId, Phone("+77000000098"))
       yield assertTrue(
         byEmail == version,
         byPhone == version,
@@ -276,19 +276,21 @@ object UserServiceSpec extends UnitSpecBase:
         ),
       )
     },
-    test("changeIdentifier fails with UserNotFound when the user is not indexed") {
+    test("setEmail and setPhone fail with UserNotFound when the user is not indexed") {
       val env = Env()
       for
         _ <- env.userRepository.patch.failsWith(UserNotFound)
-        result <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None)).either
-      yield assertTrue(result == Left(UserNotFound))
+        byEmail <- env.service.setEmail(userId, email).either
+        byPhone <- env.service.setPhone(userId, Phone("+77000000098")).either
+      yield assertTrue(byEmail == Left(UserNotFound), byPhone == Left(UserNotFound))
     },
-    test("changeIdentifier fails with UserConflict when another user holds the identifier") {
+    test("setEmail and setPhone fail with UserConflict when another user holds the value") {
       val env = Env()
       for
         _ <- env.userRepository.patch.failsWith(UserConflict)
-        result <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None)).either
-      yield assertTrue(result == Left(UserConflict))
+        byEmail <- env.service.setEmail(userId, email).either
+        byPhone <- env.service.setPhone(userId, Phone("+77000000098")).either
+      yield assertTrue(byEmail == Left(UserConflict), byPhone == Left(UserConflict))
     },
     test("patchClaims delegates to authClient") {
       val env = Env()

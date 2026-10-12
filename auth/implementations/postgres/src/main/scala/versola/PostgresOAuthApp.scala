@@ -31,7 +31,7 @@ import versola.oauth.conversation.{
   PostgresConversationRepository,
 }
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
-import versola.oauth.identifier.{IdentifierChangeIntentRepository, IdentifierChangeIntentService, IdentifierChangeSyncClient}
+import versola.oauth.identifier.{IdentifierChangeIntentRepository, IdentifierChangeIntentService, UserContactSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -114,7 +114,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       UserRegistrationSyncClient &
       IdentifierChangeIntentRepository &
       IdentifierChangeIntentService &
-      IdentifierChangeSyncClient
+      UserContactSyncClient
 
   override def routes: Routes[Dependencies & Tracing & EnvName, Throwable] =
     List(
@@ -255,7 +255,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       AcrResolutionService.live >++>
       UserRegistrationSyncClient.live >++>
       UserService.live >++>
-      IdentifierChangeSyncClient.live >++>
+      UserContactSyncClient.live >++>
       IdentifierChangeIntentService.live >++>
       ConsentService.live >++>
       ConversationService.live >++>

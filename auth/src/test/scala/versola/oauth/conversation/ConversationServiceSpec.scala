@@ -14,7 +14,7 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
-import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeResult, IdentifierChangeStage, IdentifierChangeSyncClient}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage, UserContactResult, UserContactSyncClient}
 import versola.oauth.model.*
 import versola.oauth.session.model.*
 import versola.oauth.session.model.PriorSession
@@ -138,7 +138,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     val secureRandom = stub[SecureRandom]
     val userService = stub[UserService]
     val consentService = stub[versola.oauth.consent.ConsentService]
-    val identifierChangeSyncClient = stub[IdentifierChangeSyncClient]
+    val userContactSyncClient = stub[UserContactSyncClient]
 
     val service = ConversationService.Impl(
       otpService,
@@ -160,7 +160,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       secureRandom,
       userService,
       consentService,
-      identifierChangeSyncClient,
+      userContactSyncClient,
     )
 
   private val roleId = versola.role.model.RoleId("user")
@@ -247,7 +247,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val env = Env()
         for
           service <- ZIO.service[ConversationService].provide(
-            ZLayer.succeed(env.identifierChangeSyncClient),
+            ZLayer.succeed(env.userContactSyncClient),
             ZLayer.succeed(env.otpService),
             ZLayer.succeed(env.passwordService),
             ZLayer.succeed(env.conversationRepository),
@@ -978,7 +978,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val before = UserRecord.empty(userId).copy(email = Some(email), phone = Some(Phone("+12025551234")), login = Some(Login("someone")))
         val after = before.copy(phone = Some(newPhone), claims = Json.Obj("phone_number_verified" -> Json.Bool(true)))
         for
-          _ <- env.identifierChangeSyncClient.change.succeedsWith(IdentifierChangeResult.Changed(version))
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.Updated(version))
           lookups <- Ref.make(0)
           // The first lookup is the user as central has just left it, the second as auth now holds it.
           _ <- env.userRepository.find.returnsZIO(_ => lookups.getAndUpdate(_ + 1).map(n => Some(if n == 0 then before else after)))
@@ -988,7 +988,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.get.succeedsWith(consentingClient)
           _ <- env.consentService.decide.succeedsWith(ConsentDecision.Required(requestedScope))
           result <- env.service.commitIdentifierChange(authId, changeVerifying)
-          changed = env.identifierChangeSyncClient.change.calls
+          changed = env.userContactSyncClient.set.calls
           upserted = env.userRepository.upsert.calls
           claims = env.userRepository.patchClaims.calls
           firstSave = env.conversationRepository.overwrite.calls.head._2
@@ -1007,7 +1007,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         val newEmail = Email("new@example.com")
         val before = UserRecord.empty(userId).copy(email = Some(email))
         for
-          _ <- env.identifierChangeSyncClient.change.succeedsWith(IdentifierChangeResult.Changed(UUID.randomUUID()))
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.Updated(UUID.randomUUID()))
           _ <- env.userRepository.find.succeedsWith(Some(before))
           _ <- env.userRepository.upsert.succeedsWith(())
           _ <- env.userRepository.patchClaims.succeedsWith(())
@@ -1026,7 +1026,7 @@ object ConversationServiceSpec extends UnitSpecBase:
       test("commit changes nothing and ends in access denied when another user took the identifier in the meantime") {
         val env = Env()
         for
-          _ <- env.identifierChangeSyncClient.change.succeedsWith(IdentifierChangeResult.AlreadyInUse)
+          _ <- env.userContactSyncClient.set.succeedsWith(UserContactResult.AlreadyInUse)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.commitIdentifierChange(authId, changeVerifying)
           upserted = env.userRepository.upsert.calls
@@ -1043,7 +1043,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           pending <- env.service.commitIdentifierChange(authId, changePending)
           mismatch <- env.service.commitIdentifierChange(authId, changeVerifying.copy(priorSessionUserId = Some(UserId(UUID.randomUUID()))))
-          changed = env.identifierChangeSyncClient.change.calls
+          changed = env.userContactSyncClient.set.calls
         yield assertTrue(
           pending == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           mismatch == ConversationResult.RenderStep(ConversationStep.AccessDenied),
