@@ -18,6 +18,7 @@ import versola.oauth.client.model.{
   ScopeToken,
 }
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.identifier.IdentifierChange
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.userinfo.model.RequestedClaims
@@ -85,12 +86,13 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
   // the generic `DbCodec.OptionCodec` (NULL <-> None) wrapping this element codec.
   given listAuthorizationDetailDbCodec: DbCodec[List[AuthorizationDetail]] =
     PgCodec.SeqCodec[AuthorizationDetail].biMap(_.toList, _.toSeq)
+  given DbCodec[IdentifierChange] = jsonBCodec[IdentifierChange]
   given DbCodec[ConversationRecord] = DbCodec.derived[ConversationRecord]
 
   override def find(authId: AuthId): Task[Option[ConversationRecord]] =
     Clock.instant.flatMap: now =>
       xa.connectMeasured("find-conversation") {
-        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt
+        sql"""select client_id, redirect_uri, scope, code_challenge, code_challenge_method, state, user_id, credential, step, requested_claims, ui_locales, nonce, response_type, response_mode, user_email, user_phone, user_login, user_claims, auth_flow, registration_flow, registration_step, user_agent, user_agent_cookie, version, amr, needs_password_change, target_acr, csrf_token, prior_session_id, prior_session_user_id, resources, authorization_details, granted_scope, prompt_consent, dpop_jkt, identifier_change
               from auth_conversations
               where id = $authId AND expires_at > $now"""
           .query[ConversationRecord]
@@ -137,6 +139,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 granted_scope,
                 prompt_consent,
                 dpop_jkt,
+                identifier_change,
                 expires_at
             ) values (
                 $authId,
@@ -175,6 +178,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
                 ${record.grantedScope}::text[],
                 ${record.promptConsent},
                 ${record.dpopJkt},
+                ${record.identifierChange},
                 ${authId.createdAt.plusSeconds(ttl.toSeconds)})
          """
         .update.run()
@@ -199,6 +203,7 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               prior_session_id = ${record.priorSessionId},
               prior_session_user_id = ${record.priorSessionUserId},
               granted_scope = ${record.grantedScope}::text[],
+              identifier_change = ${record.identifierChange},
               version = version + 1
             where id = $authId and version = ${record.version}"""
         .update.run()

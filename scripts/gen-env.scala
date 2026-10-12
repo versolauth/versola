@@ -1661,6 +1661,12 @@ object SecretSchema:
        |      key-column = "request_uri"
        |    }
        |    {
+       |      table-name = "identifier_change_intents"
+       |      batch-size = 1000
+       |      interval   = "5 minutes"
+       |      key-column = "user_id"
+       |    }
+       |    {
        |      table-name = "refresh_tokens"
        |      batch-size = 1000
        |      interval   = "10 minutes"

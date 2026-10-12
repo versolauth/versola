@@ -7,6 +7,7 @@ import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeIntentRepository}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionService
@@ -44,7 +45,7 @@ object AuthorizeEndpointService:
     case Ignore
 
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       conversationRepository: ConversationRepository,
@@ -61,6 +62,7 @@ object AuthorizeEndpointService:
       conversationRouter: ConversationRouter,
       acrResolutionService: AcrResolutionService,
       consentService: ConsentService,
+      identifierChangeIntents: IdentifierChangeIntentRepository,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -95,6 +97,7 @@ object AuthorizeEndpointService:
           case Some(rawId) => sessionService.find(rawId)
         _ <- ZIO.foreachDiscard(sessionInfo)(info => Observability.setPriorSessionId(info.record.publicId))
         now <- Clock.instant
+        identifierChange <- resolveIdentifierChange(request, sessionInfo)
 
         response <- (sessionInfo, idTokenUserId) match
           case (None, _) if request.promptNone =>
@@ -147,7 +150,9 @@ object AuthorizeEndpointService:
               sessionTooOld = request.maxAge
                 .exists(maxAge => maxAge >= 0 && session.createdAt.isBefore(now.minusSeconds(maxAge)))
 
-              forceReauth = request.promptLogin || sessionTooOld || hintMismatch
+              // A change of phone or email always re-verifies the user first: it moves the account to
+              // a new credential, which a session that merely exists must not be enough for.
+              forceReauth = request.promptLogin || sessionTooOld || hintMismatch || identifierChange.isDefined
 
               satisfiedAcr <- request.acrValues match
                 case None => ZIO.none
@@ -197,6 +202,7 @@ object AuthorizeEndpointService:
                             missingUser = reauthMissingUser,
                             priorSessionId = Some(id),
                             priorSessionUserId = Some(session.userId),
+                            identifierChange = identifierChange,
                           )
                     case _ =>
                       // Skipping the credential card for a known user is only sound when something
@@ -208,23 +214,32 @@ object AuthorizeEndpointService:
                       // the card is shown again, as for any login.
                       val leavesSomethingToVerify = flow.primary.factors.exists: factor =>
                         factor.required && PassedAuthFactor.fromFactorType(factor.`type`).isDefined
-                      createConversation(
-                        authId,
-                        request,
-                        flow,
-                        registrationFlow,
-                        uiLocales,
-                        Map.empty,
-                        // A re-authentication must not take a `login_hint` as the user's answer: when the
-                        // card is shown again nobody has been identified yet, and submitting the hint
-                        // would identify them and, for a flow with no factor after the card, finish
-                        // the login without anything having verified them.
-                        applyHint = false,
-                        knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
-                        missingUser = reauthMissingUser,
-                        priorSessionId = Some(id),
-                        priorSessionUserId = Some(session.userId),
-                      )
+                      // An identifier change that nothing verifies the user for would move the account to
+                      // a new credential on the strength of a session alone.
+                      ZIO.fail(Error.UnmetAuthenticationRequirements(
+                        request.clientId,
+                        request.redirectUri,
+                        request.state,
+                        responseMode = request.responseMode,
+                      )).when(identifierChange.isDefined && !leavesSomethingToVerify) *>
+                        createConversation(
+                          authId,
+                          request,
+                          flow,
+                          registrationFlow,
+                          uiLocales,
+                          Map.empty,
+                          // A re-authentication must not take a `login_hint` as the user's answer: when the
+                          // card is shown again nobody has been identified yet, and submitting the hint
+                          // would identify them and, for a flow with no factor after the card, finish
+                          // the login without anything having verified them.
+                          applyHint = false,
+                          knownUserId = targetUserId.filter(_ => leavesSomethingToVerify),
+                          missingUser = reauthMissingUser,
+                          priorSessionId = Some(id),
+                          priorSessionUserId = Some(session.userId),
+                          identifierChange = identifierChange,
+                        )
                 else if !acrSatisfied then
                   // A deleted user has no auth factors registered, so resolveAchievableAcr would
                   // return None → UnmetAuthenticationRequirements instead of AccessDenied.
@@ -310,6 +325,39 @@ object AuthorizeEndpointService:
             yield result
       yield response
 
+    /** The identifier change this request asks for, if any (#634). It takes a session, because the
+      * user is whoever holds it, and the intent the account page recorded for exactly this user,
+      * client, kind and new identifier, because the reserved `*-change` ACR values are not
+      * something a client may start on its own. The intent is consumed here, so a replayed link
+      * cannot start a second change.
+      */
+    private def resolveIdentifierChange(
+        request: AuthorizeRequest,
+        sessionInfo: Option[SessionInfo],
+    ): Task[Option[IdentifierChange]] =
+      (request.identifierChange, request.loginHint) match
+        case (Some(kind), Some(credential)) =>
+          sessionInfo match
+            case _ if request.promptNone =>
+              ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+            case None =>
+              ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+            case Some(info) =>
+              identifierChangeIntents.consume(info.record.userId, request.clientId, kind, credential).flatMap:
+                case true => ZIO.some(IdentifierChange(kind, credential))
+                case false =>
+                  ZIO.fail(Error.IdentifierChangeNotInitiated(
+                    request.clientId,
+                    request.redirectUri,
+                    request.state,
+                    responseMode = request.responseMode,
+                  ))
+        case (Some(_), None) =>
+          // The parser has already refused a change without the new identifier.
+          ZIO.fail(Error.IdentifierChangeInvalid(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
+        case (None, _) =>
+          ZIO.none
+
     private def applyLoginHint(
         request: AuthorizeRequest,
         uiLocales: Option[List[String]],
@@ -338,6 +386,7 @@ object AuthorizeEndpointService:
         missingUser: MissingUserBehavior = MissingUserBehavior.Ignore,
         priorSessionId: Option[MAC.Of[SessionId]] = None,
         priorSessionUserId: Option[UserId] = None,
+        identifierChange: Option[IdentifierChange] = None,
     ): Task[AuthorizeResponse] =
       for
         userOpt <- knownUserId match
@@ -404,6 +453,7 @@ object AuthorizeEndpointService:
           grantedScope = None,
           promptConsent = request.promptConsent,
           dpopJkt = request.dpopJkt,
+          identifierChange = identifierChange,
         )
         authConversationTtl <- configurationService.getAuthConversationTtl(request.clientId)
         _ <- conversationRepository.create(authId, conversation, authConversationTtl)

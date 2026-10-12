@@ -25,6 +25,7 @@ import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionL
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
 import versola.oauth.conversation.otp.model.SubmitOtpResult
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeResult, IdentifierChangeStage, IdentifierChangeSyncClient}
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord, UserAgentData}
 import versola.oauth.session.model.{ClientEntry, PriorSession, PublicSessionId, SessionId, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.oauth.session.{SessionRepository, UserAgentRepository}
@@ -35,9 +36,11 @@ import versola.user.{UserRepository, UserService}
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, Email, MAC, Phone, Secret, SecureRandom, SecurityService}
 import zio.*
+import zio.json.ast.Json
 import zio.prelude.NonEmptyList
 
 import java.time.Instant
+import java.util.UUID
 
 trait ConversationService:
   def find(authId: AuthId): Task[Option[ConversationRecord]]
@@ -103,6 +106,23 @@ trait ConversationService:
     * remain, and when a registration flow reaches its SetPassword step.
     */
   def offerSetPassword(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
+
+  /** Checks the code sent to the new identifier of an identifier change. Unlike [[checkOtp]] a pass
+    * says nothing about who the user is, so no authentication factor is recorded; it only returns
+    * [[ConversationResult.StepPassed]] for the router to commit the change.
+    */
+  def checkIdentifierOtp(
+      conversation: ConversationRecord,
+      otp: ConversationStep.Otp,
+      submittedCode: OtpCode,
+      authId: AuthId,
+  ): Task[ConversationResult]
+
+  /** Moves the user's phone or email to the verified new value, then continues to [[finish]].
+    * When another user holds the identifier nothing changes and the IdentifierInUse step is
+    * rendered.
+    */
+  def commitIdentifierChange(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
   /** Completes the conversation, first gating on consent: when the client requires a grant the
     * user has not given for the requested scope, the Consent step is rendered instead and no
@@ -199,7 +219,7 @@ object RegistrationEntry:
 
 object ConversationService:
   def live =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
+    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _))
 
   class Impl(
       otpService: OtpService,
@@ -221,6 +241,7 @@ object ConversationService:
       secureRandom: SecureRandom,
       userService: UserService,
       consentService: ConsentService,
+      identifierChangeSyncClient: IdentifierChangeSyncClient,
   ) extends ConversationService:
     export conversationRepository.find
 
@@ -368,6 +389,28 @@ object ConversationService:
         submittedCode: OtpCode,
         authId: AuthId,
     ): Task[ConversationResult] =
+      checkOtpCode(conversation, otp, submittedCode, authId): now =>
+        val otpType = conversation.authFlow.otpType
+        val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
+        conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
+
+    override def checkIdentifierOtp(
+        conversation: ConversationRecord,
+        otp: ConversationStep.Otp,
+        submittedCode: OtpCode,
+        authId: AuthId,
+    ): Task[ConversationResult] =
+      checkOtpCode(conversation, otp, submittedCode, authId)(_ => conversation)
+
+    /** The limits and the code check shared by both OTP checks; `passed` says what a correct code
+      * does to the conversation, which is persisted as it is returned.
+      */
+    private def checkOtpCode(
+        conversation: ConversationRecord,
+        otp: ConversationStep.Otp,
+        submittedCode: OtpCode,
+        authId: AuthId,
+    )(passed: Instant => ConversationRecord): Task[ConversationResult] =
       val subject = conversation.credential.map(_.merge).getOrElse("")
       submissionLimiter.isBanned(conversation.clientId, subject, ChallengeType.OtpSubmit).flatMap:
         case LimitStatus.Banned =>
@@ -386,9 +429,7 @@ object ConversationService:
 
             case SubmitOtpResult.Success =>
               Clock.instant.flatMap: now =>
-                val otpType = conversation.authFlow.otpType
-                val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
-                val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
+                val updated = passed(now)
                 conversationRepository.overwrite(authId, updated)
                   .flatMap:
                     case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
@@ -609,12 +650,93 @@ object ConversationService:
       conversation.userId match
         case None =>
           accessDenied(authId, conversation)
+        case Some(userId) if conversation.identifierChange.exists(_.stage == IdentifierChangeStage.Pending) =>
+          // Every route to the end of a login passes here, so the user has proven the old
+          // identifiers by now; what is left is the new one, and the code for it must not be sent
+          // before the conversation is known to belong to the user who asked for the change.
+          startIdentifierVerification(authId, conversation, userId)
         case Some(_) if conversation.grantedScope.isEmpty =>
           // Consent has not been decided for this conversation yet. Once it has, grantedScope is
           // set and this gate is skipped, so allowConsent's own call to finish issues the code.
           decideConsent(authId, conversation)
         case Some(userId) =>
           issueCode(authId, conversation, userId)
+
+    /** Sends the code to the new identifier. Besides the limits `prepareInitialOtp` applies per
+      * identifier, requests are limited per user: an attacker with a session can name any number of
+      * different phones, and each of them is a message to a third party.
+      */
+    private def startIdentifierVerification(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        userId: UserId,
+    ): Task[ConversationResult.Render] =
+      conversation.identifierChange match
+        case Some(change) if conversation.priorSessionUserId.contains(userId) =>
+          submissionLimiter.tryAcquire(conversation.clientId, userId.toString, ChallengeType.OtpRequest).flatMap:
+            case LimitStatus.Allowed =>
+              val verifying = conversation.copy(identifierChange = Some(change.copy(stage = IdentifierChangeStage.VerifyNew)))
+              prepareInitialOtp(authId, verifying, change.credential, factorIndex = 0)
+            case LimitStatus.Banned | LimitStatus.RateLimited(_) =>
+              Observability.setError("identifier_change_rate_limited") *> accessDenied(authId, conversation)
+        case _ =>
+          // The login card let someone sign in as another user, or the change was lost: either
+          // way the new identifier must not be attached to whoever this conversation now holds.
+          Observability.setError("identifier_change_user_mismatch") *> accessDenied(authId, conversation)
+
+    override def commitIdentifierChange(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render] =
+      (conversation.userId, conversation.identifierChange) match
+        case (Some(userId), Some(change))
+            if conversation.priorSessionUserId.contains(userId) && change.stage == IdentifierChangeStage.VerifyNew =>
+          identifierChangeSyncClient.change(userId, change.credential).flatMap:
+            case IdentifierChangeResult.Changed(version) =>
+              applyIdentifierChange(authId, conversation, userId, change, version)
+            case IdentifierChangeResult.AlreadyInUse =>
+              Observability.setError("identifier_in_use") *>
+                renderStep(authId, conversation.copy(identifierChange = None), ConversationStep.IdentifierInUse)
+            case IdentifierChangeResult.UserNotFound =>
+              Observability.setError("user_not_found") *> accessDenied(authId, conversation)
+        case _ =>
+          Observability.setError("illegal_state", Some("identifier change committed in the wrong state")) *>
+            accessDenied(authId, conversation)
+
+    /** Central owns the change; auth's own copy follows at once, under the version central gave the
+      * change, so the outbox event that carries the same change later is a no-op instead of a
+      * window in which this user's tokens still show the old value.
+      */
+    private def applyIdentifierChange(
+        authId: AuthId,
+        conversation: ConversationRecord,
+        userId: UserId,
+        change: IdentifierChange,
+        version: UUID,
+    ): Task[ConversationResult.Render] =
+      val verifiedClaim = change.kind match
+        case IdentifierChangeKind.Phone => "phone_number_verified"
+        case IdentifierChangeKind.Email => "email_verified"
+      for
+        current <- userRepository.find(userId).someOrFail(IllegalStateException("the user disappeared while changing an identifier"))
+        _ <- userRepository.upsert(
+          id = userId,
+          version = version,
+          email = change.credential.left.toOption.orElse(current.email),
+          phone = change.credential.toOption.orElse(current.phone),
+          login = current.login,
+        )
+        _ <- userRepository.patchClaims(userId, Json.Obj(verifiedClaim -> Json.Bool(true)))
+        refreshed <- userRepository.find(userId).someOrFail(IllegalStateException("the user disappeared while changing an identifier"))
+        updated = conversation.copy(
+          identifierChange = None,
+          userEmail = refreshed.email,
+          userPhone = refreshed.phone,
+          userLogin = refreshed.login,
+          userClaims = Some(refreshed.claims),
+        )
+        written <- conversationRepository.overwrite(authId, updated)
+        result <-
+          if written then finish(authId, updated.copy(version = updated.version + 1))
+          else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+      yield result
 
     /** Renders the Consent step when a grant is still needed, otherwise records the reused grant
       * on the conversation and completes it.

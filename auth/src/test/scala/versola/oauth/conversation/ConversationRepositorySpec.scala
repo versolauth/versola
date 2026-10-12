@@ -4,6 +4,7 @@ import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.auth.model.OtpCode
 import versola.oauth.client.model.{AuthFlow, AuthorizationDetail, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, State}
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Email, Phone}
@@ -225,6 +226,32 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.priorSessionUserId.contains(userId2),
           found2.version == found1.version + 1,
         )
+      },
+      test("persist, advance and clear an identifier change") {
+        val change = IdentifierChange(IdentifierChangeKind.Phone, Right(Phone("+77011234567")))
+        for
+          _ <- env.repository.create(authId1, initial.copy(identifierChange = Some(change)), ttl)
+          created <- env.repository.find(authId1).map(_.get)
+          advanced <- env.repository.overwrite(
+            authId1,
+            created.copy(identifierChange = Some(change.copy(stage = IdentifierChangeStage.VerifyNew))),
+          )
+          verifying <- env.repository.find(authId1).map(_.get)
+          cleared <- env.repository.overwrite(authId1, verifying.copy(identifierChange = None))
+          done <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(
+          created.identifierChange == Some(change),
+          advanced,
+          verifying.identifierChange == Some(change.copy(stage = IdentifierChangeStage.VerifyNew)),
+          cleared,
+          done.identifierChange.isEmpty,
+        )
+      },
+      test("an ordinary conversation carries no identifier change") {
+        for
+          _ <- env.repository.create(authId1, initial, ttl)
+          found <- env.repository.find(authId1).map(_.get)
+        yield assertTrue(found.identifierChange.isEmpty)
       },
       test("find returns None for expired conversation") {
         val pastAuthId = AuthId(UUID.fromString("00000000-0001-7000-8000-000000000001"))

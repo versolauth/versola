@@ -54,6 +54,19 @@ object ErrorSpec extends ZIOSpecDefault:
         "The id_token_hint could not be verified or is invalid (invalid signature, audience, or issuer)",
       ),
       check(
+        "IdentifierChangeInvalid",
+        Error.IdentifierChangeInvalid(clientId, uri, state, responseMode = ResponseMode.Query),
+        ErrorCode.InvalidRequest,
+        "An identifier change names one urn:versola:acr:phone-change or urn:versola:acr:email-change value " +
+          "and a login_hint holding the new identifier of that kind, without id_token_hint",
+      ),
+      check(
+        "IdentifierChangeNotInitiated",
+        Error.IdentifierChangeNotInitiated(clientId, uri, state, responseMode = ResponseMode.Query),
+        ErrorCode.AccessDenied,
+        "The identifier change was not started from the account page",
+      ),
+      check(
         "ConflictingHints",
         Error.ConflictingHints(clientId, uri, state, responseMode = ResponseMode.Query),
         ErrorCode.InvalidRequest,

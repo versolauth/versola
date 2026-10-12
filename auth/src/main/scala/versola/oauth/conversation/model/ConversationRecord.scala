@@ -13,6 +13,7 @@ import versola.oauth.client.model.{
   ResourceUri,
   ScopeToken,
 }
+import versola.oauth.identifier.IdentifierChange
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
@@ -78,6 +79,9 @@ case class ConversationRecord(
     /** RFC 9449 §10 `dpop_jkt` requested at `/authorize`, carried onto the authorization code
       * this conversation eventually issues. */
     dpopJkt: Option[String],
+    /** The change of the user's phone or email this conversation carries out (#634), `None` for an
+      * ordinary login. While it is set, `finish` first has the user prove the new identifier. */
+    identifierChange: Option[IdentifierChange] = None,
 ):
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(

@@ -7,6 +7,7 @@ import versola.oauth.challenge.passkey.{PasskeyCeremony, PasskeyRepository, WebA
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{ClientId, PasskeySettings}
 import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.identifier.{IdentifierChangeIntentError, IdentifierChangeIntentService, IdentifierChangeKind}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
@@ -121,6 +122,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       TestEnvConfig.coreConfig.security.conversationCookieSecret,
     )
 
+  private def intentRequest(body: String) =
+    Request.post(URL.empty / "settings" / "identifier" / "intent", Body.fromString(body))
+      .addHeader(Header.ContentType(MediaType.application.json))
+
   private type Stubs = (
       Stub[OAuthConfigurationService],
       Stub[SessionService],
@@ -128,6 +133,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       Stub[WebAuthnService],
       Stub[UserRepository],
       Stub[ConversationRenderService],
+      Stub[IdentifierChangeIntentService],
   )
 
   private def controllerTestCase(
@@ -150,7 +156,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         webAuthnService = stub[WebAuthnService]
         userRepository = stub[UserRepository]
         renderService = stub[ConversationRenderService]
-        stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService)
+        identifierChangeIntents = stub[IdentifierChangeIntentService]
+        stubs = (configuration, sessionService, passkeyRepository, webAuthnService, userRepository, renderService, identifierChangeIntents)
         tracing <- NoopTracing.layer.build
 
         _ <- TestClient.addRoutes(
@@ -163,6 +170,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
                   ZEnvironment(webAuthnService) ++
                   ZEnvironment(userRepository) ++
                   ZEnvironment(renderService) ++
+                  ZEnvironment(identifierChangeIntents) ++
                   ZEnvironment(TestEnvConfig.coreConfig) ++
                   tracing,
               ),
@@ -199,7 +207,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Ok,
         resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
         callerSecret = previousAccountResourceSecret,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
@@ -234,12 +242,12 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "renders the page with the caller's own sessions and passkeys",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
-          val (_, sessionService, passkeyRepository, _, _, renderService) = stubs
+          val (_, sessionService, passkeyRepository, _, _, renderService, _) = stubs
           ZIO.succeed(assertTrue(
             sessionService.listByUser.calls == List(userId),
             passkeyRepository.listByUser.calls == List(userId),
@@ -250,7 +258,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "marks the session the page is viewed from using edge's injected sid",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService) =>
+        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
           sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
@@ -270,7 +278,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"${otherDeviceSession.publicId}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(true),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -288,7 +296,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"targetSessionId":"$foreignSessionId"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, sessionService, _, _, _, _) =>
+        setup = (_, sessionService, _, _, _, _, _) =>
           sessionService.invalidateForUser.succeedsWith(false),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -305,7 +313,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (configuration, _, _, webAuthnService, userRepository, _) =>
+        setup = (configuration, _, _, webAuthnService, userRepository, _, _) =>
           configuration.getPasskeySettings.succeedsWith(Some(passkeySettings)) *>
             userRepository.find.succeedsWith(None) *>
             webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("req-state", """{"publicKey":{}}""")),
@@ -327,7 +335,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString("{}"),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (configuration, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
+        setup = (configuration, _, _, _, _, _, _) => configuration.getPasskeySettings.succeedsWith(None),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.startRegistration.calls.isEmpty)),
       ),
@@ -340,7 +348,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}","name":"Renamed"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.rename.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _) => passkeyRepository.rename.succeedsWith(()),
         // CredentialId is a byte array, so the calls are compared by encoded value.
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
@@ -356,7 +364,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           body = Body.fromString(s"""{"credentialId":"${Base64.urlEncode(passkeyId)}"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.NoContent,
-        setup = (_, _, passkeyRepository, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
+        setup = (_, _, passkeyRepository, _, _, _, _) => passkeyRepository.deleteByUser.succeedsWith(()),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(
             stubs._3.deleteByUser.calls.map((id, user) => (Base64.urlEncode(id), user)) ==
@@ -370,7 +378,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.Ok,
-        setup = (_, _, _, webAuthnService, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
+        setup = (_, _, _, webAuthnService, _, _, _) => webAuthnService.finishRegistration.succeedsWith(passkey),
         verify = (response, stubs) =>
           for
             body <- response.body.asString
@@ -388,7 +396,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
           Body.fromString(s"""{"ticket":"${ticketFor(userId)}","response":{},"name":"My device"}"""),
         ).addHeader(Header.ContentType(MediaType.application.json)),
         expectedStatus = Status.BadRequest,
-        setup = (_, _, _, webAuthnService, _, _) =>
+        setup = (_, _, _, webAuthnService, _, _, _) =>
           webAuthnService.finishRegistration.failsWith(WebAuthnError.CeremonyFailed("verification failed")),
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.finishRegistration.calls.nonEmpty)),
@@ -434,6 +442,50 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.BadRequest,
         verify = (_, stubs) =>
           ZIO.succeed(assertTrue(stubs._4.finishRegistration.calls.isEmpty)),
+      ),
+    ),
+    suite("POST /settings/identifier/intent")(
+      controllerTestCase(
+        description = "records the intent for the caller, who is whoever edge says it is",
+        request = intentRequest("""{"kind":"phone","value":"+12025557777"}"""),
+        expectedStatus = Status.NoContent,
+        setup = (_, _, _, _, _, _, intents) => intents.create.succeedsWith(()),
+        verify = (_, stubs) =>
+          ZIO.succeed(assertTrue(
+            stubs._7.create.calls == List((userId, clientId, IdentifierChangeKind.Phone, "+12025557777")),
+          )),
+      ),
+      controllerTestCase(
+        description = "answers 400 for a value that is not an identifier of that kind",
+        request = intentRequest("""{"kind":"phone","value":"not-a-phone"}"""),
+        expectedStatus = Status.BadRequest,
+        setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.InvalidValue),
+      ),
+      controllerTestCase(
+        description = "answers 409 when the user already has the identifier",
+        request = intentRequest("""{"kind":"email","value":"me@example.com"}"""),
+        expectedStatus = Status.Conflict,
+        setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.Unchanged),
+      ),
+      controllerTestCase(
+        description = "answers 404 when the user is unknown",
+        request = intentRequest("""{"kind":"phone","value":"+12025557777"}"""),
+        expectedStatus = Status.NotFound,
+        setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.UserNotFound),
+      ),
+      controllerTestCase(
+        description = "rejects an unknown kind before anything is recorded",
+        request = intentRequest("""{"kind":"login","value":"someone"}"""),
+        expectedStatus = Status.BadRequest,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._7.create.calls.isEmpty)),
+      ),
+      controllerTestCase(
+        description = "rejects a request without resource credentials",
+        request =
+          intentRequest("""{"userId":"f077fb08-9935-4a6d-8643-bf97c073bf0f","clientId":"test-client-1","kind":"phone","value":"+12025557777"}"""),
+        expectedStatus = Status.Unauthorized,
+        authenticate = false,
+        verify = (_, stubs) => ZIO.succeed(assertTrue(stubs._7.create.calls.isEmpty)),
       ),
     ),
     suite("PasskeyEnrollmentTicket")(

@@ -3,6 +3,7 @@ package versola.oauth.authorize
 import versola.oauth.authorize.model.{AuthorizeRequest, Error, Prompt, ResponseMode, ResponseTypeEntry}
 import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, OAuthClientRecord, PrimaryCredential, ResourceUri, ScopeToken, SecurityProfile}
 import versola.oauth.client.{AuthorizationDetailResolver, OAuthConfigurationService, ResourceResolver}
+import versola.oauth.identifier.{IdentifierChangeCredentials, IdentifierChangeKind}
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, RequestUri, State}
 import versola.oauth.model.{SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionId
@@ -291,16 +292,30 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "max_age", responseMode = responseMode))
           .map(_.flatMap(_.toLongOption))
 
-        acrValues <- getParam(params, "acr_values")
+        acrParam <- getParam(params, "acr_values")
           .orElseFail[Error](Error.MultipleValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
           .flatMap:
-            case None => ZIO.none
+            case None => ZIO.succeed((Option.empty[IdentifierChangeKind], Option.empty[NonEmptyList[Acr]]))
             case Some(values) =>
-              // Blank tokens are not values: `acr_values=` or a run of spaces names none, which is
-              // refused as before rather than read as one empty value the tenant does not define.
-              ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').filter(_.nonEmpty).map(Acr(_)).toList))
-                .orElseFail(Error.NoValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
-                .flatMap(requested => voluntaryAcrValues(clientId, requested))
+              for
+                // Blank tokens are not values: `acr_values=` or a run of spaces names none, which is
+                // refused as before rather than read as one empty value the tenant does not define.
+                requested <- ZIO.fromOption(NonEmptyList.fromIterableOption(values.split(' ').filter(_.nonEmpty).map(Acr(_)).toList))
+                  .orElseFail(Error.NoValuesProvided(clientId, redirectUri, state, "acr_values", responseMode = responseMode))
+                // The reserved `*-change` values select the identifier-change mode and are not
+                // authentication requirements, so they leave before the vocabulary filter below
+                // (which would drop them as undefined) and before any ACR is resolved.
+                split = requested.toList.partition(IdentifierChangeKind.ReservedAcrs.contains)
+                kinds = split._1.flatMap(IdentifierChangeKind.fromAcr).distinct
+                kind <- kinds match
+                  case Nil => ZIO.none
+                  case single :: Nil => ZIO.some(single)
+                  case _ => ZIO.fail(Error.IdentifierChangeInvalid(clientId, redirectUri, state, responseMode))
+                voluntary <- NonEmptyList.fromIterableOption(split._2) match
+                  case None => ZIO.none
+                  case Some(ordinary) => voluntaryAcrValues(clientId, ordinary)
+              yield (kind, voluntary)
+        (identifierChange, acrValues) = acrParam
 
         userAgent =
           request.header(Header.UserAgent)
@@ -318,11 +333,19 @@ object AuthorizeRequestParser:
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "login_hint", responseMode = responseMode))
           .flatMap {
             case None => ZIO.none
-            case Some(value) => parseLoginHint(value, client)
+            case Some(value) =>
+              identifierChange match
+                case Some(kind) => parseNewIdentifier(kind, value, client, redirectUri, state, responseMode).asSome
+                case None => parseLoginHint(value, client)
           }
 
         idTokenHint <- getParam(params, "id_token_hint")
           .orElseFail(Error.MultipleValuesProvided(clientId, redirectUri, state, "id_token_hint", responseMode = responseMode))
+
+        // An identifier change takes the new identifier from `login_hint` and the user from the
+        // session; an id_token_hint beside them would name a second user.
+        _ <- ZIO.fail(Error.IdentifierChangeInvalid(clientId, redirectUri, state, responseMode))
+          .when(identifierChange.isDefined && (loginHint.isEmpty || idTokenHint.isDefined))
 
         resources <- resolveResources(params, client, redirectUri, state, responseMode)
 
@@ -361,6 +384,7 @@ object AuthorizeRequestParser:
           authorizationDetails = authorizationDetails,
           dpopJkt = dpopJkt,
           ip = ip,
+          identifierChange = identifierChange,
         )
       yield authorizeRequest
 
@@ -451,6 +475,25 @@ object AuthorizeRequestParser:
               .map(Right(_))
       else
         ZIO.succeed(Option.when(accepts(PrimaryCredential.email))(Email.from(value)).flatMap(_.toOption).map(Left(_)))
+
+    /** The new identifier of an identifier change. Unlike a plain `login_hint` it is not a hint the
+      * server may ignore: one that does not parse as the kind the ACR names, or that the tenant
+      * does not allow, fails the request instead of silently falling back to an ordinary sign-in.
+      */
+    private def parseNewIdentifier(
+        kind: IdentifierChangeKind,
+        value: String,
+        client: OAuthClientRecord,
+        redirectUri: URL,
+        state: Option[State],
+        responseMode: ResponseMode,
+    ): IO[Error, Either[Email, Phone]] =
+      val prefixes = kind match
+        case IdentifierChangeKind.Phone => oauthClientService.getAllowedPhonePrefixes(client.id)
+        case IdentifierChangeKind.Email => ZIO.succeed(List.empty[String])
+      prefixes.flatMap: allowed =>
+        ZIO.fromOption(IdentifierChangeCredentials.parse(kind, value, allowed))
+          .orElseFail(Error.IdentifierChangeInvalid(client.id, redirectUri, state, responseMode))
 
     private def parseRedirectUri(params: Map[String, Chunk[String]]): IO[Error, (URL, String)] =
       getParam(params, "redirect_uri")

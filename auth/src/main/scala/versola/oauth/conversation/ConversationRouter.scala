@@ -4,6 +4,7 @@ import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, PrimaryCredential, RegistrationCredential, RegistrationStep}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
+import versola.oauth.identifier.IdentifierChangeStage
 import versola.user.UserRepository
 import versola.util.http.Observability
 import versola.util.{Email, Phone, SecureRandom}
@@ -117,6 +118,18 @@ object ConversationRouter:
 
         case (submitted: PhoneSubmission, _) =>
           afterCredential(authId, conversation, Right(submitted.phone)).tap(observeCredential)
+
+        case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _))
+            if conversation.identifierChange.exists(_.stage == IdentifierChangeStage.VerifyNew) =>
+          // The code for the new identifier of an identifier change: it proves the new phone or
+          // email, not the user, so it is not a factor and `afterFactor` has nothing to continue.
+          conversationService.checkIdentifierOtp(conversation, otp, submitted.code, authId)
+            .tap(observeDecision("otp"))
+            .flatMap:
+              case ConversationResult.StepPassed(updated) =>
+                conversationService.commitIdentifierChange(authId, updated)
+              case other: ConversationResult.Render =>
+                ZIO.succeed(other)
 
         case (submitted: OtpSubmission, ConversationRecord.Otp(otp, _)) =>
           conversationService.checkOtp(conversation, otp, submitted.code, authId)
@@ -423,3 +436,4 @@ object ConversationRouter:
         case _: ConversationStep.PasskeyEnroll => "passkey_enroll"
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access_denied"
+        case ConversationStep.IdentifierInUse => "identifier_in_use"

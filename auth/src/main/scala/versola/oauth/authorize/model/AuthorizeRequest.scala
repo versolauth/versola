@@ -1,6 +1,7 @@
 package versola.oauth.authorize.model
 
 import versola.oauth.client.model.{Acr, AuthorizationDetail, ClientId, ResourceUri, ScopeToken}
+import versola.oauth.identifier.IdentifierChangeKind
 import versola.oauth.model.UserAgentCookiePayload
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.model.SessionId
@@ -42,6 +43,10 @@ private[authorize] case class AuthorizeRequest(
       * any key (or none). */
     dpopJkt: Option[String],
     ip: Option[String] = None,
+    /** The reserved `urn:versola:acr:{phone,email}-change` value found in `acr_values`, taken out
+      * of [[acrValues]]: it selects the identifier-change mode and is not an authentication
+      * requirement. `loginHint` then holds the new identifier. */
+    identifierChange: Option[IdentifierChangeKind] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

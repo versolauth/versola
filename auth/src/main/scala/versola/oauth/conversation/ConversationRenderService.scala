@@ -139,6 +139,10 @@ object ConversationRenderService:
     @jsonHint("access-denied")
     case class AccessDenied(redirectUri: String) extends StepView
 
+    /** `redirectUri` returns the user to the client, which is told the change did not happen. */
+    @jsonHint("identifier-in-use")
+    case class IdentifierInUse(redirectUri: String) extends StepView
+
     @jsonHint("conversation-expired")
     case class ConversationExpired(redirectUri: Option[String]) extends StepView
 
@@ -491,6 +495,7 @@ object ConversationRenderService:
         case _: ConversationStep.PasskeyEnroll => "passkey-enroll"
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
+        case ConversationStep.IdentifierInUse => "identifier-in-use"
       for
         view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, responseMode)
         formOpt <- configuration.getForm(formId)
@@ -661,6 +666,10 @@ object ConversationRenderService:
           returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             .map(uri => StepView.AccessDenied(redirectUri = uri.getOrElse(redirectUri.encode)))
 
+        case ConversationStep.IdentifierInUse =>
+          returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
+            .map(uri => StepView.IdentifierInUse(redirectUri = uri.getOrElse(redirectUri.encode)))
+
     private def availableClaimNames(record: ConversationRecord): Set[String] =
       val customClaims = record.userClaims.toList
         .flatMap(_.fields)
@@ -690,6 +699,7 @@ object ConversationRenderService:
       case _: StepView.Consent => "consent"
       case _: StepView.AccountSettings => "auth-settings"
       case _: StepView.AccessDenied => "access-denied"
+      case _: StepView.IdentifierInUse => "identifier-in-use"
       case _: StepView.ConversationExpired => "conversation-expired"
       case _: StepView.ServiceUnavailable => "service-unavailable"
       case _: LogoutConfirm => "confirm-logout"
@@ -721,7 +731,8 @@ object ConversationRenderService:
       value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
     private def formLogo(step: StepView, logo: Option[String]): Option[String] = step match
-      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.ConversationExpired | _: StepView.ServiceUnavailable => None
+      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.IdentifierInUse | _: StepView.ConversationExpired |
+          _: StepView.ServiceUnavailable => None
       case _ => logo
 
     private def inlineScriptJson(value: String): String =

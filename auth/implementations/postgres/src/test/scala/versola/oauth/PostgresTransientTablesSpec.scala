@@ -8,11 +8,12 @@ import zio.test.*
 
 /** `UNLOGGED` is a property of the table, and nothing but WAL volume notices when it is lost: a
   * table recreated or copied in a later migration is logged again and every test still passes.
-  * These three hold minutes-old login state; see V0014__unlogged_transient_auth_tables.sql.
+  * These hold minutes-old login state; see V0014__unlogged_transient_auth_tables.sql (the intents of
+  * V0015 were created UNLOGGED).
   */
 object PostgresTransientTablesSpec extends PostgresSpec:
 
-  private val tables = List("auth_conversations", "authorization_codes", "pushed_authorization_requests")
+  private val tables = List("auth_conversations", "authorization_codes", "pushed_authorization_requests", "identifier_change_intents")
 
   override def spec =
     suite("PostgresTransientTablesSpec")(
@@ -22,13 +23,13 @@ object PostgresTransientTablesSpec extends PostgresSpec:
           logged <- xa.connect:
             sql"""
               SELECT relname FROM pg_class
-              WHERE relname IN ('auth_conversations', 'authorization_codes', 'pushed_authorization_requests')
+              WHERE relname IN ('auth_conversations', 'authorization_codes', 'pushed_authorization_requests', 'identifier_change_intents')
                 AND relkind = 'r' AND relpersistence <> 'u'
             """.query[String].run()
           present <- xa.connect:
             sql"""
               SELECT relname FROM pg_class
-              WHERE relname IN ('auth_conversations', 'authorization_codes', 'pushed_authorization_requests')
+              WHERE relname IN ('auth_conversations', 'authorization_codes', 'pushed_authorization_requests', 'identifier_change_intents')
                 AND relkind = 'r'
             """.query[String].run()
         yield assertTrue(logged.isEmpty, present.toSet == tables.toSet)

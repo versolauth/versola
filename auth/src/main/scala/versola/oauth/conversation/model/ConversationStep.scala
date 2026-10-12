@@ -71,3 +71,8 @@ object ConversationStep:
   ) extends ConversationStep(StepId.Consent)
 
   case object AccessDenied extends ConversationStep(StepId.AccessDenied)
+
+  /** The end of an identifier change whose new phone or email already belongs to another user.
+    * Nothing was changed; the page says so and sends the user back to the client.
+    */
+  case object IdentifierInUse extends ConversationStep(StepId.IdentifierInUse)
