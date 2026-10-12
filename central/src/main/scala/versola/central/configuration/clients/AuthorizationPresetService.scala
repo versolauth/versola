@@ -20,6 +20,10 @@ trait AuthorizationPresetService:
   def sync(event: SyncEvent.PresetsUpdated): Task[Unit]
 
 object AuthorizationPresetService:
+  /** Ids that name a route rather than a preset: edge serves `GET /login/current` itself, so
+    * a preset called `current` would be unreachable through `/login/<presetId>`. */
+  private[clients] val ReservedPresetIds: Set[PresetId] = Set(PresetId("current"))
+
   def live: ZLayer[
     AuthorizationPresetRepository & OAuthClientService & ChallengeSettingsService & Scope & CentralConfig,
     Throwable,
@@ -92,6 +96,7 @@ object AuthorizationPresetService:
       if presets.isEmpty then ZIO.unit
       else
         for
+          _ <- ZIO.fail(PresetValidationError.ReservedPresetId).when(presets.exists(preset => ReservedPresetIds.contains(preset.id)))
           _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(presets.map(_.id).distinct.size != presets.size)
           existing <- repository.getAll
           _ <- ZIO.fail(PresetValidationError.DuplicatePresetId).when(
@@ -151,6 +156,9 @@ sealed trait PresetValidationError
 object PresetValidationError:
   case object DuplicatePresetId
     extends RuntimeException("Authorization preset ID is already used by another client")
+       with PresetValidationError
+  case object ReservedPresetId
+    extends RuntimeException("Authorization preset ID is reserved")
        with PresetValidationError
   case object ClientNotFound extends PresetValidationError
   case object InvalidRedirectUri extends PresetValidationError

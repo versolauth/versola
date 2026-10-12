@@ -54,6 +54,8 @@ object AuthorizationPresetController extends Controller:
         case Right(_) => Response.status(Status.NoContent)
         case Left(error: PresetValidationError.DuplicatePresetId.type) =>
           Response.text(error.getMessage).status(Status.BadRequest)
+        case Left(error: PresetValidationError.ReservedPresetId.type) =>
+          Response.text(error.getMessage).status(Status.BadRequest)
         case Left(error) => Response.badRequest
     }
 

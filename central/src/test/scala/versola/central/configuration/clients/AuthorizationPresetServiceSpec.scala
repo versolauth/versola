@@ -296,6 +296,29 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.presetRepo.replace.calls.isEmpty,
       )
     },
+    test("reject the reserved preset id current before touching the repository") {
+      val request = validRequest.copy(presets = List(validRequest.presets.head.copy(id = PresetId("current"))))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        result <- env.service.savePresets(request)
+      yield assertTrue(
+        result.swap.exists(_ == PresetValidationError.ReservedPresetId),
+        env.presetRepo.getAll.calls.isEmpty,
+        env.presetRepo.replace.calls.isEmpty,
+      )
+    },
+    test("accept a preset id that merely contains current") {
+      val request = validRequest.copy(presets = validRequest.presets.flatMap: input =>
+        List(input.copy(id = PresetId("current-app")), input.copy(id = PresetId("Current"))))
+      val env = Env()
+      for
+        _ <- env.clientService.getAllClients.succeedsWith(Vector(client))
+        _ <- env.presetRepo.getAll.succeedsWith(Vector(preset1))
+        _ <- env.presetRepo.replace.succeedsWith(())
+        result <- env.service.savePresets(request)
+      yield assertTrue(result.isRight, env.presetRepo.replace.calls.nonEmpty)
+    },
     test("get client presets from cache") {
       val env = Env(Vector(preset1))
       for

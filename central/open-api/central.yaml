@@ -448,7 +448,10 @@ paths:
         '204':
           description: Presets saved.
         '400':
-          description: The presets were rejected, e.g. two presets share an id.
+          description: |
+            The presets were rejected, e.g. two presets share an id, or a preset id is
+            reserved (`current`: edge serves `GET /login/current` itself, so the id cannot
+            name a preset).
           content:
             text/plain:
               schema:
@@ -1873,6 +1876,7 @@ components:
     PresetId:
       type: string
       examples: [default]
+      description: The id `current` is reserved and rejected when presets are saved.
     UserId:
       type: string
       format: uuid
