@@ -1037,6 +1037,8 @@ object BootstrapService:
         edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
         applicationType = None,
+        issueEdgeClientCertificate = false,
+        enrollEdgeClientCertificate = false,
       )
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
         {
@@ -1136,6 +1138,8 @@ object BootstrapService:
           edgeClientCertificate = None,
           template = None,
           applicationType = None,
+          issueEdgeClientCertificate = false,
+          enrollEdgeClientCertificate = false,
         )
         // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
         // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1249,7 +1253,7 @@ object BootstrapService:
       ZIO.foreachDiscard(config.edges.getOrElse(Nil)): seed =>
         edgeRepo.find(seed.id).flatMap:
           case Some(_) => ZIO.unit
-          case None    => edgeRepo.createEdge(seed.id, seed.publicKeyJwk)
+          case None    => edgeRepo.createEdge(seed.id, seed.publicKeyJwk, requireDpopNonce = false)
 
     /** Links the default tenant to the first seeded edge so the central-admin
       * client (and its presets) are synced to that edge. Only applied when the
