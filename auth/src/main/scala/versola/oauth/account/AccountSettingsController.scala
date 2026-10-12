@@ -275,6 +275,8 @@ object AccountSettingsController extends Controller:
 
   private case class ChangePasswordRequest(
     userId: UserId,
+    clientId: ClientId,
+    sessionId: PublicSessionId,
     currentPassword: String,
     newPassword: String,
-) derives JsonCodec
+  ) derives JsonCodec
