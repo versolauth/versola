@@ -739,7 +739,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       _ <- syncConfiguration()
     yield clientId
 
-    def token(
+  def token(
       code: String,
       verifier: String,
       clientId: Option[String] = None,
