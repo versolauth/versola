@@ -54,6 +54,10 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
           .redirectOutput(log.toFile)
         ports.foreach((name, port) => builder.environment().nn.put(name, port))
         builder.environment().nn.put("RUN_MIGRATIONS", "false")
+        // Like the staged stack (ci-cd.yml): a `Fixed` pool opens every connection on first use of a
+        // target, and edge's calls to auth are mutual-TLS handshakes the terminator closes when 128
+        // arrive at once -- `/complete` then answers 500 (see 6c9b7b10). The default is 128.
+        builder.environment().nn.putIfAbsent("HTTP_CLIENT_POOL_SIZE", "10")
         (builder.start().nn, conf, log),
     )((process, conf, log) =>
       ZIO.attemptBlocking {
@@ -85,6 +89,10 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
     yield (Option.when(exited)(started.process.exitValue()), out)
 
   private def output(started: Started): Task[String] = ZIO.attemptBlocking(Files.readString(started.log))
+
+  /** The cold services' output is deleted with them, so a failure says what they logged. */
+  private def explained[R, A](name: String, started: Started)(effect: ZIO[R, Throwable, A]): ZIO[R, Throwable, A] =
+    effect.tapError(_ => output(started).flatMap(out => ZIO.logError(s"$name output:\n${out.takeRight(8000)}")).ignore)
 
   private def coldServices(config: E2EConfig): ZIO[Scope, Throwable, (Started, Started)] =
     launch(config.authLauncher, config.authEnvConf, ColdAuthPorts) <*>
@@ -151,18 +159,19 @@ object ConfigSnapshotColdStartSpec extends ZIOSpec[OAuthClient & EdgeApi & EdgeF
         challenge <- auth.getChallenge(authorize.conversationCookie.get).assertStep(ConversationStep.Credential)
         code <- auth.submitLoginPassword(authorize.conversationCookie.get, s.login.get, s.password, challenge.csrf)
           .assertRedirect(auth, authorize.conversationCookie.get)
-        token <- auth.token(
-          code,
-          authorize.verifier,
-          clientId = Some(s.clientId),
-          clientSecret = Some(s.clientSecret),
-          redirectUri = Some(s.redirectUri),
-        ).success
+        token <- explained("cold auth", coldAuth):
+          auth.token(
+            code,
+            authorize.verifier,
+            clientId = Some(s.clientId),
+            clientSecret = Some(s.clientSecret),
+            redirectUri = Some(s.redirectUri),
+          ).success
 
         // The cold edge signs in through the running auth: what is under test is that it knows
         // the preset, the client it acts as and that client's credential without central.
         edge = EdgeApi(client, config.copy(edgeUrl = ColdEdgeUrl))
-        session <- edge.browserLogin(running, f.presetId, f.login, f.password)
+        session <- explained("cold edge", coldEdge)(edge.browserLogin(running, f.presetId, f.login, f.password))
 
         authLog <- output(coldAuth)
         edgeLog <- output(coldEdge)
