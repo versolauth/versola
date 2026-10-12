@@ -3993,8 +3993,23 @@ export class VersolaClientForm extends LitElement {
     const locks = this.editLocks;
     const certificateLock = locks?.certificateBound;
     const dpopLock = locks?.dpop;
+    // A certificate credential binds every token to that certificate by itself, so there is no flag
+    // to show and no key to offer beside it: one line says so. A stored DPoP requirement is the
+    // exception, since the token endpoint refuses a token bound to both and that is worth fixing.
+    if (locks?.boundByCertificate && !this.formData.dpopBoundAccessTokens) {
+      return html`
+        <div class="locked-setting">
+          ${this.statusIcon('lock', 'locked-icon')}
+          <div class="locked-body">
+            <div class="locked-label">Access tokens</div>
+            <div class="hint">Bound to the client's certificate (RFC 8705 §3.1). Nothing to configure: there is no key to bind them to as well.</div>
+          </div>
+          <span class="locked-state on">By credential</span>
+        </div>
+      `;
+    }
     return html`
-            ${certificateLock?.locked ? this.renderLockedSetting(
+            ${certificateLock?.locked && !locks?.boundByCertificate ? this.renderLockedSetting(
               'Certificate-bound access tokens',
               certificateLock,
               !!this.formData.certificateBoundAccessTokens,

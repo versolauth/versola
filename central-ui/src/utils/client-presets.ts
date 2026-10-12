@@ -418,6 +418,10 @@ const UNLOCKED: SettingLock = { locked: false };
 const lockedAs = (value: boolean, reason: string): SettingLock => ({ locked: true, value, reason });
 
 export interface ClientLocks {
+  /** The client authenticates with a certificate, which binds every token it gets to that
+   *  certificate by itself: nothing about binding is stored or chosen, so the console states it once
+   *  instead of offering a DPoP key or a flag beside it. */
+  boundByCertificate: boolean;
   dpop: SettingLock;
   certificateBound: SettingLock;
   par: SettingLock;
@@ -435,6 +439,7 @@ const NO_AUTHORIZATION_REQUEST_REASON = 'A service client makes no authorization
 export function clientLocks(kind: ClientKind, profile: SecurityProfile, mode: ClientCredentialMode): ClientLocks {
   if (kind === 'device') {
     return {
+      boundByCertificate: false,
       dpop: lockedAs(true, "Binds each token to a key in the device's keystore. Edge's certificate is shared by every installation, so it cannot do that."),
       certificateBound: lockedAs(false, "Edge's certificate is shared by every installation, so a token cannot be bound to it."),
       par: lockedAs(true, 'Edge pushes the request over its authenticated back channel; the device key binding depends on it.'),
@@ -443,6 +448,7 @@ export function clientLocks(kind: ClientKind, profile: SecurityProfile, mode: Cl
   }
   if (kind === 'web' && mode === 'edge') {
     return {
+      boundByCertificate: true,
       dpop: lockedAs(false, "Tokens are bound to edge's certificate instead (RFC 8705 §3.1)."),
       certificateBound: lockedAs(true, 'Edge authenticates with a certificate, so every token is bound to it.'),
       par: lockedAs(true, 'Edge pushes the request over its authenticated back channel, so the browser never carries it.'),
@@ -451,6 +457,7 @@ export function clientLocks(kind: ClientKind, profile: SecurityProfile, mode: Cl
   }
   const certificate = mode === 'mtls' || mode === 'mtls-self-signed';
   return {
+    boundByCertificate: certificate,
     dpop: mode === 'private-key-jwt' && profile === 'fapi2'
       ? lockedAs(true, 'FAPI 2.0 requires sender-constrained tokens, and a key-authenticated client gets them through DPoP.')
       : UNLOCKED,
@@ -504,7 +511,11 @@ export function profilePosture(
         ? { ok: true, text: 'Authorization requests pushed (PAR)' }
         : { ok: false, text: 'Authorization requests pushed (PAR)', problem: 'PAR is off for a client with redirect URIs' },
     );
-    const insecure = redirectUris.filter(uri => !uri.startsWith('https://') && !(client.clientType === 'native' && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(uri)));
+    // Loopback http is not a gap: central admits it only outside production, so a client that has it
+    // is one a local stack registered, and in production it could not have been.
+    // Loopback http is not a gap: central admits it only outside production, so a client that has it
+    // is one a local stack registered, and in production it could not have been.
+    const insecure = redirectUris.filter(uri => !uri.startsWith('https://') && !/^http:\/\/(localhost|127\.0\.0\.1|\[::1\])/.test(uri));
     checks.push(
       insecure.length === 0
         ? { ok: true, text: 'Redirect URIs use https' }

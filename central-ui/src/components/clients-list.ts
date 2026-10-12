@@ -1671,7 +1671,8 @@ export class VersolaClientsList extends LitElement {
     const lockedValue = (lock: typeof locks.dpop) => (lock.locked ? lock.value : null);
     const deviations = [
       [lockedValue(locks.dpop), !!client.dpopBoundAccessTokens],
-      [lockedValue(locks.certificateBound), !!client.certificateBoundAccessTokens],
+      // A certificate credential binds the tokens whatever the stored flag says, so it is no deviation.
+      [locks.boundByCertificate ? null : lockedValue(locks.certificateBound), !!client.certificateBoundAccessTokens],
       [lockedValue(locks.par), !!client.requirePushedAuthorizationRequests],
     ].some(([required, actual]) => required !== null && required !== actual);
     const conformance = fapiConformance(client);
