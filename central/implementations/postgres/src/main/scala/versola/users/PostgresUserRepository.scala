@@ -4,7 +4,17 @@ import com.augustnagro.magnum.*
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.central.users.{Login, OutboxEvent, OutboxRecord, UserConflict, UserId, UserIndexConflict, UserIndexRecord, UserNotFound, UserRepository}
+import versola.central.users.{
+  Login,
+  OutboxEvent,
+  OutboxRecord,
+  UserConflict,
+  UserId,
+  UserIndexConflict,
+  UserIndexRecord,
+  UserNotFound,
+  UserRepository,
+}
 import versola.util.Patch.toUpdate
 import versola.util.postgres.BasicCodecs
 import versola.util.{Email, Patch, Phone, SecureRandom}

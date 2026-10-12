@@ -253,6 +253,7 @@ object BootstrapService:
     "DELETE" -> "/settings/passkeys",
     "POST" -> "/settings/passkeys/register/start",
     "POST" -> "/settings/passkeys/register/finish",
+    "POST" -> "/settings/identifier/intent",
   )
 
   /** Endpoints of the account page. Granted to every seeded role - each of them belongs to

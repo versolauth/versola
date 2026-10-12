@@ -331,7 +331,9 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     test("redirects to the authorize URL of the session's preset with the whitelisted params") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
       val request = Request.get(
-        URL.decode("/login/current?login_hint=%2B77011234567&acr_values=mfa&max_age=0&prompt=login&ui_locales=ru&redirect_uri=https://evil.example").toOption.get,
+        URL.decode(
+          "/login/current?login_hint=%2B77011234567&acr_values=mfa&max_age=0&prompt=login&ui_locales=ru&redirect_uri=https://evil.example",
+        ).toOption.get,
       ).addCookie(Cookie.Request(EdgeSessionCookie.name, "preset-1:header.payload.signature"))
       for
         (response, service, _) <- run(request, (s, _) => s.authorizeForSession.succeedsWith(authorizeUrl))
