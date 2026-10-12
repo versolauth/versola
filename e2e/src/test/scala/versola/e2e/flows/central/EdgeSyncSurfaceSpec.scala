@@ -74,6 +74,16 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
     central.post(path, body).flatMap: result =>
       ZIO.fail(RuntimeException(s"POST $path refused: ${result.status} ${result.body}")).unless(result.status.isSuccess).unit
 
+  /** What `Fixtures.client` registers, and so the one URI a preset of that client may name. */
+  private val clientRedirectUri = "http://localhost:3000"
+
+  private def awaitClient(central: CentralApi, tenantId: String, clientId: String): Task[Unit] =
+    eventually(central.get(
+      "/configuration/clients",
+      "tenantId" -> tenantId,
+    ).flatMap(_.items("clients")))(_.exists(_.str("id").contains(clientId))).flatMap: listed =>
+      ZIO.fail(RuntimeException(s"central never listed client '$clientId'")).unless(listed.exists(_.str("id").contains(clientId))).unit
+
   private def register(central: CentralApi): Task[SecondEdge] =
     for
       edgeId <- CentralApi.id("e2e-edge")
@@ -109,8 +119,20 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       _ <- write(central, "/configuration/roles", Fixtures.role(otherRole))
       _ <- write(central, "/configuration/permissions", Fixtures.permission(ownPermission, tenantId = tenantId))
       _ <- write(central, "/configuration/permissions", Fixtures.permission(otherPermission))
-      _ <- write(central, "/configuration/auth-request-presets", Fixtures.presets(ownClient, Fixtures.preset(ownPreset)))
-      _ <- write(central, "/configuration/auth-request-presets", Fixtures.presets(otherClient, Fixtures.preset(otherPreset)))
+      // A preset is validated against its client's redirect URIs, read from central's cache:
+      // the client has to be readable first, and the preset has to name a URI it registered.
+      _ <- awaitClient(central, tenantId, ownClient)
+      _ <- awaitClient(central, Fixtures.suiteTenant, otherClient)
+      _ <- write(
+        central,
+        "/configuration/auth-request-presets",
+        Fixtures.presets(ownClient, Fixtures.preset(ownPreset, redirectUri = clientRedirectUri)),
+      )
+      _ <- write(
+        central,
+        "/configuration/auth-request-presets",
+        Fixtures.presets(otherClient, Fixtures.preset(otherPreset, redirectUri = clientRedirectUri)),
+      )
     yield SecondEdge(
       edgeId = edgeId,
       token = token,
