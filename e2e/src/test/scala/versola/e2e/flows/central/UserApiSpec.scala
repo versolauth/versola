@@ -240,9 +240,10 @@ object UserApiSpec extends CentralApiSpec:
         _ <- create(central, Fixtures.user(email = Some(held)))
         login <- CentralApi.login("probe")
         other <- create(central, Fixtures.user(login = Some(login)))
-        _ <- central.patch(path, Json.Obj("id" -> Json.Str(other), "email" -> Json.Str(held)))
+        rejected <- central.patch(path, Json.Obj("id" -> Json.Str(other), "email" -> Json.Str(held)))
         record <- byId(central, other).delay(1.second)
-      yield assertTrue(record.flatMap(_.str("email")).isEmpty)
+      yield assertTrue(rejected.status == Status.Conflict) &&
+        assertTrue(record.flatMap(_.str("email")).isEmpty)
         .label("stealing an indexed email would make one address resolve to two people")
     },
     test("a patch of a user that does not exist does not create one") {
@@ -250,10 +251,11 @@ object UserApiSpec extends CentralApiSpec:
         central <- api
         id <- CentralApi.uuid
         email <- CentralApi.email("probe")
-        _ <- central.patch(path, Json.Obj("id" -> Json.Str(id.toString), "email" -> Json.Str(email)))
+        rejected <- central.patch(path, Json.Obj("id" -> Json.Str(id.toString), "email" -> Json.Str(email)))
         found <- find(central, "email" -> email).delay(1.second)
-      yield assertTrue(found.isEmpty)
-        .label("a patch must not be a back door for creating an unindexed user; central answers 500 here today")
+      yield assertTrue(rejected.status == Status.NotFound) &&
+        assertTrue(found.isEmpty)
+        .label("a patch must not be a back door for creating an unindexed user")
     },
     test("a patch without an id is refused") {
       for
