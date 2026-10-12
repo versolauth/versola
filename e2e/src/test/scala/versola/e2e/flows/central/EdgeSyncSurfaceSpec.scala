@@ -68,6 +68,12 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       jwt.sign(RSASSASigner(key))
       jwt.serialize()
 
+  /** A fixture write that was refused would leave the edge with nothing to be shown, and the
+    * assertions would then report a missing row instead of the refusal. */
+  private def write(central: CentralApi, path: String, body: Json.Obj): Task[Unit] =
+    central.post(path, body).flatMap: result =>
+      ZIO.fail(RuntimeException(s"POST $path refused: ${result.status} ${result.body}")).unless(result.status.isSuccess).unit
+
   private def register(central: CentralApi): Task[SecondEdge] =
     for
       edgeId <- CentralApi.id("e2e-edge")
@@ -91,17 +97,20 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       known <- eventually(central.withBearer(token).get("/edge/sync/dpop"))(_.status == Status.Ok)
       _ <- ZIO.fail(RuntimeException(s"central never authenticated the new edge: ${known.status} ${known.body}"))
         .unless(known.status == Status.Ok)
-      _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId)))
-      _ <- central.post("/configuration/clients", Fixtures.client(ownClient, tenantId = tenantId))
-      _ <- central.post("/configuration/clients", Fixtures.client(otherClient))
-      _ <- central.post("/configuration/resources", Fixtures.resource(ownResource, s"https://$ownResource.example.com", tenantId = tenantId))
-      _ <- central.post("/configuration/resources", Fixtures.resource(otherResource, s"https://$otherResource.example.com"))
-      _ <- central.post("/configuration/roles", Fixtures.role(ownRole, tenantId = tenantId))
-      _ <- central.post("/configuration/roles", Fixtures.role(otherRole))
-      _ <- central.post("/configuration/permissions", Fixtures.permission(ownPermission, tenantId = tenantId))
-      _ <- central.post("/configuration/permissions", Fixtures.permission(otherPermission))
-      _ <- central.post("/configuration/auth-request-presets", Fixtures.presets(ownClient, Fixtures.preset(ownPreset)))
-      _ <- central.post("/configuration/auth-request-presets", Fixtures.presets(otherClient, Fixtures.preset(otherPreset)))
+      // On `standard`, like the suite tenant: a new tenant defaults to `fapi2`, which refuses
+      // the plain `client_secret` fixture client, and there would be nothing to sync.
+      _ <- write(central, "/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId), securityProfile = Some("standard")))
+      _ <- SecurityProfiles.awaitProfile(central, tenantId, "standard")
+      _ <- write(central, "/configuration/clients", Fixtures.client(ownClient, tenantId = tenantId))
+      _ <- write(central, "/configuration/clients", Fixtures.client(otherClient))
+      _ <- write(central, "/configuration/resources", Fixtures.resource(ownResource, s"https://$ownResource.example.com", tenantId = tenantId))
+      _ <- write(central, "/configuration/resources", Fixtures.resource(otherResource, s"https://$otherResource.example.com"))
+      _ <- write(central, "/configuration/roles", Fixtures.role(ownRole, tenantId = tenantId))
+      _ <- write(central, "/configuration/roles", Fixtures.role(otherRole))
+      _ <- write(central, "/configuration/permissions", Fixtures.permission(ownPermission, tenantId = tenantId))
+      _ <- write(central, "/configuration/permissions", Fixtures.permission(otherPermission))
+      _ <- write(central, "/configuration/auth-request-presets", Fixtures.presets(ownClient, Fixtures.preset(ownPreset)))
+      _ <- write(central, "/configuration/auth-request-presets", Fixtures.presets(otherClient, Fixtures.preset(otherPreset)))
     yield SecondEdge(
       edgeId = edgeId,
       token = token,
