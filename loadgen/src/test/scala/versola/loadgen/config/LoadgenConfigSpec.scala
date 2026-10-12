@@ -439,7 +439,7 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
       test("a rejected seed pepper is not quoted in the error") {
         def load(source: String) =
           TypesafeConfigProvider.fromHoconString(source).kebabCase.load(loadgenConfigDescriptor).either
-        val forbidden = List(SecretConfigChecks.marker, "Illegal base64")
+        val forbidden = SecretConfigChecks.pieces :+ "Illegal base64"
         for
           tooLong <- load(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", SecretConfigChecks.longMarker))
           illegal <- load(hocon.replaceFirst("AAECAwQFBgcICQoLDA0ODw", SecretConfigChecks.marker + "+/"))
@@ -447,8 +447,11 @@ object LoadgenConfigSpec extends ZIOSpecDefault:
           def texts(result: Either[Config.Error, LoadgenConfig]) =
             result.left.toOption.toList.flatMap(SecretConfigChecks.rendered)
           // The failure has to come from the pepper, or the absence of the marker proves nothing.
-          val fromPepper = texts(tooLong).exists(t => t.contains("passwords-secret") && t.contains("expected 16 bytes")) &&
-            texts(illegal).exists(t => t.contains("passwords-secret") && t.contains("not valid base64url"))
+          // The path in the error is built from the case class field names, so it may read
+          // `passwordsSecret`; the kebab-case conversion is the provider's, applied to lookups only.
+          def names(text: String) = text.contains("passwords-secret") || text.contains("passwordsSecret")
+          val fromPepper = texts(tooLong).exists(t => names(t) && t.contains("expected 16 bytes")) &&
+            texts(illegal).exists(t => names(t) && t.contains("not valid base64url"))
           val leaked = (texts(tooLong) ++ texts(illegal)).exists(text => forbidden.exists(text.contains))
           assertTrue(tooLong.isLeft, illegal.isLeft, fromPepper, !leaked)
       },

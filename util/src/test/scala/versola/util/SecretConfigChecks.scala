@@ -1,8 +1,8 @@
 package versola.util
 
-import zio.*
 import zio.config.typesafe.TypesafeConfigProvider
 import zio.test.*
+import zio.{Config, UIO}
 
 /** What every service's secret decoders have to satisfy, run against the service's own `DeriveConfig` givens.
   *
@@ -20,7 +20,8 @@ object SecretConfigChecks:
   /** The config path the secret is read from. zio-config puts it into the error, which is how the name of the secret gets there. */
   val name = "refresh-tokens-secret"
 
-  private val pieces = List(marker, marker.take(8), marker.takeRight(8))
+  /** The marker and its head and tail: a leak of only a prefix or a suffix is a leak too. */
+  val pieces = List(marker, marker.take(8), marker.takeRight(8))
 
   /** What `java.util.Base64` writes about an illegal character; it carries the character's code. */
   private val illegalCharacter = List("Illegal base64")
