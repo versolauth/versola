@@ -1115,7 +1115,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
         resp.body.asString.flatMap: bodyStr =>
           ZIO.fail(RuntimeException(s"assignUserRoles failed: status=${resp.status} body=$bodyStr"))
 
-  /** POST /configuration/clients — registers a new OAuth client via the Central API.
+  /** POST /configuration/clients/{web,native,service} — registers a new OAuth client via the Central API,
+    * at the endpoint of the kind the arguments describe (see [[ClientEndpoints]]).
     * Authenticates with the central resource secret.
     */
   def registerClient(
@@ -1180,7 +1181,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** Seconds; absent takes central's default (180 days). */
       refreshTokenTtl: Option[Int] = None,
   ): Task[RegisterClientResult] =
-    val body = Body.fromString(OAuthClient.RegisterClientBody(
+    val flat = OAuthClient.RegisterClientBody(
       tenantId = tenantId,
       id = clientId,
       clientName = Map("en" -> clientName),
@@ -1213,8 +1214,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
       applicationType = applicationType,
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
-    ).toJson)
-    val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
+    ).toJson
+    val (kindPath, typed) = ClientEndpoints.registration(flat.fromJson[Json.Obj].getOrElse(Json.Obj()))
+    val req = Request.post(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
@@ -1225,10 +1227,16 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * already fills in as no-ops, so a caller names only the member it is changing.
     */
   def updateClient(body: Json.Obj): Task[Unit] =
-    val req = Request.put(s"${config.centralUrl}/configuration/clients", Body.fromString(body.toJson))
-      .addHeader(centralAuthorization)
-      .addHeader(Header.ContentType(MediaType.application.json))
-    Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
+    def attempt(kindPath: String, typed: Json.Obj) =
+      val req = Request.put(s"${config.centralUrl}$kindPath", Body.fromString(typed.toJson))
+        .addHeader(centralAuthorization)
+        .addHeader(Header.ContentType(MediaType.application.json))
+      Client.batched(req).provide(ZLayer.succeed(client))
+    // The update names a client, not its kind: the first endpoint that does not call it another's.
+    ZIO.foldLeft(ClientEndpoints.updates(body))(Option.empty[Response]):
+      case (done @ Some(resp), _) if resp.status != Status.Conflict => ZIO.succeed(done)
+      case (_, (kindPath, typed)) => attempt(kindPath, typed).asSome
+    .map(_.get).flatMap: resp =>
       if resp.status.isSuccess then ZIO.unit
       else
         resp.body.asString.flatMap: responseBody =>

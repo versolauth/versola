@@ -20,8 +20,6 @@ object ClientController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
     getAllClientsSyncEndpoint,
-    createClientEndpoint,
-    updateClientEndpoint,
     createWebClientEndpoint,
     createNativeClientEndpoint,
     createServiceClientEndpoint,
@@ -159,69 +157,6 @@ object ClientController extends Controller:
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
-    }
-
-  val createClientEndpoint =
-    Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
-      (for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[ClientCertificateService]
-        body <- request.bodyAs[CreateClientRequest]
-        _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.id))
-        registered <- service.register(body)
-        response = CreateClientResponse(
-          registered.secret.map(Base64Url.encode),
-          registered.createdAt,
-          registered.privateKey,
-        )
-      yield Response.json(response.toJson).status(Status.Created))
-        .catchAll {
-          case error: ClientAlreadyExists =>
-            ZIO.succeed:
-              Response.status(Status.Conflict)
-          case error: InvalidClientLogoutConfiguration =>
-            ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
-          case error: InvalidConsentUri =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
-          case error: InvalidRegistrationConfiguration =>
-            ZIO.succeed:
-              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
-          case error: Throwable =>
-            ZIO.fail(error)
-        }
-    }
-
-  val updateClientEndpoint =
-    Method.PUT / "configuration" / "clients" -> handler { (request: Request) =>
-      (for
-        _ <- authorizeBasic(request)
-        service <- ZIO.service[OAuthClientService]
-        certificates <- ZIO.service[ClientCertificateService]
-        body <- request.bodyAs[UpdateClientRequest]
-        _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
-        enrolled <- certificates.isEnrolled(body.clientId)
-        _ <- service.updateClient(body, edgeCertificateEnrolled = enrolled)
-        // After the update has been accepted: an operator-supplied certificate is theirs from
-        // here on, and central stops renewing the one it issued.
-        _ <- certificates.forgetIfReplaced(body)
-      yield Response.status(Status.NoContent))
-        .catchAll {
-          case error: InvalidClientLogoutConfiguration =>
-            ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
-          case error: InvalidConsentUri =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
-          case error: InvalidRegistrationConfiguration =>
-            ZIO.succeed:
-              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
-          case error: Throwable =>
-            ZIO.fail(error)
-        }
     }
 
   // ── One registration and one update per kind of client ─────────────────────────────────────

@@ -106,6 +106,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
   )
 
+  /** What the web endpoint registers the general request as: its kind recorded. */
+  private def registeredAsWeb(request: CreateClientRequest): CreateClientRequest =
+    request.copy(template = Some(ClientTemplate(ClientKind.web)), applicationType = Some(ApplicationType.web))
+
   private val updateRequest = UpdateClientRequest(
     clientId = clientId,
     clientName = Some(Map("en" -> "Updated Web App")),
@@ -767,7 +771,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create client and return encoded secret",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
@@ -777,37 +781,16 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         for
           body <- response.body.asJson[CreateClientResponse]
         yield assertTrue(
-          service.registerClient.calls == List((createRequest, None, true)),
+          service.registerClient.calls == List((registeredAsWeb(createRequest), None, true)),
           // The registration time is the service's, handed back as it recorded it.
           body == CreateClientResponse(Some(Base64Url.encode(rotatedSecret)), registeredAt, None),
-        ),
-    ),
-    controllerTestCase(
-      description = "create public client and return no secret",
-      request = Request(
-        method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
-        body = Body.fromString(createRequest.copy(authMethod = AuthMethod.none).toJson),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.Created,
-      setup = service =>
-        service.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None)),
-      verify = (response, service, _) =>
-        for
-          raw <- response.body.asString
-          body <- response.body.asJson[CreateClientResponse]
-        yield assertTrue(
-          service.registerClient.calls == List((createRequest.copy(authMethod = AuthMethod.none), None, true)),
-          body == CreateClientResponse(None, registeredAt, None),
-          // Absent rather than empty: a caller must not mistake "" for a usable secret.
-          !raw.contains("secret"),
         ),
     ),
     controllerTestCase(
       description = "create client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.copy(
           frontChannelLogoutUri = Some("https://example.com/front-logout"),
           backChannelLogoutUri = Some("https://example.com/back-logout"),
@@ -823,7 +806,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create client returns 409 when the client id already exists",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Conflict,
@@ -834,7 +817,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create client returns 400 when the consent screen URI is invalid",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -848,7 +831,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create client returns 400 when the registration configuration is invalid",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
@@ -862,7 +845,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "create client surfaces an unexpected failure as 500 Internal Server Error",
       request = Request(
         method = Method.POST,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(createRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.InternalServerError,
@@ -873,12 +856,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client and return no content",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
-        service.updateClient.succeedsWith(()),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls == List((updateRequest, true, false))),
@@ -888,7 +871,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "clear registration flow while leaving auth flow unchanged",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(
           """{
             |  "clientId": "web-app",
@@ -903,7 +886,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
-        service.updateClient.succeedsWith(()),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(
@@ -915,7 +898,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client returns 400 when both logout URIs are configured",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
           backChannelLogoutUri = Some(Patch.Modified("https://example.com/back-logout")),
@@ -931,14 +914,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client succeeds when setting only one logout URI",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
-        service.updateClient.succeedsWith(()),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls.nonEmpty),
@@ -951,14 +934,14 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client succeeds when clearing a single logout URI via null patch",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Deleted),
         ).toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
-        service.updateClient.succeedsWith(()),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls == List((updateRequest.copy(frontChannelLogoutUri = Some(Patch.Deleted)), true, false))),
@@ -968,12 +951,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client returns 400 when the consent screen URI is invalid",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
-        service.updateClient.failsWith(InvalidConsentUri("policyUri", "must be an absolute https URL")),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.failsWith(InvalidConsentUri(
+          "policyUri",
+          "must be an absolute https URL",
+        )),
       verify = (response, _, _) =>
         for body <- response.body.asString
         yield assertTrue(body == "Invalid policyUri: must be an absolute https URL"),
@@ -982,12 +968,15 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client returns 400 when the registration configuration is invalid",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
-        service.updateClient.failsWith(InvalidRegistrationConfiguration(clientId, "registration must start with OTP verification")),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.failsWith(InvalidRegistrationConfiguration(
+          clientId,
+          "registration must start with OTP verification",
+        )),
       verify = (response, _, _) =>
         for body <- response.body.asString
         yield assertTrue(body == "Invalid registration configuration: registration must start with OTP verification"),
@@ -996,12 +985,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "update client surfaces an unexpected failure as 500 Internal Server Error",
       request = Request(
         method = Method.PUT,
-        url = URL.empty / "configuration" / "clients",
+        url = URL.empty / "configuration" / "clients" / "web",
         body = Body.fromString(updateRequest.toJson),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.InternalServerError,
       setup = service =>
-        service.updateClient.failsWith(RuntimeException("boom")),
+        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.failsWith(RuntimeException("boom")),
     ),
     controllerTestCase(
       description = "rotate client secret and return encoded value",
@@ -1162,13 +1151,13 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a web client at the web endpoint",
-      request = json(Method.PUT, "web", UpdateWebClientRequest(clientId = clientId, accessTokenTtl = Some(900L)).toJson),
+      request = json(Method.PUT, "web", UpdateWebClientRequest.of(clientId).copy(accessTokenTtl = Some(900L)).toJson),
       expectedStatus = Status.NoContent,
       setup = service => service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
         ZIO.succeed(assertTrue(
           service.updateClient.calls == List((
-            UpdateWebClientRequest(clientId = clientId, accessTokenTtl = Some(900L)).toUpdateClientRequest,
+            UpdateWebClientRequest.of(clientId).copy(accessTokenTtl = Some(900L)).toUpdateClientRequest,
             true,
             false,
           )),
@@ -1176,7 +1165,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a native client at the web endpoint is a conflict: a client's kind cannot change",
-      request = json(Method.PUT, "web", UpdateWebClientRequest(clientId = nativeRecord.id, accessTokenTtl = Some(900L)).toJson),
+      request = json(Method.PUT, "web", UpdateWebClientRequest.of(nativeRecord.id).copy(accessTokenTtl = Some(900L)).toJson),
       expectedStatus = Status.Conflict,
       setup = _.findClient.succeedsWith(Some(nativeRecord)),
       verify = (response, service, _) =>
@@ -1184,7 +1173,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update an unknown client at a typed endpoint is not found",
-      request = json(Method.PUT, "service", UpdateServiceClientRequest(clientId = ClientId("missing")).toJson),
+      request = json(Method.PUT, "service", UpdateServiceClientRequest.of(ClientId("missing")).toJson),
       expectedStatus = Status.NotFound,
       setup = _.findClient.succeedsWith(None),
       verify = (_, service, _) => ZIO.succeed(assertTrue(service.updateClient.calls.isEmpty)),
@@ -1194,7 +1183,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = json(
         Method.PUT,
         "web",
-        UpdateWebClientRequest(clientId = clientId, redirectUris = PatchClientRedirectUris(Set.empty, Set(redirectUri1))).toJson,
+        UpdateWebClientRequest.of(clientId).copy(redirectUris = PatchClientRedirectUris(Set.empty, Set(redirectUri1))).toJson,
       ),
       expectedStatus = Status.BadRequest,
       setup = _.findClient.succeedsWith(clients.headOption),
@@ -1203,7 +1192,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a native client fronted by edge brings what its kind fixes up with it, whatever it was stored as",
-      request = json(Method.PUT, "native", UpdateNativeClientRequest(clientId = nativeRecord.id, accessTokenTtl = Some(3600L)).toJson),
+      request = json(Method.PUT, "native", UpdateNativeClientRequest.of(nativeRecord.id).copy(accessTokenTtl = Some(3600L)).toJson),
       expectedStatus = Status.NoContent,
       setup = service =>
         service.findClient.succeedsWith(
@@ -1220,7 +1209,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a service client at the service endpoint",
-      request = json(Method.PUT, "service", UpdateServiceClientRequest(clientId = serviceRecord.id, accessTokenTtl = Some(600L)).toJson),
+      request = json(Method.PUT, "service", UpdateServiceClientRequest.of(serviceRecord.id).copy(accessTokenTtl = Some(600L)).toJson),
       expectedStatus = Status.NoContent,
       setup = service => service.findClient.succeedsWith(Some(serviceRecord)) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
@@ -1228,8 +1217,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     test("a native update request has no field for what the kind fixes, and cannot move the client's method") {
       val fixed = Set("certificateBoundAccessTokens", "requirePushedAuthorizationRequests", "requireSignedRequestObject", "authMethod", "jwks")
-      val written = UpdateNativeClientRequest(clientId = nativeRecord.id).toJson
+      val written = UpdateNativeClientRequest.of(nativeRecord.id).toJson
       assertTrue(fixed.forall(field => !written.contains(s""""$field""""))) &&
-      assertTrue(UpdateNativeClientRequest(clientId = nativeRecord.id).toUpdateClientRequest.authMethod.isEmpty)
+      assertTrue(UpdateNativeClientRequest.of(nativeRecord.id).toUpdateClientRequest.authMethod.isEmpty)
     },
   )

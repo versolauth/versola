@@ -24,10 +24,12 @@ import scala.util.control.NonFatal
   * Secret per client and nothing else. A directory missing either file is skipped, so a client
   * whose first certificate is still being issued does not stop the others.
   *
-  * Each pass reads every directory and PUTs `PUT /configuration/clients` -- `edgeClientCertificate`
+  * Each pass reads every directory and PUTs `PUT /configuration/clients/web` -- `edgeClientCertificate`
   * only, everything else left as it is -- for the ones whose content differs from what this
-  * process last pushed. The first pass therefore pushes everything, which is harmless: central
-  * stores what it is given, and a restart of this process is how a drifted value is repaired.
+  * process last pushed. A client's kind is fixed and this tool is not told it, so a `409` from the
+  * web endpoint (the client is a native app) is retried at `/native`. The first pass therefore
+  * pushes everything, which is harmless: central stores what it is given, and a restart of this
+  * process is how a drifted value is repaired.
   *
   * Environment:
   *   - `CENTRAL_URL`: central's base URL.
@@ -42,8 +44,8 @@ import scala.util.control.NonFatal
   */
 object CertSyncTool:
 
-  /** What a PUT carries. Every other field of `UpdateClientRequest` is optional or an empty
-    * add/remove set, so the client is otherwise untouched. */
+  /** What a PUT carries. Every other member of the web and native update requests is optional or an
+    * empty add/remove set, so the client is otherwise untouched. */
   def requestBody(clientId: String, pem: String): String =
     s"""{"clientId":${jsonString(clientId)},""" +
       """"redirectUris":{"add":[],"remove":[]},"scope":{"add":[],"remove":[]},""" +
@@ -105,13 +107,16 @@ object CertSyncTool:
         // Re-read per request: a mounted secret file is replaced under us on rotation of the
         // central resource secret just as it is for the certificates.
         val basic = java.util.Base64.getEncoder.nn.encodeToString(s"central:${secret()}".getBytes(StandardCharsets.UTF_8))
-        val request = HttpRequest.newBuilder(URI.create(s"$centralUrl/configuration/clients")).nn
-          .timeout(Duration.ofSeconds(30)).nn
-          .header("Authorization", s"Basic $basic").nn
-          .header("Content-Type", "application/json").nn
-          .PUT(HttpRequest.BodyPublishers.ofString(requestBody(clientId, pem))).nn
-          .build.nn
-        val response = http.send(request, HttpResponse.BodyHandlers.ofString()).nn
+        def put(kind: String) =
+          val request = HttpRequest.newBuilder(URI.create(s"$centralUrl/configuration/clients/$kind")).nn
+            .timeout(Duration.ofSeconds(30)).nn
+            .header("Authorization", s"Basic $basic").nn
+            .header("Content-Type", "application/json").nn
+            .PUT(HttpRequest.BodyPublishers.ofString(requestBody(clientId, pem))).nn
+            .build.nn
+          http.send(request, HttpResponse.BodyHandlers.ofString()).nn
+        val first = put("web")
+        val response = if first.statusCode == 409 then put("native") else first
         if response.statusCode == 204 || response.statusCode == 200 then
           println(s"cert-sync: $clientId updated")
           true

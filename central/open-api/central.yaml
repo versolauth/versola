@@ -168,59 +168,6 @@ paths:
                 $ref: '#/components/schemas/GetAllClientsResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
-    post:
-      tags: [Clients]
-      summary: Register a client
-      description: |
-        Returns the generated client secret. This is the only time the plaintext secret is
-        available — central keeps only an encrypted copy.
-      operationId: createClient
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateClientRequest'
-      responses:
-        '201':
-          description: Client registered.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/CreateClientResponse'
-        '400':
-          description: |
-            The configuration was rejected: both logout URIs set at once, a consent URI that
-            is not an absolute HTTPS URL, or a registration flow auth cannot run.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '409':
-          description: A client with this id already exists.
-    put:
-      tags: [Clients]
-      summary: Update a client
-      operationId: updateClient
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/UpdateClientRequest'
-      responses:
-        '204':
-          description: Client updated.
-        '400':
-          description: The patch was rejected — see `POST /configuration/clients`.
-          content:
-            text/plain:
-              schema:
-                type: string
-        '401':
-          $ref: '#/components/responses/Unauthorized'
     delete:
       tags: [Clients]
       summary: Delete a client
@@ -239,7 +186,6 @@ paths:
       summary: Register a web client
       description: |
         A site with a backend, where users sign in. See `CreateWebClientRequest`.
-        `POST /configuration/clients` stays for callers that predate the kind-specific endpoints.
         The secret is returned only here, and only for `authMethod: client_secret`.
       operationId: createWebClient
       requestBody:
@@ -259,7 +205,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            reason `POST /configuration/clients` gives.
+            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
           content:
             text/plain:
               schema:
@@ -306,7 +252,6 @@ paths:
       summary: Register a native client
       description: |
         An app installed on a device, holding a DPoP key. See `CreateNativeClientRequest`.
-        `POST /configuration/clients` stays for callers that predate the kind-specific endpoints.
         The secret is returned only here, and only for `authMethod: client_secret`.
       operationId: createNativeClient
       requestBody:
@@ -326,7 +271,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            reason `POST /configuration/clients` gives.
+            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
           content:
             text/plain:
               schema:
@@ -373,7 +318,6 @@ paths:
       summary: Register a service client
       description: |
         Code calling an API with no user present. See `CreateServiceClientRequest`.
-        `POST /configuration/clients` stays for callers that predate the kind-specific endpoints.
         The secret is returned only here, and only for `authMethod: client_secret`.
       operationId: createServiceClient
       requestBody:
@@ -393,7 +337,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            reason `POST /configuration/clients` gives.
+            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
           content:
             text/plain:
               schema:
@@ -2481,344 +2425,6 @@ components:
           items:
             $ref: '#/components/schemas/OAuthClientResponse'
       required: [clients]
-    CreateClientRequest:
-      type: object
-      description: |
-        A client may configure `frontChannelLogoutUri` or `backChannelLogoutUri`, never both.
-        `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
-      properties:
-        tenantId:
-          $ref: '#/components/schemas/TenantId'
-        id:
-          $ref: '#/components/schemas/ClientId'
-        clientName:
-          $ref: '#/components/schemas/LocalizedText'
-        redirectUris:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/RedirectUri'
-        allowedScopes:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/ScopeToken'
-        permissions:
-          type: array
-          uniqueItems: true
-          items:
-            $ref: '#/components/schemas/Permission'
-        accessTokenTtl:
-          type: integer
-          description: Seconds.
-        refreshTokenTtl:
-          type: [integer, 'null']
-          description: Seconds. `null` or omitted uses the default of 15552000 (180 days).
-        theme:
-          type: string
-        authFlow:
-          oneOf:
-            - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
-            - type: 'null'
-        otpTemplateId:
-          type: string
-        frontChannelLogoutUri:
-          type: [string, 'null']
-        frontChannelLogoutSessionRequired:
-          type: boolean
-        backChannelLogoutUri:
-          type: [string, 'null']
-        logoUri:
-          type: [string, 'null']
-        policyUri:
-          type: [string, 'null']
-        tosUri:
-          type: [string, 'null']
-        consentFlow:
-          oneOf:
-            - $ref: '#/components/schemas/ConsentFlowDto'
-            - type: 'null'
-        dpopBoundAccessTokens:
-          type: boolean
-          description: |
-            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
-            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
-        dpopSigningAlgs:
-          type: array
-          items:
-            type: string
-            enum: [ES256, PS256, RS256]
-          description: |
-            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
-            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
-            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
-            document does not advertise does not make it acceptable.
-        dpopMinRsaKeySize:
-          type: [integer, 'null']
-          description: |
-            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
-            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
-            regardless; a value below it is refused at registration.
-        authMethod:
-          $ref: '#/components/schemas/AuthMethod'
-          description: |
-            How the client authenticates. Fixed here for the life of the client: an update refuses
-            any other value, and a client that has to change method is deleted and registered again.
-        applicationType:
-          oneOf:
-            - $ref: '#/components/schemas/ApplicationType'
-            - type: 'null'
-          description: |
-            Absent or `null` registers a `web` client. Held apart from `authMethod`: a native
-            app is public (`none`) when it calls this server itself, and confidential
-            (`tls_client_auth`) when an edge authenticates as it.
-        mtlsAuth:
-          oneOf:
-            - $ref: '#/components/schemas/MutualTlsAuth'
-            - type: 'null'
-          description: |
-            RFC 8705 §2 mutual-TLS client authentication. `null` registers none, which is what
-            a client authenticating by secret or by client assertion sends. Held to agree with
-            `authMethod`: a credential the method does not read is one nothing would check.
-
-            Refused for a tenant whose proxy terminates no mutual TLS (§6.5) - there would be
-            no certificate to match it against.
-        certificateBoundAccessTokens:
-          type: boolean
-          description: |
-            RFC 8705 §3.4: bind this client's access tokens to the certificate it presents, so
-            a resource request carrying one over another certificate is refused. Opt-in and
-            independent of `mtlsAuth`, which implies binding on its own - a client that
-            authenticates by secret can still ask for it.
-        jwks:
-          oneOf:
-            - $ref: '#/components/schemas/JsonWebKeySet'
-            - type: 'null'
-          description: |
-            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
-            assertions with. `null` means the client does not use the method, or that
-            `generateJwks` asks this server for the keys instead.
-        generateJwks:
-          type: string
-          nullable: true
-          enum: [ES256, PS256, RS256]
-          description: |
-            Generate the `private_key_jwt` key pair here instead of registering one, signing
-            with this algorithm. The public half is stored as `jwks`; the private half is
-            returned as `CreateClientResponse.privateKey` and is kept nowhere.
-
-            For the caller that holds no key and no way to make one. A FAPI 2.0 tenant admits
-            no `client_secret`, so without this there is no method left whose credential this
-            server issues, and registering a service client there needs a key produced
-            outside the product.
-
-            Mutually exclusive with `jwks`, and refused for any method other than
-            `private_key_jwt` -- RFC 8705 §2.2 reads a key set too, but matches it against a
-            certificate a generated pair would not come with.
-        requireSignedRequestObject:
-          type: boolean
-          description: |
-            RFC 9101 §10.5: the client states its authorization request in a request object it
-            signed, so a plain parameter set from it is refused with `invalid_request`.
-            Needs `jwks` - a request object is verified against no other keys.
-        requirePushedAuthorizationRequests:
-          type: boolean
-          description: |
-            RFC 9126 §6.2: the client pushes its authorization request to `/par` first, so one
-            arriving at `/authorize` without a `request_uri` is refused with `invalid_request`.
-        edgeSigningKey:
-          oneOf:
-            - $ref: '#/components/schemas/PrivateJsonWebKey'
-            - type: 'null'
-          description: |
-            The private key an edge fronting this client signs and authenticates as it with.
-            Must be the private half of a key `jwks` publishes - a pair that cannot verify is
-            refused at registration. `null` for a client no edge fronts.
-        template:
-          oneOf:
-            - $ref: '#/components/schemas/ClientTemplate'
-            - type: 'null'
-          description: |
-            The wizard combination this registration came from, recorded as-is and never
-            inferred from the settings sent alongside it. `null` names none, which is what a
-            caller other than the console sends.
-        issueEdgeClientCertificate:
-          type: boolean
-          description: |
-            Central generates the key pair of the certificate the edge fronting this client
-            presents, has a CA sign it and renews it before it expires (#440). The client is
-            registered `tls_client_auth` by `mtlsAuth` where one is given; without it the subject
-            is `CN=<client>,OU=<tenant>,O=Versola`. Required, never defaulted: `false` for a
-            client no edge fronts or one that supplies its own certificate. Mutually exclusive with
-            `enrollEdgeClientCertificate` and with supplying a certificate.
-        enrollEdgeClientCertificate:
-          type: boolean
-          description: |
-            The edge fronting this client generates its own key and enrols for a certificate
-            (#463): central stores no certificate and no key, only that the client is enrolled,
-            and signs the request an authenticated edge sends for the subject `mtlsAuth`
-            registers (or `CN=<client>,OU=<tenant>,O=Versola` where it names none). Only for a
-            native client fronted by edge. Required, never defaulted: `false` otherwise.
-            Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
-            certificate.
-      required:
-        - tenantId
-        - id
-        - clientName
-        - redirectUris
-        - allowedScopes
-        - permissions
-        - accessTokenTtl
-        - theme
-        - otpTemplateId
-        - frontChannelLogoutSessionRequired
-        - dpopBoundAccessTokens
-        - dpopSigningAlgs
-        - authMethod
-        - certificateBoundAccessTokens
-        - requireSignedRequestObject
-        - requirePushedAuthorizationRequests
-        - issueEdgeClientCertificate
-        - enrollEdgeClientCertificate
-    UpdateClientRequest:
-      type: object
-      description: |
-        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
-        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
-        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
-        leaves the value unchanged, `null` clears it, a value sets it.
-
-        Every other member is a plain optional overwrite: absent *or* `null` both leave the
-        current value unchanged, and a value sets it. There is no way to clear `clientName`,
-        `accessTokenTtl`, `refreshTokenTtl`, `theme`, `otpTemplateId` or
-        `frontChannelLogoutSessionRequired` through this endpoint.
-      properties:
-        clientId:
-          $ref: '#/components/schemas/ClientId'
-        clientName:
-          oneOf:
-            - $ref: '#/components/schemas/LocalizedText'
-            - type: 'null'
-        redirectUris:
-          $ref: '#/components/schemas/PatchClientRedirectUris'
-        scope:
-          $ref: '#/components/schemas/PatchClientScope'
-        permissions:
-          $ref: '#/components/schemas/PatchPermissions'
-        accessTokenTtl:
-          type: [integer, 'null']
-          format: int64
-          description: Seconds.
-        refreshTokenTtl:
-          type: [integer, 'null']
-          format: int64
-          description: Seconds.
-        theme:
-          type: [string, 'null']
-        authFlow:
-          oneOf:
-            - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
-            - type: 'null'
-        otpTemplateId:
-          type: [string, 'null']
-        frontChannelLogoutUri:
-          type: [string, 'null']
-        frontChannelLogoutSessionRequired:
-          type: [boolean, 'null']
-        backChannelLogoutUri:
-          type: [string, 'null']
-        logoUri:
-          type: [string, 'null']
-        policyUri:
-          type: [string, 'null']
-        tosUri:
-          type: [string, 'null']
-        consentFlow:
-          oneOf:
-            - $ref: '#/components/schemas/ConsentFlowDto'
-            - type: 'null'
-        dpopBoundAccessTokens:
-          type: boolean
-          description: |
-            RFC 9449 §5.2: the client always uses DPoP. A token request from it that carries no
-            proof is refused with `invalid_dpop_proof` rather than answered with a bearer token.
-        dpopSigningAlgs:
-          type: array
-          items:
-            type: string
-            enum: [ES256, PS256, RS256]
-          description: |
-            RFC 9449 §5.1: the signing algorithms a DPoP proof from this client may use,
-            narrowing `dpop_signing_alg_values_supported`. An empty array registers no
-            narrowing. Narrowing only ever subtracts - naming an algorithm the metadata
-            document does not advertise does not make it acceptable.
-        dpopMinRsaKeySize:
-          type: [integer, 'null']
-          description: |
-            The modulus length, in bits, an RSA DPoP proof key from this client must reach.
-            `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
-            regardless; a value below it is refused at registration.
-        authMethod:
-          oneOf:
-            - $ref: '#/components/schemas/AuthMethod'
-            - type: 'null'
-          description: |
-            The method the client was registered with, which an update cannot change. Absent,
-            `null`, or the stored method leaves it as it is; any other value is refused with
-            `400`. A client that has to change method is deleted and registered again.
-        applicationType:
-          oneOf:
-            - $ref: '#/components/schemas/ApplicationType'
-            - type: 'null'
-          description: |
-            Absent or `null` leaves the stored value unchanged. A value is validated against
-            the client as the patch leaves it, exactly as a registration is.
-        mtlsAuth:
-          oneOf:
-            - $ref: '#/components/schemas/MutualTlsAuth'
-            - type: 'null'
-          description: |
-            Merge-patch: absent leaves the registered mutual-TLS configuration unchanged,
-            `null` clears it, a value replaces it. Validated against the resulting
-            `authMethod` exactly as a registration is.
-        certificateBoundAccessTokens:
-          type: [boolean, 'null']
-          description: |
-            RFC 8705 §3.4. Absent or `null` leaves the stored value unchanged.
-        jwks:
-          oneOf:
-            - $ref: '#/components/schemas/JsonWebKeySet'
-            - type: 'null'
-          description: |
-            RFC 7523 §2.2 `private_key_jwt`: the public keys this client signs its client
-            assertions with. `null` means the client does not use the method.
-        requireSignedRequestObject:
-          type: boolean
-          description: |
-            RFC 9101 §10.5: the client states its authorization request in a request object it
-            signed, so a plain parameter set from it is refused with `invalid_request`.
-            Needs `jwks` - a request object is verified against no other keys.
-        requirePushedAuthorizationRequests:
-          type: boolean
-          description: |
-            RFC 9126 §6.2: the client pushes its authorization request to `/par` first, so one
-            arriving at `/authorize` without a `request_uri` is refused with `invalid_request`.
-        edgeSigningKey:
-          oneOf:
-            - $ref: '#/components/schemas/PrivateJsonWebKey'
-            - type: 'null'
-          description: |
-            Merge-patch: absent leaves the stored key unchanged, `null` clears it, a value
-            replaces it. Checked against the resulting `jwks` exactly as a registration is.
-      required: [clientId, redirectUris, scope, permissions]
     CreateWebClientRequest:
       type: object
       additionalProperties: false
@@ -2831,7 +2437,8 @@ components:
         certificate) it must set `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests`,
         and cannot set `dpopBoundAccessTokens` or `requireSignedRequestObject`.
 
-        Recorded as a `web` client. Otherwise held to the same checks as `CreateClientRequest`.
+        Recorded as a `web` client. `frontChannelLogoutUri` and `backChannelLogoutUri` are never both
+        set, and `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.
         Members that are not listed here are refused, not ignored.
       properties:
         tenantId:
@@ -3221,8 +2828,13 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Patch semantics as in `UpdateClientRequest`, without `authMethod` and `applicationType`: a
-        client's method and kind are fixed when it is registered. For a web client fronted by edge,
+        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+
+        A client's method and kind are fixed when it is registered. For a web client fronted by edge,
         `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests` are fixed on and
         `dpopBoundAccessTokens` and `requireSignedRequestObject` off: an update may restate them, not
         ask for the opposite, and central writes them onto the client whatever it was stored as. No
@@ -3340,7 +2952,13 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Patch semantics as in `UpdateClientRequest`. What the kind fixes is not a member, and central
+        `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+
+        What the kind fixes is not a member, and central
         writes it onto the client whatever it was stored as: no certificate binding or signed request
         object, and -- for an app fronted by edge -- DPoP-bound tokens and pushed authorization
         requests. A public app's `dpopBoundAccessTokens` stays its own. No patch may leave the client
@@ -3421,8 +3039,14 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Patch semantics as in `UpdateClientRequest`, limited to what a service client has: no redirect
-        URIs, flows, consent, logout, branding or refresh token.
+        `scope` and `permissions` are add/remove patches (see their schemas).
+        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
+        leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
+        plain optional overwrite: absent or `null` leaves the value, a value sets it.
+
+        Limited to what a service client has: no redirect URIs, flows, consent, logout, branding or
+        refresh token.
         Members that are not listed here are refused, not ignored.
       properties:
         clientId:

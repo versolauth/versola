@@ -53,16 +53,40 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
 
   private def record(request: CreateClientRequest): OAuthClientRecord =
     OAuthClientRecord(
-      id = request.id, tenantId = request.tenantId, clientName = request.clientName, redirectUris = request.redirectUris,
-      scope = request.allowedScopes, secret = None, previousSecret = None, accessTokenTtl = zio.Duration.fromSeconds(300),
-      refreshTokenTtl = zio.Duration.fromSeconds(300), permissions = Set.empty[Permission], theme = "default", authFlow = request.authFlow,
-      registrationFlow = None, otpTemplateId = "default", frontChannelLogoutUri = None, frontChannelLogoutSessionRequired = false,
-      backChannelLogoutUri = None, logoUri = None, policyUri = None, tosUri = None, consentFlow = None,
-      dpopBoundAccessTokens = request.dpopBoundAccessTokens, dpopSigningAlgs = Set.empty, dpopMinRsaKeySize = None,
-      authMethod = request.authMethod, mtlsAuth = None, certificateBoundAccessTokens = request.certificateBoundAccessTokens, jwks = None,
+      id = request.id,
+      tenantId = request.tenantId,
+      clientName = request.clientName,
+      redirectUris = request.redirectUris,
+      scope = request.allowedScopes,
+      secret = None,
+      previousSecret = None,
+      accessTokenTtl = zio.Duration.fromSeconds(300),
+      refreshTokenTtl = zio.Duration.fromSeconds(300),
+      permissions = Set.empty[Permission],
+      theme = "default",
+      authFlow = request.authFlow,
+      registrationFlow = None,
+      otpTemplateId = "default",
+      frontChannelLogoutUri = None,
+      frontChannelLogoutSessionRequired = false,
+      backChannelLogoutUri = None,
+      logoUri = None,
+      policyUri = None,
+      tosUri = None,
+      consentFlow = None,
+      dpopBoundAccessTokens = request.dpopBoundAccessTokens,
+      dpopSigningAlgs = Set.empty,
+      dpopMinRsaKeySize = None,
+      authMethod = request.authMethod,
+      mtlsAuth = None,
+      certificateBoundAccessTokens = request.certificateBoundAccessTokens,
+      jwks = None,
       requireSignedRequestObject = request.requireSignedRequestObject,
-      requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests, edgeSigningKey = None,
-      edgeClientCertificate = None, template = request.template, createdAt = java.time.Instant.EPOCH,
+      requirePushedAuthorizationRequests = request.requirePushedAuthorizationRequests,
+      edgeSigningKey = None,
+      edgeClientCertificate = None,
+      template = request.template,
+      createdAt = java.time.Instant.EPOCH,
       applicationType = request.applicationType.getOrElse(ApplicationType.web),
     )
 
@@ -86,9 +110,15 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
         val bound = edge.copy(certificateBoundAccessTokens = true, requirePushedAuthorizationRequests = true)
         assertTrue(
           registration(ClientKind.web, edge.toCreateClientRequest).exists(_.contains("certificateBoundAccessTokens")),
-          registration(ClientKind.web, edge.copy(certificateBoundAccessTokens = true).toCreateClientRequest).exists(_.contains("requirePushedAuthorizationRequests")),
+          registration(
+            ClientKind.web,
+            edge.copy(certificateBoundAccessTokens = true).toCreateClientRequest,
+          ).exists(_.contains("requirePushedAuthorizationRequests")),
           registration(ClientKind.web, bound.copy(dpopBoundAccessTokens = true).toCreateClientRequest).exists(_.contains("dpopBoundAccessTokens")),
-          registration(ClientKind.web, bound.copy(requireSignedRequestObject = true).toCreateClientRequest).exists(_.contains("requireSignedRequestObject")),
+          registration(
+            ClientKind.web,
+            bound.copy(requireSignedRequestObject = true).toCreateClientRequest,
+          ).exists(_.contains("requireSignedRequestObject")),
           registration(ClientKind.web, bound.toCreateClientRequest).isEmpty,
         )
       },
@@ -97,12 +127,21 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       test("public and edge-fronted are the two methods") {
         assertTrue(
           registration(ClientKind.device, native.toCreateClientRequest).isEmpty,
-          registration(ClientKind.device, native.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true).toCreateClientRequest).isEmpty,
-          registration(ClientKind.device, native.copy(authMethod = AuthMethod.private_key_jwt).toCreateClientRequest).exists(_.contains("public (none) or fronted by edge")),
+          registration(
+            ClientKind.device,
+            native.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true).toCreateClientRequest,
+          ).isEmpty,
+          registration(
+            ClientKind.device,
+            native.copy(authMethod = AuthMethod.private_key_jwt).toCreateClientRequest,
+          ).exists(_.contains("public (none) or fronted by edge")),
         )
       },
       test("a public one has no certificate to present") {
-        assertTrue(registration(ClientKind.device, native.copy(enrollEdgeClientCertificate = true).toCreateClientRequest).exists(_.contains("not fronted by edge")))
+        assertTrue(registration(
+          ClientKind.device,
+          native.copy(enrollEdgeClientCertificate = true).toCreateClientRequest,
+        ).exists(_.contains("not fronted by edge")))
       },
       test("the settings the kind fixes are fixed whatever the caller sent") {
         val fixed = native.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true).toCreateClientRequest
@@ -129,7 +168,10 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
         assertTrue(registration(ClientKind.service, service.toCreateClientRequest).isEmpty)
       },
       test("one that does not is refused") {
-        assertTrue(registration(ClientKind.service, service.copy(authMethod = AuthMethod.none).toCreateClientRequest).exists(_.contains("must authenticate")))
+        assertTrue(registration(
+          ClientKind.service,
+          service.copy(authMethod = AuthMethod.none).toCreateClientRequest,
+        ).exists(_.contains("must authenticate")))
       },
       test("it has nothing a user signs in with") {
         val fixed = service.toCreateClientRequest
@@ -148,10 +190,13 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     suite("what an update leaves fixed")(
       test("a device fronted by edge is bound to its key and its pushed request; a public one keeps its own") {
         val stored = record(native.toCreateClientRequest).copy(dpopBoundAccessTokens = false)
-        val update = UpdateWebClientRequest(clientId = stored.id).toUpdateClientRequest
+        val update = UpdateWebClientRequest.of(stored.id).toUpdateClientRequest
         val publicApp = InvalidRegistrationConfiguration.withKindFixed(ClientKind.device, update, stored, edgeFronted = false)
         val edgeApp = InvalidRegistrationConfiguration.withKindFixed(
-          ClientKind.device, update, stored.copy(authMethod = AuthMethod.tls_client_auth), edgeFronted = true,
+          ClientKind.device,
+          update,
+          stored.copy(authMethod = AuthMethod.tls_client_auth),
+          edgeFronted = true,
         )
         assertTrue(
           // A public app's DPoP is its own choice, so what the request says stands.
@@ -168,7 +213,7 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
     suite("a web client fronted by edge on update")(
       test("may restate what the kind fixes, and is brought up to it, but cannot ask for the opposite") {
         val stored = record(web.copy(authMethod = AuthMethod.tls_client_auth).toCreateClientRequest)
-        val update = UpdateWebClientRequest(clientId = stored.id)
+        val update = UpdateWebClientRequest.of(stored.id)
         def check(request: UpdateWebClientRequest) =
           InvalidRegistrationConfiguration.validateKindUpdate(ClientKind.web, request.toUpdateClientRequest, stored, edgeFronted = true)
         val fixed = InvalidRegistrationConfiguration.withKindFixed(ClientKind.web, update.toUpdateClientRequest, stored, edgeFronted = true)
@@ -183,7 +228,12 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
           fixed.requirePushedAuthorizationRequests == Some(true),
           fixed.dpopBoundAccessTokens == Some(false),
           // Held to nothing on a client no edge fronts.
-          InvalidRegistrationConfiguration.validateKindUpdate(ClientKind.web, update.copy(dpopBoundAccessTokens = Some(true)).toUpdateClientRequest, stored, edgeFronted = false).isEmpty,
+          InvalidRegistrationConfiguration.validateKindUpdate(
+            ClientKind.web,
+            update.copy(dpopBoundAccessTokens = Some(true)).toUpdateClientRequest,
+            stored,
+            edgeFronted = false,
+          ).isEmpty,
         )
       },
     ),
