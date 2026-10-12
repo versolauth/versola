@@ -25,14 +25,14 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     val service = IdentifierChangeIntentService.Impl(intents, userRepository, configuration)
 
   val spec = suite("IdentifierChangeIntentService")(
-    test("records an intent for the canonical new phone, for five minutes") {
+    test("records an intent for the new phone, for five minutes") {
       val env = Env()
       for
         _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())
-        _ <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+787011234568")
+        _ <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+77011234568")
         calls = env.intents.create.calls
       yield assertTrue(calls == List((userId, clientId, IdentifierChangeKind.Phone, Right(Phone("+77011234568")), 5.minutes)))
     },

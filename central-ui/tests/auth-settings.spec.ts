@@ -174,3 +174,20 @@ test('stays on the page and says why when the change cannot be started', async (
   await page.getByRole('button', { name: 'Change', exact: true }).click();
   await expect(page.getByRole('alert')).toHaveText('Could not start the change');
 });
+
+test('writes the phone in E.164 before it reaches the server and the login', async ({ page }) => {
+  let body = '';
+  await page.route('**/resources/auth/settings/identifier/intent', async route => {
+    body = route.request().postData() ?? '';
+    await route.fulfill({ status: 204, body: '' });
+  });
+  await page.route('**/login/current**', route => route.fulfill({ contentType: 'text/html', body: '<p>login</p>' }));
+  await loadAccountForm(page);
+
+  await page.getByPlaceholder('New phone number').fill('+7 (701) 123-45-68');
+  await page.getByRole('button', { name: 'Change', exact: true }).click();
+
+  await expect(page).toHaveURL(/\/login\/current\?/);
+  expect(body).toBe(JSON.stringify({ kind: 'phone', value: '+77011234568' }));
+  expect(new URL(page.url()).searchParams.get('login_hint')).toBe('+77011234568');
+});

@@ -9,12 +9,12 @@ object IdentifierChangeCredentialsSpec extends UnitSpecBase:
     IdentifierChangeCredentials.parse(kind, raw, prefixes)
 
   val spec = suite("IdentifierChangeCredentials")(
-    test("parses a phone in international form to its canonical value") {
+    test("accepts a phone written in E.164 and nothing but E.164") {
       assertTrue(
         parse(IdentifierChangeKind.Phone, "+77011234567") == Some(Right(Phone("+77011234567"))),
-        // The same number written with the national trunk prefix: the intent and the login_hint
-        // must meet at one value for the intent to match.
-        parse(IdentifierChangeKind.Phone, "+787011234567") == Some(Right(Phone("+77011234567"))),
+        // Validated, not normalised: the same number written with the national trunk prefix is
+        // refused, so the intent and the login_hint can only meet at one spelling.
+        parse(IdentifierChangeKind.Phone, "+787011234567").isEmpty,
       )
     },
     test("refuses a phone that is not in international form or not a number") {

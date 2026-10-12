@@ -436,13 +436,11 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
-      description = "set phone canonicalises the phone to E.164",
+      description = "set phone returns 400 Bad Request for a valid number that is not written in E.164",
       request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+787011234567"}"""),
-      expectedStatus = Status.Ok,
-      setup = service => service.setPhone.succeedsWith(version),
+      expectedStatus = Status.BadRequest,
       authorization = internalAuthorization,
-      verify = (_, service) =>
-        ZIO.succeed(assertTrue(service.setPhone.calls == List((userId, Phone("+77011234567"))))),
+      verify = (_, service) => ZIO.succeed(assertTrue(service.setPhone.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "set phone returns 400 Bad Request for an invalid phone",

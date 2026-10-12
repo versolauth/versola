@@ -131,15 +131,16 @@ object UserController extends Controller:
         .catchAll(contactFailure)
     }
 
-  /** The phone counterpart of [[setEmailEndpoint]]. It is stored in canonical E.164, so a number
-    * written another way is normalised here, not by the caller. */
+  /** The phone counterpart of [[setEmailEndpoint]]. The caller writes the number in E.164, the form
+    * the index stores; one that is valid but written another way is refused, not normalised. */
   val setPhoneEndpoint =
     Method.PUT / "users" / "phone" -> handler { (request: Request) =>
       (for
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[SetUserPhoneRequest]
-        phone <- ZIO.fromEither(Phone.parse(body.phone)).mapError(BadRequest(_))
+        phone <- ZIO.fromEither(Phone.parse(body.phone).filterOrElse(_ == body.phone, s"${body.phone} is not in E.164 form"))
+          .mapError(BadRequest(_))
         version <- service.setPhone(body.userId, phone)
       yield Response.json(UserVersionResponse(version).toJson))
         .catchAll(contactFailure)

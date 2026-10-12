@@ -8,8 +8,9 @@ import versola.util.{Email, Phone}
   */
 object IdentifierChangeCredentials:
 
-  /** `allowedPhonePrefixes` is the tenant's allow-list; empty allows every country. A phone must
-    * be written in international form, as `login_hint` already requires.
+  /** `allowedPhonePrefixes` is the tenant's allow-list; empty allows every country. A phone is only
+    * validated here, not normalised: the page writes it in E.164, and one that is valid but written
+    * any other way is refused, so the intent and `login_hint` can only meet at one spelling.
     */
   def parse(
       kind: IdentifierChangeKind,
@@ -20,6 +21,7 @@ object IdentifierChangeCredentials:
       case IdentifierChangeKind.Phone =>
         Option.when(raw.startsWith("+") && raw.drop(1).forall(_.isDigit)):
           Phone.parse(raw).toOption
+            .filter(_ == raw)
             .filter(phone => allowedPhonePrefixes.isEmpty || allowedPhonePrefixes.exists(phone.startsWith))
             .map(Right(_))
         .flatten

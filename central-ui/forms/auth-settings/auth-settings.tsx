@@ -103,6 +103,13 @@ function apiBase(): string {
   return path.endsWith('/') ? path : `${path}/`;
 }
 
+// The server validates a phone number but does not normalise it, so the page writes it in E.164:
+// the spaces, dashes and brackets people type are dropped, and a leading 00 becomes +.
+function toE164(value: string): string {
+  const compact = value.replace(/[\s().-]/g, '');
+  return compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+}
+
 function formatDate(value: string, locale: string): string {
   try {
     return new Date(value).toLocaleString(locale);
@@ -228,7 +235,8 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const startIdentifierChange = async () => {
     if (changing()) return;
     const kind = changeKind();
-    const value = changeValue().trim();
+    const typed = changeValue().trim();
+    const value = kind === 'phone' ? toE164(typed) : typed;
     if (!value) {
       setChangeError('invalid');
       return;

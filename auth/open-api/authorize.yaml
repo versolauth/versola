@@ -276,7 +276,8 @@ components:
 
         With `urn:versola:acr:phone-change` or `urn:versola:acr:email-change` in `acr_values` it is
         no longer a hint but the new identifier, of the kind the value names, and a missing or
-        unusable one fails the request with `invalid_request` instead of being ignored. Such a
+        unusable one fails the request with `invalid_request` instead of being ignored. A phone number
+        is validated and not normalised here: it has to be written in E.164 already. Such a
         request needs a signed-in user (`login_required` without a session, and under
         `prompt=none`), re-verifies that user with the client's required factors however fresh the
         session is (`unmet_authentication_requirements` when the flow has nothing to verify with),
