@@ -66,10 +66,10 @@ object SubmissionLimiter:
       */
     private def windowLimits(limits: SubmissionLimits, ct: ChallengeType): Option[NonEmptyChunk[RateLimit]] =
       val configured = ct match
-        case ChallengeType.OtpRequest => limits.otpRequest
-        case ChallengeType.OtpSubmit => limits.otpSubmit
-        case ChallengeType.PasswordSubmit => limits.passwordSubmit
-        case ChallengeType.PasskeyAssertion => limits.passkeyAssertion
+        case ChallengeType.OtpRequest | ChallengeType.StepUpOtpRequest => limits.otpRequest
+        case ChallengeType.OtpSubmit | ChallengeType.StepUpOtpSubmit => limits.otpSubmit
+        case ChallengeType.PasswordSubmit | ChallengeType.StepUpPasswordSubmit => limits.passwordSubmit
+        case ChallengeType.PasskeyAssertion | ChallengeType.StepUpPasskeyAssertion => limits.passkeyAssertion
       NonEmptyChunk.fromIterableOption(configured)
 
     private def worstStatus(a: LimitStatus, b: LimitStatus): LimitStatus =

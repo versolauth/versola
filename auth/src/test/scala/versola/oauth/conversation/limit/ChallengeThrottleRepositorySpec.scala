@@ -69,6 +69,34 @@ trait ChallengeThrottleRepositorySpec extends DatabaseSpecBase[ChallengeThrottle
           all <- env.repository.findAll(tenantId, subject, List(ChallengeType.OtpSubmit))
         yield assertTrue(found.contains(updated), all.length == 1)
       },
+      test("step-up records round-trip and are kept apart from the regular record of the same subject") {
+        val regular = record(ChallengeType.PasswordSubmit, attempts = List(1000L))
+        val stepUp = record(ChallengeType.StepUpPasswordSubmit, attempts = List(2000L, 3000L), banned = Some(bannedUntil))
+        for
+          _ <- env.repository.upsert(regular)
+          _ <- env.repository.upsert(stepUp)
+          foundRegular <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+          foundStepUp <- env.repository.find(tenantId, subject, ChallengeType.StepUpPasswordSubmit)
+          _ <- env.repository.delete(tenantId, subject, ChallengeType.StepUpPasswordSubmit)
+          afterDelete <- env.repository.findAll(tenantId, subject, ChallengeType.values.toList)
+        yield assertTrue(
+          foundRegular.contains(regular),
+          foundStepUp.contains(stepUp),
+          afterDelete == List(regular),
+        )
+      },
+      test("recordAttempt counts step-up attempts without touching the regular counter") {
+        val limits = NonEmptyChunk(RateLimit(maxAttempts = 1000, windowSeconds = 3600))
+        for
+          _ <- env.repository.upsert(record(ChallengeType.PasswordSubmit, attempts = List(nowEpoch - 10)))
+          _ <- env.repository.recordAttempt(tenantId, subject, ChallengeType.StepUpPasswordSubmit, now, limits, banDurationSeconds)
+          regular <- env.repository.find(tenantId, subject, ChallengeType.PasswordSubmit)
+          stepUp <- env.repository.find(tenantId, subject, ChallengeType.StepUpPasswordSubmit)
+        yield assertTrue(
+          regular.map(_.attempts) == Some(List(nowEpoch - 10)),
+          stepUp.map(_.attempts) == Some(List(nowEpoch)),
+        )
+      },
       test("findAll returns only the requested types for the subject in a single query") {
         for
           _ <- env.repository.upsert(record(ChallengeType.OtpRequest))

@@ -70,6 +70,10 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     ChallengeType.OtpSubmit -> allWindowsConfigured.otpSubmit,
     ChallengeType.PasswordSubmit -> allWindowsConfigured.passwordSubmit,
     ChallengeType.PasskeyAssertion -> allWindowsConfigured.passkeyAssertion,
+    ChallengeType.StepUpOtpRequest -> allWindowsConfigured.otpRequest,
+    ChallengeType.StepUpOtpSubmit -> allWindowsConfigured.otpSubmit,
+    ChallengeType.StepUpPasswordSubmit -> allWindowsConfigured.passwordSubmit,
+    ChallengeType.StepUpPasskeyAssertion -> allWindowsConfigured.passkeyAssertion,
   )
 
   private def throttleRecord(attempts: List[Long], bannedUntil: Option[Instant], expiresAt: Instant) =
@@ -345,6 +349,29 @@ object SubmissionLimiterSpec extends UnitSpecBase:
       },
     ),
     suite("recordLimit window selection")(windowSelectionTests*),
+    suite("ChallengeType.forConversation")(
+      test("keeps the regular type for a sign-in") {
+        assertTrue(
+          ChallengeType.values.forall(ct => ChallengeType.forConversation(stepUp = false, ct) == ct),
+        )
+      },
+      test("maps each regular type to its own step-up type, distinct from the regular one") {
+        val mapped = List(
+          ChallengeType.OtpRequest,
+          ChallengeType.OtpSubmit,
+          ChallengeType.PasswordSubmit,
+          ChallengeType.PasskeyAssertion,
+        ).map(ChallengeType.forConversation(stepUp = true, _))
+        assertTrue(
+          mapped == List(
+            ChallengeType.StepUpOtpRequest,
+            ChallengeType.StepUpOtpSubmit,
+            ChallengeType.StepUpPasswordSubmit,
+            ChallengeType.StepUpPasskeyAssertion,
+          ),
+        )
+      },
+    ),
     suite("recordLimitAll")(
       test("returns Allowed and skips lookups when no windows are configured") {
         val env = Env()
