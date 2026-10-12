@@ -38,7 +38,7 @@ object OAuthClientsSyncClient:
       centralSyncTokenService: CentralSyncTokenService,
       enrollment: ClientCertificateEnrollment,
   ) extends OAuthClientsSyncClient:
-    private val ClientsURL = config.central.url / "configuration" / "clients" / "sync"
+    private val ClientsURL = config.central.url / "edge" / "sync" / "clients"
 
     private def fetch: Task[GetOAuthClientsSyncResponse] =
       for

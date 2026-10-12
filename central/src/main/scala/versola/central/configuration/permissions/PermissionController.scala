@@ -1,17 +1,9 @@
 package versola.central.configuration.permissions
 
-import versola.central.configuration.edges.EdgeService
+import versola.central.authorizeBasic
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
-import versola.central.configuration.{
-  CreatePermissionRequest,
-  GetAllPermissionsResponse,
-  GetPermissionsSyncResponse,
-  PermissionResponse,
-  PermissionSyncResponse,
-  UpdatePermissionRequest,
-}
-import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
+import versola.central.configuration.{CreatePermissionRequest, GetAllPermissionsResponse, PermissionResponse, UpdatePermissionRequest}
 import versola.util.http.Controller
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.{EncoderOps, JsonCodec}
@@ -20,14 +12,13 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 import zio.{Cause, ZIO}
 
 object PermissionController extends Controller:
-  type Env = Tracing & PermissionService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & PermissionService & ResourceService
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllPermissionsEndpoint,
     createPermissionEndpoint,
     updatePermissionEndpoint,
     deletePermissionEndpoint,
-    syncPermissionsEndpoint,
   )
 
   val getAllPermissionsEndpoint =
@@ -77,20 +68,4 @@ object PermissionController extends Controller:
         permission <- request.url.queryZIO[Permission]("permission")
         _ <- service.deletePermission(tenantId, permission)
       yield Response.status(Status.NoContent)
-    }
-
-  val syncPermissionsEndpoint =
-    Method.GET / "configuration" / "permissions" / "sync" -> handler { (request: Request) =>
-      for
-        service <- ZIO.service[PermissionService]
-        edgeId <- authorizeInternal(request)
-        permissions <- service.getPermissionsForSync(edgeId)
-        response = GetPermissionsSyncResponse(permissions.map { p =>
-          PermissionSyncResponse(
-            tenantId = p.tenantId,
-            id = p.id,
-            endpointIds = p.endpointIds,
-          )
-        })
-      yield Response.json(response.toJson)
     }

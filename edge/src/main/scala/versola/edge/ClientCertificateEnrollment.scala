@@ -66,7 +66,7 @@ object ClientCertificateEnrollment:
       held: Ref.Synchronized[Map[ClientId, Held]],
   ) extends ClientCertificateEnrollment:
 
-    private val SignUrl: URL = config.central.url / "configuration" / "clients" / "edge-certificate" / "sign"
+    private val SignUrl: URL = config.central.url / "edge" / "clients" / "edge-certificate" / "sign"
 
     override def certificateFor(clientId: ClientId, subject: CertificateSubject): Task[PrivateClientCertificate.Material] =
       // One enrolment at a time, and the same one for every caller that arrives while it runs.

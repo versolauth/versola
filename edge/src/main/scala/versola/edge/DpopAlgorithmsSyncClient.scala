@@ -24,7 +24,7 @@ object DpopAlgorithmsSyncClient:
       config: EdgeConfig,
       centralSyncTokenService: CentralSyncTokenService,
   ) extends DpopAlgorithmsSyncClient:
-    private val MetadataURL = config.central.url / "configuration" / "server-metadata" / "sync"
+    private val MetadataURL = config.central.url / "edge" / "sync" / "server-metadata"
 
     override def getAll: Task[Set[Dpop.Algorithm]] =
       for

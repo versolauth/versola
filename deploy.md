@@ -479,6 +479,22 @@ user has to authorize again. This removes the per-refresh write of `refresh_toke
   released migrations are immutable, so it is left as it is.
 - Rolling back to the previous version restores sliding, from the then-current `expires_at`.
 
+#### Behaviour change: edge syncs through `/edge/sync/*`
+
+Central serves edges on a surface of their own (#554): `GET /edge/sync/{clients,resources,roles,
+permissions,jwks,dpop,auth-request-presets,server-metadata}` and `POST
+/edge/clients/edge-certificate/sign`, each answering only for the tenants bound to the calling
+edge. Every route outside `/edge/*` -- `/configuration/**` including the `*/sync` routes auth
+reads, `/users/registrations` -- refuses an edge token with `403`. The routes edge used before
+(`/configuration/{resources,roles,permissions,auth-request-presets}/sync`,
+`/configuration/edges/dpop/sync`, `/configuration/clients/edge-certificate/sign`) are gone, and
+there is no compatibility period.
+
+- **Upgrade `central` and `edge` together** (the normal `versola up` of one release does). An
+  older edge against this central gets `403`/`404` on every sync and keeps serving the
+  configuration it last loaded; a newer edge against an older central gets `404`.
+- No schema change, no data migration, nothing to configure.
+
 ### `RUN_MIGRATIONS`
 
 `RUN_MIGRATIONS` controls whether a service applies Flyway migrations itself on startup:
