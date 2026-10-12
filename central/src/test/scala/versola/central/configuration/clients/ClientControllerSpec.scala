@@ -74,7 +74,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     clientName = Map("en" -> "Web App"),
     redirectUris = Set(redirectUri1),
     allowedScopes = Set(readScope),
-    permissions = Set(readPermission),
+    permissions = Set.empty,
     accessTokenTtl = 300,
     refreshTokenTtl = Some(7776000),
     theme = "default",
@@ -121,10 +121,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       add = Set(writeScope),
       remove = Set(readScope),
     ),
-    permissions = PatchPermissions(
-      add = Set(writePermission),
-      remove = Set(readPermission),
-    ),
+    permissions = PatchPermissions(Set.empty, Set.empty),
     accessTokenTtl = Some(900L),
     refreshTokenTtl = None,
     theme = None,
@@ -280,6 +277,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     authFlow = None,
     template = Some(ClientTemplate(ClientKind.service)),
   )
+
+  /** The web endpoint has no `permissions` member: they are a service client's alone. */
+  private def webJson(body: String): String =
+    body.fromJson[Json.Obj].map(obj => Json.Obj(obj.fields.filterNot(_._1 == "permissions")).toJson).getOrElse(body)
 
   private def json(method: Method, kind: String, body: String): Request =
     Request(method = method, url = URL.empty / "configuration" / "clients" / kind, body = Body.fromString(body))
@@ -772,7 +773,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.toJson),
+        body = Body.fromString(webJson(createRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Created,
       setup = service =>
@@ -791,10 +792,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.copy(
+        body = Body.fromString(webJson(createRequest.copy(
           frontChannelLogoutUri = Some("https://example.com/front-logout"),
           backChannelLogoutUri = Some("https://example.com/back-logout"),
-        ).toJson),
+        ).toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       verify = (_, service, _) =>
@@ -807,7 +808,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.toJson),
+        body = Body.fromString(webJson(createRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.Conflict,
       setup = service =>
@@ -818,7 +819,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.toJson),
+        body = Body.fromString(webJson(createRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -832,7 +833,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.toJson),
+        body = Body.fromString(webJson(createRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -846,7 +847,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.POST,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(createRequest.toJson),
+        body = Body.fromString(webJson(createRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.InternalServerError,
       setup = service =>
@@ -857,7 +858,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.toJson),
+        body = Body.fromString(webJson(updateRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
@@ -878,7 +879,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             |  "clientName": {"en": "Updated Web App"},
             |  "redirectUris": {"add": ["https://example.com/alt-callback"], "remove": ["https://example.com/callback"]},
             |  "scope": {"add": ["write"], "remove": ["read"]},
-            |  "permissions": {"add": ["users:write"], "remove": ["users:read"]},
             |  "accessTokenTtl": 900,
             |  "registrationFlow": null
             |}""".stripMargin,
@@ -899,10 +899,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.copy(
+        body = Body.fromString(webJson(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
           backChannelLogoutUri = Some(Patch.Modified("https://example.com/back-logout")),
-        ).toJson),
+        ).toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       verify = (_, service, _) =>
@@ -915,9 +915,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.copy(
+        body = Body.fromString(webJson(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Modified("https://example.com/front-logout")),
-        ).toJson),
+        ).toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
@@ -935,9 +935,9 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.copy(
+        body = Body.fromString(webJson(updateRequest.copy(
           frontChannelLogoutUri = Some(Patch.Deleted),
-        ).toJson),
+        ).toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
@@ -952,7 +952,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.toJson),
+        body = Body.fromString(webJson(updateRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -969,7 +969,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.toJson),
+        body = Body.fromString(webJson(updateRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = service =>
@@ -986,7 +986,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       request = Request(
         method = Method.PUT,
         url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(updateRequest.toJson),
+        body = Body.fromString(webJson(updateRequest.toJson)),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.InternalServerError,
       setup = service =>
@@ -1206,6 +1206,12 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             sent.map(_.certificateBoundAccessTokens) == List(Some(false)),
             sent.map(_.requirePushedAuthorizationRequests) == List(Some(true)),
           ),
+    ),
+    controllerTestCase(
+      description = "a web or native request that names permissions is refused: they are a service client's alone",
+      request = json(Method.POST, "web", createWebRequest.toJson.stripSuffix("}") + ""","permissions":["users:read"]}"""),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service, _) => ZIO.succeed(assertTrue(service.registerClient.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "update a service client at the service endpoint",

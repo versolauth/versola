@@ -13,6 +13,7 @@ import {
   ClientCredentialMode,
   ClientKind,
   SettingLock,
+  accessSectionTitle,
   authMethodFor,
   fapiConformance,
   clientKindOf,
@@ -55,7 +56,7 @@ export type ClientEditSection = 'type' | 'general' | 'access' | 'signin' | 'toke
 export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   type: 'Type',
   general: 'General',
-  access: 'Scopes and permissions',
+  access: 'Scopes and permissions', // replaced per kind by `accessSectionTitle` where a client is shown
   signin: 'Sign-in',
   tokens: 'Tokens',
   keys: 'Keys',
@@ -3695,7 +3696,7 @@ export class VersolaClientForm extends LitElement {
       ])}
 
       ${service
-        ? this.renderReviewGroup('Scopes and permissions', 3, [
+        ? this.renderReviewGroup('Permissions', 3, [
             ['Permissions', permissions.length ? permissions.join(', ') : 'none', permissions.length === 0],
             ['OIDC scopes', 'none - no user to describe', true],
           ])
@@ -3705,9 +3706,8 @@ export class VersolaClientForm extends LitElement {
               ['Passkey', this.authFlow.passkey ? 'offered as an alternative' : 'not offered', !this.authFlow.passkey],
               ['Self-service sign-up', this.hasRegistrationFlow ? 'on' : 'off - accounts come from Central', !this.hasRegistrationFlow],
             ])}
-            ${this.renderReviewGroup('Scopes and permissions', 3, [
+            ${this.renderReviewGroup('Scopes', 3, [
               ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
-              ['Permissions', permissions.length ? permissions.join(', ') : 'none', permissions.length === 0],
             ])}
             ${this.renderReviewGroup('Consent', 3, [
               ['Consent', this.hasConsentFlow ? 'asked' : 'first party, no prompt', !this.hasConsentFlow],
@@ -3817,7 +3817,10 @@ export class VersolaClientForm extends LitElement {
       case 'general':
         return html`${this.renderIdentityFields()}${this.renderRedirectUrisField()}`;
       case 'access':
-        return html`${this.renderScopesField()}${this.renderPermissionsField()}`;
+        // Only a service client has permissions of its own; a user's come through their roles.
+        return this.editKind === 'service'
+          ? this.renderPermissionsField()
+          : this.renderScopesField();
       case 'signin':
         return html`${this.renderAuthFlowSection()}${this.renderOtpSettingsSection()}${this.renderRedirectUrisField()}`;
       case 'tokens':
@@ -3833,7 +3836,7 @@ export class VersolaClientForm extends LitElement {
 
   /** One group of an existing client's settings, on its own page with its own Cancel and Save. */
   private renderSectionEditor(section: ClientEditSection) {
-    const title = CLIENT_EDIT_SECTION_TITLES[section];
+    const title = section === 'access' && this.editKind ? accessSectionTitle(this.editKind) : CLIENT_EDIT_SECTION_TITLES[section];
     const name = (this.formData.clientName?.en || '').trim() || this.formData.id || '';
 
     return html`

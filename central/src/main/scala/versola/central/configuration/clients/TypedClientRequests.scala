@@ -13,6 +13,10 @@ import zio.schema.*
 // The two edge-certificate members are not defaulted, for the reason `CreateClientRequestJsonSpec`
 // states: a caller registering a client names the certificate mode it chose.
 //
+// `permissions` is a service client's alone: they are what a token issued to the client itself (client_credentials) may
+// call, and a token issued to a user carries the user's roles' permissions instead. A web or native client has no use for
+// them, so its requests have no member for them.
+//
 // A member a kind does not have is refused rather than ignored: a native client asked to set
 // `dpopBoundAccessTokens: false` is a mistake to report, not a value to drop.
 //
@@ -30,7 +34,6 @@ case class CreateWebClientRequest(
     clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
-    permissions: Set[Permission] = Set.empty,
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int],
     theme: String = "default",
@@ -66,7 +69,7 @@ case class CreateWebClientRequest(
       clientName,
       redirectUris,
       allowedScopes,
-      permissions,
+      Set.empty,
       accessTokenTtl,
       refreshTokenTtl,
       theme,
@@ -112,7 +115,6 @@ case class CreateNativeClientRequest(
     clientName: Map[String, String],
     redirectUris: Set[RedirectUri],
     allowedScopes: Set[ScopeToken],
-    permissions: Set[Permission] = Set.empty,
     accessTokenTtl: Int,
     refreshTokenTtl: Option[Int],
     theme: String = "default",
@@ -142,7 +144,7 @@ case class CreateNativeClientRequest(
       clientName,
       redirectUris,
       allowedScopes,
-      permissions,
+      Set.empty,
       accessTokenTtl,
       refreshTokenTtl,
       theme,
@@ -244,7 +246,6 @@ case class UpdateWebClientRequest(
     clientName: Option[Map[String, String]],
     redirectUris: PatchClientRedirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
     scope: PatchClientScope = PatchClientScope(Set.empty, Set.empty),
-    permissions: PatchPermissions = PatchPermissions(Set.empty, Set.empty),
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
     theme: Option[String],
@@ -275,7 +276,7 @@ case class UpdateWebClientRequest(
       clientName,
       redirectUris,
       scope,
-      permissions,
+      PatchPermissions(Set.empty, Set.empty),
       accessTokenTtl,
       refreshTokenTtl,
       theme,
@@ -340,7 +341,6 @@ case class UpdateNativeClientRequest(
     clientName: Option[Map[String, String]],
     redirectUris: PatchClientRedirectUris = PatchClientRedirectUris(Set.empty, Set.empty),
     scope: PatchClientScope = PatchClientScope(Set.empty, Set.empty),
-    permissions: PatchPermissions = PatchPermissions(Set.empty, Set.empty),
     accessTokenTtl: Option[Long],
     refreshTokenTtl: Option[Long],
     theme: Option[String],
@@ -365,7 +365,7 @@ case class UpdateNativeClientRequest(
       clientName,
       redirectUris,
       scope,
-      permissions,
+      PatchPermissions(Set.empty, Set.empty),
       accessTokenTtl,
       refreshTokenTtl,
       theme,

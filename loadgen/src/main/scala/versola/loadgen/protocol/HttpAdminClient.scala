@@ -152,7 +152,6 @@ final class HttpAdminClient(
           clientName = Map(englishTag -> spec.clientName),
           redirectUris = spec.redirectUris,
           allowedScopes = spec.allowedScopes,
-          permissions = Set.empty,
           accessTokenTtl = spec.accessTokenTtlSeconds,
           refreshTokenTtl = spec.refreshTokenTtlSeconds,
           theme = defaultTheme,
@@ -180,7 +179,6 @@ final class HttpAdminClient(
           clientName = Map(englishTag -> spec.clientName),
           redirectUris = spec.redirectUris,
           allowedScopes = spec.allowedScopes,
-          permissions = Set.empty,
           accessTokenTtl = spec.accessTokenTtlSeconds,
           refreshTokenTtl = spec.refreshTokenTtlSeconds,
           theme = defaultTheme,
@@ -220,9 +218,6 @@ final class HttpAdminClient(
   private def updateClient(spec: ClientSpec, current: ClientState): Task[Unit] =
     val redirectUris = PatchSet(add = spec.redirectUris, remove = current.redirectUris -- spec.redirectUris)
     val scope = PatchSet(add = spec.allowedScopes, remove = current.scopes -- spec.allowedScopes)
-    // The campaign grants its permissions through roles, so a client that carries one directly
-    // carries it from a configuration nothing names any more.
-    val permissions = PatchSet(add = Set.empty, remove = current.permissions)
     // A patchable field is cleared by an explicit `null` and left alone by omission, so the
     // blueprint's `None` has to be written rather than dropped -- a client that carried a
     // registration flow or a logout URI the campaign no longer wants would otherwise keep it.
@@ -235,7 +230,6 @@ final class HttpAdminClient(
           clientName = Map(englishTag -> spec.clientName),
           redirectUris = redirectUris,
           scope = scope,
-          permissions = permissions,
           accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
           refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
           theme = Some(defaultTheme),
@@ -251,7 +245,6 @@ final class HttpAdminClient(
           clientName = Map(englishTag -> spec.clientName),
           redirectUris = redirectUris,
           scope = scope,
-          permissions = permissions,
           accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
           refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
           theme = Some(defaultTheme),
@@ -775,7 +768,6 @@ object HttpAdminClient:
       clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
-      permissions: Set[String],
       accessTokenTtl: Int,
       refreshTokenTtl: Option[Int],
       theme: String,
@@ -807,7 +799,6 @@ object HttpAdminClient:
       clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
-      permissions: Set[String],
       accessTokenTtl: Int,
       refreshTokenTtl: Option[Int],
       theme: String,
@@ -832,7 +823,6 @@ object HttpAdminClient:
       clientName: Map[String, String],
       redirectUris: PatchSet,
       scope: PatchSet,
-      permissions: PatchSet,
       accessTokenTtl: Option[Long],
       refreshTokenTtl: Option[Long],
       theme: Option[String],
@@ -852,7 +842,6 @@ object HttpAdminClient:
       clientName: Map[String, String],
       redirectUris: PatchSet,
       scope: PatchSet,
-      permissions: PatchSet,
       accessTokenTtl: Option[Long],
       refreshTokenTtl: Option[Long],
       theme: Option[String],

@@ -473,6 +473,8 @@ client is registered as `native`; a `service` client cannot have redirect URIs. 
 `migrate-tool`'s cert-sync are already updated. A client's kind cannot change: an update sent to
 another kind's endpoint is a `409`.
 
+`permissions` is a `service` client's alone, so the `web` and `native` requests no longer have the member and a body naming it is a `400`. They are what a token issued to the client itself (`client_credentials`) may call; a token issued to a user carries the user's roles' permissions. Permissions already stored on a web or native client are not read by anything but a `client_credentials` token from that client; clear them if there are any.
+
 #### Behaviour change: refresh tokens have a fixed lifetime
 
 Refresh tokens are **no longer extended on use**. A token's expiry is fixed when it is issued

@@ -457,14 +457,13 @@ object FakeCentral:
       "id",
       "clientName",
       "allowedScopes",
-      "permissions",
       "accessTokenTtl",
       "authMethod",
       "mtlsAuth",
       "dpopSigningAlgs",
       "dpopMinRsaKeySize",
     )
-    val update = Set("clientId", "clientName", "scope", "permissions", "accessTokenTtl", "dpopSigningAlgs", "dpopMinRsaKeySize")
+    val update = Set("clientId", "clientName", "scope", "accessTokenTtl", "dpopSigningAlgs", "dpopMinRsaKeySize")
     val updateSignIn = signInMembers - "issueEdgeClientCertificate"
     Map(
       (Method.POST, "/configuration/clients/web") -> (create ++ signInMembers ++ Set(
@@ -488,7 +487,7 @@ object FakeCentral:
       (
         Method.POST,
         "/configuration/clients/service",
-      ) -> (create ++ Set("dpopBoundAccessTokens", "certificateBoundAccessTokens", "jwks", "generateJwks")),
+      ) -> (create ++ Set("permissions", "dpopBoundAccessTokens", "certificateBoundAccessTokens", "jwks", "generateJwks")),
       (Method.PUT, "/configuration/clients/web") -> (update ++ updateSignIn ++ Set(
         "redirectUris",
         "dpopBoundAccessTokens",
@@ -504,7 +503,10 @@ object FakeCentral:
         Method.PUT,
         "/configuration/clients/native",
       ) -> (update ++ updateSignIn ++ Set("redirectUris", "dpopBoundAccessTokens", "edgeClientCertificate")),
-      (Method.PUT, "/configuration/clients/service") -> (update ++ Set("dpopBoundAccessTokens", "mtlsAuth", "certificateBoundAccessTokens", "jwks")),
+      (
+        Method.PUT,
+        "/configuration/clients/service",
+      ) -> (update ++ Set("permissions", "dpopBoundAccessTokens", "mtlsAuth", "certificateBoundAccessTokens", "jwks")),
     )
 
   val requiredMembers: Map[(Method, String), Set[String]] = Map(
@@ -593,7 +595,8 @@ object FakeCentral:
         spec = spec,
         redirectUris = patched(redirectUris, obj(spec, "redirectUris")),
         scopes = patched(scopes, obj(spec, "scope")),
-        permissions = patched(permissions, obj(spec, "permissions")),
+        // Only a service client has permissions: a web or native update carries no such member.
+        permissions = spec.get("permissions").collect { case patch: Json.Obj => patched(permissions, patch) }.getOrElse(permissions),
       )
 
     def rotated(secret: String): StoredClient = copy(secret = Some(secret), rotations = rotations + 1)

@@ -548,3 +548,10 @@ export function fapiConformance(client: Parameters<typeof profilePosture>[0]): {
   const gaps = checks.filter(check => !check.ok);
   return { conformant: gaps.length === 0, gaps };
 }
+
+/** What the page calls the group of access settings: a client that signs users in has scopes, and its
+ *  users bring their permissions through their roles; permissions are what a token issued to the
+ *  client itself may call, which only a service client has. */
+export function accessSectionTitle(kind: ClientKind): string {
+  return kind === 'service' ? 'Permissions' : 'Scopes';
+}

@@ -1112,7 +1112,7 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
 const KIND_PATHS: Record<ClientKind, string> = { web: 'web', device: 'native', service: 'service' };
 
 const COMMON_CREATE_FIELDS = [
-  'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'authMethod', 'mtlsAuth',
+  'tenantId', 'id', 'clientName', 'allowedScopes', 'accessTokenTtl', 'authMethod', 'mtlsAuth',
   'dpopSigningAlgs', 'dpopMinRsaKeySize',
 ] as const;
 
@@ -1128,11 +1128,12 @@ const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
   ],
   device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
-  service: [...COMMON_CREATE_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+  // Permissions are what a token issued to the client itself may call: only a service client has any.
+  service: [...COMMON_CREATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
 };
 
 const COMMON_UPDATE_FIELDS = [
-  'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+  'clientId', 'clientName', 'scope', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
 ] as const;
 
 const SIGN_IN_UPDATE_FIELDS = [
@@ -1146,7 +1147,7 @@ const UPDATE_FIELDS: Record<ClientKind, readonly string[]> = {
     'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
   ],
   device: [...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS],
-  service: [...COMMON_UPDATE_FIELDS, 'dpopBoundAccessTokens', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks'],
+  service: [...COMMON_UPDATE_FIELDS, 'permissions', 'dpopBoundAccessTokens', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks'],
 };
 
 function pickFields(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {

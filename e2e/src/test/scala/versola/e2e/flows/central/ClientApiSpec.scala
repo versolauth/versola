@@ -525,7 +525,19 @@ object ClientApiSpec extends CentralApiSpec:
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        rejected <- central.post(path, Fixtures.client(id, permissions = Set("Not A Permission")))
+        // Permissions are a service client's alone: a token issued to a user carries the user's roles'.
+        rejected <- central.post(
+          s"$path/service",
+          Json.Obj(
+            "tenantId" -> Json.Str(Fixtures.suiteTenant),
+            "id" -> Json.Str(id),
+            "clientName" -> Fixtures.text("Service"),
+            "allowedScopes" -> Json.Arr(),
+            "permissions" -> Json.Arr(Json.Str("Not A Permission")),
+            "accessTokenTtl" -> Json.Num(3600),
+            "authMethod" -> Json.Str("client_secret"),
+          ),
+        )
       yield assertTrue(rejected.status == Status.BadRequest)
         .label("permissions are matched literally against endpoint grants, so the alphabet is fixed")
     },

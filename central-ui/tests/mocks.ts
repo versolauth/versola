@@ -416,7 +416,7 @@ const KIND_BY_PATH: Record<string, ClientKindDto> = { web: 'web', native: 'devic
 
 const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
   web: [
-    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
     'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
@@ -424,7 +424,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
   ],
   device: [
-    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
     'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
@@ -437,14 +437,14 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
 
 const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
   web: [
-    'clientId', 'clientName', 'redirectUris', 'scope', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
     'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
     'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
     'edgeClientCertificate',
   ],
   device: [
-    'clientId', 'clientName', 'redirectUris', 'scope', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
     'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
     'edgeClientCertificate',
