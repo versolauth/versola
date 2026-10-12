@@ -1887,3 +1887,73 @@ for (const width of [375, 320]) {
     expect(review.small).toEqual([]);
   });
 }
+
+test('turns offline_access on for a mobile app to begin with, and only for that kind', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: {
+        'tenant-alpha': [
+          { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+          { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+        ],
+      },
+    },
+  });
+  const chip = page.getByRole('button', { name: 'offline_access', exact: true });
+
+  // Web app: off. Mobile app: on. Back to web before anything was touched: off again.
+  await startCreate(page, 'Web app');
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+
+  // The mobile app asked for a refresh token, so the review says so and creation sends the scope.
+  await continueToReview(page);
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Refresh token' })).toContainText('180 days');
+  await submitCreate(page);
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
+    allowedScopes: expect.arrayContaining(['openid', 'offline_access']),
+  });
+});
+
+test('keeps what the operator chose for offline_access when the kind changes', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [] },
+      scopes: { 'tenant-alpha': [
+        { scope: 'openid', description: { en: 'OpenID scope' }, claims: [] },
+        { scope: 'offline_access', description: { en: 'Offline access scope' }, claims: [] },
+      ] },
+    },
+  });
+  const chip = page.getByRole('button', { name: 'offline_access', exact: true });
+
+  await startCreate(page, 'Mobile or desktop app');
+  await continueToBasicsDone(page);
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('button', { name: /Mobile or desktop app/ }).click();
+  await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+  await continueToBasicsDone(page);
+  await expect(chip).toHaveAttribute('aria-pressed', 'false');
+});
+
+/** Fills what step 2 needs and moves to step 3, for a test that only cares about its scopes. */
+async function continueToBasicsDone(page: Page) {
+  await fillBasics(page, 'scope-client', 'Scope Client');
+  const redirect = page.locator('versola-client-form #redirect-uri');
+  if (await redirect.count()) {
+    await addRedirectUri(page, 'https://scope.example/callback');
+  }
+  await continueToThirdStep(page);
+}
