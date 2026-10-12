@@ -68,7 +68,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       request.rawHeader("DPoP").nonEmpty)
     if proxied && !bearer then record.as(Response.status(Status.Unauthorized))
     else
-      missingMember(request.method, path, body) match
+      missingMember(request.method, path, body).orElse(extraMember(request.method, path, body)) match
         case Some(refusal) => record.as(refusal)
         case None => dispatch(request, path, body, record)
 
@@ -82,6 +82,14 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
       required.toList.sorted.find(member => !document.exists(present(_, member.split('.').toList))).map: member =>
         val trace = member.split('.').mkString(".", ".", "")
         Response.text(s"Failed to decode JSON: $trace(missing)").status(Status.BadRequest)
+
+  /** Central's per-kind client requests refuse a member they do not declare (`@jsonNoExtraFields`)
+    * rather than ignoring it, so a payload naming a setting its kind fixes is refused here too. */
+  private def extraMember(method: Method, path: String, body: String): Option[Response] =
+    allowedMembers.get((method, path)).flatMap: allowed =>
+      Json.decoder.decodeJson(body).toOption.collect { case obj: Json.Obj => obj }
+        .flatMap(_.fields.map(_._1).find(!allowed.contains(_)))
+        .map(member => Response.text(s"Failed to decode JSON: .$member(invalid extra field)").status(Status.BadRequest))
 
   /** A member named by its path from the document root, so that a nested DTO's own mandatory
     * members are checked too -- `submissionLimits` being present says nothing about the
@@ -138,10 +146,11 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
               "redirectUris" -> array(stored.redirectUris.toList.sorted.map(Json.Str(_))),
               "scope" -> array(stored.scopes.toList.sorted.map(Json.Str(_))),
               "permissions" -> array(stored.permissions.toList.sorted.map(Json.Str(_))),
+              "kind" -> Json.Str(stored.kind),
             )
           })))
 
-      case (Method.POST, "/configuration/clients") =>
+      case (Method.POST, kindPath) if clientKinds.contains(kindPath) =>
         val spec = parse(body)
         val clientId = str(spec, "id")
         val create = state.modify: s =>
@@ -150,6 +159,7 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             val secret = if str(spec, "authMethod") == "client_secret" then Some(s"secret-$clientId-0") else None
             val response = json(Json.Obj(secret.map(v => "secret" -> Json.Str(v)).toList*), Status.Created)
             val stored = StoredClient(
+              kind = clientKinds(path),
               spec = spec,
               secret = secret,
               redirectUris = strings(spec, "redirectUris").toSet,
@@ -159,12 +169,15 @@ final class FakeCentral(state: Ref[FakeCentral.State], staleClientListing: Boole
             (response, s.copy(clients = s.clients.updated(clientId, stored)))
         invalidRegistration(spec).someOrElseZIO(create)
 
-      case (Method.PUT, "/configuration/clients") =>
+      case (Method.PUT, kindPath) if clientKinds.contains(kindPath) =>
         val spec = parse(body)
         val clientId = str(spec, "clientId")
         val update = state.modify: s =>
           s.clients.get(clientId) match
-            case None => (Response.status(Status.NoContent), s)
+            case None => (Response.status(Status.NotFound), s)
+            // A client's kind is fixed when it is registered, so central answers an update sent to
+            // another kind's endpoint with a conflict rather than applying it.
+            case Some(stored) if stored.kind != clientKinds(path) => (Response.status(Status.Conflict), s)
             case Some(stored) =>
               (Response.status(Status.NoContent), s.copy(clients = s.clients.updated(clientId, stored.updated(spec))))
         invalidRegistration(spec).someOrElseZIO(update)
@@ -392,11 +405,25 @@ object FakeCentral:
     * idempotent by construction.
     */
   val createPaths: List[String] = List(
-    "/configuration/clients",
+    "/configuration/clients/web",
+    "/configuration/clients/native",
+    "/configuration/clients/service",
     "/configuration/resources",
     "/configuration/permissions",
     "/configuration/roles",
   )
+
+  /** The endpoint each kind of client is registered and updated at, and the `ClientKind` central
+    * records for it: `native` is the one it calls `device`. */
+  val clientKinds: Map[String, String] = Map(
+    "/configuration/clients/web" -> "web",
+    "/configuration/clients/native" -> "device",
+    "/configuration/clients/service" -> "service",
+  )
+
+  /** A write to one of the per-kind client endpoints. */
+  def isClientWrite(call: Call): Boolean =
+    clientKinds.contains(call.path) && (call.method == Method.POST || call.method == Method.PUT)
 
   /** The members central's DTO for each write declares mandatory -- neither optional nor
     * carrying a default, so zio-json refuses a body without them. A dotted name is a member of
@@ -406,28 +433,107 @@ object FakeCentral:
     * are: this stand-in is the only thing between a member added to a registration DTO and a
     * `provision` run that fails against a real central.
     */
+  private val signInMembers = Set(
+    "redirectUris",
+    "refreshTokenTtl",
+    "theme",
+    "authFlow",
+    "registrationFlow",
+    "otpTemplateId",
+    "frontChannelLogoutUri",
+    "frontChannelLogoutSessionRequired",
+    "backChannelLogoutUri",
+    "logoUri",
+    "policyUri",
+    "tosUri",
+    "consentFlow",
+  )
+
+  /** Every member the per-kind client requests declare, mandatory or not -- mirrors
+    * `TypedClientRequests.scala`, by hand like the rest of this stand-in. */
+  val allowedMembers: Map[(Method, String), Set[String]] =
+    val create = Set(
+      "tenantId",
+      "id",
+      "clientName",
+      "allowedScopes",
+      "permissions",
+      "accessTokenTtl",
+      "authMethod",
+      "mtlsAuth",
+      "dpopSigningAlgs",
+      "dpopMinRsaKeySize",
+    )
+    val update = Set("clientId", "clientName", "scope", "permissions", "accessTokenTtl", "dpopSigningAlgs", "dpopMinRsaKeySize")
+    val updateSignIn = signInMembers - "issueEdgeClientCertificate"
+    Map(
+      (Method.POST, "/configuration/clients/web") -> (create ++ signInMembers ++ Set(
+        "issueEdgeClientCertificate",
+        "enrollEdgeClientCertificate",
+        "dpopBoundAccessTokens",
+        "certificateBoundAccessTokens",
+        "jwks",
+        "generateJwks",
+        "requireSignedRequestObject",
+        "requirePushedAuthorizationRequests",
+        "edgeSigningKey",
+        "edgeClientCertificate",
+      )),
+      (Method.POST, "/configuration/clients/native") -> (create ++ signInMembers ++ Set(
+        "issueEdgeClientCertificate",
+        "enrollEdgeClientCertificate",
+        "dpopBoundAccessTokens",
+        "edgeClientCertificate",
+      )),
+      (
+        Method.POST,
+        "/configuration/clients/service",
+      ) -> (create ++ Set("dpopBoundAccessTokens", "certificateBoundAccessTokens", "jwks", "generateJwks")),
+      (Method.PUT, "/configuration/clients/web") -> (update ++ updateSignIn ++ Set(
+        "redirectUris",
+        "dpopBoundAccessTokens",
+        "mtlsAuth",
+        "certificateBoundAccessTokens",
+        "jwks",
+        "requireSignedRequestObject",
+        "requirePushedAuthorizationRequests",
+        "edgeSigningKey",
+        "edgeClientCertificate",
+      )),
+      (
+        Method.PUT,
+        "/configuration/clients/native",
+      ) -> (update ++ updateSignIn ++ Set("redirectUris", "dpopBoundAccessTokens", "edgeClientCertificate")),
+      (Method.PUT, "/configuration/clients/service") -> (update ++ Set("dpopBoundAccessTokens", "mtlsAuth", "certificateBoundAccessTokens", "jwks")),
+    )
+
   val requiredMembers: Map[(Method, String), Set[String]] = Map(
-    (Method.POST, "/configuration/clients") -> Set(
+    (Method.POST, "/configuration/clients/web") -> Set(
       "tenantId",
       "id",
       "clientName",
       "redirectUris",
       "allowedScopes",
-      "permissions",
       "accessTokenTtl",
-      "theme",
-      "otpTemplateId",
-      "frontChannelLogoutSessionRequired",
       "authMethod",
-      "certificateBoundAccessTokens",
-      "dpopSigningAlgs",
-      "dpopBoundAccessTokens",
-      "requireSignedRequestObject",
-      "requirePushedAuthorizationRequests",
       "issueEdgeClientCertificate",
       "enrollEdgeClientCertificate",
     ),
-    (Method.PUT, "/configuration/clients") -> Set("clientId", "redirectUris", "scope", "permissions"),
+    (Method.POST, "/configuration/clients/native") -> Set(
+      "tenantId",
+      "id",
+      "clientName",
+      "redirectUris",
+      "allowedScopes",
+      "accessTokenTtl",
+      "authMethod",
+      "issueEdgeClientCertificate",
+      "enrollEdgeClientCertificate",
+    ),
+    (Method.POST, "/configuration/clients/service") -> Set("tenantId", "id", "clientName", "allowedScopes", "accessTokenTtl", "authMethod"),
+    (Method.PUT, "/configuration/clients/web") -> Set("clientId"),
+    (Method.PUT, "/configuration/clients/native") -> Set("clientId"),
+    (Method.PUT, "/configuration/clients/service") -> Set("clientId"),
     (Method.POST, "/configuration/resources") -> Set(
       "tenantId",
       "resourceId",
@@ -470,6 +576,7 @@ object FakeCentral:
   )
 
   case class StoredClient(
+      kind: String,
       spec: Json.Obj,
       secret: Option[String],
       redirectUris: Set[String] = Set.empty,
@@ -526,6 +633,10 @@ object FakeCentral:
   ):
     def callsTo(method: Method, path: String): Chunk[Call] =
       calls.filter(call => call.method == method && call.path == path)
+
+    /** Registrations (`POST`) or updates (`PUT`) of a client, whichever kind's endpoint took them. */
+    def clientCalls(method: Method): Chunk[Call] =
+      calls.filter(call => call.method == method && clientKinds.contains(call.path))
 
   val empty: State = State(
     clients = Map.empty,
