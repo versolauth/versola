@@ -134,7 +134,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-  ): IO[UserNotFound | UserConflict | Throwable, Unit] =
+  ): IO[UserNotFound | UserConflict | Throwable, UUID] =
     (for
       version <- secureRandom.nextUUIDv7
       _ <- xa.transactMeasured("patch-user"):
@@ -160,7 +160,7 @@ class PostgresUserRepository(xa: TransactorZIO, secureRandom: SecureRandom) exte
             login = user.login,
           ),
         )
-    yield ()).mapError:
+    yield version).mapError:
       case PostgresUserRepository.NotFound => UserNotFound
       case e if PostgresUserRepository.isUniqueViolation(e) => UserConflict
       case e => e

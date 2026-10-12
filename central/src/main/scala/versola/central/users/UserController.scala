@@ -4,7 +4,7 @@ import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
-import versola.util.http.Controller
+import versola.util.http.{BadRequest, Controller}
 import versola.util.{Email, EnvName, Phone}
 import zio.ZIO
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -21,6 +21,7 @@ object UserController extends Controller:
     getUserRefreshTokensEndpoint,
     createUserEndpoint,
     registeredUserEndpoint,
+    changeIdentifierEndpoint,
     patchUserEndpoint,
     patchUserClaimsEndpoint,
     patchRolesEndpoint,
@@ -113,6 +114,34 @@ object UserController extends Controller:
           case UserIndexConflict => ZIO.succeed(Response.status(Status.Conflict))
           case error: Throwable => ZIO.fail(error)
     }
+
+  /** Called by auth once the user has confirmed a new email/phone; the response `version` is the
+    * outbox event's version, so auth can recognise the UpsertUser that central replays to it. */
+  val changeIdentifierEndpoint =
+    Method.POST / "users" / "identifier-changes" -> handler { (request: Request) =>
+      (for
+        _ <- authorizeInternal(request)
+        service <- ZIO.service[UserService]
+        raw <- request.bodyAs[ChangeIdentifierRequest]
+        body <- ZIO.fromEither(validated(raw)).mapError(BadRequest(_))
+        version <- service.changeIdentifier(body)
+      yield Response.json(ChangeIdentifierResponse(version).toJson))
+        .catchAll:
+          case UserNotFound => ZIO.succeed(Response.status(Status.NotFound))
+          case UserConflict => ZIO.succeed(Response.status(Status.Conflict))
+          case error: Throwable => ZIO.fail(error)
+    }
+
+  /** The JSON codec does not validate Email/Phone, and a phone must be stored in canonical E.164,
+    * so both are checked here before anything reaches the index. */
+  private def validated(request: ChangeIdentifierRequest): Either[String, ChangeIdentifierRequest] =
+    if request.email.isDefined == request.phone.isDefined then
+      Left("Exactly one of email and phone must be present")
+    else
+      for
+        email <- request.email.fold(Right(None))(Email.from(_).map(Some(_)))
+        phone <- request.phone.fold(Right(None))(Phone.parse(_).map(Some(_)))
+      yield request.copy(email = email, phone = phone)
 
   val patchUserEndpoint =
     Method.PATCH / "users" -> handler { (request: Request) =>

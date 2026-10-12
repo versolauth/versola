@@ -254,11 +254,41 @@ object UserServiceSpec extends UnitSpecBase:
       val env = Env()
       val request = PatchUserRequest(userId, Some(Patch.Modified(email)), None, None)
       for
-        _ <- env.userRepository.patch.succeedsWith(())
+        _ <- env.userRepository.patch.succeedsWith(UUID.randomUUID())
         _ <- env.service.patch(request)
       yield assertTrue(
         env.userRepository.patch.calls == List((userId, Some(Patch.Modified(email)), None, None)),
       )
+    },
+    test("changeIdentifier patches only the supplied identifier and returns the event version") {
+      val env = Env()
+      val version = UUID.fromString("00000000-0000-7000-8000-0000000000aa")
+      for
+        _ <- env.userRepository.patch.succeedsWith(version)
+        byEmail <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None))
+        byPhone <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, None, Some(Phone("+77000000098"))))
+      yield assertTrue(
+        byEmail == version,
+        byPhone == version,
+        env.userRepository.patch.calls == List(
+          (userId, Some(Patch.Modified(email)), None, None),
+          (userId, None, Some(Patch.Modified(Phone("+77000000098"))), None),
+        ),
+      )
+    },
+    test("changeIdentifier fails with UserNotFound when the user is not indexed") {
+      val env = Env()
+      for
+        _ <- env.userRepository.patch.failsWith(UserNotFound)
+        result <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None)).either
+      yield assertTrue(result == Left(UserNotFound))
+    },
+    test("changeIdentifier fails with UserConflict when another user holds the identifier") {
+      val env = Env()
+      for
+        _ <- env.userRepository.patch.failsWith(UserConflict)
+        result <- env.service.changeIdentifier(ChangeIdentifierRequest(userId, Some(email), None)).either
+      yield assertTrue(result == Left(UserConflict))
     },
     test("patchClaims delegates to authClient") {
       val env = Env()

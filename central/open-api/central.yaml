@@ -13,7 +13,9 @@ info:
 
     This reference covers the admin console surface. Central also exposes internal
     replication endpoints (`/sync`, `/registry`) that auth and edge use to pull configuration;
-    those are not part of this document.
+    those are not part of this document. The same goes for the endpoints auth calls with its own
+    service credentials (`POST /users/registrations`, `POST /users/identifier-changes`): they
+    are not reachable with the admin credentials below and are deliberately left out.
 
     ## Authentication
 

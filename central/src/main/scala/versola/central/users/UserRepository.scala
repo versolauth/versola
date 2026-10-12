@@ -40,14 +40,14 @@ trait UserRepository:
     * Each `Option[Patch[A]]` follows three-state semantics: `None` keeps the column,
     * `Some(Patch.Deleted)` sets it to NULL, `Some(Patch.Modified(v))` sets it to `v`.
     * Fails with [[UserNotFound]] when no such user is indexed, or [[UserConflict]] when an
-    * identifier is already held by another user.
+    * identifier is already held by another user. Returns the `version` (UUIDv7) of the enqueued event.
     */
   def patch(
       id: UserId,
       email: Option[Patch[Email]],
       phone: Option[Patch[Phone]],
       login: Option[Patch[Login]],
-  ): IO[UserNotFound | UserConflict | Throwable, Unit]
+  ): IO[UserNotFound | UserConflict | Throwable, UUID]
 
   /** Enqueues an UpdateUserRoles outbox event, dispatched to auth in per-user FIFO order.
     * Ordering behind [[create]]/[[patch]] events guarantees the user exists in auth before roles are applied.

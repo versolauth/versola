@@ -3,11 +3,12 @@ package versola.central.users
 import versola.central.configuration.clients.{ClientId, OAuthClientService}
 import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
-import versola.util.{Email, Phone, SecureRandom}
+import versola.util.{Email, Patch, Phone, SecureRandom}
 import zio.json.ast.Json
 import zio.{Duration, IO, Task, ZIO, ZLayer, duration2DurationOps}
 
 import java.time.Instant
+import java.util.UUID
 import scala.util.Try
 
 trait UserService:
@@ -33,6 +34,9 @@ trait UserService:
   def indexRegistered(request: RegisteredUserRequest): IO[UserIndexConflict | Throwable, UserId]
 
   def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit]
+
+  /** Replaces one identifier of an indexed user and enqueues the auth upsert; returns the outbox event version. */
+  def changeIdentifier(request: ChangeIdentifierRequest): IO[UserNotFound | UserConflict | Throwable, UUID]
 
   def patchClaims(id: UserId, patch: Json.Obj): Task[Unit]
 
@@ -139,7 +143,15 @@ object UserService:
       userRepository.indexFromAuth(request.email, request.phone, request.login)
 
     override def patch(request: PatchUserRequest): IO[UserNotFound | UserConflict | Throwable, Unit] =
-      userRepository.patch(request.id, request.email, request.phone, request.login)
+      userRepository.patch(request.id, request.email, request.phone, request.login).unit
+
+    override def changeIdentifier(request: ChangeIdentifierRequest): IO[UserNotFound | UserConflict | Throwable, UUID] =
+      userRepository.patch(
+        request.userId,
+        request.email.map(Patch.Modified(_)),
+        request.phone.map(Patch.Modified(_)),
+        None,
+      )
 
     override def patchClaims(id: UserId, patch: Json.Obj): Task[Unit] =
       authClient.patchUserClaims(id, patch)

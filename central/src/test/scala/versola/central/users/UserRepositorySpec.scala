@@ -131,6 +131,18 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           upserts.map(_.email) == Vector(Some(Email("new@example.com"))),
         )
       },
+      test("patch returns the version carried by the queued upsert") {
+        for
+          _ <- env.repository.create(userId1, Some(email), None, None)
+          _ <- drainOutbox(env)
+          version <- env.repository.patch(userId1, None, Some(Patch.Modified(phone)), None)
+          events <- env.repository.claimDueEvents(10, Duration.fromSeconds(60))
+          upserts = events.map(_.event).collect { case e: OutboxEvent.UpsertUser => e }
+        yield assertTrue(
+          upserts.map(_.version) == Vector(version),
+          upserts.map(_.phone) == Vector(Some(phone)),
+        )
+      },
       test("patch fails with UserNotFound for an unknown user") {
         for
           result <- env.repository.patch(userId1, None, Some(Patch.Modified(phone)), None).either

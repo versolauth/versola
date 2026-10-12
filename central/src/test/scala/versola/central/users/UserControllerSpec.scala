@@ -51,6 +51,15 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val registeredRequestBody = s"""{"email":"$email"}"""
 
+  private val version = UUID.fromString("00000000-0000-7000-8000-0000000000aa")
+
+  private def identifierChangeRequest(body: String) =
+    Request(
+      method = Method.POST,
+      url = URL.empty / "users" / "identifier-changes",
+      body = Body.fromString(body),
+    ).addHeader(Header.ContentType(MediaType.application.json))
+
   private val internalAuthorization: Task[Header] =
     JWT.serialize(
       JWT.Claims("auth", "auth", List("central"), Json.Obj()),
@@ -372,6 +381,89 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = service => service.patch.failsWith(UserConflict),
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.patch.calls.nonEmpty)),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 200 OK with the event version",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.changeIdentifier.succeedsWith(version),
+      authorization = internalAuthorization,
+      verify = (response, service) =>
+        for body <- response.body.asJson[ChangeIdentifierResponse]
+        yield assertTrue(
+          service.changeIdentifier.calls == List(ChangeIdentifierRequest(userId, Some(Email("new@example.com")), None)),
+          body == ChangeIdentifierResponse(version),
+        ),
+    ),
+    controllerTestCase(
+      description = "identifier change accepts a phone alone",
+      request = identifierChangeRequest(s"""{"userId":"$userId","phone":"+77011234567"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.changeIdentifier.succeedsWith(version),
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.changeIdentifier.calls == List(ChangeIdentifierRequest(userId, None, Some(Phone("+77011234567")))),
+        )),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 400 Bad Request when both email and phone are present",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"new@example.com","phone":"+77011234567"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.changeIdentifier.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 400 Bad Request when neither email nor phone is present",
+      request = identifierChangeRequest(s"""{"userId":"$userId"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.changeIdentifier.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 400 Bad Request for a malformed email",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"not-an-email"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.changeIdentifier.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 400 Bad Request for an invalid phone",
+      request = identifierChangeRequest(s"""{"userId":"$userId","phone":"123"}"""),
+      expectedStatus = Status.BadRequest,
+      authorization = internalAuthorization,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.changeIdentifier.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "identifier change canonicalises the phone to E.164",
+      request = identifierChangeRequest(s"""{"userId":"$userId","phone":"+787011234567"}"""),
+      expectedStatus = Status.Ok,
+      setup = service => service.changeIdentifier.succeedsWith(version),
+      authorization = internalAuthorization,
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(
+          service.changeIdentifier.calls == List(ChangeIdentifierRequest(userId, None, Some(Phone("+77011234567")))),
+        )),
+    ),
+    controllerTestCase(
+      description = "identifier change returns 404 Not Found when the user is not indexed",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.NotFound,
+      setup = service => service.changeIdentifier.failsWith(UserNotFound),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "identifier change returns 409 Conflict when another user holds the identifier",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Conflict,
+      setup = service => service.changeIdentifier.failsWith(UserConflict),
+      authorization = internalAuthorization,
+    ),
+    controllerTestCase(
+      description = "identifier change rejects the admin Basic credentials with 401",
+      request = identifierChangeRequest(s"""{"userId":"$userId","email":"new@example.com"}"""),
+      expectedStatus = Status.Unauthorized,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.changeIdentifier.calls.isEmpty)),
     ),
     controllerTestCase(
       description = "reset user limits returns 202 Accepted",
