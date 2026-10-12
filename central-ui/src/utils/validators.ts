@@ -295,6 +295,41 @@ export function validateAccessTokenTtl(seconds: number, dpopBoundAccessTokens: b
   return { valid: true };
 }
 
+/** One line of what a pasted JWK Set holds, so an operator can see what they registered
+ *  without reading base64url. `kind` is the key type with its size or curve, e.g. `EC P-256`
+ *  or `RSA 2048`. `private` flags private key material, which the backend refuses. */
+export interface JwkSummary {
+  kind: string;
+  kid?: string;
+  alg?: string;
+  use?: string;
+  private: boolean;
+}
+
+export function describeJwks(keySet: Record<string, unknown> | undefined): JwkSummary[] {
+  const keys = keySet?.keys;
+  if (!Array.isArray(keys)) return [];
+  return keys.map((raw): JwkSummary => {
+    const key = (raw ?? {}) as Record<string, unknown>;
+    const kty = typeof key.kty === 'string' ? key.kty : '?';
+    let kind = kty;
+    if (kty === 'EC' && typeof key.crv === 'string') {
+      kind = `EC ${key.crv}`;
+    } else if (kty === 'RSA' && typeof key.n === 'string') {
+      // base64url length -> modulus bits: 4 chars carry 3 bytes
+      const bits = Math.floor((key.n.length * 6) / 8) * 8;
+      kind = `RSA ${bits}`;
+    }
+    return {
+      kind,
+      kid: typeof key.kid === 'string' ? key.kid : undefined,
+      alg: typeof key.alg === 'string' ? key.alg : undefined,
+      use: typeof key.use === 'string' ? key.use : undefined,
+      private: ['d', 'p', 'q', 'dp', 'dq', 'qi', 'k'].some(field => field in key),
+    };
+  });
+}
+
 /** RFC 8705 section 2.1.2 subject types a client's certificate can be recognised by. */
 export const MTLS_SUBJECT_TYPES = ['subject_dn', 'san_dns', 'san_uri', 'san_ip', 'san_email'] as const;
 

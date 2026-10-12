@@ -97,10 +97,10 @@ test('clients list', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
   await expect(page.getByRole('heading', { name: 'OAuth Clients', exact: true })).toBeVisible();
-  await expect(page.locator('.client-card')).toHaveCount(1);
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(1);
   await shot(page, 'clients-list');
 
-  await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first().locator('.client-header').click();
+  await page.getByRole('button', { name: 'Open client storefront-web', exact: true }).click();
   await expect(page.getByText('https://storefront.example.com/callback').first()).toBeVisible();
   await shot(page, 'clients-list-expanded', true);
 });
@@ -152,10 +152,10 @@ test('clients list — registry (light theme)', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=clients&tenant=${registryTenant}`, state: registryState });
 
   await expect(page.getByRole('button', { name: '+ Create Client', exact: true })).toBeVisible();
-  await expect(page.getByPlaceholder('Search clients by client ID')).toBeVisible();
+  await expect(page.getByPlaceholder('Search by name or client ID')).toBeVisible();
 
-  // Expanding a client card also auto-expands Authorization Flows and loads presets.
-  await page.locator('.client-card').filter({ hasText: 'Central Admin' }).first().locator('.client-header').click();
+  // A client's own page lists its sign-in flow and loads its presets.
+  await page.getByRole('button', { name: 'Open client central-admin', exact: true }).click();
   await expect(page.getByText('https://id.example.kz/complete').first()).toBeVisible();
   await expect(page.getByText('passkey enrollment')).toBeVisible();
 
@@ -205,11 +205,10 @@ test('client registration flow form', async ({ page }) => {
   // asks whether sign-up is on at all - so this shot comes from editing an existing client.
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
-  await page.locator('.client-card').filter({ hasText: 'Storefront Web' }).first()
-    .getByRole('button', { name: 'Edit client storefront-web' }).click();
+  await page.getByRole('button', { name: 'Open client storefront-web', exact: true }).click();
 
-  // The edit page opens with every group collapsed behind its summary.
-  await page.getByRole('button', { name: /^Registration and consent/ }).click();
+  // Each group of settings has its own Edit button on the client's page.
+  await page.getByRole('button', { name: 'Edit registration and consent', exact: true }).click();
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();

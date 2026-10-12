@@ -53,6 +53,23 @@ Rules:
 - Empty states should be centered inside a card
 - If a create/edit form is open, prefer replacing the list page content with the form instead of showing both together
 
+### Record pages (view first)
+
+A record that has settings of its own (a client) opens on a read-only page, never straight into a
+form:
+
+1. breadcrumb back to the list, the title, then a meta row: ID with a copy button, the kind of
+   record, its security status
+2. a status banner when the page can say something about the whole record
+3. one card per group of settings; its header carries an `Edit` button that opens only that group
+   as its own page with its own `Cancel` and `Save <group>`
+4. settings that are fixed when the record is created stay in a card marked `Fixed`, each row with
+   its reason (`By type`); they have no editor and no control
+5. delete is the last card, in danger colours, named for what it deletes
+
+Lists of such records are tables (cards below 720px), rows open the page, and the row menu holds
+open, copy ID and delete. Nothing in the list edits.
+
 ### Create/edit pages
 
 Use this structure:

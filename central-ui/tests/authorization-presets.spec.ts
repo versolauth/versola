@@ -42,8 +42,13 @@ const alphaPresets = [
   },
 ];
 
-function clientCard(page: any, clientId: string) {
-  return page.locator('.client-card').filter({ hasText: clientId });
+/** The client's page, where its presets are listed. */
+function clientCard(page: any, _clientId: string) {
+  return page.locator('versola-clients-list');
+}
+
+async function openClient(page: any, clientId: string) {
+  await page.getByRole('button', { name: `Open client ${clientId}`, exact: true }).click();
 }
 
 test('loads presets when client is expanded', async ({ page }) => {
@@ -61,7 +66,7 @@ test('loads presets when client is expanded', async ({ page }) => {
 
   // Click to expand
   const loaded = presetsLoaded(page);
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
   await loaded;
 
   // Verify GET request was made with correct params
@@ -85,7 +90,7 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
 
   // Expand first time
   const loaded = presetsLoaded(page);
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
   await loaded;
 
   const firstLoadCount = api.requests.filter(req =>
@@ -93,11 +98,9 @@ test('caches presets and does not reload on subsequent expands', async ({ page }
     req.method === 'GET'
   ).length;
 
-  // Collapse
-  await card.locator('.client-header').click();
-
-  // Expand second time
-  await card.locator('.client-header').click();
+  // Leave the client's page and come back to it
+  await page.getByRole('button', { name: 'Clients', exact: true }).click();
+  await openClient(page, 'alpha-web');
 
   // Wait a bit to ensure no new request
   await page.waitForTimeout(200);
@@ -122,7 +125,7 @@ test('displays loaded presets in the expanded client card', async ({ page }) => 
 
   const card = clientCard(page, 'alpha-web');
   const loaded = presetsLoaded(page);
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
   await loaded;
 
   // Expand presets section
@@ -143,7 +146,7 @@ test('shows preset details in card', async ({ page }) => {
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -173,7 +176,7 @@ test('adds a new preset with a manually entered ID', async ({ page }) => {
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -234,7 +237,7 @@ test('edits an existing preset', async ({ page }) => {
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -280,7 +283,7 @@ test('updates a preset with the prompt consent custom parameter', async ({ page 
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
   await card.getByText('Authorization Presets').click();
   await card.getByRole('button', { name: 'Edit presets for alpha-web' }).click();
 
@@ -317,7 +320,7 @@ test('saves and reloads a preset with a post-logout redirect URI', async ({ page
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -365,7 +368,7 @@ test('deletes a preset', async ({ page }) => {
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -403,7 +406,7 @@ test('validates preset form - redirect URI must be in client allowed URIs', asyn
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();
@@ -454,7 +457,7 @@ test('handles backend validation errors gracefully', async ({ page }) => {
   });
 
   const card = clientCard(page, 'alpha-web');
-  await card.locator('.client-header').click();
+  await openClient(page, 'alpha-web');
 
   // Click on "Authorization Presets" to expand the section
   await card.getByText('Authorization Presets').click();

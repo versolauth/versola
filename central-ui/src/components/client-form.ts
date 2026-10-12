@@ -11,15 +11,13 @@ import {
   CLIENT_KINDS,
   ClientCredentialMode,
   ClientKind,
-  TemplateDifference,
-  TemplateSettingSection,
+  SettingLock,
   authMethodFor,
+  clientKindOf,
+  clientLocks,
   clientPreset,
   credentialBinding,
   defaultCredentialMode,
-  templateDecides,
-  templateDifferences,
-  templateLabel,
 } from '../utils/client-presets';
 
 /** Creation walks four steps; editing shows the same field groups on one page. */
@@ -44,12 +42,32 @@ import {
   jwksVerifiesRequestObjects,
   MTLS_SUBJECT_TYPES,
   MAX_JWKS_KEYS,
+  describeJwks,
 } from '../utils/validators';
+import { fetchServerMetadata } from '../utils/central-api';
 
+
+/** The groups of settings the client page offers an Edit button for. */
+export type ClientEditSection = 'type' | 'general' | 'access' | 'signin' | 'tokens' | 'keys' | 'registration' | 'branding';
+
+export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
+  type: 'Type',
+  general: 'General',
+  access: 'Scopes and permissions',
+  signin: 'Sign-in',
+  tokens: 'Tokens',
+  keys: 'Keys',
+  registration: 'Registration and consent',
+  branding: 'Branding and logout',
+};
 
 @customElement('versola-client-form')
 export class VersolaClientForm extends LitElement {
   @property({ type: Object }) client: OAuthClient | null = null;
+  /** Which group of settings an existing client is being edited in. Only that group is shown,
+   *  with its own Cancel and Save: the page the operator came from lists everything else, and
+   *  nothing on it can be changed by accident from here. */
+  @property({ type: String }) editSection: ClientEditSection | null = null;
   @property({ attribute: false }) availableScopes: OAuthScope[] = [];
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
@@ -109,9 +127,9 @@ export class VersolaClientForm extends LitElement {
   /** Creation only: what is being built, the basics, sign-in or permissions, then review. */
   @state() private wizardStep: WizardStep = 1;
   @state() private kind: ClientKind | null = null;
-  /** Which edit-page sections are expanded. All collapsed to start: the differences panel
-   *  above them already says what moved, and a section is opened to change something. */
-  @state() private openSections: string[] = [];
+  /** `dpop_signing_alg_values_supported` of the server metadata, which is what a proof can be
+   *  signed with at all; null until it has loaded, or when it cannot be read. */
+  @state() private serverDpopAlgs: string[] | null = null;
 
   private handleDocumentClick = () => {
     this.openInfoKey = null;
@@ -335,6 +353,8 @@ export class VersolaClientForm extends LitElement {
         font-weight: 700;
         line-height: 1;
         padding: 0.25rem 0.45rem;
+        min-width: 1.5rem;
+        min-height: 1.5rem;
         cursor: pointer;
         font-family: var(--font-family);
       }
@@ -546,10 +566,72 @@ export class VersolaClientForm extends LitElement {
         color: var(--text-secondary);
       }
 
+      .status-icon {
+        flex: none;
+        vertical-align: -3px;
+      }
+      .locked-setting {
+        display: flex;
+        gap: 0.75rem;
+        align-items: flex-start;
+        padding: 0.75rem 0;
+        border-top: 1px solid var(--border-dark);
+      }
+      .locked-setting:first-child {
+        border-top: none;
+        padding-top: 0;
+      }
+      .locked-icon {
+        color: var(--text-secondary);
+        margin-top: 0.125rem;
+      }
+      .locked-body {
+        flex: 1;
+        min-width: 0;
+      }
+      .locked-label {
+        font-size: 0.9375rem;
+        color: var(--text-primary);
+      }
+      .locked-state {
+        font-size: 0.8125rem;
+        padding: 0.125rem 0.625rem;
+        border-radius: 999px;
+        border: 1px solid var(--border-dark);
+        color: var(--text-secondary);
+        white-space: nowrap;
+      }
+      .locked-state.on {
+        border-color: var(--success);
+        color: var(--text-primary);
+      }
+      .locked-problem {
+        margin-top: 0.375rem;
+        font-size: 0.8125rem;
+        color: var(--text-primary);
+        border-left: 3px solid var(--danger);
+        padding-left: 0.5rem;
+      }
+      .link-button {
+        background: none;
+        border: none;
+        padding: 0;
+        margin-left: 0.5rem;
+        color: var(--accent);
+        font: inherit;
+        text-decoration: underline;
+        cursor: pointer;
+      }
+
       .template-badge.drift {
         border-color: var(--warning);
         background: rgba(210, 153, 34, 0.12);
         color: var(--warning);
+      }
+
+      .form-subtitle {
+        font-size: 0.875rem;
+        color: var(--text-secondary);
       }
 
       .client-id-readonly {
@@ -1359,12 +1441,68 @@ export class VersolaClientForm extends LitElement {
         line-height: 1.5;
         resize: vertical;
       }
+      /* A key set is long unbroken base64url: wrapping it mid-value makes it unreadable, so it
+         scrolls sideways instead, across the whole width of the form. */
+      textarea.jwks-field {
+        width: 100%;
+        max-width: none;
+        min-height: 10rem;
+        font-family: var(--font-mono);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        white-space: pre;
+        overflow: auto;
+        resize: vertical;
+        tab-size: 2;
+      }
+      .jwks-summary {
+        list-style: none;
+        margin: 0.5rem 0 0;
+        padding: 0;
+        display: grid;
+        gap: 0.25rem;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+      }
+      .jwks-summary li {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.75rem;
+        align-items: baseline;
+      }
+      .jwk-kind {
+        font-family: var(--font-mono);
+        color: var(--text-primary);
+      }
+      .jwk-kid {
+        font-family: var(--font-mono);
+        overflow-wrap: anywhere;
+      }
+      details.advanced {
+        margin-top: var(--spacing-md);
+        border-top: 1px solid var(--border-dark);
+        padding-top: 0.75rem;
+      }
+      details.advanced > summary {
+        cursor: pointer;
+        font-weight: 600;
+        font-size: 0.875rem;
+      }
+      details.advanced > summary .hint {
+        display: inline;
+        margin-left: 0.5rem;
+        font-weight: 400;
+      }
+      details.advanced[open] > summary {
+        margin-bottom: 0.75rem;
+      }
     `,
   ];
 
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
+    void this.loadServerDpopAlgs();
     if (this.client) {
       this.formData = {
         ...this.client,
@@ -1603,36 +1741,6 @@ export class VersolaClientForm extends LitElement {
     }));
   }
 
-  private handleRotateSecret() {
-    if (!this.client) {
-      return;
-    }
-
-    this.dispatchEvent(new CustomEvent('rotate-secret', {
-      detail: {
-        clientId: this.client.id,
-        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
-      },
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
-  private handleDeleteOldSecret() {
-    if (!this.client) {
-      return;
-    }
-
-    this.dispatchEvent(new CustomEvent('delete-previous-secret', {
-      detail: {
-        clientId: this.client.id,
-        clientName: getLocalizedDescription(this.formData.clientName ?? this.client.clientName),
-      },
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
   private addRedirectUri() {
     const uri = this.redirectUriInput.trim();
     if (!uri) return;
@@ -1688,6 +1796,75 @@ export class VersolaClientForm extends LitElement {
     };
   }
 
+  private async loadServerDpopAlgs() {
+    try {
+      const advertised = (await fetchServerMetadata()).dpop_signing_alg_values_supported;
+      if (Array.isArray(advertised) && advertised.every(alg => typeof alg === 'string')) {
+        this.serverDpopAlgs = advertised as string[];
+      }
+    } catch {
+      // The metadata is only used to hide what the server would refuse anyway.
+    }
+  }
+
+  /** The algorithms worth offering: narrowing only subtracts from what the server advertises,
+   *  so an algorithm it does not advertise would be a checkbox that does nothing. */
+  private get offeredDpopAlgs(): readonly string[] {
+    return this.serverDpopAlgs
+      ? DPOP_SIGNING_ALGS.filter(alg => this.serverDpopAlgs!.includes(alg))
+      : DPOP_SIGNING_ALGS;
+  }
+
+  /** Whether an RSA proof key can reach this client at all: the size floor is meaningless for
+   *  an EC-only policy. */
+  private get dpopAllowsRsa(): boolean {
+    const selected = this.formData.dpopSigningAlgs ?? [];
+    const pool = selected.length > 0 ? selected : this.offeredDpopAlgs;
+    return pool.some(alg => alg === 'PS256' || alg === 'RS256');
+  }
+
+  private formatJwks() {
+    const result = validateJwksJson(this.jwksInput);
+    if (result.valid) {
+      this.jwksInput = JSON.stringify(result.keySet, null, 2);
+    }
+  }
+
+  private renderJwksSummary() {
+    const keys = describeJwks(this.jwksValidation.valid ? this.jwksValidation.keySet : undefined);
+    if (keys.length === 0) return '';
+    return html`
+      <ul class="jwks-summary" aria-label="Registered keys">
+        ${keys.map(key => html`
+          <li>
+            <span class="jwk-kind">${key.kind}</span>
+            ${key.alg ? html`<span>${key.alg}</span>` : ''}
+            ${key.use ? html`<span>use: ${key.use}</span>` : ''}
+            ${key.kid ? html`<span class="jwk-kid">kid ${key.kid}</span>` : html`<span class="jwk-kid">no kid</span>`}
+            ${key.private ? html`<span class="error-message">contains private key material</span>` : ''}
+          </li>
+        `)}
+      </ul>
+    `;
+  }
+
+  private renderJwksTextarea() {
+    return html`
+      <textarea
+        id="client-jwks"
+        class="compact-input jwks-field ${this.jwksValidation.valid ? '' : 'input-error'}"
+        rows="10"
+        wrap="off"
+        spellcheck="false"
+        .value=${this.jwksInput}
+        @input=${this.handleJwksInput}
+        @blur=${() => this.formatJwks()}
+        placeholder='{"keys": [...]}'
+      ></textarea>
+      ${this.jwksValidation.valid ? this.renderJwksSummary() : ''}
+    `;
+  }
+
   private toggleDpopBoundAccessTokens() {
     const dpopBoundAccessTokens = !this.formData.dpopBoundAccessTokens;
     this.formData = { ...this.formData, dpopBoundAccessTokens };
@@ -1726,20 +1903,8 @@ export class VersolaClientForm extends LitElement {
     this.formData = { ...this.formData, ...credentialBinding(mode) };
   }
 
-  private handleMtlsSubjectTypeChange(e: Event) {
-    this.mtlsSubjectType = (e.target as HTMLSelectElement).value as MtlsSubjectType;
-  }
-
-  private handleMtlsSubjectValueInput(e: Event) {
-    this.mtlsSubjectValue = (e.target as HTMLInputElement).value;
-  }
-
   private handleJwksInput(e: Event) {
     this.jwksInput = (e.target as HTMLTextAreaElement).value;
-  }
-
-  private toggleCertificateBoundAccessTokens() {
-    this.formData = { ...this.formData, certificateBoundAccessTokens: !this.formData.certificateBoundAccessTokens };
   }
 
   private toggleRequireSignedRequestObject() {
@@ -1839,26 +2004,12 @@ export class VersolaClientForm extends LitElement {
     }
   }
 
-  private renderMtlsTerminationError() {
-    return this.mtlsTerminationValidation.valid
-      ? ''
-      : html`<div class="error-message" style="margin-bottom: 0.75rem;">${this.mtlsTerminationValidation.error}</div>`;
-  }
-
   private renderJwksField() {
     return html`
       <label for="client-jwks">JWK Set</label>
-      <textarea
-        id="client-jwks"
-        class="compact-input ${this.jwksValidation.valid ? '' : 'input-error'}"
-        rows="6"
-        style="font-family: var(--font-mono); resize: vertical;"
-        .value=${this.jwksInput}
-        @input=${this.handleJwksInput}
-        placeholder='{"keys": [...]}'
-      ></textarea>
+      ${this.renderJwksTextarea()}
       ${this.jwksValidation.valid
-        ? html`<div class="hint">Public keys only - up to ${MAX_JWKS_KEYS} RSA or EC keys, no private key material.</div>`
+        ? html`<div class="hint">Public keys only - up to ${MAX_JWKS_KEYS} RSA or EC keys, no private key material. Reformatted when you leave the field.</div>`
         : html`<div class="error-message">${this.jwksValidation.error}</div>`}
     `;
   }
@@ -2092,87 +2243,6 @@ export class VersolaClientForm extends LitElement {
     }
 
     this.formData = { ...this.formData, clientType };
-  }
-
-  /** The template the client was registered from, which only an existing client has. */
-  private get editTemplate(): { kind: ClientKind } | null {
-    return this.client?.template ?? null;
-  }
-
-  /** Whether this client's tokens end up bound to a certificate: by the flag, or by a
-   *  registered certificate credential - except for an app fronted by edge, whose certificate
-   *  is shared by every installation and so never binds a token. */
-  private get bindsToCertificate(): boolean {
-    return !!this.formData.certificateBoundAccessTokens
-      || (this.effectiveMtlsAuth !== null && this.clientType !== 'native');
-  }
-
-  /** The template-decided settings as the form currently holds them, so a difference
-   *  disappears the moment it is edited back rather than on the next save. The access token
-   *  TTL lives in the value/unit pair the field edits, not in `formData`. */
-  private get currentTemplateSettings(): Partial<OAuthClient> {
-    return {
-      accessTokenTtl: ttlToSeconds(this.ttlValue, this.ttlUnit),
-      dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
-      certificateBoundAccessTokens: this.bindsToCertificate,
-      requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
-      requireSignedRequestObject: this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
-    };
-  }
-
-  private get templateDifferenceList(): TemplateDifference[] {
-    const template = this.editTemplate;
-    return template ? templateDifferences(template, this.securityProfile, this.currentTemplateSettings) : [];
-  }
-
-  /** Whether writing the template's value back would actually take. A signed request object
-    * is verified against `jwks` and nothing else (RFC 9101), so a client whose credential
-    * publishes no signing key cannot require one - this form clamps the setting off, and
-    * registration refuses it. The difference is still real, and still shown: the credential
-    * moved and the template's requirement lapsed with it. What it is not is undoable here,
-    * and a reset that silently did nothing would be the worse answer. */
-  private canResetDifference(difference: TemplateDifference): boolean {
-    return difference.field !== 'requireSignedRequestObject' || this.canRequireSignedRequestObject;
-  }
-
-  /** Puts the template's own value back into every setting that has moved away from it and
-    * can still hold it. */
-  private resetToTemplate() {
-    const differences = this.templateDifferenceList.filter(difference => this.canResetDifference(difference));
-    const ttl = differences.find(difference => difference.field === 'accessTokenTtl');
-    if (ttl) {
-      const { value, unit } = secondsToTtl(Number(ttl.templateValue));
-      this.ttlValue = value;
-      this.ttlUnit = unit;
-    }
-
-    const flags = differences.filter(difference => difference.field !== 'accessTokenTtl');
-    if (flags.length) {
-      this.formData = flags.reduce(
-        (data, difference) => ({ ...data, [difference.field]: difference.templateValue }),
-        this.formData,
-      );
-    }
-  }
-
-  /** `changed` when one of the section's own template-decided settings has moved, `from
-   *  template` when the template decides some of them and none has. A section the template
-   *  says nothing about gets neither - there is nothing for it to agree or disagree with. */
-  private sectionTag(section: TemplateSettingSection | null): 'changed' | 'from template' | null {
-    const template = this.editTemplate;
-    if (!template || !section || !templateDecides(template, this.securityProfile, section)) {
-      return null;
-    }
-
-    return this.templateDifferenceList.some(difference => difference.section === section)
-      ? 'changed'
-      : 'from template';
-  }
-
-  private toggleSection(key: string) {
-    this.openSections = this.openSections.includes(key)
-      ? this.openSections.filter(open => open !== key)
-      : [...this.openSections, key];
   }
 
   private selectKind(kind: ClientKind) {
@@ -2778,14 +2848,7 @@ export class VersolaClientForm extends LitElement {
     return html`
       <div class="wizard-field">
         <label for="client-jwks">${label}</label>
-        <textarea
-          id="client-jwks"
-          class="compact-input code ${this.jwksValidation.valid ? '' : 'input-error'}"
-          rows="10"
-          .value=${this.jwksInput}
-          @input=${this.handleJwksInput}
-          placeholder='{"keys": [...]}'
-        ></textarea>
+        ${this.renderJwksTextarea()}
         ${this.jwksValidation.valid
           ? html`<div class="hint">An RFC 7517 JWK Set of up to ${MAX_JWKS_KEYS} public keys. ${extraHint}</div>`
           : html`<div class="error-message">${this.jwksValidation.error}</div>`}
@@ -3412,7 +3475,7 @@ export class VersolaClientForm extends LitElement {
     return html`
       ${this.renderWizardHead(
         'Review',
-        'Nothing here is final except the client ID. Every other line stays editable afterwards.',
+        'The type, and what follows from it, is final once the client is created. Everything else is edited from the client\'s page.',
       )}
 
       <div class="review-tier">
@@ -3505,7 +3568,7 @@ export class VersolaClientForm extends LitElement {
           <versola-nav-toggle></versola-nav-toggle>
           <div class="title-stack">
             <h1 class="form-title">Create New Client</h1>
-            <div class="entity-id-meta">Four short steps. Every setting stays editable afterwards.</div>
+            <div class="form-subtitle">Four short steps. The type can't be changed once the client is created.</div>
           </div>
         </div>
       </div>
@@ -3524,162 +3587,111 @@ export class VersolaClientForm extends LitElement {
   }
 
   /** What the client is and whether it still matches it, stated once above the form. */
-  private renderTemplateBadges() {
-    const template = this.editTemplate;
-    if (!template) {
-      return '';
-    }
-
-    const differences = this.templateDifferenceList.length;
-
-    return html`
-      <div class="template-badges">
-        <span class="template-badge">${templateLabel(template)}</span>
-        ${differences ? html`
-          <span class="template-badge drift">
-            ${differences} ${differences === 1 ? 'setting differs' : 'settings differ'} from the template
-          </span>
-        ` : ''}
-      </div>
-    `;
+  /** Stroke icons for state: the console loads no icon font, and an icon that fails to load
+   *  would leave a lock or a tick unstated. */
+  private statusIcon(name: 'lock' | 'check' | 'x' | 'alert' | 'shield', className = '') {
+    const paths: Record<string, string> = {
+      lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z',
+      check: 'M5 12.5l4.5 4.5L19 7.5',
+      x: 'M6 6l12 12M18 6L6 18',
+      alert: 'M12 4l9 16H3zM12 10v4M12 17v.5',
+      shield: 'M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6zM8.5 12l2.5 2.5L15.5 10',
+    };
+    return html`<svg class="status-icon ${className}" viewBox="0 0 24 24" width="16" height="16" fill="none"
+      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${paths[name]}></path></svg>`;
   }
 
-  /** The settings that have moved away from the template, each with the value it moved from,
-    * so the list reads as what an operator would have to undo. */
-  private renderDifferencesPanel() {
-    const differences = this.templateDifferenceList;
-    if (!differences.length) {
-      return '';
-    }
-
-    const resettable = differences.filter(difference => this.canResetDifference(difference));
-
-    return html`
-      <div class="drift-panel">
-        <div class="drift-head">
-          <strong>Differences from the template</strong>
-          <span class="drift-count">${differences.length} ${differences.length === 1 ? 'setting' : 'settings'}</span>
-        </div>
-        ${differences.map(difference => html`
-          <div class="drift-row">
-            <span>${difference.label}</span>
-            <span>
-              <span class="drift-was">${difference.templateText}</span>
-              <span class="drift-now">${difference.currentText}</span>
-            </span>
-          </div>
-          ${this.canResetDifference(difference) ? '' : html`
-            <div class="drift-blocked">
-              Not restorable while the credential publishes no signing key — a request object is
-              verified against the client's JWK set and nothing else.
-            </div>
-          `}
-        `)}
-        ${resettable.length ? html`
-          <button type="button" class="btn btn-secondary btn-sm" @click=${this.resetToTemplate}>
-            ${resettable.length === 1 ? 'Reset it to template' : `Reset all ${resettable.length} to template`}
-          </button>
-        ` : ''}
-      </div>
-    `;
+  /** What the stored client is. Fixed at creation, so it is read once from what was stored. */
+  private get editKind(): ClientKind | null {
+    return this.client ? clientKindOf(this.client) : null;
   }
 
-  /** One collapsed row per group of settings: what it holds now on the right, and whether
-    * the template still decides it on the left. Opened to change something. */
-  private renderSection(
-    key: string,
-    title: string,
-    section: TemplateSettingSection | null,
-    summary: string,
-    body: unknown,
+  /** What the client's kind, the tenant's profile and its credential settle. Null while the
+   *  client is being created: the wizard decides those settings there. */
+  private get editLocks() {
+    const kind = this.editKind;
+    return kind ? clientLocks(kind, this.securityProfile, this.clientCredentialMode) : null;
+  }
+
+  /** One setting the console shows and does not offer: its value, why it has it, and - for a
+   *  client stored with something else (registered before the setting was settled, or on a
+   *  tenant switched to FAPI 2.0 since) - what it should be and a way to get there. The one
+   *  way a locked setting ever moves is towards what it is required to be. */
+  private renderLockedSetting(
+    label: string,
+    lock: Extract<SettingLock, { locked: true }>,
+    actual: boolean,
+    onFix: () => void,
   ) {
-    const open = this.openSections.includes(key);
-    const tag = this.sectionTag(section);
-
-    // Named explicitly rather than from its contents: the caret, the tag and the summary all
-    // read as part of the name otherwise, and the summary changes with every edit.
-    const label = [title, tag === 'changed' ? 'changed from the template' : tag, summary]
-      .filter(Boolean).join(', ');
-
+    const differs = actual !== lock.value;
+    const state = lock.value ? 'Required' : 'Not used';
     return html`
-      <div class="edit-section ${open ? 'open' : ''}">
-        <button
-          type="button"
-          class="edit-section-head"
-          aria-expanded=${open ? 'true' : 'false'}
-          aria-label=${label}
-          @click=${() => this.toggleSection(key)}
-        >
-          <span class="edit-section-title">
-            <span class="edit-section-caret">${open ? '▾' : '▸'}</span>
-            ${title}
-            ${tag ? html`<span class="section-tag ${tag === 'changed' ? 'changed' : ''}">${tag}</span>` : ''}
-          </span>
-          <span class="edit-section-summary">${summary}</span>
-        </button>
-        ${open ? html`<div class="edit-section-body form-grid">${body}</div>` : ''}
+      <div class="locked-setting ${differs ? 'differs' : ''}">
+        ${this.statusIcon('lock', 'locked-icon')}
+        <div class="locked-body">
+          <div class="locked-label">${label}</div>
+          <div class="hint">${lock.reason}</div>
+          ${differs ? html`
+            <div class="locked-problem">
+              Stored as ${actual ? 'on' : 'off'}, but this client must have it ${lock.value ? 'on' : 'off'}.
+              <button type="button" class="link-button" @click=${onFix}>Set to ${lock.value ? 'on' : 'off'}</button>
+            </div>
+          ` : ''}
+        </div>
+        <span class="locked-state ${lock.value ? 'on' : ''}">${state}</span>
       </div>
     `;
   }
 
-  private renderEditSections() {
-    const scopes = this.formData.scope || [];
-    const permissions = this.formData.permissions || [];
-    const redirectUris = this.formData.redirectUris || [];
-    const logoutUris = [this.formData.frontChannelLogoutUri, this.formData.backChannelLogoutUri]
-      .filter(uri => !!(uri || '').trim()).length;
-    const registration = this.hasRegistrationFlow ? 'self-registration on' : 'self-registration off';
-    const consent = this.hasConsentFlow ? 'consent screen on' : 'consent screen off';
-
-    return html`
-      ${this.renderSection('scopes', 'Scopes and permissions', null,
-        [scopes.join(', ') || 'no scopes', permissions.length ? `${permissions.length} permissions` : 'no permissions']
-          .join(' · '),
-        html`${this.renderScopesField()}${this.renderPermissionsField()}`)}
-
-      ${this.renderSection('sign-in', 'How users sign in', null,
-        this.hasAuthFlow
-          ? `${this.firstScreenSummary} · ${redirectUris.length} redirect ${redirectUris.length === 1 ? 'URI' : 'URIs'}`
-          : 'no user signs in',
-        html`${this.renderAuthFlowSection()}${this.renderOtpSettingsSection()}${this.renderRedirectUrisField()}`)}
-
-      ${this.renderSection('tokens', 'Token lifetimes', 'tokens',
-        `${this.ttlValue} ${this.ttlValue === 1 ? this.ttlUnit.slice(0, -1) : this.ttlUnit} access · ${
-          this.hasOfflineAccessScope ? `${this.refreshTokenTtlDays} day refresh` : 'no refresh token'}`,
-        html`${this.renderAccessTokenTtlField()}${this.renderRefreshTokenTtlField()}`)}
-
-      ${this.renderSection('credential', 'Client credential and binding', 'credential',
-        `${this.credentialSummary} · ${this.tokenBindingSummary}`,
-        html`${this.renderCredentialGroup()}${this.renderDpopFieldsGroup()}`)}
-
-      ${this.renderSection('integrity', 'Request integrity', 'integrity',
-        `PAR ${this.formData.requirePushedAuthorizationRequests ? 'required' : 'off'} · JAR ${
-          !this.canRequireSignedRequestObject
-            ? 'unavailable'
-            : this.formData.requireSignedRequestObject ? 'required' : 'off'}`,
-        this.renderRequestIntegrityFields())}
-
-      ${this.renderSection('registration', 'Registration and consent', null,
-        `${registration} · ${consent}`,
-        html`${this.renderRegistrationSection()}${this.renderConsentSection()}`)}
-
-      ${this.renderSection('branding', 'Branding and logout', null,
-        `${this.formData.theme || 'default'} theme · ${logoutUris ? `${logoutUris} logout ${logoutUris === 1 ? 'URI' : 'URIs'}` : 'no logout URIs'}`,
-        html`${this.renderThemeField()}${this.hasAuthFlow ? this.renderLogoutSettings() : ''}`)}
-    `;
+  /** What each group of settings holds, in the order the page lists them. */
+  private renderSectionBody(section: ClientEditSection) {
+    switch (section) {
+      case 'type':
+        return html`${this.renderDpopFieldsGroup()}${this.renderRequestIntegrityFields()}`;
+      case 'general':
+        return html`${this.renderIdentityFields()}${this.renderRedirectUrisField()}`;
+      case 'access':
+        return html`${this.renderScopesField()}${this.renderPermissionsField()}`;
+      case 'signin':
+        return html`${this.renderAuthFlowSection()}${this.renderOtpSettingsSection()}${this.renderRedirectUrisField()}`;
+      case 'tokens':
+        return html`${this.renderAccessTokenTtlField()}${this.renderRefreshTokenTtlField()}${this.renderDpopPolicy()}`;
+      case 'keys':
+        return html`<div class="form-group">${this.renderJwksField()}</div>`;
+      case 'registration':
+        return html`${this.renderRegistrationSection()}${this.renderConsentSection()}`;
+      case 'branding':
+        return html`${this.renderThemeField()}${this.hasAuthFlow ? this.renderLogoutSettings() : ''}`;
+    }
   }
 
-  /** The two facts about the client itself that the form does not otherwise state. */
-  private get editFooterNote(): string {
-    const kind = this.clientType === 'native' ? 'Public client' : 'Confidential client';
-    const created = this.client?.createdAt;
-    if (!created) {
-      return kind;
-    }
+  /** One group of an existing client's settings, on its own page with its own Cancel and Save. */
+  private renderSectionEditor(section: ClientEditSection) {
+    const title = CLIENT_EDIT_SECTION_TITLES[section];
+    const name = (this.formData.clientName?.en || '').trim() || this.formData.id || '';
 
-    const days = Math.floor((Date.now() - new Date(created).getTime()) / 86_400_000);
-    const age = days < 1 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-    return `${kind} · created ${age}`;
+    return html`
+      <div class="form-header">
+        <div class="form-header-lead">
+          <versola-nav-toggle></versola-nav-toggle>
+          <div class="title-stack">
+            <h1 class="form-title">${title}</h1>
+            <div class="entity-id-meta">${name} · ${this.formData.id || ''}</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <form @submit=${this.handleSubmit}>
+          <div class="form-grid">${this.renderSectionBody(section)}</div>
+
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
+            <button type="submit" class="btn btn-primary">Save ${title.toLowerCase()}</button>
+          </div>
+        </form>
+      </div>
+    `;
   }
 
   render() {
@@ -3687,59 +3699,8 @@ export class VersolaClientForm extends LitElement {
       return this.renderWizard();
     }
 
-    const name = (this.formData.clientName?.en || '').trim();
-
-    return html`
-      <div class="form-header">
-        <div class="form-header-lead">
-          <versola-nav-toggle></versola-nav-toggle>
-          <div class="title-stack">
-            <h1 class="form-title">${name || this.formData.id || 'Edit Client'}</h1>
-            <div class="entity-id-meta">${this.formData.id || '—'}</div>
-          </div>
-        </div>
-      </div>
-
-      ${this.renderTemplateBadges()}
-
-      <div class="card">
-        <form @submit=${this.handleSubmit}>
-          <div class="form-grid">
-            ${this.renderIdentityFields()}
-          </div>
-
-          ${this.renderDifferencesPanel()}
-          ${this.renderEditSections()}
-
-          <div class="form-actions">
-            <span class="form-actions-note">${this.editFooterNote}</span>
-            ${this.client && this.canManageSecrets && this.client.authMethod === 'client_secret' ? html`
-              ${this.client.hasPreviousSecret ? html`
-                <button
-                  type="button"
-                  class="btn btn-secondary btn-sm secondary-action-button"
-                  @click=${this.handleDeleteOldSecret}
-                  title="Delete old secret"
-                  aria-label="Delete old secret"
-                >Delete old secret</button>
-              ` : html`
-                <button
-                  type="button"
-                  class="btn btn-secondary secondary-action-button"
-                  @click=${this.handleRotateSecret}
-                >Rotate Secret</button>
-              `}
-            ` : ''}
-            <button type="button" class="btn btn-secondary" @click=${this.handleClose}>
-              Cancel
-            </button>
-            <button type="submit" class="btn btn-primary">
-              Save changes
-            </button>
-          </div>
-        </form>
-      </div>
-    `;
+    // An existing client is only ever edited one group of settings at a time.
+    return this.renderSectionEditor(this.editSection ?? 'general');
   }
 
   /** Identity: Client ID (chosen at creation, shown read-only afterwards) and the localized
@@ -3829,6 +3790,7 @@ export class VersolaClientForm extends LitElement {
                 <div class="ttl-select-wrapper">
                   <select
                     class="ttl-unit-select"
+                    aria-label="Access token lifetime unit"
                     .value=${this.ttlUnit}
                     @change=${this.handleTtlUnitChange}
                   >
@@ -3861,14 +3823,40 @@ export class VersolaClientForm extends LitElement {
                   min="1"
                   step="1"
                 />
-                <div class="hint">${daysToSeconds(this.refreshTokenTtlDays)} seconds. Fixed from login: using the token does not extend it, and the user must sign in again after it ends.</div>
+                <div class="hint">Counted from login: using the token does not extend it, and the user must sign in again after it ends.</div>
               </div>
-            ` : ''}
+            ` : html`
+              <div class="locked-setting">
+                ${this.statusIcon('lock', 'locked-icon')}
+                <div class="locked-body">
+                  <div class="locked-label">Refresh token</div>
+                  <div class="hint">${this.client && clientKindOf(this.client) === 'service'
+                    ? 'A service signs in with its own credential, so it is issued no refresh token.'
+                    : 'Refresh tokens are issued only to a client with the offline_access scope. Add it under Scopes and permissions.'}</div>
+                </div>
+                <span class="locked-state">Not issued</span>
+              </div>
+            `}
     `;
   }
 
   private renderDpopFieldsGroup() {
+    const locks = this.editLocks;
+    const certificateLock = locks?.certificateBound;
+    const dpopLock = locks?.dpop;
     return html`
+            ${certificateLock?.locked ? this.renderLockedSetting(
+              'Certificate-bound access tokens',
+              certificateLock,
+              !!this.formData.certificateBoundAccessTokens,
+              () => { this.formData = { ...this.formData, certificateBoundAccessTokens: certificateLock.value }; },
+            ) : ''}
+            ${dpopLock?.locked ? this.renderLockedSetting(
+              'DPoP-bound access tokens',
+              dpopLock,
+              !!this.formData.dpopBoundAccessTokens,
+              () => { this.formData = { ...this.formData, dpopBoundAccessTokens: dpopLock.value }; },
+            ) : html`
             <div class="form-group">
               <div style="display: flex; align-items: center; gap: 0.4rem;">
                 <label class="plain-checkbox-label" style="margin-bottom: 0;">
@@ -3897,179 +3885,106 @@ export class VersolaClientForm extends LitElement {
                 refused rather than answered with a bearer token.
               </div>
             </div>
+            `}
 
-            <div class="form-group">
-              <div style="display: flex; align-items: center; gap: 0.4rem;">
-                <label style="margin-bottom: 0;">DPoP proof keys</label>
-                ${this.renderOptionInfo(
-                  'dpop-key-policy',
-                  'DPoP proof keys',
-                  html`
-                    <div class="option-tooltip-item">Which keys a proof from this client is accepted with. Left alone, the client is held to what the server advertises in <code>dpop_signing_alg_values_supported</code>, and to the 2048-bit RSA floor of RFC 7518 §3.3 that applies to every client.</div>
-                    <div class="option-tooltip-item">Narrowing only ever subtracts: selecting an algorithm the server does not advertise does not make it acceptable. Selecting none leaves the server's own set in force.</div>
-                    <div class="option-tooltip-item">Before narrowing: the client must already hold a key of a selected type. One that signs with anything else stops being able to get a bound token immediately.</div>
-                  `,
-                  'DPoP proof key policy info',
-                )}
-              </div>
-              <div class="checkbox-group">
-                ${DPOP_SIGNING_ALGS.map(alg => html`
-                  <div class="checkbox-item" @click=${() => this.toggleDpopSigningAlg(alg)}>
-                    <input
-                      type="checkbox"
-                      id="dpop-alg-${alg}"
-                      .checked=${(this.formData.dpopSigningAlgs ?? []).includes(alg)}
-                      @click=${(e: Event) => e.stopPropagation()}
-                      @change=${() => this.toggleDpopSigningAlg(alg)}
-                    />
-                    <label for="dpop-alg-${alg}" @click=${(e: Event) => e.stopPropagation()}>${alg}</label>
-                  </div>
-                `)}
-              </div>
-              <div class="hint">
-                Leave every algorithm unselected to hold this client to the server's own set.
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="dpop-min-rsa-key-size">Minimum RSA proof key size (bits)</label>
-              <input
-                type="number"
-                id="dpop-min-rsa-key-size"
-                class="compact-input ${this.dpopMinRsaKeySizeValidation.valid ? '' : 'input-error'}"
-                .value=${this.formData.dpopMinRsaKeySize == null ? '' : String(this.formData.dpopMinRsaKeySize)}
-                @input=${this.handleDpopMinRsaKeySizeInput}
-                min=${MIN_DPOP_RSA_KEY_SIZE}
-                step="1024"
-                placeholder=${String(MIN_DPOP_RSA_KEY_SIZE)}
-              />
-              ${this.dpopMinRsaKeySizeValidation.valid
-                ? html`<div class="hint">
-                    Empty leaves the ${MIN_DPOP_RSA_KEY_SIZE}-bit floor every client is held to; a value here
-                    can only raise it.
-                  </div>`
-                : html`<div class="error-message">${this.dpopMinRsaKeySizeValidation.error}</div>`}
-            </div>
+            ${this.renderDpopPolicy()}
     `;
   }
 
-  /** How the client authenticates, plus the request-integrity settings tied to it - decided
-   *  by the kind in step 1, still editable here. */
-  private renderCredentialGroup() {
-    // A native client authenticates with nothing beyond its client_id - authMethodFor pins it
-    // to 'none' regardless of which mode is picked here, so the cards below would let an
-    // operator fill in a certificate or a key set that the update then silently drops.
-    if (this.clientCredentialMode === 'edge') {
-      return html`
-            <div class="form-group">
-              <label style="margin-bottom: 0;">Client credential</label>
-              <div class="plan">
-                ${this.renderPlanLine('fixed', 'mTLS by edge', 'Central provisions the certificate edge authenticates with.')}
-              </div>
-            </div>
-      `;
-    }
-
-    if (this.clientType === 'native') {
-      return html`
-            <div class="form-group">
-              <label style="margin-bottom: 0;">Client credential</label>
-              <div class="plan">
-                ${this.renderPlanLine('fixed', 'Public client, no secret', 'A shipped binary cannot keep one.')}
-              </div>
-            </div>
-      `;
-    }
-
+  /** Which proof keys a DPoP client may use: only meaningful while DPoP binds its tokens. */
+  private renderDpopPolicy() {
     return html`
-            <div class="form-group">
-              <div style="display: flex; align-items: center; gap: 0.4rem;">
-                <label style="margin-bottom: 0;">Client credential</label>
-                ${this.renderOptionInfo(
-                  'client-credential',
-                  'Client credential',
-                  html`
-                    <div class="option-tooltip-item">How this client authenticates itself at the token endpoint, alongside or instead of its secret. A client authenticates one way - registering more than one credential does not make it harder to impersonate, it gives an attacker a second independent path in.</div>
-                    <div class="option-tooltip-item"><code>mTLS certificate</code> (RFC 8705 §2.1): a certificate issued by a trusted CA, matched against the subject value registered here. Every access token this client receives is automatically certificate-bound.</div>
-                    <div class="option-tooltip-item"><code>mTLS self-signed</code> (RFC 8705 §2.2): any certificate, matched by public key against a registered JWK Set instead of a CA-issued subject.</div>
-                    <div class="option-tooltip-item"><code>private_key_jwt</code> (RFC 7523 §2.2): the client signs a JWT assertion with a key from its registered JWK Set instead of sending a secret.</div>
-                  `,
-                  'Client credential info',
-                )}
-              </div>
-              <div class="cred-mode-cards">
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'secret' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('secret')}>secret</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('mtls')}>mTLS certificate</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'mtls-self-signed' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('mtls-self-signed')}>mTLS self-signed</button>
-                <button type="button" class=${`cred-mode-card ${this.clientCredentialMode === 'private-key-jwt' ? 'selected' : ''}`} ?disabled=${!!this.client} @click=${() => this.setClientCredentialMode('private-key-jwt')}>private_key_jwt</button>
-              </div>
-              ${this.client ? html`<div class="hint">The authentication method is fixed when the client is created. To use another one, delete the client and register it again.</div>` : ''}
+            ${this.formData.dpopBoundAccessTokens ? html`
+            <details class="advanced" ?open=${this.dpopPolicyIsCustom}>
+              <summary>
+                Restrict DPoP proof keys
+                <span class="hint">${this.dpopPolicySummary}</span>
+              </summary>
 
-              ${this.clientCredentialMode === 'mtls' ? html`
-                <div class="cred-options">
-                  ${this.renderMtlsTerminationError()}
-                  <label for="mtls-subject-type">Subject type</label>
-                  <select id="mtls-subject-type" class="compact-input" .value=${this.mtlsSubjectType} @change=${this.handleMtlsSubjectTypeChange}>
-                    ${MTLS_SUBJECT_TYPES.map(type => html`<option value=${type} ?selected=${this.mtlsSubjectType === type}>${type}</option>`)}
-                  </select>
-                  <label for="mtls-subject-value" style="margin-top: 0.75rem;">Subject value</label>
+              <div class="form-group">
+                <div style="display: flex; align-items: center; gap: 0.4rem;">
+                  <label style="margin-bottom: 0;">Allowed proof algorithms</label>
+                  ${this.renderOptionInfo(
+                    'dpop-key-policy',
+                    'DPoP proof keys',
+                    html`
+                      <div class="option-tooltip-item">Which keys a proof from this client is accepted with. Left alone, the client may use any algorithm the server advertises in <code>dpop_signing_alg_values_supported</code>${this.serverDpopAlgs ? html` (here: ${this.serverDpopAlgs.join(', ')})` : ''}.</div>
+                      <div class="option-tooltip-item">Narrowing only ever subtracts: it cannot make acceptable an algorithm the server does not advertise, so only the advertised ones are offered. Selecting none leaves the server's own set in force.</div>
+                      <div class="option-tooltip-item">Before narrowing: the client must already hold a key of a selected type. One that signs with anything else stops being able to get a bound token immediately.</div>
+                    `,
+                    'DPoP proof key policy info',
+                  )}
+                </div>
+                <div class="checkbox-group">
+                  ${this.offeredDpopAlgs.map(alg => html`
+                    <div class="checkbox-item" @click=${() => this.toggleDpopSigningAlg(alg)}>
+                      <input
+                        type="checkbox"
+                        id="dpop-alg-${alg}"
+                        .checked=${(this.formData.dpopSigningAlgs ?? []).includes(alg)}
+                        @click=${(e: Event) => e.stopPropagation()}
+                        @change=${() => this.toggleDpopSigningAlg(alg)}
+                      />
+                      <label for="dpop-alg-${alg}" @click=${(e: Event) => e.stopPropagation()}>${alg}${alg === 'ES256' ? ' (EC P-256)' : alg === 'PS256' ? ' (RSA)' : ' (RSA, legacy)'}</label>
+                    </div>
+                  `)}
+                </div>
+                <div class="hint">
+                  Nothing selected: the client may use any of ${this.offeredDpopAlgs.join(', ')}.
+                </div>
+              </div>
+
+              ${this.dpopAllowsRsa ? html`
+                <div class="form-group">
+                  <label for="dpop-min-rsa-key-size">Minimum RSA key size (bits)</label>
                   <input
-                    type="text"
-                    id="mtls-subject-value"
-                    class="compact-input ${this.mtlsSubjectValueError ? 'input-error' : ''}"
-                    .value=${this.mtlsSubjectValue}
-                    @input=${this.handleMtlsSubjectValueInput}
-                    placeholder=${this.mtlsSubjectType === 'subject_dn' ? 'CN=client,O=Example' : 'client.example.com'}
+                    type="number"
+                    id="dpop-min-rsa-key-size"
+                    class="compact-input ${this.dpopMinRsaKeySizeValidation.valid ? '' : 'input-error'}"
+                    .value=${this.formData.dpopMinRsaKeySize == null ? '' : String(this.formData.dpopMinRsaKeySize)}
+                    @input=${this.handleDpopMinRsaKeySizeInput}
+                    min=${MIN_DPOP_RSA_KEY_SIZE}
+                    step="1024"
+                    placeholder=${String(MIN_DPOP_RSA_KEY_SIZE)}
                   />
-                  ${this.mtlsSubjectValueError
-                    ? html`<div class="error-message">${this.mtlsSubjectValueError}</div>`
-                    : html`<div class="hint">Compared literally against the certificate's ${this.mtlsSubjectType === 'subject_dn' ? 'subject' : 'subject alternative name'}.</div>`}
+                  ${this.dpopMinRsaKeySizeValidation.valid
+                    ? html`<div class="hint">
+                        Only for proofs signed with an RSA key; EC keys are not affected. Empty keeps the
+                        ${MIN_DPOP_RSA_KEY_SIZE}-bit minimum every client is held to - a value here can only raise it.
+                      </div>`
+                    : html`<div class="error-message">${this.dpopMinRsaKeySizeValidation.error}</div>`}
                 </div>
               ` : ''}
-
-              ${this.clientCredentialMode === 'mtls-self-signed' ? html`
-                <div class="cred-options">
-                  ${this.renderMtlsTerminationError()}
-                  ${this.renderJwksField()}
-                </div>
-              ` : ''}
-
-              ${this.clientCredentialMode === 'private-key-jwt' ? html`
-                <div class="cred-options">
-                  ${this.renderJwksField()}
-                </div>
-              ` : ''}
-
-              ${!this.clientCredentialValidation.valid
-                ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.clientCredentialValidation.error}</div>`
-                : ''}
-            </div>
-
-            <div class="form-group">
-              <label class="plain-checkbox-label">
-                <input
-                  type="checkbox"
-                  .checked=${!!this.formData.certificateBoundAccessTokens}
-                  ?disabled=${!!this.effectiveMtlsAuth}
-                  @change=${() => this.toggleCertificateBoundAccessTokens()}
-                />
-                Bind access tokens to a presented certificate
-              </label>
-              <div class="hint">
-                ${this.effectiveMtlsAuth
-                  ? 'Already implied by the mTLS credential above - every token this client receives is bound regardless of this checkbox.'
-                  : 'RFC 8705 §3.4: for a client that authenticates by secret or private_key_jwt but still presents a certificate purely to have its tokens bound to it.'}
-              </div>
-            </div>
-
+            </details>
+            ` : ''}
     `;
+  }
+
+  private get dpopPolicyIsCustom(): boolean {
+    return (this.formData.dpopSigningAlgs ?? []).length > 0 || this.formData.dpopMinRsaKeySize != null;
+  }
+
+  private get dpopPolicySummary(): string {
+    const algs = this.formData.dpopSigningAlgs ?? [];
+    const parts = [algs.length ? algs.join(', ') : `any of ${this.offeredDpopAlgs.join(', ')}`];
+    if (this.formData.dpopMinRsaKeySize != null) parts.push(`RSA ≥ ${this.formData.dpopMinRsaKeySize}`);
+    return parts.join(' · ');
   }
 
   /** RFC 9126 PAR and RFC 9101 JAR: what a request from this client has to arrive as.
     * Shown for a public client too - it pushes with a bare client_id, and the value of
     * pushing is request integrity rather than client authentication. */
   private renderRequestIntegrityFields() {
+    const locks = this.editLocks;
+    const parLock = locks?.par;
+    const jarLock = locks?.jar;
     return html`
+            ${parLock?.locked ? this.renderLockedSetting(
+              'Pushed authorization requests (PAR)',
+              parLock,
+              !!this.formData.requirePushedAuthorizationRequests,
+              () => { this.formData = { ...this.formData, requirePushedAuthorizationRequests: parLock.value }; },
+            ) : html`
             <div class="form-group">
               <label class="plain-checkbox-label">
                 <input
@@ -4084,7 +3999,14 @@ export class VersolaClientForm extends LitElement {
                 one that arrives at /authorize without a request_uri is refused.
               </div>
             </div>
+            `}
 
+            ${jarLock?.locked ? this.renderLockedSetting(
+              'Signed request objects (JAR)',
+              jarLock,
+              this.canRequireSignedRequestObject && !!this.formData.requireSignedRequestObject,
+              () => { this.formData = { ...this.formData, requireSignedRequestObject: jarLock.value }; },
+            ) : html`
             <div class="form-group">
               <label class="plain-checkbox-label">
                 <input
@@ -4103,6 +4025,7 @@ export class VersolaClientForm extends LitElement {
                     : 'Requires a registered JWK Set (mTLS self-signed or private_key_jwt above) - a request object is verified against no other keys.'}
               </div>
             </div>
+            `}
     `;
   }
 
@@ -4171,7 +4094,7 @@ export class VersolaClientForm extends LitElement {
   private renderAuthFlowSection() {
     return html`
             <div class="form-group">
-              ${this.kind ? '' : html`
+              ${this.kind || this.client ? '' : html`
               <div class="flow-toggle-row">
                 <label style="margin: 0; line-height: 18px;">Authorization Flow</label>
                 <label class="toggle">
@@ -4185,7 +4108,7 @@ export class VersolaClientForm extends LitElement {
               `}
 
               ${this.hasAuthFlow ? html`
-              ${this.kind ? '' : html`
+              ${this.kind || this.client ? '' : html`
               <div class="flow-subsection">
                 <div class="flow-subtitle-row">
                   <div class="flow-subtitle">Client type</div>

@@ -29,3 +29,19 @@ for (const theme of themes) {
     });
   }
 }
+
+for (const theme of themes) {
+  test(`a client's page and its section editor have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });
+    await page.getByRole('button', { name: 'Open client alpha-web', exact: true }).click();
+    await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await page.getByRole('button', { name: 'Edit tokens', exact: true }).click();
+    await expect(page.getByRole('button', { name: /^Save tokens/ })).toBeVisible();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+}

@@ -10,10 +10,10 @@ import {
   clientPreset,
 } from '../utils/client-presets';
 
-const KIND_ICONS: Record<ClientKind, string> = {
-  web: '▤',
-  device: '▢',
-  service: '⬡',
+const KIND_ICON_PATHS: Record<ClientKind, string> = {
+  web: 'M3 5h18v14H3zM3 9h18',
+  device: 'M7 3h10v18H7zM11 18h2',
+  service: 'M4 4h16v7H4zM4 13h16v7H4zM8 7.5h.01M8 16.5h.01',
 };
 
 const PLAN_MARKS: Record<PlanLine['state'], string> = {
@@ -46,7 +46,7 @@ export class VersolaClientKindStep extends LitElement {
 
       .kind-grid {
         display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
         gap: var(--spacing-md);
         margin-bottom: var(--spacing-xl);
       }
@@ -73,15 +73,30 @@ export class VersolaClientKindStep extends LitElement {
         box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.16);
       }
 
-      .kind-icon { font-size: 1.15rem; color: var(--accent); line-height: 1; }
+      .kind-icon { color: var(--accent); }
       .kind-name { font-size: 0.9375rem; font-weight: 600; color: var(--text-primary); }
       .kind-blurb { font-size: 0.8125rem; color: var(--text-secondary); line-height: 1.45; }
 
+      .kind-gets {
+        list-style: none;
+        margin: 0.25rem 0 0;
+        padding: 0;
+        display: grid;
+        gap: 0.25rem;
+        font-size: 0.8125rem;
+        color: var(--text-primary);
+      }
+      .kind-gets li::before {
+        content: '✓';
+        color: var(--success);
+        margin-right: 0.5rem;
+      }
       .kind-type {
-        font-family: var(--font-mono);
-        font-size: 0.6875rem;
+        font-size: 0.75rem;
         color: var(--text-secondary);
-        margin-top: 0.15rem;
+        margin-top: 0.5rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid var(--border-dark);
       }
 
       .plan { display: grid; gap: 0.6rem; margin-top: 0.25rem; }
@@ -131,10 +146,12 @@ export class VersolaClientKindStep extends LitElement {
             aria-pressed=${k.id === this.kind}
             @click=${() => this.selectKind(k.id)}
           >
-            <span class="kind-icon">${KIND_ICONS[k.id]}</span>
+            <svg class="kind-icon" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor"
+              stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${KIND_ICON_PATHS[k.id]}></path></svg>
             <span class="kind-name">${k.name}</span>
             <span class="kind-blurb">${k.blurb}</span>
-            <span class="kind-type">${k.clientTypeLabel}</span>
+            <ul class="kind-gets">${k.gets.map(item => html`<li>${item}</li>`)}</ul>
+            <span class="kind-type">${k.examples}</span>
           </button>
         `)}
       </div>

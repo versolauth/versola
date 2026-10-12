@@ -6,6 +6,7 @@ import {
   validateClientCredential,
   validateEdgeFrontedRedirectUri,
   validateJwksJson,
+  describeJwks,
   validateMtlsTermination,
 } from './validators';
 
@@ -114,5 +115,28 @@ describe('validateEdgeFrontedRedirectUri', () => {
 
   it('keeps the general rules, such as no fragment', () => {
     expect(validateEdgeFrontedRedirectUri('https://app.example.com/cb#frag').valid).toBe(false);
+  });
+});
+
+describe('describeJwks', () => {
+  it('names the key type, curve and size', () => {
+    const summary = describeJwks({
+      keys: [
+        { kty: 'EC', crv: 'P-256', kid: 'a', x: 'x', y: 'y' },
+        { kty: 'RSA', n: 'A'.repeat(342), e: 'AQAB', alg: 'PS256' },
+      ],
+    });
+    expect(summary.map(key => key.kind)).toEqual(['EC P-256', 'RSA 2048']);
+    expect(summary[0].kid).toBe('a');
+    expect(summary[1].alg).toBe('PS256');
+  });
+
+  it('flags private key material', () => {
+    expect(describeJwks({ keys: [{ kty: 'EC', crv: 'P-256', d: 'secret' }] })[0].private).toBe(true);
+    expect(describeJwks({ keys: [{ kty: 'EC', crv: 'P-256' }] })[0].private).toBe(false);
+  });
+
+  it('is empty for anything that is not a key set', () => {
+    expect(describeJwks(undefined)).toEqual([]);
   });
 });

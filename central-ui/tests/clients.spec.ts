@@ -101,8 +101,25 @@ const mtlsTerminatingSettings = {
 };
 
 function clientCard(page: Page, text: string) {
-  return page.locator('.client-card').filter({ hasText: text }).first();
+  return page.locator('versola-clients-list tbody tr').filter({ hasText: text }).first();
 }
+
+/** A client's page: read-only, with an Edit button per group of settings. */
+async function openClientPage(page: Page, id: string) {
+  await page.getByRole('button', { name: `Open client ${id}`, exact: true }).click();
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+}
+
+/** What the edit page used to call each group, and what the client page calls it now. */
+const SECTION_TITLES: Record<string, string> = {
+  'Token lifetimes': 'Tokens',
+  'How users sign in': 'Sign-in',
+  'Scopes and permissions': 'Scopes and permissions',
+  'Registration and consent': 'Registration and consent',
+  'Branding and logout': 'Branding and logout',
+  'Client credential and binding': 'Type',
+  'Request integrity': 'Type',
+};
 
 /**
  * Creation opens on step 1, which decides the client's credential and request-integrity
@@ -157,14 +174,12 @@ async function submitCreate(page: Page) {
  * would close it again.
  */
 async function openEditSection(page: Page, title: string) {
-  const head = page.getByRole('button', { name: new RegExp(`^${title}`) });
-  if (await head.getAttribute('aria-expanded') === 'false') {
-    await head.click();
-  }
+  const section = SECTION_TITLES[title] ?? title;
+  await page.getByRole('button', { name: `Edit ${section.toLowerCase()}`, exact: true }).click();
 }
 
 async function saveEdit(page: Page) {
-  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+  await page.getByRole('button', { name: /^Save /, exact: false }).click();
 }
 
 /** Step 2 to the created client, for a test with nothing to say about steps 3 and 4. */
@@ -189,25 +204,39 @@ test('renders client details and filters by client id', async ({ page }) => {
     },
   });
 
-  const alpha = clientCard(page, 'Alpha Web');
-  await alpha.locator('.client-header').click();
+  const search = page.getByLabel('Search clients');
+  await search.fill('service-client');
+  await expect(clientCard(page, 'Service Client')).toBeVisible();
+  await expect(page.locator('versola-clients-list tbody tr').filter({ hasText: 'alpha-web' })).toHaveCount(0);
+
+  await search.fill('missing-client');
+  await expect(page.getByRole('heading', { name: 'No clients match', exact: true })).toBeVisible();
+  await search.fill('');
+
+  // A row opens the client's own page, which states everything the list leaves out.
+  await openClientPage(page, 'alpha-web');
+  const alpha = page.locator('versola-clients-list');
   await expect(alpha).toContainText('https://alpha.example/callback');
   await expect(alpha).toContainText('openid');
   await expect(alpha).toContainText('alpha.read');
   await expect(alpha).toContainText('1h');
-  await expect(alpha.locator('.flow-section')).toBeVisible();
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Forms Theme');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Redirect URIs');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('OTP Settings');
-  await expect(alpha.locator('.auth-flow-settings')).toContainText('Logout Settings');
+  await expect(alpha.getByRole('region', { name: 'Sign-in' })).toBeVisible();
+  await expect(alpha.getByRole('region', { name: 'Branding and logout' })).toContainText('Forms theme');
+  await expect(alpha.getByRole('region', { name: 'General' })).toContainText('Redirect URIs');
+});
 
-  const search = page.getByLabel('Search clients');
-  await search.fill('service-client');
-  await expect(clientCard(page, 'Service Client')).toBeVisible();
-  await expect(page.locator('.client-card').filter({ hasText: 'alpha-web' })).toHaveCount(0);
+test('filters the list by client type', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [alphaClient, serviceClient, edgeNativeClient] } },
+  });
 
-  await search.fill('missing-client');
-  await expect(page.getByRole('heading', { name: 'No clients match your search', exact: true })).toBeVisible();
+  const filter = page.getByRole('group', { name: 'Filter by type' });
+  await filter.getByRole('button', { name: /^Mobile or desktop app/ }).click();
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(1);
+  await expect(clientCard(page, 'Edge Mobile')).toBeVisible();
+  await filter.getByRole('button', { name: /^All/ }).click();
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(3);
 });
 
 test('shows and updates refresh token TTL in days for offline clients', async ({ page }) => {
@@ -224,12 +253,11 @@ test('shows and updates refresh token TTL in days for offline clients', async ({
     },
   });
 
-  const client = clientCard(page, 'Alpha Web');
-  await client.locator('.client-header').click();
-  await expect(client).toContainText('Refresh Token TTL');
+  await openClientPage(page, 'alpha-web');
+  const client = page.getByRole('region', { name: 'Tokens' });
+  await expect(client).toContainText('Refresh token');
   await expect(client).toContainText('180d');
 
-  await client.getByRole('button', { name: 'Edit client alpha-web' }).click();
   await openEditSection(page, 'Token lifetimes');
   await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveValue('180');
   await page.getByLabel('Refresh Token TTL (days) *').fill('120');
@@ -270,11 +298,10 @@ test('shows refresh token TTL only after selecting offline_access when creating 
     refreshTokenTtl: 180 * 24 * 60 * 60,
   });
 
-  await clientCard(page, 'Offline Client').getByRole('button', { name: 'Edit client offline-client' }).click();
   await openEditSection(page, 'Token lifetimes');
   await page.getByLabel('Refresh Token TTL (days) *').fill('45');
   await saveEdit(page);
-  await expect(clientCard(page, 'Offline Client')).toContainText('45d');
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('45d');
 });
 
 test('creates a client and shows the generated secret banner', async ({ page }) => {
@@ -291,7 +318,8 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await continueToReview(page);
   await submitCreate(page);
 
-  const created = clientCard(page, 'Dashboard Client');
+  // Creating lands on the new client's own page, where the secret is shown.
+  const created = page.locator('versola-clients-list .view-head');
   const secretBanner = page.locator('.secret-banner').first();
   const secretValue = secretBanner.locator('.secret-value');
   await expect(page.getByRole('heading', { name: 'Client created: Dashboard Client', exact: true })).toBeVisible();
@@ -299,7 +327,7 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await expect(secretValue).toBeVisible();
   expect((await secretValue.textContent())?.trim().length ?? 0).toBeGreaterThan(0);
   await expect(created).toContainText('dashboard-client');
-  await expect(created).toContainText('1h');
+  await expect(page.locator('versola-clients-list')).toContainText('1h');
 
   expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toEqual({
     tenantId: 'tenant-alpha',
@@ -349,11 +377,9 @@ test('dates a just-created client by the time the registration answered with', a
   await addRedirectUri(page, 'https://dashboard.example/callback');
   await finishCreate(page);
 
-  await clientCard(page, 'Dashboard Client').getByRole('button', { name: 'Edit client dashboard-client' }).click();
-
   // Central settles the registration time; without it coming back in the response the client
   // would read as undated until the list was loaded again.
-  await expect(page.locator('.form-actions-note')).toHaveText('Confidential client · created today');
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Created today');
 });
 
 test('creates a native client authenticated by edge, without a secret or rotation controls', async ({ page }) => {
@@ -380,11 +406,10 @@ test('creates a native client authenticated by edge, without a secret or rotatio
   await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Copy secret', exact: true })).toHaveCount(0);
 
-  // The list itself shows the client type, so it's discoverable without opening the edit form.
-  await expect(clientCard(page, 'Mobile App').locator('.badge-native')).toHaveText('Native');
+  // The page says what kind of client it is, in the same words the wizard used.
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Mobile or desktop app');
 
-  await clientCard(page, 'Mobile App').getByRole('button', { name: 'Edit client mobile-app' }).click();
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
 });
 
@@ -407,12 +432,12 @@ test('settles the client type from the kind step, and fixes it once created', as
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Back', exact: true }).click();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-  await expect(clientCard(page, 'Alpha Web').locator('.badge-web')).toHaveText('Web');
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await expect(clientCard(page, 'Alpha Web')).toContainText('Web app');
+  await openClientPage(page, 'alpha-web');
+  await expect(page.locator('versola-clients-list .view-meta')).toContainText('Web app');
   await openEditSection(page, 'How users sign in');
-  await expect(page.getByText('Client type', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'web', exact: true })).toBeDisabled();
-  await expect(page.getByRole('button', { name: 'native', exact: true })).toBeDisabled();
+  await expect(page.getByText('Client type', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'native', exact: true })).toHaveCount(0);
 });
 
 test('gates each step behind its own answer and marks the stepper as the wizard advances', async ({ page }) => {
@@ -790,7 +815,7 @@ test('keeps the registered subject when an edge-fronted client is edited', async
     state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
   });
 
-  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openClientPage(page, 'edge-mobile');
   await openEditSection(page, 'Token lifetimes');
   await page.locator('versola-client-form #ttl').fill('2');
   await saveEdit(page);
@@ -806,7 +831,7 @@ test('does not report an edge-fronted client as drifted from its template', asyn
       dpopBoundAccessTokens: false, certificateBoundAccessTokens: true }] } },
   });
 
-  await clientCard(page, 'Edge Mobile').getByRole('button', { name: 'Edit client edge-mobile' }).click();
+  await openClientPage(page, 'edge-mobile');
 
   // The certificate credential binds the token, which is what the web template asks for.
   await expect(page.locator('versola-client-form .template-badge.drift')).toHaveCount(0);
@@ -935,8 +960,7 @@ test('registers a private_key_jwt service client with a key set that must be val
 
   // private_key_jwt is a confidential method, but not client_secret - Central issues no
   // secret for it, so there is none to rotate or forget.
-  await clientCard(page, 'Assertion Client').getByRole('button', { name: 'Edit client assertion-client' }).click();
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'Delete old secret', exact: true })).toHaveCount(0);
 });
 
@@ -982,7 +1006,7 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
 
   // OTP delivery is not asked for at creation - the credential picks the channel - so this is
   // the edit page, where the template and the channel are both settable.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'How users sign in');
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
   await expect(page.getByLabel('OTP Template')).toBeVisible();
@@ -1051,7 +1075,6 @@ test('configures a registration flow and sends it when creating a client', async
     },
   });
 
-  await clientCard(page, 'Registering Client').getByRole('button', { name: 'Edit client registering-client' }).click();
   await openEditSection(page, 'Registration and consent');
   await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
   await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
@@ -1115,7 +1138,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
     },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Registration and consent');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
@@ -1133,7 +1156,7 @@ test('explains consent settings with info buttons', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Registration and consent');
 
   await page.getByRole('button', { name: 'Consent settings info' }).click();
@@ -1163,10 +1186,12 @@ test('explains which client fields are shown on the consent screen', async ({ pa
   });
 
   // The client name is identity, shown above the collapsed groups; scopes are inside one.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   await page.getByRole('button', { name: 'Consent display info', exact: true }).click();
   await expect(page.getByText('Shown to the user on the consent screen. Each locale can have its own name.', { exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await openEditSection(page, 'Scopes and permissions');
   await page.getByRole('button', { name: 'OAuth scopes consent info', exact: true }).click();
   await expect(page.getByText('Scope descriptions and their claim descriptions are shown to the user before the authorization code is issued.', { exact: true })).toBeVisible();
@@ -1178,7 +1203,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Registration and consent');
   const consentRow = page.getByText('Consent', { exact: true }).locator('..');
   await consentRow.locator('label.toggle').click();
@@ -1217,19 +1242,22 @@ test('hides registration settings when inline password is enabled', async ({ pag
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  // Inline password is an edit-page refinement; turning it on leaves sign-up nothing to verify.
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  // Inline password is a sign-in refinement; turning it on leaves sign-up nothing to verify.
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Registration and consent');
 
   const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
   await registrationRow.locator('label.toggle').click();
   await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
   await openEditSection(page, 'How users sign in');
   await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
-  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
-
   await saveEdit(page);
+
+  await openEditSection(page, 'Registration and consent');
+  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
   // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
   // the key is omitted rather than sent as an explicit null.
@@ -1390,61 +1418,84 @@ test('shows redirect URI validation with a red input border', async ({ page }) =
   await expect(redirectUriField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
 });
 
-test('updates a client and sends patch-style changes', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [alphaClient, serviceClient] },
-      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
-      permissions: {
-        'tenant-alpha': [
-          { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
-          { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
-        ],
-      },
-    },
-  });
+const patchState = {
+  clients: { 'tenant-alpha': [alphaClient, serviceClient] },
+  scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }, { scope: 'email', description: { en: 'Email scope' }, claims: [] }] },
+  permissions: {
+    'tenant-alpha': [
+      { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] },
+      { permission: 'alpha.write', description: { en: 'Write alpha resources' }, endpointIds: [101] },
+    ],
+  },
+};
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+// Each group of settings is saved on its own, and sends only what that group changed.
+
+test('sends the name and redirect URIs as a patch when General is saved', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   await page.getByLabel('Client Name').fill('Alpha Console');
-
-  await openEditSection(page, 'How users sign in');
   await page.getByRole('button', { name: 'Remove redirect URI https://alpha.example/callback', exact: true }).click();
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://alpha.example/admin/callback');
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
+  await saveEdit(page);
 
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
+  expect(body).toMatchObject({
+    clientId: 'alpha-web',
+    clientName: { en: 'Alpha Console' },
+    redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
+  });
+  expect(body).not.toHaveProperty('accessTokenTtl');
+  expect(body.scope ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+  await expect(page.locator('versola-clients-list .view-title')).toHaveText('Alpha Console');
+});
+
+test('sends scopes and permissions as a patch when they are saved', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Scopes and permissions');
   await page.locator('.checkbox-item', { hasText: 'openid' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'email' }).getByRole('checkbox').check();
   await page.locator('.checkbox-item', { hasText: 'alpha.read' }).getByRole('checkbox').uncheck();
   await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
-
-  await openEditSection(page, 'Token lifetimes');
-  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
-
   await saveEdit(page);
 
-  // Verify the API request was made correctly
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toEqual({
+  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
     clientId: 'alpha-web',
-    clientName: { en: 'Alpha Console' },
-    otpTemplateId: 'default',
-    redirectUris: { add: ['https://alpha.example/admin/callback'], remove: ['https://alpha.example/callback'] },
     scope: { add: ['email'], remove: ['openid'] },
     permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
-    accessTokenTtl: 7200,
-    authFlow: {
-      primary: {
-        credentials: ['phone'],
-        inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
-      },
-      passkey: null,
-      equivalents: {},
-      otpType: 'sms',
-    },
-    frontChannelLogoutSessionRequired: false,
   });
+});
+
+test('sends the access token lifetime when Tokens is saved, and nothing else about the client', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
+  await saveEdit(page);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
+  expect(body).toMatchObject({ clientId: 'alpha-web', accessTokenTtl: 7200 });
+  expect(body).not.toHaveProperty('clientName');
+  expect(body.redirectUris ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+  expect(body.scope ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
+});
+
+test('goes back to the client page without saving when a section is cancelled', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: patchState });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+  expect(api.requests.filter(request => request.method === 'PUT')).toHaveLength(0);
 });
 
 test('does not patch a localized client name after reverting an edit', async ({ page }) => {
@@ -1453,7 +1504,8 @@ test('does not patch a localized client name after reverting an edit', async ({ 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'General');
   const clientName = page.getByLabel('Client Name');
   await clientName.fill('Temporary name');
   await clientName.fill('Alpha Web');
@@ -1462,8 +1514,8 @@ test('does not patch a localized client name after reverting an edit', async ({ 
   expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).not.toHaveProperty('clientName');
 });
 
-test('clears the auth flow on an existing client by sending an explicit null', async ({ page }) => {
-  const api = await loadAdminApp(page, {
+test('does not let an existing client switch its sign-in flow, which would change what kind of client it is', async ({ page }) => {
+  await loadAdminApp(page, {
     path: clientsPath,
     state: {
       clients: { 'tenant-alpha': [alphaClient] },
@@ -1471,42 +1523,10 @@ test('clears the auth flow on an existing client by sending an explicit null', a
     },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'How users sign in');
 
-  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
-  await authFlowRow.locator('label.toggle').click();
-
-  await saveEdit(page);
-
-  // An explicit null is required: an omitted key would leave the stored flow in place.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    clientId: 'alpha-web',
-    authFlow: null,
-  });
-});
-
-test('leaves a native client public when its sign-in flow is switched off', async ({ page }) => {
-  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [nativeClient] },
-      scopes: { 'tenant-alpha': [{ scope: 'openid', description: { en: 'OpenID scope' }, claims: [] }] },
-    },
-  });
-
-  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
-  await openEditSection(page, 'How users sign in');
-
-  const authFlowRow = page.getByText('Authorization Flow', { exact: true }).locator('..');
-  await authFlowRow.locator('label.toggle').click();
-
-  await saveEdit(page);
-
-  // A native client holds no secret, so moving it onto client_secret would leave it unable
-  // to authenticate at all - the method is the client's own, not one the flow toggle decides.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).not.toHaveProperty('authMethod');
+  await expect(page.getByText('Authorization Flow', { exact: true })).toHaveCount(0);
 });
 
 test('does not carry a stale logout error into a kind that has no logout block', async ({ page }) => {
@@ -1531,8 +1551,8 @@ test('does not carry a stale logout error into a kind that has no logout block',
   await expect(page.getByRole('button', { name: 'Continue to permissions' })).toBeEnabled();
 });
 
-test('hides the credential picker on a native client instead of accepting a credential it drops', async ({ page }) => {
-  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, authMethod: 'none' as const };
+test('shows a public native client as having no credential, with nothing to register', async ({ page }) => {
+  const nativeClient = { ...alphaClient, id: 'alpha-native', clientName: { en: 'Alpha Native' }, clientType: 'native' as const, authMethod: 'none' as const };
   await loadAdminApp(page, {
     path: clientsPath,
     state: {
@@ -1541,15 +1561,14 @@ test('hides the credential picker on a native client instead of accepting a cred
     },
   });
 
-  await clientCard(page, 'Alpha Native').getByRole('button', { name: 'Edit client alpha-native' }).click();
-  await openEditSection(page, 'Client credential and binding');
+  await openClientPage(page, 'alpha-native');
 
-  // authMethodFor pins a native client to 'none' no matter which mode is picked, so the picker
-  // that lets an operator fill in a certificate or a key set that the update would then drop
-  // (and Central's validation would then reject) must not be offered at all.
+  // authMethodFor pins a native client to 'none', so a credential an update would drop is never
+  // offered: the page states what the client has and offers no way to pick another.
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('None (public client)');
   await expect(page.getByRole('button', { name: 'mTLS certificate', exact: true })).toHaveCount(0);
   await expect(page.getByRole('button', { name: 'private_key_jwt', exact: true })).toHaveCount(0);
-  await expect(page.getByText('Public client, no secret')).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Keys' })).toHaveCount(0);
 });
 
 test('gates the sign-in step on the consent URIs it edits', async ({ page }) => {
@@ -1579,13 +1598,13 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   const api = await loadAdminApp(page, { path: clientsPath });
 
   // Click Edit on the client
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
 
-  // Click Rotate Secret button
-  await page.getByRole('button', { name: 'Rotate Secret', exact: true }).click();
+  // Click Rotate secret button
+  await page.getByRole('button', { name: 'Rotate secret', exact: true }).click();
 
-  // Wait for the form to close (it should close after rotation)
-  await expect(page.getByRole('button', { name: 'Rotate Secret', exact: true })).not.toBeVisible();
+  // The old secret stays valid until it is deleted, so Rotate gives way to Delete old secret.
+  await expect(page.getByRole('button', { name: 'Rotate secret', exact: true })).not.toBeVisible();
 
   // Verify the rotate secret API was called correctly
   expect((await findRequest(api.requests, 'POST', '/configuration/clients/rotate-secret')).searchParams).toEqual({
@@ -1593,10 +1612,9 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   });
 
   // The client card should show "Secret Rotation" badge
-  await expect(page.getByText('Secret Rotation')).toBeVisible();
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Secret rotation')).toBeVisible();
 
-  // Edit the client again to delete the old secret
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  // Delete the old secret from the same page
   await page.getByRole('button', { name: 'Delete old secret', exact: true }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
@@ -1609,7 +1627,7 @@ test('rotates a client secret and deletes the previous secret', async ({ page })
   });
 
   // After deleting the old secret, the "Secret Rotation" indicator should be gone
-  await expect(clientCard(page, 'Alpha Web')).not.toContainText('Secret Rotation');
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Secret rotation')).toHaveCount(0);
 });
 
 test('deletes a client through the confirm dialog and reaches the empty state', async ({ page }) => {
@@ -1618,13 +1636,14 @@ test('deletes a client through the confirm dialog and reaches the empty state', 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Delete client alpha-web' }).click();
+  await page.getByRole('button', { name: 'Actions for alpha-web' }).click();
+  await page.getByRole('menuitem', { name: 'Delete client alpha-web' }).click();
   await page.getByRole('dialog').getByRole('button', { name: 'Delete', exact: true }).click();
 
   expect((await findRequest(api.requests, 'DELETE', '/configuration/clients')).searchParams).toEqual({
     clientId: 'alpha-web',
   });
-  await expect(page.locator('.client-card')).toHaveCount(0);
+  await expect(page.locator('versola-clients-list tbody tr')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No OAuth clients yet', exact: true })).toBeVisible();
 });
 
@@ -1698,77 +1717,54 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
   });
 
   // The client should NOT be added to the list
-  await expect(page.locator('.client-card').filter({ hasText: 'Duplicate Client' })).toHaveCount(0);
+  await expect(page.locator('versola-clients-list tbody tr').filter({ hasText: 'Duplicate Client' })).toHaveCount(0);
 });
 
-test('shows a templated client against the template it was registered from', async ({ page }) => {
+test('says what kind a client is, from the template it was registered from', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [templatedClient] } },
+    state: { clients: { 'tenant-alpha': [edgeNativeClient] } },
   });
 
-  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+  await openClientPage(page, 'edge-mobile');
 
-  await expect(page.getByText('Mobile or desktop app')).toBeVisible();
-  await expect(page.getByText(/settings? differ from the template/)).toHaveCount(0);
-  await expect(page.getByText('Differences from the template')).toHaveCount(0);
-
-  // Every group the template decides says so; the ones it says nothing about stay untagged.
-  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Request integrity, from template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Scopes and permissions/ })).not.toHaveAccessibleName(/from template|changed/);
-
-  // The client ID is shown but cannot be edited - it is the one field creation fixes.
-  await expect(page.getByLabel('Client ID')).toHaveValue('mobile-checkout');
-  await expect(page.getByLabel('Client ID')).toHaveAttribute('readonly', '');
+  await expect(page.locator('versola-clients-list .view-meta').getByText('Mobile or desktop app', { exact: true })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Fixed');
+  await expect(page.getByText(/differ from the template/)).toHaveCount(0);
 });
 
-test('lists the settings that differ from the template and resets them back', async ({ page }) => {
+test('flags settings stored below what the client type requires, and moves them only upwards', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [driftedClient] } },
+    state: { clients: { 'tenant-alpha': [{ ...edgeNativeClient, requirePushedAuthorizationRequests: false }] } },
   });
 
-  await clientCard(page, 'Mobile Checkout').getByRole('button', { name: 'Edit client mobile-checkout' }).click();
+  await openClientPage(page, 'edge-mobile');
+  await expect(page.getByText('Some of these differ from what this type requires.')).toBeVisible();
+  await page.getByRole('button', { name: 'Review', exact: true }).click();
 
-  await expect(page.getByText('2 settings differ from the template')).toBeVisible();
-
-  const panel = page.locator('.drift-panel');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('Access token TTL');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('1 h');
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('4 h');
-  await expect(panel.locator('.drift-row').nth(1)).toContainText('Pushed authorization requests');
-
-  // The two groups holding those settings say so; the untouched ones still read as the template's.
-  await expect(page.getByRole('button', { name: /^Token lifetimes, changed from the template/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Client credential and binding, from template/ })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Reset all 2 to template', exact: true }).click();
-
-  await expect(page.getByText('2 settings differ from the template')).toHaveCount(0);
-  await expect(page.locator('.drift-panel')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Token lifetimes, from template/ })).toBeVisible();
+  const par = page.locator('versola-client-form .locked-setting', { hasText: 'Pushed authorization requests' });
+  await expect(par.getByText('Stored as off, but this client must have it on.')).toBeVisible();
+  await par.getByRole('button', { name: 'Set to on' }).click();
+  await expect(par.locator('.locked-problem')).toHaveCount(0);
 
   await saveEdit(page);
-
   expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    accessTokenTtl: 3600,
+    clientId: 'edge-mobile',
     requirePushedAuthorizationRequests: true,
   });
 });
 
-test('lists a web client moved onto a secret as differing from its template', async ({ page }) => {
+test('shows a web client on a secret as holding its own credential, not as one fronted by edge', async ({ page }) => {
   await loadAdminApp(page, {
     path: clientsPath,
-    state: { clients: { 'tenant-alpha': [secretBackedHighClient] } },
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [secretBackedHighClient] } },
   });
 
-  await clientCard(page, 'Web Downgraded').getByRole('button', { name: 'Edit client web-downgraded' }).click();
+  await openClientPage(page, 'web-downgraded');
 
-  const panel = page.locator('.drift-panel');
-  await expect(panel.locator('.drift-row')).toHaveCount(1);
-  await expect(panel.locator('.drift-row').nth(0)).toContainText('Certificate-bound access tokens');
-  await expect(panel.getByRole('button', { name: 'Reset it to template' })).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Client secret');
+  await expect(page.getByText('Some of these differ from what this type requires.')).toHaveCount(0);
 });
 
 test('says nothing about a template for a client registered without one', async ({ page }) => {
@@ -1777,9 +1773,88 @@ test('says nothing about a template for a client registered without one', async 
     state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
-  await clientCard(page, 'Alpha Web').getByRole('button', { name: 'Edit client alpha-web' }).click();
+  await openClientPage(page, 'alpha-web');
 
-  await expect(page.locator('.template-badges')).toHaveCount(0);
-  await expect(page.locator('.drift-panel')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: /^Token lifetimes/ })).not.toHaveAccessibleName(/from template|changed/);
+  await expect(page.getByText(/template/i)).toHaveCount(0);
+});
+
+// A client's kind is fixed at creation, and what the kind implies is shown rather than offered.
+
+test('says what an existing client is and that it meets FAPI 2.0, at the top of its page', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
+  await openClientPage(page, 'edge-mobile');
+
+  const meta = page.locator('versola-clients-list .view-meta');
+  await expect(meta.getByText('Mobile or desktop app', { exact: true })).toBeVisible();
+  await expect(meta.getByText('FAPI 2.0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Meets FAPI 2.0', { exact: false })).toBeVisible();
+});
+
+test('shows a mobile app\'s DPoP and PAR as fixed by its type, with nothing to switch', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [edgeNativeClient] } } });
+  await openClientPage(page, 'edge-mobile');
+
+  const binding = page.getByRole('region', { name: 'Token binding and requests' });
+  await expect(binding).toContainText('Bound to a DPoP key');
+  await expect(binding).toContainText('Pushed through edge (PAR)');
+  await expect(binding.getByText('By type')).toHaveCount(3);
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit token binding and requests', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: 'Type' })).toContainText('Fixed');
+});
+
+test('tells a FAPI 2.0 client from a standard one on a standard tenant, in the list and on its page', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [edgeNativeClient, secretBackedHighClient] } },
+  });
+
+  await expect(clientCard(page, 'Edge Mobile')).toContainText('FAPI 2.0');
+  await expect(clientCard(page, 'Web Downgraded')).toContainText('Standard');
+
+  await openClientPage(page, 'web-downgraded');
+  await expect(page.getByText('Standard profile client, not FAPI 2.0')).toBeVisible();
+});
+
+// Refresh tokens are issued to a client with the offline_access scope and to no other.
+
+test('says a client without offline_access is issued no refresh token, and offers no lifetime for one', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: { clients: { 'tenant-alpha': [{ ...alphaClient, scope: ['openid'] }] } },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await expect(page.getByRole('region', { name: 'Tokens' })).toContainText('Not issued');
+
+  await openEditSection(page, 'Token lifetimes');
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .locked-setting', { hasText: 'Refresh token' })).toContainText('offline_access');
+});
+
+test('lets the refresh token lifetime be changed once offline_access is in scope', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [offlineClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+  await expect(page.getByLabel('Refresh Token TTL (days) *')).toBeEnabled();
+  await expect(page.locator('versola-client-form .locked-setting', { hasText: 'Refresh token' })).toHaveCount(0);
+});
+
+test('offers PAR and JAR to a web client that authenticates for itself, since its type leaves them open', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { tenants: standardTenants, clients: { 'tenant-alpha': [secretBackedHighClient] } },
+  });
+
+  await openClientPage(page, 'web-downgraded');
+  await expect(page.getByRole('region', { name: 'Token binding and requests' })).not.toContainText('By type');
+  await page.getByRole('button', { name: 'Edit token binding and requests', exact: true }).click();
+  await page.getByRole('checkbox', { name: /Pushed Authorization Requests/ }).uncheck();
+  await saveEdit(page);
+
+  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+    clientId: 'web-downgraded',
+    requirePushedAuthorizationRequests: false,
+  });
 });
