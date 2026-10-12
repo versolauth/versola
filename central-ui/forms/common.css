@@ -179,6 +179,9 @@ form {
 .error-text {
   color: var(--danger);
 }
+.success-text {
+  color: var(--success);
+}
 #message {
   font-size: 1rem;
   margin-top: 20px;
