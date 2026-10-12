@@ -103,6 +103,7 @@ object ConversationControllerSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   def successfulSubmitTestCase(

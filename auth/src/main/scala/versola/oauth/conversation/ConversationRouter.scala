@@ -436,4 +436,3 @@ object ConversationRouter:
         case _: ConversationStep.PasskeyEnroll => "passkey_enroll"
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access_denied"
-        case ConversationStep.IdentifierInUse => "identifier_in_use"

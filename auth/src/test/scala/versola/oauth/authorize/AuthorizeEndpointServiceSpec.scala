@@ -117,6 +117,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val rawSessionId = SessionId(Array.fill(32)(5.toByte))
@@ -267,6 +268,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val spec = suite("AuthorizeEndpointService")(

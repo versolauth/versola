@@ -145,7 +145,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
   const [changeKind, setChangeKind] = createSignal<IdentifierKind>('phone');
   const [changeValue, setChangeValue] = createSignal('');
   const [changing, setChanging] = createSignal(false);
-  const [changeError, setChangeError] = createSignal<'invalid' | 'unchanged' | 'failed' | null>(null);
+  const [changeError, setChangeError] = createSignal<'invalid' | 'in_use' | 'failed' | null>(null);
 
   const revokeSession = async (session: AccountSession) => {
     if (busySessionId()) return;
@@ -250,7 +250,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
         window.location.assign(`${window.location.origin}/login/current?${params}`);
         return;
       }
-      setChangeError(res.status === 409 ? 'unchanged' : res.status === 400 ? 'invalid' : 'failed');
+      setChangeError(res.status === 409 ? 'in_use' : res.status === 400 ? 'invalid' : 'failed');
     } catch (_) {
       setChangeError('failed');
     }
@@ -351,7 +351,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
           <Show when={changeError()}>
             {(error) => (
               <div class="error-text account-enroll-error" role="alert">
-                {error() === 'invalid' ? t().change_invalid : error() === 'unchanged' ? t().change_unchanged : t().change_failed}
+                {error() === 'invalid' ? t().change_invalid : error() === 'in_use' ? t().change_in_use : t().change_failed}
               </div>
             )}
           </Show>

@@ -47,7 +47,7 @@ object IdentifierChangeKind:
 case class IdentifierChange(
     kind: IdentifierChangeKind,
     credential: Either[Email, Phone],
-    stage: IdentifierChangeStage = IdentifierChangeStage.Pending,
+    stage: IdentifierChangeStage,
 )
 
 object IdentifierChange:

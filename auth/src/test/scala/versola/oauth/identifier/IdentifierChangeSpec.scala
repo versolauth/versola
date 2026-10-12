@@ -7,7 +7,7 @@ import zio.test.*
 
 object IdentifierChangeSpec extends UnitSpecBase:
 
-  private val phoneChange = IdentifierChange(IdentifierChangeKind.Phone, Right(Phone("+77011234567")))
+  private val phoneChange = IdentifierChange(IdentifierChangeKind.Phone, Right(Phone("+77011234567")), IdentifierChangeStage.Pending)
   private val emailChange = IdentifierChange(IdentifierChangeKind.Email, Left(Email("new@example.com")), IdentifierChangeStage.VerifyNew)
 
   val spec = suite("IdentifierChange")(

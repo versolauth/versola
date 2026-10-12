@@ -449,7 +449,7 @@ version keeps running on the new schema. Two things to know when upgrading:
 
 `central` also gains the internal `POST /users/identifier-changes` (called by `auth`, authorised like
 `/users/registrations`) and the account endpoint `POST /settings/identifier/intent` is added to the
-`auth` resource on the next start; the new `identifier-in-use` login form is seeded the same way.
+`auth` resource on the next start.
 
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the

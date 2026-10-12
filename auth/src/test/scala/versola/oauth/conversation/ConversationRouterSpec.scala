@@ -117,6 +117,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val otpRecord = ConversationRecord(
@@ -154,6 +155,7 @@ object ConversationRouterSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val login = Login("testuser")
@@ -346,7 +348,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val verifying = otpRecord.copy(
           identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone), IdentifierChangeStage.VerifyNew)),
         )
-        val committed = ConversationResult.RenderStep(ConversationStep.IdentifierInUse)
+        val committed = ConversationResult.RenderStep(ConversationStep.AccessDenied)
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(verifying))
           _ <- env.otpConversationService.checkIdentifierOtp.succeedsWith(ConversationResult.StepPassed(verifying))
@@ -378,7 +380,8 @@ object ConversationRouterSpec extends UnitSpecBase:
       },
       test("treat the code of an identifier change that is still proving the old identifier as an ordinary factor") {
         val env = Env()
-        val pending = otpRecord.copy(identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone))))
+        val pending =
+          otpRecord.copy(identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(phone), IdentifierChangeStage.Pending)))
         val successResult = ConversationResult.StepPassed(pending)
         val passed = ConversationResult.RenderStep(ConversationStep.AccessDenied)
         for

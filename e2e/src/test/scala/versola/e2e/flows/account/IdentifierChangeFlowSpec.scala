@@ -156,21 +156,14 @@ object IdentifierChangeFlowSpec extends E2ESpec:
       yield assertTrue(again.step.contains(ConversationStep.Otp)).label("still asking for the code") &&
         assertTrue(info.phoneNumber.contains(account.phone)).label("the phone was not changed")
     },
-    test("a phone another user holds ends in a specific step and changes nothing") {
+    test("a phone another user holds is refused on the page, before the browser leaves it") {
       for
         (shared, auth) <- setup(Flows.Id.IdentifierChange)
         account <- newAccount(auth, shared)
         other <- newAccount(auth, shared)
-        session <- signIn(auth, account)
-        _ <- auth.createIdentifierChangeIntent(account.caller, "phone", other.phone)
-        started <- startChange(auth, account, Some(session), Acr.PhoneChange, other.phone).assertChallengeRedirect
-        cookie = started.conversationCookie.get
-        _ <- proveOldIdentifier(auth, cookie)
-        newOtp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(cookie, fixedOtp, newOtp.csrf)
-        taken <- auth.getChallenge(cookie).assertStep(ConversationStep.IdentifierInUse)
+        taken <- auth.createIdentifierChangeIntent(account.caller, "phone", other.phone)
         info <- userinfoOf(auth, account)
-      yield assertTrue(taken.step.contains(ConversationStep.IdentifierInUse)) &&
+      yield assertTrue(taken.status == Status.Conflict) &&
         assertTrue(info.phoneNumber.contains(account.phone)).label("the phone was not changed")
     },
     test("is refused without an intent from the account page") {

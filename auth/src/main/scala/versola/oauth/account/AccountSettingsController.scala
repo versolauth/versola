@@ -138,8 +138,8 @@ object AccountSettingsController extends Controller:
           .catchAll:
             case IdentifierChangeIntentError.InvalidValue =>
               Observability.setError("invalid_identifier").as(Response.status(Status.BadRequest))
-            case IdentifierChangeIntentError.Unchanged =>
-              Observability.setError("identifier_unchanged").as(Response.status(Status.Conflict))
+            case IdentifierChangeIntentError.AlreadyInUse =>
+              Observability.setError("identifier_in_use").as(Response.status(Status.Conflict))
             case IdentifierChangeIntentError.UserNotFound =>
               Observability.setError("user_not_found").as(Response.status(Status.NotFound))
             case error: Throwable => ZIO.fail(error)

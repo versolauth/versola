@@ -47,6 +47,7 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
     resources = Nil,
     authorizationDetails = None,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   case class Services(

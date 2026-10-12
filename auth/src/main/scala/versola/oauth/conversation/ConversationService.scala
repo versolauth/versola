@@ -119,8 +119,8 @@ trait ConversationService:
   ): Task[ConversationResult]
 
   /** Moves the user's phone or email to the verified new value, then continues to [[finish]].
-    * When another user holds the identifier nothing changes and the IdentifierInUse step is
-    * rendered.
+    * When another user holds the identifier (the account page checks before it starts, so this is
+    * a race lost) nothing changes and the conversation ends in access denied.
     */
   def commitIdentifierChange(authId: AuthId, conversation: ConversationRecord): Task[ConversationResult.Render]
 
@@ -692,8 +692,10 @@ object ConversationService:
             case IdentifierChangeResult.Changed(version) =>
               applyIdentifierChange(authId, conversation, userId, change, version)
             case IdentifierChangeResult.AlreadyInUse =>
-              Observability.setError("identifier_in_use") *>
-                renderStep(authId, conversation.copy(identifierChange = None), ConversationStep.IdentifierInUse)
+              // The account page asked central's index through auth before redirecting, so reaching
+              // this means the identifier was taken in between: not a state a user is meant to see.
+              Observability.setError("illegal_state", Some("identifier taken while a change was in progress")) *>
+                accessDenied(authId, conversation)
             case IdentifierChangeResult.UserNotFound =>
               Observability.setError("user_not_found") *> accessDenied(authId, conversation)
         case _ =>

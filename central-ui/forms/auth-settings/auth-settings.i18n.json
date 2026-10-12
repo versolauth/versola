@@ -31,8 +31,8 @@
     "new_email_placeholder": "New email",
     "change_button": "Change",
     "change_invalid": "Enter a valid value. A phone number starts with + and the country code",
-    "change_unchanged": "This is already your current value",
-    "change_failed": "Could not start the change. Please try again"
+    "change_failed": "Could not start the change. Please try again",
+    "change_in_use": "This number or email is already in use"
   },
   "ru": {
     "page_title": "Безопасность",
@@ -66,7 +66,7 @@
     "new_email_placeholder": "Новый email",
     "change_button": "Изменить",
     "change_invalid": "Введите корректное значение. Номер начинается с + и кода страны",
-    "change_unchanged": "Это уже ваше текущее значение",
-    "change_failed": "Не удалось начать изменение. Попробуйте ещё раз"
+    "change_failed": "Не удалось начать изменение. Попробуйте ещё раз",
+    "change_in_use": "Этот номер или email уже используется"
   }
 }

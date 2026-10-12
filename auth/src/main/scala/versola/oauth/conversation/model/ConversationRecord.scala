@@ -81,7 +81,7 @@ case class ConversationRecord(
     dpopJkt: Option[String],
     /** The change of the user's phone or email this conversation carries out (#634), `None` for an
       * ordinary login. While it is set, `finish` first has the user prove the new identifier. */
-    identifierChange: Option[IdentifierChange] = None,
+    identifierChange: Option[IdentifierChange],
 ):
   def user: Option[UserRecord] = userId.map { userId =>
     UserRecord(

@@ -10,4 +10,3 @@ object StepId:
   case object PasskeyEnroll extends StepId
   case object Consent extends StepId
   case object AccessDenied extends StepId
-  case object IdentifierInUse extends StepId

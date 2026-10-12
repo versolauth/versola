@@ -42,11 +42,11 @@ private[authorize] case class AuthorizeRequest(
       * code against. `None` when the parameter was absent, which leaves redemption open to
       * any key (or none). */
     dpopJkt: Option[String],
-    ip: Option[String] = None,
     /** The reserved `urn:versola:acr:{phone,email}-change` value found in `acr_values`, taken out
       * of [[acrValues]]: it selects the identifier-change mode and is not an authentication
       * requirement. `loginHint` then holds the new identifier. */
-    identifierChange: Option[IdentifierChangeKind] = None,
+    identifierChange: Option[IdentifierChangeKind],
+    ip: Option[String] = None,
 ):
   def promptNone: Boolean = prompt.contains(Prompt.none)
   def promptLogin: Boolean = prompt.contains(Prompt.login)

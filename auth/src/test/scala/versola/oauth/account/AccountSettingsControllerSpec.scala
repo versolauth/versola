@@ -470,10 +470,10 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.InvalidValue),
       ),
       controllerTestCase(
-        description = "answers 409 when the user already has the identifier",
+        description = "answers 409 when the identifier is already in use",
         request = intentRequest("""{"kind":"email","value":"me@example.com"}"""),
         expectedStatus = Status.Conflict,
-        setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.Unchanged),
+        setup = (_, _, _, _, _, _, intents) => intents.create.failsWith(IdentifierChangeIntentError.AlreadyInUse),
       ),
       controllerTestCase(
         description = "answers 404 when the user is unknown",

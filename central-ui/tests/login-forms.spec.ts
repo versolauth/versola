@@ -431,14 +431,6 @@ test.describe('terminal screens', () => {
     await expect(page.getByRole('link', { name: t.return_button })).toHaveAttribute('href', 'https://app.example/start');
   });
 
-  test('identifier-in-use: says nothing changed and returns to the client', async ({ page }) => {
-    const { t } = await renderForm(page, 'identifier-in-use', { step: { type: 'identifier-in-use', redirectUri: 'https://app.example/start' } });
-
-    await expect(page.getByRole('heading', { name: t.title })).toBeVisible();
-    await expect(page.getByText(t.description)).toBeVisible();
-    await expect(page.getByRole('link', { name: t.return_button })).toHaveAttribute('href', 'https://app.example/start');
-  });
-
   test('signed-out: notifies every front-channel logout URI, then continues on its own', async ({ page }) => {
     await page.clock.install();
     await page.route('**/rp-*/logout', route => route.fulfill({ contentType: 'text/html', body: '' }));
@@ -470,7 +462,6 @@ const accessibilityCases: Array<[string, FormConfig]> = [
   ['conversation-expired', { step: { type: 'conversation-expired', redirectUri: 'https://app.example' } }],
   ['service-unavailable', { step: { type: 'service-unavailable', redirectUri: 'https://app.example' } }],
   ['access-denied', { step: { type: 'access-denied', redirectUri: 'https://app.example' } }],
-  ['identifier-in-use', { step: { type: 'identifier-in-use', redirectUri: 'https://app.example' } }],
   ['signed-out', { step: { type: 'signed-out', logoutUris: [], redirectUri: 'https://app.example' } }],
 ];
 

@@ -30,6 +30,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
       for
         _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())
         _ <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+787011234568")
         calls = env.intents.create.calls
@@ -39,6 +40,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
       val env = Env()
       for
         _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())
         _ <- env.service.create(userId, clientId, IdentifierChangeKind.Email, "new@example.com")
         calls = env.intents.create.calls
@@ -63,17 +65,18 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
         created.isEmpty,
       )
     },
-    test("refuses the identifier the user already has") {
+    test("refuses an identifier that is already in use, the user's own or another's, before anything is recorded") {
       val env = Env()
       for
         _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(user))
+        _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(UserId(UUID.randomUUID()))))
         phone <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, currentPhone).flip
-        email <- env.service.create(userId, clientId, IdentifierChangeKind.Email, currentEmail).flip
+        email <- env.service.create(userId, clientId, IdentifierChangeKind.Email, "taken@example.com").flip
         created = env.intents.create.calls
       yield assertTrue(
-        phone == IdentifierChangeIntentError.Unchanged,
-        email == IdentifierChangeIntentError.Unchanged,
+        phone == IdentifierChangeIntentError.AlreadyInUse,
+        email == IdentifierChangeIntentError.AlreadyInUse,
         created.isEmpty,
       )
     },
@@ -91,6 +94,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
       for
         _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(email = Some(currentEmail))))
+        _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())
         _ <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+77011234568")
         created = env.intents.create.calls

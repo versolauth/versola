@@ -7,7 +7,7 @@ import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
-import versola.oauth.identifier.{IdentifierChange, IdentifierChangeIntentRepository}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeIntentRepository, IdentifierChangeStage}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionService
@@ -344,7 +344,7 @@ object AuthorizeEndpointService:
               ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
             case Some(info) =>
               identifierChangeIntents.consume(info.record.userId, request.clientId, kind, credential).flatMap:
-                case true => ZIO.some(IdentifierChange(kind, credential))
+                case true => ZIO.some(IdentifierChange(kind, credential, IdentifierChangeStage.Pending))
                 case false =>
                   ZIO.fail(Error.IdentifierChangeNotInitiated(
                     request.clientId,

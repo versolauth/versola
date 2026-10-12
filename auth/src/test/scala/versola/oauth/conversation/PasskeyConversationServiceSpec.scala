@@ -140,6 +140,7 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   // A minimal assertion response carrying a credential id, used as the throttle subject.

@@ -24,7 +24,7 @@ const formConfig = {
     add_passkey_button: 'Add a passkey', enroll_failed: 'Could not add the passkey',
     identifiers_title: 'Phone number and email', phone_label: 'Phone number', email_label: 'Email', change_kind_label: 'What to change',
     change_description: 'To change one, enter the new value.', new_phone_placeholder: 'New phone number', new_email_placeholder: 'New email',
-    change_button: 'Change', change_invalid: 'Enter a valid value', change_unchanged: 'This is already your current value',
+    change_button: 'Change', change_invalid: 'Enter a valid value', change_in_use: 'This number or email is already in use',
     change_failed: 'Could not start the change',
   },
   locales: ['en'],
@@ -164,7 +164,7 @@ test('stays on the page and says why when the change cannot be started', async (
 
   await page.getByPlaceholder('New phone number').fill('+77011234567');
   await page.getByRole('button', { name: 'Change', exact: true }).click();
-  await expect(page.getByRole('alert')).toHaveText('This is already your current value');
+  await expect(page.getByRole('alert')).toHaveText('This number or email is already in use');
 
   status = 400;
   await page.getByRole('button', { name: 'Change', exact: true }).click();

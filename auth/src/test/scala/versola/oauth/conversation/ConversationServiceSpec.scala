@@ -86,6 +86,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   /** Consent already decided, so `finish` proceeds straight to issuing the code. */
@@ -98,7 +99,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     userId = Some(userId),
     priorSessionUserId = Some(userId),
     grantedScope = None,
-    identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone))),
+    identifierChange = Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone), IdentifierChangeStage.Pending)),
   )
 
   private val changeOtp = ConversationStep.Otp(
@@ -1022,7 +1023,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           claims = env.userRepository.patchClaims.calls
         yield assertTrue(claims == List((userId, Json.Obj("email_verified" -> Json.Bool(true)))))
       },
-      test("commit changes nothing and says so when another user holds the identifier") {
+      test("commit changes nothing and ends in access denied when another user took the identifier in the meantime") {
         val env = Env()
         for
           _ <- env.identifierChangeSyncClient.change.succeedsWith(IdentifierChangeResult.AlreadyInUse)
@@ -1031,7 +1032,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           upserted = env.userRepository.upsert.calls
           claims = env.userRepository.patchClaims.calls
         yield assertTrue(
-          result == ConversationResult.RenderStep(ConversationStep.IdentifierInUse),
+          result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           upserted.isEmpty,
           claims.isEmpty,
         )

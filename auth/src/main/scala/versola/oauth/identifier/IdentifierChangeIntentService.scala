@@ -10,8 +10,8 @@ enum IdentifierChangeIntentError:
   /** The value is not a valid identifier of that kind, or the tenant does not allow it. */
   case InvalidValue
 
-  /** The user already has this identifier. */
-  case Unchanged
+  /** Some user, this one included, already holds the identifier. */
+  case AlreadyInUse
 
   case UserNotFound
 
@@ -51,10 +51,10 @@ object IdentifierChangeIntentService:
           case IdentifierChangeKind.Email => ZIO.succeed(List.empty[String])
         credential <- ZIO.fromOption(IdentifierChangeCredentials.parse(kind, value, prefixes))
           .orElseFail(IdentifierChangeIntentError.InvalidValue)
-        user <- userRepository.find(userId).someOrFail(IdentifierChangeIntentError.UserNotFound)
-        current = kind match
-          case IdentifierChangeKind.Phone => user.phone.map(Right(_))
-          case IdentifierChangeKind.Email => user.email.map(Left(_))
-        _ <- ZIO.fail(IdentifierChangeIntentError.Unchanged).when(current.contains(credential))
+        _ <- userRepository.find(userId).someOrFail(IdentifierChangeIntentError.UserNotFound)
+        // Asked here, before the browser is sent through /authorize, so the user hears about a taken
+        // identifier on the page rather than after proving the old one and typing a code.
+        holder <- userRepository.findByCredential(credential)
+        _ <- ZIO.fail(IdentifierChangeIntentError.AlreadyInUse).when(holder.isDefined)
         _ <- intents.create(userId, clientId, kind, credential, IntentTtl)
       yield ()

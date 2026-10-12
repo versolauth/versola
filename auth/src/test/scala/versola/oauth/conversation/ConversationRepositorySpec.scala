@@ -84,6 +84,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     grantedScope = Some(Set(ScopeToken("openid"))),
     promptConsent = true,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   val record2 = record1.copy(
@@ -128,6 +129,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
     grantedScope = None,
     promptConsent = false,
     dpopJkt = None,
+    identifierChange = None,
   )
 
   def testCases(env: ConversationRepositorySpec.Env): List[Spec[ConversationRepositorySpec.Env & zio.Scope, Any]] =
@@ -228,7 +230,7 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
         )
       },
       test("persist, advance and clear an identifier change") {
-        val change = IdentifierChange(IdentifierChangeKind.Phone, Right(Phone("+77011234567")))
+        val change = IdentifierChange(IdentifierChangeKind.Phone, Right(Phone("+77011234567")), IdentifierChangeStage.Pending)
         for
           _ <- env.repository.create(authId1, initial.copy(identifierChange = Some(change)), ttl)
           created <- env.repository.find(authId1).map(_.get)
