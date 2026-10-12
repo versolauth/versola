@@ -516,6 +516,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       redirectUri: Option[String] = None,
       /** RFC 9396 §2: the raw JSON value of the `authorization_details` request parameter. */
       authorizationDetails: Option[String] = None,
+      /** OIDC Core §5.5: the raw JSON value of the `claims` request parameter. */
+      claims: Option[String] = None,
   ): Task[AuthorizeResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveRedirectUri = redirectUri.getOrElse(config.redirectUri)
@@ -531,7 +533,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
         "state" -> state,
         "code_challenge" -> challenge,
         "code_challenge_method" -> "S256",
-      ) ++ authorizationDetails.map("authorization_details" -> _))
+      ) ++ authorizationDetails.map("authorization_details" -> _) ++ claims.map("claims" -> _))
       response <- Client.batched(Request.get(url)).provide(ZLayer.succeed(client))
       cookie <- ZIO.fromOption(OAuthClient.extractConversationCookie(response))
         .orElseFail(new RuntimeException(
@@ -571,6 +573,9 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * `"query.jwt"`, `"fragment.jwt"`.
         */
       responseMode: Option[String] = None,
+      /** OIDC Core §3.1.2.1 hints a client may send and a server is free to ignore. */
+      uiLocales: Option[String] = None,
+      loginHint: Option[String] = None,
   ): Task[AuthorizeResult] =
     val (verifier, challenge) = PkceHelper.generate()
     val state = java.util.UUID.randomUUID().toString
@@ -593,6 +598,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
           "nonce"                -> nonce,
           "request"              -> request,
           "response_mode"        -> responseMode,
+          "ui_locales"           -> uiLocales,
+          "login_hint"           -> loginHint,
         ),
       )(uri =>
         List(
@@ -719,7 +726,20 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * endpoint, carries no `ath` — there is no token yet to compute one over — and the `cnf.jkt`
     * it leaves in the token is what every resource server afterwards demands a proof against.
     */
-  def token(
+  def registerPublicClient(redirectUri: String): Task[String] =
+    for
+      clientId <- CentralApi.id("e2e-public")
+      _ <- registerClient(
+        clientId,
+        "Public client",
+        Set(redirectUri),
+        authFlow = Some(Flows.loginPasswordAuthFlow),
+        authMethod = "none",
+      ).success
+      _ <- syncConfiguration()
+    yield clientId
+
+    def token(
       code: String,
       verifier: String,
       clientId: Option[String] = None,
@@ -731,6 +751,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** RFC 7523 §2.2: what a client that registered a key set authenticates with instead of
         * a secret, which it then does not send. */
       assertion: Option[String] = None,
+      /** RFC 7636: send no `code_verifier`, as a client that sent no `code_challenge` must. */
+      omitVerifier: Boolean = false,
   ): Task[TokenResult] =
     val effectiveClientId = clientId.getOrElse(config.clientId)
     val effectiveClientSecret = clientSecret
@@ -741,8 +763,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       "grant_type" -> "authorization_code",
       "code" -> code,
       "redirect_uri" -> effectiveRedirectUri,
-      "code_verifier" -> verifier,
-    ) ++ assertion.fold(Map.empty)(value =>
+    ) ++ (if omitVerifier then Map.empty else Map("code_verifier" -> verifier)) ++ assertion.fold(Map.empty)(value =>
       Map(
         "client_assertion_type" -> AssertionSigner.Type,
         "client_assertion" -> value,
@@ -1141,6 +1162,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** OIDC Registration §2 `application_type`; absent registers a `web` client. `native`
         * with `tls_client_auth` is the app fronted by edge (#421). */
       applicationType: Option[String] = None,
+      /** #440: central issues the certificate the edge fronting this client presents */
+      issueEdgeClientCertificate: Boolean = false,
+      /** #463: the edge fronting this client generates its own key and enrols for a certificate */
+      enrollEdgeClientCertificate: Boolean = false,
+      /** Seconds; absent takes central's default (180 days). */
+      refreshTokenTtl: Option[Int] = None,
   ): Task[RegisterClientResult] =
     val body = Body.fromString(OAuthClient.RegisterClientBody(
       tenantId = tenantId,
@@ -1151,7 +1178,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       audience = List.empty,
       permissions = Set.empty,
       accessTokenTtl = 3600,
-      refreshTokenTtl = None,
+      refreshTokenTtl = refreshTokenTtl,
       theme = "default",
       authFlow = authFlow,
       registrationFlow = registrationFlow,
@@ -1173,6 +1200,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       dpopSigningAlgs = dpopSigningAlgs,
       dpopMinRsaKeySize = dpopMinRsaKeySize,
       applicationType = applicationType,
+      issueEdgeClientCertificate = issueEdgeClientCertificate,
+      enrollEdgeClientCertificate = enrollEdgeClientCertificate,
     ).toJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
       .addHeader(centralAuthorization)
