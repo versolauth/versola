@@ -359,6 +359,13 @@ export class VersolaClientForm extends LitElement {
         font-family: var(--font-family);
       }
 
+      /* A label row that carries an info button is as tall as the button (24px), with room under
+         it, so the button never reaches into the field below. */
+      div:has(> .option-info) {
+        min-height: 1.5rem;
+        margin-bottom: 0.375rem;
+      }
+
       .option-info {
         position: relative;
         display: inline-flex;

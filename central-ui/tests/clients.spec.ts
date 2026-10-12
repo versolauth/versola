@@ -1858,3 +1858,15 @@ test('offers PAR and JAR to a web client that authenticates for itself, since it
     requirePushedAuthorizationRequests: false,
   });
 });
+
+test('keeps the info button above a field clear of the field', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [alphaClient] } } });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Token lifetimes');
+
+  const info = await page.getByRole('button', { name: 'Access token TTL info' }).boundingBox();
+  const field = await page.locator('versola-client-form #ttl').boundingBox();
+  expect(info!.height).toBeGreaterThanOrEqual(24);
+  expect(field!.y).toBeGreaterThanOrEqual(info!.y + info!.height);
+});
