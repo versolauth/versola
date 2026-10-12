@@ -96,8 +96,16 @@ The script first asks for the environment **Name** (default `local`):
       `central-admin`'s authorization request to `/par`. `gen-env.scala` needs an OpenSSL 3
       `openssl` on `PATH` for this (macOS's LibreSSL lacks `-copy_extensions`), e.g.
       `PATH=/opt/homebrew/opt/openssl@3/bin:$PATH`.
-      docker-local/vps/interactive targets get no `central-admin-mtls` and no terminator, so
-      central keeps `central-admin` on its `client_secret` there and logs that it is outside the
+      docker-local and vps need neither the terminator nor a certificate in the config: their
+      `central-admin-mtls` names only the header, and central issues `central-admin`'s
+      certificate itself through step-ca (the one it issues edge-fronted clients' from) and
+      renews it. Edge presents it to auth's own mutual-TLS listener (`native` in `edge.conf`).
+      The proxy in front of auth clears `ssl-client-cert`, so a certificate cannot be asserted
+      from outside. Redeploying over a deployment from before this keeps `central-admin` on its
+      `client_secret`, and central then refuses to boot ("A client's authentication method is
+      fixed when it is created"): delete the `central-admin` client, or start from empty
+      volumes. The interactive and k8s targets still get no `central-admin-mtls`, so central
+      keeps `central-admin` on its `client_secret` there and logs that it is outside the
       tenant's profile.
     - go to http://localhost:9005/login/central-admin
     - enter admin/Admin1234!

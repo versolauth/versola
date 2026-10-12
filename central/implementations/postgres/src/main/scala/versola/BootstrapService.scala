@@ -1,6 +1,5 @@
 package versola
 
-import versola.util.SequentialLayers.*
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
@@ -14,6 +13,7 @@ import versola.central.configuration.challenges.{
   PasskeySettings,
   SubmissionLimits,
 }
+import versola.central.configuration.clients.certificates.ClientCertificateService
 import versola.central.configuration.clients.{
   AuthFactor,
   AuthFactorType,
@@ -62,6 +62,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
+import versola.util.SequentialLayers.*
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -95,13 +96,19 @@ object BootstrapService:
     * edge-fronted web client. Its tokens are certificate-bound by the method itself
     * (`OAuthClientRecord.bindsAccessTokens`), so no DPoP is asked for.
     *
-    * Without one: the `client_secret` it has always had, seeded outside the profile.
+    * With the seed but no certificate in it: the same, except that central issues the
+    * certificate itself (`issueEdgeClientCertificate`) and renews it, so there is no
+    * certificate here to read the subject from -- the registration is recognised by the
+    * subject central's CA signs it for.
+    *
+    * Without a seed: the `client_secret` it has always had, seeded outside the profile.
     */
   private[versola] case class CentralAdminCredential(
       authMethod: AuthMethod,
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
       requirePushedAuthorizationRequests: Boolean,
+      issueEdgeClientCertificate: Boolean = false,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
 
@@ -111,9 +118,17 @@ object BootstrapService:
     seed match
       case None =>
         Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
-      case Some(mtls) =>
+      case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, _, _)) =>
+        Right(CentralAdminCredential(
+          authMethod = AuthMethod.tls_client_auth,
+          mtlsAuth = None,
+          edgeClientCertificate = None,
+          requirePushedAuthorizationRequests = true,
+          issueEdgeClientCertificate = true,
+        ))
+      case Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(Some(pem), _, _)) =>
         for
-          certificate <- PrivateClientCertificate.validate(mtls.certificate)
+          certificate <- PrivateClientCertificate.validate(pem)
             .left.map(reason => s"bootstrap.central-admin-mtls.certificate $reason")
           material <- certificate.material
         yield CentralAdminCredential(
@@ -898,13 +913,18 @@ object BootstrapService:
         finally source.close()
 
   val live: ZLayer[
-    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
+    TenantRepository & PermissionRepository & OAuthScopeRepository & RoleRepository & OtpChallengeRepository & ChallengeSettingsRepository & SystemSettingsRepository & ThemeRepository & LocaleRepository & FormRepository & OAuthClientRepository & OAuthClientService & ClientCertificateService & ChallengeSettingsService & AuthorizationPresetRepository & EdgeRepository & ResourceRepository & JwksRepository & ServerMetadataRepository & UserRepository & CentralConfig & SecurityService & SecureRandom & EnvName,
     Throwable,
     BootstrapService,
   ] =
-    ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
+    ZLayer.fromFunction(ClientServices(_, _)) >+>
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _)) >++>
       ZLayer(ZIO.serviceWithZIO[BootstrapService](_.bootstrap)) >++>
       ZLayer(refreshCachesAfterBootstrap)
+
+  /** The two services that register a client, as one dependency: `ZLayer.fromFunction` takes at
+    * most 22, which [[Impl]] would otherwise exceed. */
+  private final case class ClientServices(clients: OAuthClientService, certificates: ClientCertificateService)
 
   /** Reloads the two caches built before bootstrap -- it registers central-admin through
     * OAuthClientService, which reads challenge settings -- so they loaded before the seed, and
@@ -927,7 +947,7 @@ object BootstrapService:
       localeRepo: LocaleRepository,
       formRepo: FormRepository,
       clientRepo: OAuthClientRepository,
-      clientService: OAuthClientService,
+      clientServices: ClientServices,
       presetRepo: AuthorizationPresetRepository,
       edgeRepo: EdgeRepository,
       resourceRepo: ResourceRepository,
@@ -939,6 +959,9 @@ object BootstrapService:
       secureRandom: SecureRandom,
       envName: EnvName,
   ) extends BootstrapService:
+
+    private def clientService: OAuthClientService = clientServices.clients
+    private def certificateService: ClientCertificateService = clientServices.certificates
 
     def bootstrap: Task[Unit] =
       ZIO.foreach(config.bootstrap) { config =>
@@ -1182,10 +1205,15 @@ object BootstrapService:
         edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
         applicationType = None,
-        issueEdgeClientCertificate = false,
+        issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
       )
-      warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
+      // Issued by central: `register` takes the profile enforcement as it is, which for the one
+      // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
+      val register =
+        if credential.issueEdgeClientCertificate then certificateService.register(request)
+        else clientService.registerClient(request, enforceSecurityProfile = credential.conformant)
+      warnNonConformant *> register.foldZIO(
         {
           case _: ClientAlreadyExists =>
             refuseAuthMethodMismatch(
@@ -1220,13 +1248,19 @@ object BootstrapService:
                 // was replaced has edge present the new one. The method itself is not -- it is
                 // fixed at creation, and `refuseAuthMethodMismatch` has already refused a boot
                 // that calls for another.
-                mtlsAuth = Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
+                // A certificate central issues is not reasserted: its renewal replaces it, and
+                // what the client is recognised by is the subject that issuance chose.
+                mtlsAuth =
+                  if credential.issueEdgeClientCertificate then None
+                  else Some(credential.mtlsAuth.fold(Patch.Deleted)(Patch.Modified(_))),
                 certificateBoundAccessTokens = None,
                 jwks = None,
                 requireSignedRequestObject = None,
                 requirePushedAuthorizationRequests = Some(credential.requirePushedAuthorizationRequests),
                 edgeSigningKey = None,
-                edgeClientCertificate = Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
+                edgeClientCertificate =
+                  if credential.issueEdgeClientCertificate then None
+                  else Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
                 applicationType = None,
               ),
               enforceSecurityProfile = credential.conformant,
