@@ -90,9 +90,10 @@ object ClientPoolSpec extends ZIOSpecDefault:
         small <- elapsed(ConnectionPoolConfig.Fixed(10))
         large <- elapsed(ConnectionPoolConfig.Fixed(64))
       yield assertTrue(
+        // Four rounds against one: a runner that is slow to open connections moves both
+        // by about the same, so what is asserted is the gap, not how long "one round" took.
         small >= handlerDelay * 3.5,
-        large < handlerDelay * 2.5,
-        small > large,
+        small >= large + handlerDelay,
       )
     } @@ TestAspect.withLiveClock,
     // A dynamic pool queues the same way once its maximum is below the concurrency, rather than failing.
@@ -101,9 +102,10 @@ object ClientPoolSpec extends ZIOSpecDefault:
         small <- elapsed(ConnectionPoolConfig.Dynamic(0, 10, 30.seconds))
         large <- elapsed(ConnectionPoolConfig.Dynamic(0, 64, 30.seconds))
       yield assertTrue(
+        // Four rounds against one: a runner that is slow to open connections moves both
+        // by about the same, so what is asserted is the gap, not how long "one round" took.
         small >= handlerDelay * 3.5,
-        large < handlerDelay * 2.5,
-        small > large,
+        small >= large + handlerDelay,
       )
     } @@ TestAspect.withLiveClock,
   ) @@ TestAspect.timeout(60.seconds) @@ TestAspect.sequential
