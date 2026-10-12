@@ -33,3 +33,15 @@ enum ClientKind derives JsonCodec, Schema, Equal:
 case class ClientTemplate(
     kind: ClientKind,
 ) derives Schema, JsonCodec, Equal
+
+object ClientKind:
+  /** The kind a stored client is, for the typed registration endpoints to hold an update to.
+    *
+    * The template names it when the client was registered with one. Otherwise it is read off
+    * what the client is: a native one is a device, one with a redirect URI or a sign-in flow
+    * has a user to sign in, and what is left calls on its own behalf. */
+  def of(client: OAuthClientRecord): ClientKind =
+    client.template.map(_.kind).getOrElse:
+      if client.applicationType == ApplicationType.native then ClientKind.device
+      else if client.authFlow.nonEmpty || client.redirectUris.nonEmpty then ClientKind.web
+      else ClientKind.service

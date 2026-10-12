@@ -81,6 +81,9 @@ trait OAuthClientService:
       edgeCertificateEnrolled: Boolean = false,
   ): IO[InvalidRegistrationConfiguration | Throwable, Unit]
 
+  /** The stored client, read through the repository when it has not reached the cache yet. */
+  def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]]
+
   def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret]
 
   def deletePreviousClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Unit]
@@ -492,6 +495,11 @@ object OAuthClientService:
           ),
         )
       yield ()
+
+    override def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]] =
+      cache.get.map(_.find(_.id == clientId)).flatMap:
+        case some @ Some(_) => ZIO.succeed(some)
+        case None => clientRepository.find(clientId).flatMap(ZIO.foreach(_)(decryptSecrets(_, securityService, clientSecretsKey)))
 
     override def rotateClientSecret(clientId: ClientId): IO[ClientHasNoSecret | Throwable, Secret] =
       for

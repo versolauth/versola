@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
+import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
@@ -555,3 +556,111 @@ object InvalidRegistrationConfiguration:
   private def isHttpsWithHost(uri: String): Boolean =
     scala.util.Try(java.net.URI(uri)).toOption.exists: parsed =>
       Option(parsed.getScheme).exists(_.equalsIgnoreCase("https")) && parsed.getHost != null
+
+  // ── typed registration: what each kind of client is held to ────────────────────────────────
+  //
+  // Read off the registration after the typed request has fixed what its kind fixes, so each
+  // rule is about what the caller chose. The general endpoint does not apply them: it takes any
+  // combination the checks above admit, and a kind is only what it recorded.
+
+  private val ConfidentialAuthMethods =
+    "client_secret, private_key_jwt, tls_client_auth or self_signed_tls_client_auth"
+
+  /** A client fronted by edge presents edge's certificate, which is shared by every user it
+    * serves -- so its tokens are bound to that certificate, its authorization requests are pushed
+    * over the authenticated channel, and it holds no key to sign a request object or prove DPoP
+    * with. */
+  private def edgeFronted(request: CreateClientRequest): Boolean =
+    request.issueEdgeClientCertificate || request.enrollEdgeClientCertificate || request.edgeClientCertificate.nonEmpty
+
+  def validateKindRegistration(kind: ClientKind, request: CreateClientRequest): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(request.id, s"$kind client $reason"))
+
+    kind match
+      case ClientKind.web =>
+        if request.authMethod == AuthMethod.none then
+          invalid(s"is confidential: authMethod must be $ConfidentialAuthMethods, not none")
+        else if request.redirectUris.isEmpty then
+          invalid("needs at least one redirect URI - users sign in through it")
+        else if edgeFronted(request) && !request.certificateBoundAccessTokens then
+          invalid("fronted by edge needs certificateBoundAccessTokens - edge's certificate is what binds its tokens")
+        else if edgeFronted(request) && !request.requirePushedAuthorizationRequests then
+          invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request is trustworthy")
+        else if edgeFronted(request) && request.dpopBoundAccessTokens then
+          invalid("fronted by edge cannot set dpopBoundAccessTokens - the certificate is its sender constraint")
+        else if edgeFronted(request) && request.requireSignedRequestObject then
+          invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
+        else None
+
+      case ClientKind.device =>
+        if request.authMethod != AuthMethod.none && request.authMethod != AuthMethod.tls_client_auth then
+          invalid(s"cannot authenticate with ${request.authMethod} - an app is public (none) or fronted by edge (tls_client_auth)")
+        else if request.redirectUris.isEmpty then
+          invalid("needs at least one redirect URI - users sign in through it")
+        else if request.authMethod == AuthMethod.none && edgeFronted(request) then
+          invalid("with authMethod none is not fronted by edge - there is no certificate to present")
+        else None
+
+      case ClientKind.service =>
+        if request.authMethod == AuthMethod.none then
+          invalid(s"must authenticate: authMethod must be $ConfidentialAuthMethods, not none")
+        else None
+
+  /** What an update may leave the client as, for the kind it is held to.
+    *
+    * @param redirectUris the client's redirect URIs after the patch is applied -- a patch that
+    *                     removes the last one is as much a way to break a client as registering
+    *                     it with none.
+    * @param edgeFronted  the client has an edge presenting its certificate, which fixes the same
+    *                     settings registration fixed for it: an update may restate them, never
+    *                     ask for the opposite ([[withKindFixed]] moves a stored client up to them).
+    */
+  def validateKindUpdate(
+      kind: ClientKind,
+      request: UpdateClientRequest,
+      current: OAuthClientRecord,
+      edgeFronted: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    def invalid(reason: String) = Some(InvalidRegistrationConfiguration(request.clientId, s"$kind client $reason"))
+
+    val redirectUris = (current.redirectUris -- request.redirectUris.remove) ++ request.redirectUris.add
+
+    kind match
+      case ClientKind.web | ClientKind.device if redirectUris.isEmpty =>
+        invalid("needs at least one redirect URI - users sign in through it")
+      case ClientKind.web if edgeFronted && request.certificateBoundAccessTokens.contains(false) =>
+        invalid("fronted by edge needs certificateBoundAccessTokens - edge's certificate is what binds its tokens")
+      case ClientKind.web if edgeFronted && request.requirePushedAuthorizationRequests.contains(false) =>
+        invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request is trustworthy")
+      case ClientKind.web if edgeFronted && request.dpopBoundAccessTokens.contains(true) =>
+        invalid("fronted by edge cannot set dpopBoundAccessTokens - the certificate is its sender constraint")
+      case ClientKind.web if edgeFronted && request.requireSignedRequestObject.contains(true) =>
+        invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
+      case _ => None
+
+  /** The update as the kind leaves it: what a kind fixes is written onto every update of it, so a
+    * client stored below its kind (registered before the kinds had endpoints) is brought up by
+    * the first update rather than left to a member no request has. Only values the kind itself
+    * decides: for a device fronted by edge, its DPoP binding and PAR; for a web client fronted by
+    * edge, its certificate binding and PAR and no DPoP; and no signed request object for any of
+    * them, nor a certificate binding for a device. */
+  def withKindFixed(kind: ClientKind, request: UpdateClientRequest, current: OAuthClientRecord, edgeFronted: Boolean): UpdateClientRequest =
+    kind match
+      case ClientKind.device =>
+        val byEdge = current.authMethod == AuthMethod.tls_client_auth
+        request.copy(
+          dpopBoundAccessTokens = if byEdge then Some(true) else request.dpopBoundAccessTokens,
+          certificateBoundAccessTokens = Some(false),
+          requireSignedRequestObject = Some(false),
+          requirePushedAuthorizationRequests = if byEdge then Some(true) else request.requirePushedAuthorizationRequests,
+        )
+      case ClientKind.service =>
+        request.copy(requireSignedRequestObject = Some(false), requirePushedAuthorizationRequests = Some(false))
+      case ClientKind.web if edgeFronted =>
+        request.copy(
+          certificateBoundAccessTokens = Some(true),
+          requirePushedAuthorizationRequests = Some(true),
+          dpopBoundAccessTokens = Some(false),
+          requireSignedRequestObject = Some(false),
+        )
+      case ClientKind.web => request
