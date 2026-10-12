@@ -221,6 +221,14 @@ components:
         check achievability against, so the request proceeds with normal authentication and the
         `acr` claim reports what was actually achieved: the request is not a guarantee, and the
         client has to read that claim.
+
+        Two values are reserved by Versola and are not authentication contexts: they are taken
+        out of the list before any of the above, never reach the tenant's vocabulary and are
+        never reported in the `acr` claim. `urn:versola:acr:phone-change` and
+        `urn:versola:acr:email-change` turn the request into a change of the signed-in user's
+        phone number or email, with the new value in `login_hint` (see there). At most one of
+        them may be named. Only the account page may start such a request: it records an intent
+        for the user first, and without one the request fails with `access_denied`.
       schema:
         type: string
 
@@ -265,6 +273,18 @@ components:
         credential type, one outside the configured phone prefixes, or one that is not a valid
         identifier is ignored, and the user signs in without it. A phone number is canonicalised
         to E.164 before the prefix check and pre-filling.
+
+        With `urn:versola:acr:phone-change` or `urn:versola:acr:email-change` in `acr_values` it is
+        no longer a hint but the new identifier, of the kind the value names, and a missing or
+        unusable one fails the request with `invalid_request` instead of being ignored. Such a
+        request needs a signed-in user (`login_required` without a session, and under
+        `prompt=none`), re-verifies that user with the client's required factors however fresh the
+        session is (`unmet_authentication_requirements` when the flow has nothing to verify with),
+        then sends a code to the new identifier. On the correct code the identifier is moved,
+        marked verified (`phone_number_verified` / `email_verified`), and the response is the
+        ordinary authorization response, so the ID token and UserInfo already carry the new value.
+        When another user holds the identifier the user is shown that nothing changed and returns to
+        the client with `access_denied`. `id_token_hint` must not accompany it.
       schema:
         type: string
       example: user@example.com

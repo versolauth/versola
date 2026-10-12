@@ -431,6 +431,26 @@ client retries. Sessions, tokens, consents and users are unaffected. The migrati
 logins on the still-running previous version wait while it runs. The tables are small, so it is
 short, but run `versola migrate` at low traffic.
 
+**Migration `auth` V0015: self-service change of a phone number or email (#634).** Adds the
+UNLOGGED table `identifier_change_intents` (minutes-old state, like the tables above) and a
+nullable `auth_conversations.identifier_change` column; no existing row changes, and the previous
+version keeps running on the new schema. Two things to know when upgrading:
+
+- `central` now refuses to save an authorization request preset whose id is `current`, because
+  `edge` serves `GET /login/current` (re-authorize with the preset of the caller's own session).
+  A client that already has a preset named `current` gets a `400` the next time its preset list is
+  saved, and `/login/current` no longer reaches that preset by name. Before upgrading, check with
+  `SELECT id, client_id FROM authorization_presets WHERE id = 'current';` (in the database `central`
+  uses) and rename any it returns.
+- A configuration generated before this release has no `cleanup` entry for the new table, so expired
+  intents are not purged until `identifier_change_intents` (`key-column = "user_id"`, like the
+  other entries, see `scripts/gen-env.scala`) is added to `cleanup.tables`. They are one row per
+  user at most and expire after five minutes whether or not they are purged.
+
+`central` also gains the internal `POST /users/identifier-changes` (called by `auth`, authorised like
+`/users/registrations`) and the account endpoint `POST /settings/identifier/intent` is added to the
+`auth` resource on the next start; the new `identifier-in-use` login form is seeded the same way.
+
 **Rollback.** If the new release only *added* migrations and the previous version runs fine on the
 newer schema, going back is just `versola configure vps <previous> …` + `versola up` (install the
 matching CLI from GitHub Releases if needed). If the migrations must be undone, restore the database

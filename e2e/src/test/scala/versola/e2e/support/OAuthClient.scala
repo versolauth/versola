@@ -1558,6 +1558,22 @@ final class OAuthClient(client: Client, config: E2EConfig):
       credentials,
     )
 
+  /** POST /settings/identifier/intent — records that the caller asked to change one identifier;
+    * `kind` is `phone` or `email`. */
+  def createIdentifierChangeIntent(
+      caller: AccountCaller,
+      kind: String,
+      value: String,
+      credentials: Option[(String, String)] = Some(accountCredentials),
+  ): Task[AccountResult] =
+    accountRequest(
+      Method.POST,
+      "/settings/identifier/intent",
+      Nil,
+      Some(caller.bodyWith("kind" -> Json.Str(kind), "value" -> Json.Str(value))),
+      credentials,
+    )
+
   /** POST /settings/passkeys/register/start — obtains creation options plus the ceremony ticket. */
   def startPasskeyEnrollment(
       caller: AccountCaller,

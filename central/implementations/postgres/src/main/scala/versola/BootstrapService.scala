@@ -783,6 +783,7 @@ object BootstrapService:
     "password" -> Vector.empty,
     "set-password" -> Vector.empty,
     "access-denied" -> Vector.empty,
+    "identifier-in-use" -> Vector.empty,
     "conversation-expired" -> Vector.empty,
     "service-unavailable" -> Vector.empty,
     "passkey-enroll" -> Vector.empty,

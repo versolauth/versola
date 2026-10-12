@@ -12,7 +12,7 @@ import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.http.{BadRequest, Controller, Observability, Unauthorized}
-import versola.util.{Base64, CoreConfig, Secret}
+import versola.util.{Base64, CoreConfig, Email, Phone, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -184,11 +184,17 @@ object AccountSettingsController extends Controller:
   private def accountView(
       userId: UserId,
       sessionId: PublicSessionId,
-  ): ZIO[SessionService & PasskeyRepository, Throwable, StepView.AccountSettings] =
+  ): ZIO[SessionService & PasskeyRepository & UserRepository, Throwable, StepView.AccountSettings] =
     for
       sessions <- listSessions(userId, sessionId)
       passkeys <- listPasskeys(userId)
-    yield StepView.AccountSettings(sessions, passkeys)
+      user <- ZIO.serviceWithZIO[UserRepository](_.find(userId))
+    yield StepView.AccountSettings(
+      sessions,
+      passkeys,
+      phone = user.flatMap(_.phone).map(Phone.mask),
+      email = user.flatMap(_.email).map(Email.mask),
+    )
 
   private def listSessions(userId: UserId, sessionId: PublicSessionId): ZIO[SessionService, Throwable, List[StepView.AccountSession]] =
     ZIO.serviceWithZIO[SessionService](_.listByUser(userId)).map:

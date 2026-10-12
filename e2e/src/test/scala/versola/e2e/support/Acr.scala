@@ -12,3 +12,10 @@ object Acr:
 
   /** Satisfied by a passkey factor. */
   val PasskeyLevel = "passkey-level"
+
+  /** Reserved by Versola (#634): change the user's phone number. Defined by the server, so
+    * not part of the tenant vocabulary above. */
+  val PhoneChange = "urn:versola:acr:phone-change"
+
+  /** Reserved by Versola (#634): change the user's email. */
+  val EmailChange = "urn:versola:acr:email-change"

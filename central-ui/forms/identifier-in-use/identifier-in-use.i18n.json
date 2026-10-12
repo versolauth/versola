@@ -1,0 +1,14 @@
+{
+  "en": {
+    "page_title": "Already in use",
+    "title": "This number or email is already in use",
+    "description": "It belongs to another account, so nothing was changed. Your current phone number and email stay as they were.",
+    "return_button": "Return"
+  },
+  "ru": {
+    "page_title": "Уже используется",
+    "title": "Этот номер или email уже используется",
+    "description": "Он принадлежит другой учётной записи, поэтому ничего не изменилось. Ваши текущие номер телефона и email остались прежними.",
+    "return_button": "Вернуться"
+  }
+}

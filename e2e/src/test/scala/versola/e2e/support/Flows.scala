@@ -179,6 +179,24 @@ object Flows:
       _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, Some(email), None, password)
 
+  /** Register a client (email + OTP) that may read the phone claim, for the identifier-change
+    * flows (#634). The user is only a placeholder: each test makes its own, so that a change one
+    * test makes is not the starting point of the next.
+    */
+  def setupIdentifierChange(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+    val uid = UUID.randomUUID().toString.replace("-", "").take(8)
+    val clientId = s"change-client-$uid"
+    for
+      oauthClient <- ZIO.service[OAuthClient]
+      clientResult <- oauthClient.registerClient(
+        clientId,
+        "Identifier Change Test Client",
+        Set(redirectUri),
+        allowedScopes = Set("openid", "email", "phone"),
+        authFlow = Some(emailOtpAuthFlow),
+      ).success
+    yield Setup(clientId, clientResult.secret, redirectUri, UUID.randomUUID(), None, None, None, "")
+
   /** Register a client (phone + OTP) and a matching user with a permanent password. */
   def setupPhoneOtp(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
     val uid = UUID.randomUUID()
@@ -289,7 +307,8 @@ object Flows:
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, PasskeyLogin, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial, BackChannelLogout
+    case LoginPassword, PasskeyLogin, EmailOtp, IdentifierChange, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial,
+      BackChannelLogout
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -306,6 +325,7 @@ object Flows:
         lp <- setupLoginPassword()
         passkeyLogin <- setupPasskeyLogin()
         otp <- setupEmailOtp()
+        identifierChange <- setupIdentifierChange()
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
         emailRegistration <- setupEmailRegistration()
@@ -343,6 +363,7 @@ object Flows:
           Id.LoginPassword -> lp,
           Id.PasskeyLogin -> passkeyLogin,
           Id.EmailOtp -> otp,
+          Id.IdentifierChange -> identifierChange,
           Id.PhoneOtp -> phoneOtp,
           Id.PhoneRegistration -> registration,
           Id.EmailRegistration -> emailRegistration,

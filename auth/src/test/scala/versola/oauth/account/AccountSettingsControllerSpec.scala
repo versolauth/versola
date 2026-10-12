@@ -11,9 +11,9 @@ import versola.oauth.identifier.{IdentifierChangeIntentError, IdentifierChangeIn
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{PublicSessionId, SessionUnderUserAgent}
 import versola.user.UserRepository
-import versola.user.model.UserId
+import versola.user.model.{UserId, UserRecord}
 import versola.util.http.{NoopTracing, Observability}
-import versola.util.{Base64, Secret, UnitSpecBase}
+import versola.util.{Base64, Email, Phone, Secret, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -44,6 +44,8 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
   )
 
   private val otherDeviceSession = ownSession.copy(publicId = PublicSessionId("session-on-another-device"))
+
+  private val ownUser = UserRecord.empty(userId).copy(email = Some(Email("me@example.com")), phone = Some(Phone("+77011234567")))
 
   private val passkeyId = CredentialId(Array.fill(16)(3.toByte))
 
@@ -207,8 +209,9 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         expectedStatus = Status.Ok,
         resourceSecrets = List(accountResourceSecret, previousAccountResourceSecret),
         callerSecret = previousAccountResourceSecret,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
-          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+        setup = (_, sessionService, passkeyRepository, _, userRepository, renderService, _) =>
+          userRepository.find.succeedsWith(Some(ownUser)) *>
+            sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
       ),
@@ -242,8 +245,9 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
         description = "renders the page with the caller's own sessions and passkeys",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
-          sessionService.listByUser.succeedsWith(List(ownSession)) *>
+        setup = (_, sessionService, passkeyRepository, _, userRepository, renderService, _) =>
+          userRepository.find.succeedsWith(Some(ownUser)) *>
+            sessionService.listByUser.succeedsWith(List(ownSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector(passkey)) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
@@ -252,14 +256,18 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
             sessionService.listByUser.calls == List(userId),
             passkeyRepository.listByUser.calls == List(userId),
             renderService.renderAccount.calls.map(_._2.sessions.map(_.id)) == List(List(ownSessionId)),
+            // Masked: the page says what a change replaces, but never holds the whole identifier.
+            renderService.renderAccount.calls.map(_._2.phone) == List(Some(Phone.mask(ownUser.phone.get))),
+            renderService.renderAccount.calls.map(_._2.email) == List(Some(Email.mask(ownUser.email.get))),
           )),
       ),
       controllerTestCase(
         description = "marks the session the page is viewed from using edge's injected sid",
         request = Request.get(URL.empty / "settings"),
         expectedStatus = Status.Ok,
-        setup = (_, sessionService, passkeyRepository, _, _, renderService, _) =>
-          sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
+        setup = (_, sessionService, passkeyRepository, _, userRepository, renderService, _) =>
+          userRepository.find.succeedsWith(Some(ownUser)) *>
+            sessionService.listByUser.succeedsWith(List(ownSession, otherDeviceSession)) *>
             passkeyRepository.listByUser.succeedsWith(Vector.empty) *>
             renderService.renderAccount.succeedsWith(Response.text("<html>account</html>")),
         verify = (_, stubs) =>
