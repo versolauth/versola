@@ -1,7 +1,6 @@
 package versola.oauth.challenge.password
 
 import com.augustnagro.magnum.magzio.TransactorZIO
-import versola.oauth.challenge.password.model.PasswordReuseError
 import versola.user.model.UserId
 import versola.util.{DatabaseSpecBase, Salt, Secret}
 import zio.*
