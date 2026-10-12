@@ -450,6 +450,26 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) => ZIO.succeed(assertTrue(service.setPhone.calls.isEmpty)),
     ),
     controllerTestCase(
+      description = "create user returns 400 Bad Request for a phone that is not in E.164",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "users",
+        body = Body.fromString("""{"phone":"+787011234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.create.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "patch user returns 400 Bad Request for a phone that is not in E.164",
+      request = Request(
+        method = Method.PATCH,
+        url = URL.empty / "users",
+        body = Body.fromString(s"""{"id":"$userId","phone":"+787011234567"}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.patch.calls.isEmpty)),
+    ),
+    controllerTestCase(
       description = "set phone returns 404 Not Found when the user is not indexed",
       request = setContactRequest("phone", s"""{"userId":"$userId","phone":"+77011234567"}"""),
       expectedStatus = Status.NotFound,

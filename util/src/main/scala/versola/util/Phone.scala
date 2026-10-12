@@ -7,7 +7,7 @@ type Phone = Phone.Type
 
 object Phone:
   given Schema[Phone] = Schema.primitive[String]
-    .transformOrFail(parse, Right(_))
+    .transformOrFail(validate, Right(_))
 
   private val util = PhoneNumberUtil.getInstance()
   private val regex = "\\+?\\d{9,15}".r
@@ -31,6 +31,14 @@ object Phone:
         Left(ex.getMessage)
     }
   }
+
+  /** What the backend asks of a phone it receives: a valid number already written in E.164, the form
+    * that is stored, compared and hashed. It is not normalised here; a client writes the number in
+    * E.164 (a page strips the separators people type) and one that is valid but spelled another way,
+    * such as with the national trunk prefix, is refused rather than silently rewritten.
+    */
+  def validate(string: String): Either[String, Phone] =
+    parse(string).filterOrElse(_ == string, s"$string is not written in E.164 form")
 
   /** ISO 3166-1 alpha-2 region of a number, e.g. `KZ` for `+77011234567`; `None` when the
     * value is not a valid number.

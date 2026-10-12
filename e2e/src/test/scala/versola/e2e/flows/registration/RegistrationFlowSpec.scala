@@ -2,6 +2,7 @@ package versola.e2e.flows.registration
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Status
 import zio.test.*
 
 import java.util.UUID
@@ -193,41 +194,20 @@ object RegistrationFlowSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("a taken number must complete as a normal sign-in")
     },
-    test("a number registered with the trunk prefix signs in with its canonical E.164 form") {
+    test("a number written with the trunk prefix is refused rather than normalised, and its E.164 form goes on") {
       val phone = unusedPhone
       val withTrunkPrefix = phone.replaceFirst("^\\+49", "+490")
-      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
-        first <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+        started <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
-        firstCookie = first.conversationCookie.get
-        c1 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
-        _ <- auth.submitPhone(firstCookie, withTrunkPrefix, c1.csrf)
-        c2 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(firstCookie, fixedOtp, c2.csrf)
-        c3 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.SetPassword)
-        _ <- auth.submitSetPassword(firstCookie, password, c3.csrf).assertRedirect(auth, firstCookie)
-        registeredId <- auth.findUserIdByPhone(phone)
-
-        // The canonical form finds the account: OTP completes the sign-in, no set-password step.
-        second <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
-          .assertChallengeRedirect
-        secondCookie = second.conversationCookie.get
-        c4 <- auth.getChallenge(secondCookie).assertStep(ConversationStep.Credential)
-        _ <- auth.submitPhone(secondCookie, phone, c4.csrf)
-        c5 <- auth.getChallenge(secondCookie).assertStep(ConversationStep.Otp)
-        code <- auth.submitOtp(secondCookie, fixedOtp, c5.csrf).assertRedirect(auth, secondCookie)
-        token <- auth.token(
-          code,
-          second.verifier,
-          clientId = Some(s.clientId),
-          clientSecret = Some(s.clientSecret),
-          redirectUri = Some(s.redirectUri),
-        ).success
-        userinfo <- auth.userinfo(token.accessToken).success
-      yield assertTrue(
-        registeredId.contains(userinfo.sub),
-      ).label("both forms of one number must resolve to the account stored under the canonical form")
+        cookie = started.conversationCookie.get
+        credential <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        refused <- auth.submitPhone(cookie, withTrunkPrefix, credential.csrf)
+        stillAsking <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitPhone(cookie, phone, stillAsking.csrf)
+        otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+      yield assertTrue(refused.response.status == Status.BadRequest) &&
+        assertTrue(otp.step.contains(ConversationStep.Otp)).label("the E.164 form of the same number proceeds")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

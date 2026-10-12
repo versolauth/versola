@@ -1888,10 +1888,11 @@ components:
       type: string
       pattern: '^\+?\d{9,15}$'
       description: |
-        A number that parses and validates as an international phone number. It is stored and
-        returned in canonical E.164 (`+` and digits, national trunk prefix dropped), so
-        `+787011234567` is accepted and stored as `+77011234567`; lookups canonicalise the input
-        the same way.
+        A valid international phone number written in E.164 (`+` and digits, no national trunk
+        prefix), which is also how it is stored and returned. It is validated, not normalised: a valid
+        number spelled any other way, such as `+787011234567` for `+77011234567`, is refused with
+        `400`, and so is a lookup by one. Clients (the admin console included) write the number in
+        E.164 before sending it.
       examples: ['+77001234567']
     Login:
       type: string

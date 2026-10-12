@@ -447,6 +447,16 @@ version keeps running on the new schema. Two things to know when upgrading:
   other entries, see `scripts/gen-env.scala`) is added to `cleanup.tables`. They are one row per
   user at most and expire after five minutes whether or not they are purged.
 
+**Behaviour change: phone numbers are validated, not normalised.** `central` (`POST /users`, `PATCH /users`,
+`POST /users/registrations`, the limits reset, `GET /users?phone=`) and `auth` (the login and registration
+form, `login_hint`) now accept a phone only when it is already written in E.164. Before, `auth` and the
+`phone` lookup rewrote a valid number (`+787011234567` became `+77011234567`) and `central`'s JSON
+endpoints stored whatever they were given. A valid number in another spelling now gets `400` from `central`,
+a form error from the login page, and is ignored as a `login_hint`. The login page, the Security page and
+the admin console normalise with libphonenumber before they send, so people are not affected; a client that
+calls these endpoints directly, or passes a `login_hint` with a trunk prefix, has to send E.164. Numbers
+already stored are not touched.
+
 `central` also gains the internal `PUT /users/email` and `PUT /users/phone` (called by `auth`, authorised like
 `/users/registrations`) and the account endpoint `POST /settings/identifier/intent` is added to the
 `auth` resource on the next start.

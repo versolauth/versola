@@ -909,14 +909,14 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
-      test("canonicalises a phone login_hint before the prefix check") {
+      test("ignores a phone login_hint that is valid but not written in E.164: the backend validates, it does not normalise") {
         val env = Env()
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+787011234567")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+770"))
           result <- env.parser.parse(request)
-        yield assertTrue(result.loginHint == Some(Right(Phone("+77011234567"))))
+        yield assertTrue(result.loginHint.isEmpty)
       },
       test("ignores an email login_hint when the client does not accept email credentials") {
         val env = Env()

@@ -470,7 +470,7 @@ object AuthorizeRequestParser:
         if !accepts(PrimaryCredential.phone) then ZIO.none
         else
           oauthClientService.getAllowedPhonePrefixes(client.id).map: prefixes =>
-            Phone.parse(value).toOption
+            Phone.validate(value).toOption
               .filter(phone => prefixes.isEmpty || prefixes.exists(phone.startsWith))
               .map(Right(_))
       else

@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { createMemo, createSignal, For, Show } from 'solid-js';
+import { toE164 } from '../phone';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
@@ -101,13 +102,6 @@ declare global {
 function apiBase(): string {
   const path = window.location.pathname;
   return path.endsWith('/') ? path : `${path}/`;
-}
-
-// The server validates a phone number but does not normalise it, so the page writes it in E.164:
-// the spaces, dashes and brackets people type are dropped, and a leading 00 becomes +.
-function toE164(value: string): string {
-  const compact = value.replace(/[\s().-]/g, '');
-  return compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
 }
 
 function formatDate(value: string, locale: string): string {

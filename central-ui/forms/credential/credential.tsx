@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
+import { toE164 } from '../phone';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
@@ -91,6 +92,7 @@ function CredentialForm(props: { config: FormConfig }) {
     `${showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`}?ui_locale=${currentLocale()}`;
 
   const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
+  const [phoneInvalid, setPhoneInvalid] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
   const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
@@ -146,11 +148,19 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
-    if (single === 'phone' && allowedPhonePrefixes.length > 0) {
-      const phone = (form.elements.namedItem('phone') as HTMLInputElement | null)?.value ?? '';
-      if (!allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
+    if (single === 'phone') {
+      const input = form.elements.namedItem('phone') as HTMLInputElement | null;
+      // The server only validates a phone, so it is sent in E.164 whatever the person typed.
+      const phone = toE164(input?.value ?? '');
+      if (!input || phone === null) {
         e.preventDefault();
-        setPhoneNotAllowed(true);
+        setPhoneInvalid(true);
+      } else {
+        input.value = phone;
+        if (allowedPhonePrefixes.length > 0 && !allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
+          e.preventDefault();
+          setPhoneNotAllowed(true);
+        }
       }
     }
     if (showPassword() && passwordRegex) {
@@ -207,10 +217,12 @@ function CredentialForm(props: { config: FormConfig }) {
             name="phone"
             class="input-field"
             placeholder={t().phone_placeholder}
-            pattern="^\+[1-9]\d{6,14}$"
             required
-            onInput={() => phoneNotAllowed() && setPhoneNotAllowed(false)}
+            onInput={() => { setPhoneNotAllowed(false); setPhoneInvalid(false); }}
           />
+          <Show when={phoneInvalid()}>
+            <div class="phone-error-message error-text">{t().phone_invalid}</div>
+          </Show>
           <Show when={phoneNotAllowed()}>
             <div class="phone-error-message error-text">{t().phone_not_allowed}</div>
           </Show>

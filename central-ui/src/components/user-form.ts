@@ -305,7 +305,8 @@ export class VersolaUserForm extends LitElement {
     const user: Omit<User, 'id'> & { id?: string } = {
       ...(this.userData ? { id: this.formData.id } : {}),
       email: this.formData.email?.trim() || undefined,
-      phone: this.formData.phone?.trim() || undefined,
+      // The backend only validates a phone, so it is sent in E.164 whatever was typed.
+      phone: this.formData.phone?.trim() ? parsePhoneNumberFromString(this.formData.phone.trim())?.number : undefined,
       login: this.formData.login?.trim() || undefined,
       claims: this.formData.claims ?? {},
     };

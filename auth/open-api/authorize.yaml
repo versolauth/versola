@@ -271,13 +271,14 @@ components:
         digits is treated as a phone number, anything else as an email address. It is only a hint
         (OpenID Connect Core §3.1.2.1): one the client's auth flow does not accept for that
         credential type, one outside the configured phone prefixes, or one that is not a valid
-        identifier is ignored, and the user signs in without it. A phone number is canonicalised
-        to E.164 before the prefix check and pre-filling.
+        identifier is ignored, and the user signs in without it. A phone number is validated, not
+        normalised: it has to be written in E.164 already, and a valid number spelled any other way
+        (with the national trunk prefix, say) is ignored like any other unusable hint.
 
         With `urn:versola:acr:phone-change` or `urn:versola:acr:email-change` in `acr_values` it is
         no longer a hint but the new identifier, of the kind the value names, and a missing or
-        unusable one fails the request with `invalid_request` instead of being ignored. A phone number
-        is validated and not normalised here: it has to be written in E.164 already. Such a
+        unusable one (a phone number not written in E.164 included) fails the request with
+        `invalid_request` instead of being ignored. Such a
         request needs a signed-in user (`login_required` without a session, and under
         `prompt=none`), re-verifies that user with the client's required factors however fresh the
         session is (`unmet_authentication_requirements` when the flow has nothing to verify with),

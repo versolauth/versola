@@ -5,7 +5,7 @@ import versola.central.configuration.resources.ResourceService
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.http.{BadRequest, Controller}
-import versola.util.{Email, EnvName, Phone}
+import versola.util.{Email, EnvName, Patch, Phone}
 import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 import zio.telemetry.opentelemetry.tracing.Tracing
@@ -96,6 +96,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[CreateUserRequest]
+        _ <- requireE164(body.phone)
         id <- service.create(body)
       yield Response.json(CreateUserResponse(id).toJson).status(Status.Created))
         .catchAll:
@@ -109,6 +110,7 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[RegisteredUserRequest]
+        _ <- requireE164(body.phone)
         userId <- service.indexRegistered(body)
       yield Response.json(RegisteredUserResponse(userId).toJson))
         .catchAll:
@@ -139,12 +141,16 @@ object UserController extends Controller:
         _ <- authorizeInternal(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[SetUserPhoneRequest]
-        phone <- ZIO.fromEither(Phone.parse(body.phone).filterOrElse(_ == body.phone, s"${body.phone} is not in E.164 form"))
-          .mapError(BadRequest(_))
+        phone <- ZIO.fromEither(Phone.validate(body.phone)).mapError(BadRequest(_))
         version <- service.setPhone(body.userId, phone)
       yield Response.json(UserVersionResponse(version).toJson))
         .catchAll(contactFailure)
     }
+
+  /** The JSON codec does not validate a Phone, and the index stores E.164: a phone that is not
+    * already written that way is refused here instead of being stored as given. */
+  private def requireE164(phone: Option[Phone]): IO[BadRequest, Unit] =
+    ZIO.foreachDiscard(phone)(phone => ZIO.fromEither(Phone.validate(phone)).mapError(BadRequest(_)))
 
   private def contactFailure(error: UserNotFound | UserConflict | Throwable): IO[Throwable, Response] =
     error match
@@ -158,6 +164,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[PatchUserRequest]
+        _ <- requireE164(body.phone.collect { case Patch.Modified(phone) => phone })
         _ <- service.patch(body)
       yield Response.status(Status.Accepted))
         .catchAll:
@@ -202,6 +209,7 @@ object UserController extends Controller:
         _ <- authorizeBasic(request)
         service <- ZIO.service[UserService]
         body <- request.bodyAs[ResetUserLimitsRequest]
+        _ <- requireE164(body.phone)
         _ <- service.resetLimits(body)
       yield Response.status(Status.Accepted)
     }

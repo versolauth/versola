@@ -20,8 +20,7 @@ object IdentifierChangeCredentials:
     kind match
       case IdentifierChangeKind.Phone =>
         Option.when(raw.startsWith("+") && raw.drop(1).forall(_.isDigit)):
-          Phone.parse(raw).toOption
-            .filter(_ == raw)
+          Phone.validate(raw).toOption
             .filter(phone => allowedPhonePrefixes.isEmpty || allowedPhonePrefixes.exists(phone.startsWith))
             .map(Right(_))
         .flatten

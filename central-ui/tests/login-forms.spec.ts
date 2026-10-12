@@ -234,7 +234,7 @@ test.describe('credential', () => {
     });
     const phone = page.getByPlaceholder(t.phone_placeholder);
 
-    await phone.fill('+15551234567');
+    await phone.fill('+12025551234');
     await page.getByRole('button', { name: t.continue }).click();
     await expect(page.getByText(t.phone_not_allowed)).toBeVisible();
     expect(submitted).toHaveLength(0);
@@ -245,6 +245,23 @@ test.describe('credential', () => {
 
     await expectSubmissions(submitted, 1);
     expect(submitted[0].path).toBe('/challenge/phone');
+    expect(submitted[0].fields.get('phone')).toBe('+77001234567');
+  });
+
+  test('phone: is sent in E.164 whatever was typed, and a non-number is not sent', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['phone'] } });
+    const phone = page.getByPlaceholder(t.phone_placeholder);
+
+    await phone.fill('12345');
+    await page.getByRole('button', { name: t.continue }).click();
+    await expect(page.getByText(t.phone_invalid)).toBeVisible();
+    expect(submitted).toHaveLength(0);
+
+    await phone.fill('+7 (700) 123-45-67');
+    await expect(page.getByText(t.phone_invalid)).toHaveCount(0);
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expectSubmissions(submitted, 1);
     expect(submitted[0].fields.get('phone')).toBe('+77001234567');
   });
 
