@@ -837,13 +837,9 @@ object EdgeService:
           // send the caller to log in, which overwrites the row. Any other failure of the
           // decryption itself -- a key that is not an AES key, say -- is not the session's fault
           // and stays a failure.
-          // Neither the token, the ciphertext, the key nor the exception text is logged.
-          case e @ (_: AEADBadTagException | _: IllegalArgumentException) =>
-            ZIO.logWarning(
-              s"Stored refresh token of preset '${record.presetId}' cannot be decrypted " +
-                s"(${e.getClass.getSimpleName}); the caller is sent to re-authenticate",
-            ) *>
-              Observability.setError("refresh_token_undecryptable") *>
+          // No separate log line: the error code on the HTTP log context is enough.
+          case _: AEADBadTagException | _: IllegalArgumentException =>
+            Observability.setError("refresh_token_undecryptable") *>
               failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
         session <- rotate(decryptedRefreshToken, preset, record.presetId)
       yield session

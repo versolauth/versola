@@ -242,10 +242,10 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
 
   /** An expired session whose stored refresh token edge can no longer open -- sealed under another
     * `EDGE_TOKEN_ENC_KEY`, altered, truncated or empty -- sends the caller to log in instead of
-    * failing the request, never calls the SSO with it, and logs nothing of the token.
+    * failing the request, never calls the SSO with it, and leaks nothing of the token into the logs.
     * `stored` builds the stored bytes from a real [[SecurityService]] and the key edge is configured with.
     */
-  private def unreadableRefreshTokenTest(name: String, failureClass: String)(stored: (SecurityService, SecretKey) => Task[Array[Byte]]) =
+  private def unreadableRefreshTokenTest(name: String)(stored: (SecurityService, SecretKey) => Task[Array[Byte]]) =
     test(name) {
       val env = new Env
       for
@@ -279,9 +279,6 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           Some(EdgeSessionCookie.clear(preset.cookieDomain, preset.cookiePath)),
         env.ssoClient.exchangeRefreshToken.calls.isEmpty,
         env.sessionRepository.create.calls.isEmpty,
-        logged.exists(message =>
-          message.contains("cannot be decrypted") && message.contains(s"${presetId}") && message.contains(failureClass),
-        ),
         !logged.exists(_.contains(unreadableRefreshTokenPlaintext)),
       )
     }
@@ -1774,22 +1771,22 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         setCookieHeader.flatMap(_.maxAge).contains(Duration.Zero),
       )
     },
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key", "AEADBadTagException")(
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was sealed under another key")(
       (security, _) =>
         security.encryptAes256(
           unreadableRefreshTokenPlaintext.getBytes("UTF-8"),
           SecretKeySpec(Array.fill(32)(7.toByte), "AES"),
         ),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was altered", "AEADBadTagException")(
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token was altered")(
       (security, key) =>
         security.encryptAes256(unreadableRefreshTokenPlaintext.getBytes("UTF-8"), key)
           .map(bytes => bytes.updated(bytes.length - 1, (bytes.last ^ 1).toByte)),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is too short to be sealed", "IllegalArgumentException")(
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is too short to be sealed")(
       (_, _) => ZIO.succeed(Array.fill(16)(1.toByte)),
     ),
-    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is empty", "IllegalArgumentException")(
+    unreadableRefreshTokenTest("returns 401 and clears the cookie when the stored refresh token is empty")(
       (_, _) => ZIO.succeed(Array.empty[Byte]),
     ),
     // Only an unreadable *value* means "log in again". A decryption that breaks for any other
