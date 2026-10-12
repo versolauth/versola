@@ -1887,3 +1887,33 @@ for (const width of [375, 320]) {
     expect(review.small).toEqual([]);
   });
 }
+
+// The seeded central-admin on a local stack: a web client that authenticates with a certificate, over
+// loopback http, with the binding flag never stored. It meets FAPI 2.0, and says so plainly.
+const certificateWebClient = {
+  ...alphaClient,
+  id: 'central-admin',
+  clientName: { en: 'Central Admin' },
+  redirectUris: ['http://localhost:2821/central/admin/'],
+  authMethod: 'tls_client_auth',
+  mtlsAuth: { type: 'tls_client_auth', subjectType: 'subject_dn', subjectValue: 'CN=central-admin,OU=default,O=Versola' },
+  certificateBoundAccessTokens: false,
+  dpopBoundAccessTokens: false,
+  requirePushedAuthorizationRequests: true,
+  template: { kind: 'web' },
+};
+
+test('calls a certificate client over loopback http FAPI 2.0, with nothing to configure for binding', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [certificateWebClient] } } });
+  await openClientPage(page, 'central-admin');
+
+  await expect(page.locator('versola-clients-list .view-meta').getByText('FAPI 2.0', { exact: true })).toBeVisible();
+  await expect(page.getByText('Some of these differ from what this type requires.')).toHaveCount(0);
+
+  await openEditSection(page, 'Token binding and requests');
+  await expect(page.getByText("Bound to the client's certificate (RFC 8705 §3.1)")).toBeVisible();
+  // Neither a flag the certificate already implies, nor a key to bind the tokens to as well.
+  await expect(page.getByText('Certificate-bound access tokens')).toHaveCount(0);
+  await expect(page.getByText('Stored as off')).toHaveCount(0);
+  await expect(page.getByLabel('Require DPoP-bound access tokens')).toHaveCount(0);
+});
