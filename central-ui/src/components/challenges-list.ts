@@ -990,6 +990,8 @@ export class VersolaChallengesList extends LitElement {
     this.editingSettings = true;
     this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
+    // Step-up limits are always edited. A tenant that never set them follows sign-in, so start from its values.
+    this.editSubmissionLimits.stepUp ??= this.stepUpLimitsFrom(this.editSubmissionLimits);
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
     this.editAuthConversationTtlSeconds = this.authConversationTtlSeconds;
@@ -1050,9 +1052,13 @@ export class VersolaChallengesList extends LitElement {
     this.editAcrVocabulary = this.editAcrVocabulary.filter((_, i) => i !== index);
   }
 
-  /** The limits being edited for a scope; the step-up ones exist only while the section is switched on. */
+  private stepUpLimitsFrom({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds }: StepUpLimits): StepUpLimits {
+    return JSON.parse(JSON.stringify({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds }));
+  }
+
+  /** The limits being edited for a scope. */
   private editLimitsFor(scope: 'signIn' | 'stepUp'): SubmissionLimits | StepUpLimits {
-    return scope === 'stepUp' && this.editSubmissionLimits.stepUp ? this.editSubmissionLimits.stepUp : this.editSubmissionLimits;
+    return scope === 'stepUp' ? this.editSubmissionLimits.stepUp! : this.editSubmissionLimits;
   }
 
   private addRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion', scope: 'signIn' | 'stepUp' = 'signIn') {
@@ -1064,17 +1070,6 @@ export class VersolaChallengesList extends LitElement {
   private removeRateLimit(type: 'otpRequest' | 'otpSubmit' | 'passwordSubmit' | 'passkeyAssertion', index: number, scope: 'signIn' | 'stepUp' = 'signIn') {
     const limits = this.editLimitsFor(scope);
     limits[type] = limits[type].filter((_, i) => i !== index);
-    this.requestUpdate();
-  }
-
-  /** Switching step-up limits on starts from a copy of the sign-in ones; off drops them so step-up follows sign-in again. */
-  private toggleStepUpLimits(enabled: boolean) {
-    if (enabled) {
-      const { otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds } = this.editSubmissionLimits;
-      this.editSubmissionLimits.stepUp = JSON.parse(JSON.stringify({ otpRequest, otpSubmit, passwordSubmit, passkeyAssertion, banDurationSeconds }));
-    } else {
-      delete this.editSubmissionLimits.stepUp;
-    }
     this.requestUpdate();
   }
 
@@ -1443,15 +1438,8 @@ export class VersolaChallengesList extends LitElement {
   }
 
   private renderStepUpLimitsCard() {
-    const stepUp = this.submissionLimits.stepUp;
-    if (!stepUp) {
-      return html`
-        <div class="card" data-testid="step-up-limits-card" style="margin-top: var(--spacing-lg);">
-          <label style="margin-bottom: 0;">Step-up Limits</label>
-          <div class="hint">Follow the submission limits above, counted separately from sign-in.</div>
-        </div>
-      `;
-    }
+    // A tenant that never set step-up limits follows its sign-in ones.
+    const stepUp = this.submissionLimits.stepUp ?? this.submissionLimits;
     return html`
       <div class="card" data-testid="step-up-limits-card" style="margin-top: var(--spacing-lg);">
         <div class="limits-card-header">
@@ -1805,27 +1793,20 @@ export class VersolaChallengesList extends LitElement {
         ${this.renderEditLimitList('Passkey Assertion', 'passkeyAssertion')}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Step-up Limits</h3>
-        <div class="hint">Step-up attempts are always counted apart from sign-in. By default they follow the sign-in limits above; switch this on to give them their own.</div>
-        <label style="display: flex; align-items: center; gap: var(--spacing-xs); font-size: 0.875rem; cursor: pointer; margin-top: var(--spacing-sm);">
-          <input type="checkbox" data-testid="step-up-limits-toggle" .checked=${!!this.editSubmissionLimits.stepUp}
-            @change=${(e: Event) => this.toggleStepUpLimits((e.target as HTMLInputElement).checked)} />
-          Configure step-up limits separately
-        </label>
+        <div class="hint">Step-up attempts are counted apart from sign-in and use these limits.</div>
 
-        ${this.editSubmissionLimits.stepUp ? html`
-          <div class="form-group" style="margin-top: var(--spacing-lg);">
-            <label>Step-up Ban Duration (seconds)</label>
-            <div class="limit-row" style="margin-bottom: 0;">
-              <input type="number" class="form-control compact-input limit-input" .value=${this.editSubmissionLimits.stepUp.banDurationSeconds}
-                @input=${(e: Event) => { this.editSubmissionLimits.stepUp!.banDurationSeconds = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
-              <span class="limit-hint">${this.formatDuration(this.editSubmissionLimits.stepUp.banDurationSeconds)}</span>
-            </div>
+        <div class="form-group" style="margin-top: var(--spacing-lg);">
+          <label>Step-up Ban Duration (seconds)</label>
+          <div class="limit-row" style="margin-bottom: 0;">
+            <input type="number" class="form-control compact-input limit-input" .value=${this.editSubmissionLimits.stepUp!.banDurationSeconds}
+              @input=${(e: Event) => { this.editSubmissionLimits.stepUp!.banDurationSeconds = Math.max(0, parseInt((e.target as HTMLInputElement).value) || 0); this.requestUpdate(); }} />
+            <span class="limit-hint">${this.formatDuration(this.editSubmissionLimits.stepUp!.banDurationSeconds)}</span>
           </div>
-          ${this.renderEditLimitList('Step-up OTP Request', 'otpRequest', 'stepUp')}
-          ${this.renderEditLimitList('Step-up OTP Submit', 'otpSubmit', 'stepUp')}
-          ${this.renderEditLimitList('Step-up Password Submit', 'passwordSubmit', 'stepUp')}
-          ${this.renderEditLimitList('Step-up Passkey Assertion', 'passkeyAssertion', 'stepUp')}
-        ` : nothing}
+        </div>
+        ${this.renderEditLimitList('Step-up OTP Request', 'otpRequest', 'stepUp')}
+        ${this.renderEditLimitList('Step-up OTP Submit', 'otpSubmit', 'stepUp')}
+        ${this.renderEditLimitList('Step-up Password Submit', 'passwordSubmit', 'stepUp')}
+        ${this.renderEditLimitList('Step-up Passkey Assertion', 'passkeyAssertion', 'stepUp')}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">ACR Vocabulary</h3>
         <div class="hint">Map ACR names to the authentication factors they require. Clients can request a specific ACR via the <code>acr_values</code> parameter.</div>

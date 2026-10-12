@@ -257,13 +257,15 @@ const signInLimits = {
   banDurationSeconds: 1800,
 };
 
-test('shows that step-up follows the sign-in limits when none are configured', async ({ page }) => {
+test('shows the sign-in limits as the step-up ones when none are configured', async ({ page }) => {
   await loadAdminApp(page, {
     path: challengesPath,
     state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, submissionLimits: signInLimits } } },
   });
 
-  await expect(page.getByTestId('step-up-limits-card')).toContainText('Follow the submission limits above');
+  const card = page.getByTestId('step-up-limits-card');
+  await expect(card).toContainText('Ban: 30 min');
+  await expect(card).toContainText('5 per 15 min');
 });
 
 test('shows dedicated step-up limits in view mode', async ({ page }) => {
@@ -275,7 +277,7 @@ test('shows dedicated step-up limits in view mode', async ({ page }) => {
 
   const card = page.getByTestId('step-up-limits-card');
   await expect(card).toContainText('Ban: 1 hr');
-  await expect(card).not.toContainText('Follow the submission limits above');
+  await expect(card).toContainText('3 per 10 min');
 });
 
 test('sends dedicated step-up limits, edited apart from sign-in, in the save payload', async ({ page }) => {
@@ -285,8 +287,7 @@ test('sends dedicated step-up limits, edited apart from sign-in, in the save pay
   });
 
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByTestId('step-up-limits-toggle').check();
-  // Starts from a copy of sign-in; changing step-up's first Password Submit window must not touch sign-in's.
+  // A tenant without step-up limits starts from a copy of sign-in; changing step-up's first Password Submit window must not touch sign-in's.
   await page.getByText('Step-up Password Submit Rate Limits').locator('..').locator('input[type=number]').first().fill('2');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.waitForTimeout(300);
@@ -299,24 +300,20 @@ test('sends dedicated step-up limits, edited apart from sign-in, in the save pay
   expect(body.submissionLimits.stepUp?.banDurationSeconds).toBe(1800);
 });
 
-test('switching step-up limits off drops them from the save payload', async ({ page }) => {
+test('always sends step-up limits, a copy of sign-in when none were configured', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: challengesPath,
-    state: {
-      ...baseState,
-      challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, passkeySettings, submissionLimits: { ...signInLimits, stepUp: { ...signInLimits } } } },
-    },
+    state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, passkeySettings, submissionLimits: signInLimits } } },
   });
 
   await page.getByRole('button', { name: 'Edit', exact: true }).click();
-  await page.getByTestId('step-up-limits-toggle').uncheck();
+  await expect(page.getByText('Step-up Password Submit Rate Limits')).toBeVisible();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
 
   const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
-    submissionLimits: Record<string, unknown>;
+    submissionLimits: typeof signInLimits & { stepUp?: typeof signInLimits };
   };
-  expect('stepUp' in body.submissionLimits).toBe(false);
+  expect(body.submissionLimits.stepUp).toEqual(signInLimits);
 });
 
 test('lists only the keys central can sign with, and sends the selected kid', async ({ page }) => {
