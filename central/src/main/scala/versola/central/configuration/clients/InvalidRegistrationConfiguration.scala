@@ -567,9 +567,8 @@ object InvalidRegistrationConfiguration:
     "client_secret, private_key_jwt, tls_client_auth or self_signed_tls_client_auth"
 
   /** A client fronted by edge presents edge's certificate, which is shared by every user it
-    * serves -- so its tokens are bound to that certificate and its authorization requests are
-    * pushed over the authenticated channel (both written on by the typed request), and it holds no
-    * key to sign a request object (refused here). */
+    * serves, and it holds no key to sign a request object (refused here). Whether its tokens are
+    * bound and its requests pushed is the caller's to say; the console says both. */
   private def edgeFronted(request: CreateClientRequest): Boolean =
     request.issueEdgeClientCertificate || request.enrollEdgeClientCertificate || request.edgeClientCertificate.nonEmpty
 
@@ -622,10 +621,6 @@ object InvalidRegistrationConfiguration:
     kind match
       case ClientKind.web | ClientKind.device if redirectUris.isEmpty =>
         invalid("needs at least one redirect URI - users sign in through it")
-      case ClientKind.web if edgeFronted && request.certificateBoundAccessTokens.contains(false) =>
-        invalid("fronted by edge needs certificateBoundAccessTokens - edge's certificate is what binds its tokens")
-      case ClientKind.web if edgeFronted && request.requirePushedAuthorizationRequests.contains(false) =>
-        invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request is trustworthy")
       case ClientKind.web if edgeFronted && request.requireSignedRequestObject.contains(true) =>
         invalid("fronted by edge cannot set requireSignedRequestObject - edge holds no key to sign one with")
       case _ => None
@@ -633,9 +628,9 @@ object InvalidRegistrationConfiguration:
   /** The update as the kind leaves it: what a kind fixes is written onto every update of it, so a
     * client stored below its kind (registered before the kinds had endpoints) is brought up by
     * the first update rather than left to a member no request has. Only values the kind itself
-    * decides: for a device fronted by edge, its DPoP binding and PAR; for a web client fronted by
-    * edge, its certificate binding and PAR; and no signed request object for any of
-    * them, nor a certificate binding for a device. */
+    * decides: for a device fronted by edge, its DPoP binding and PAR; no certificate binding for a
+    * device; and no signed request object for a device or a service. A web client's settings are
+    * its own: edge's certificate and PAR are what the console asks for, not something central writes. */
   def withKindFixed(kind: ClientKind, request: UpdateClientRequest, current: OAuthClientRecord, edgeFronted: Boolean): UpdateClientRequest =
     kind match
       case ClientKind.device =>
@@ -648,10 +643,4 @@ object InvalidRegistrationConfiguration:
         )
       case ClientKind.service =>
         request.copy(requireSignedRequestObject = Some(false), requirePushedAuthorizationRequests = Some(false))
-      case ClientKind.web if edgeFronted =>
-        request.copy(
-          certificateBoundAccessTokens = Some(true),
-          requirePushedAuthorizationRequests = Some(true),
-          requireSignedRequestObject = Some(false),
-        )
       case ClientKind.web => request

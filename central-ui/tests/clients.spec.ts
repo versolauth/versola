@@ -1644,10 +1644,9 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await finishCreate(page);
 
-  // Wait for the dialog to appear
-  await page.waitForTimeout(200);
-
-  expect(dialogShown).toBe(true);
+  // The dialog is raised once the registration is answered, which a slow runner takes longer over
+  // than any fixed pause.
+  await expect.poll(() => dialogShown).toBe(true);
 
   expect((await findClientWrite(api.requests, 'POST')).body).toEqual({
     tenantId: 'tenant-alpha',

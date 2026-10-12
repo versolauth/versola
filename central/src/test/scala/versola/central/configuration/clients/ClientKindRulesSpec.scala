@@ -105,21 +105,17 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       test("no redirect URI is refused") {
         assertTrue(registration(ClientKind.web, web.copy(redirectUris = Set.empty).toCreateClientRequest).exists(_.contains("redirect URI")))
       },
-      test("fronted by edge it is bound to the certificate and pushes its requests, and cannot require a request object") {
+      test("fronted by edge it cannot require a request object, and nothing else is written onto it") {
         val edge = web.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true)
         val written = edge.toCreateClientRequest
         assertTrue(
-          written.certificateBoundAccessTokens,
-          written.requirePushedAuthorizationRequests,
           registration(ClientKind.web, written).isEmpty,
-          // DPoP beside the certificate is left to the runtime, which refuses a token bound to both.
-          registration(ClientKind.web, edge.copy(dpopBoundAccessTokens = true).toCreateClientRequest).isEmpty,
           registration(
             ClientKind.web,
             edge.copy(requireSignedRequestObject = true).toCreateClientRequest,
           ).exists(_.contains("requireSignedRequestObject")),
-          // Not edge-fronted, nothing is written on.
-          !web.toCreateClientRequest.certificateBoundAccessTokens,
+          !written.certificateBoundAccessTokens,
+          !written.requirePushedAuthorizationRequests,
         )
       },
     ),
@@ -211,27 +207,21 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       },
     ),
     suite("a web client fronted by edge on update")(
-      test("may restate what the kind fixes, and is brought up to it, but cannot ask for the opposite") {
+      test("cannot start requiring a request object, and is otherwise left as it is") {
         val stored = record(web.copy(authMethod = AuthMethod.tls_client_auth).toCreateClientRequest)
         val update = UpdateWebClientRequest.of(stored.id)
-        def check(request: UpdateWebClientRequest) =
-          InvalidRegistrationConfiguration.validateKindUpdate(ClientKind.web, request.toUpdateClientRequest, stored, edgeFronted = true)
-        val fixed = InvalidRegistrationConfiguration.withKindFixed(ClientKind.web, update.toUpdateClientRequest, stored, edgeFronted = true)
+        def check(request: UpdateWebClientRequest, edge: Boolean = true) =
+          InvalidRegistrationConfiguration.validateKindUpdate(ClientKind.web, request.toUpdateClientRequest, stored, edgeFronted = edge)
         assertTrue(
           check(update).isEmpty,
-          check(update.copy(certificateBoundAccessTokens = Some(true), requirePushedAuthorizationRequests = Some(true))).isEmpty,
-          check(update.copy(certificateBoundAccessTokens = Some(false))).exists(_.reason.contains("certificateBoundAccessTokens")),
-          check(update.copy(requirePushedAuthorizationRequests = Some(false))).exists(_.reason.contains("requirePushedAuthorizationRequests")),
           check(update.copy(requireSignedRequestObject = Some(true))).exists(_.reason.contains("requireSignedRequestObject")),
-          fixed.certificateBoundAccessTokens == Some(true),
-          fixed.requirePushedAuthorizationRequests == Some(true),
-          // Held to nothing on a client no edge fronts.
-          InvalidRegistrationConfiguration.validateKindUpdate(
+          check(update.copy(requireSignedRequestObject = Some(true)), edge = false).isEmpty,
+          InvalidRegistrationConfiguration.withKindFixed(
             ClientKind.web,
-            update.copy(dpopBoundAccessTokens = Some(true)).toUpdateClientRequest,
+            update.toUpdateClientRequest,
             stored,
-            edgeFronted = false,
-          ).isEmpty,
+            edgeFronted = true,
+          ) == update.toUpdateClientRequest,
         )
       },
     ),
