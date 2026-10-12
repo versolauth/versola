@@ -259,18 +259,16 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService.live
 
   given DeriveConfig[Secret.Bytes16] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes16))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes16))
 
   given DeriveConfig[Secret.Bytes32] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
 
   given DeriveConfig[Secret] = DeriveConfig[String]
-    .mapOrFail: str =>
-      Secret.fromBase64Url(str)
-        .left.map(message => zio.Config.Error.InvalidData(message = message))
+    .mapOrFail(SecretConfig.secret)
 
   given DeriveConfig[SecretKey] = DeriveConfig[String]
-    .mapOrFail(parseBase64UrlSecret(Secret.Bytes32))
+    .mapOrFail(SecretConfig.fixedLength(Secret.Bytes32))
     .map(bytes => SecretKeySpec(bytes, "AES"))
 
   given DeriveConfig[URL] = DeriveConfig[String]
@@ -282,19 +280,9 @@ object PostgresOAuthApp extends VersolaApp("auth"):
     .mapOrFail(Email.from(_).left.map(message => zio.Config.Error.InvalidData(message = message)))
 
   given DeriveConfig[PrivateKey] = DeriveConfig[String]
-    .mapOrFail: str =>
-      PrivateKeyUtil.parse(str, "RSA")
-        .left.map(ex => zio.Config.Error.InvalidData(message = ex.getMessage))
+    .mapOrFail(SecretConfig.rsaPrivateKey)
 
   given DeriveConfig[EnvName] = DeriveConfig[String]
     .map:
       case "prod" => EnvName.Prod
       case value => EnvName.Test(value)
-
-  private def parseBase64UrlSecret(newType: ByteArrayNewType.FixedLength)(str: String) =
-    newType.fromBase64Url(str)
-      .left.map(message => zio.Config.Error.InvalidData(message = message))
-      .filterOrElse(
-        _.length == newType.length,
-        zio.Config.Error.InvalidData(message = s"Base64-encoded string must be ${newType.length} bytes. '$str' is '"),
-      )
