@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
+import { INVALID_FIELD_BORDER, clientWrites, findClientWrite, findRequest, loadAdminApp } from './fixtures';
 
 const clientsPath = '/?view=clients&tenant=tenant-alpha';
 
@@ -263,7 +263,7 @@ test('shows and updates refresh token TTL in days for offline clients', async ({
   await page.getByLabel('Refresh Token TTL (days) *').fill('120');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     refreshTokenTtl: 120 * 24 * 60 * 60,
   });
 });
@@ -294,7 +294,7 @@ test('shows refresh token TTL only after selecting offline_access when creating 
     .toContainText('180 days');
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     refreshTokenTtl: 180 * 24 * 60 * 60,
   });
 
@@ -329,25 +329,13 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
   await expect(created).toContainText('dashboard-client');
   await expect(page.locator('versola-clients-list')).toContainText('1h');
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toEqual({
+  expect((await findClientWrite(api.requests, 'POST')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'dashboard-client',
     clientName: { en: 'Dashboard Client' },
-    redirectUris: [],
     allowedScopes: [],
     permissions: [],
     accessTokenTtl: 3600,
-    authFlow: null,
-    registrationFlow: null,
-    otpTemplateId: 'default',
-    theme: 'default',
-    frontChannelLogoutUri: null,
-    frontChannelLogoutSessionRequired: false,
-    backChannelLogoutUri: null,
-    logoUri: null,
-    policyUri: null,
-    tosUri: null,
-    consentFlow: null,
     authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
     dpopSigningAlgs: [],
@@ -355,14 +343,10 @@ test('creates a client and shows the generated secret banner', async ({ page }) 
     mtlsAuth: null,
     certificateBoundAccessTokens: false,
     jwks: null,
-    requireSignedRequestObject: false,
-    requirePushedAuthorizationRequests: false,
-    // Step 1's kind, stored so the edit page can show the client against it.
-    applicationType: 'web',
-    template: { kind: 'service' },
-    issueEdgeClientCertificate: false,
-    enrollEdgeClientCertificate: false,
   });
+  // A service client is registered at its own endpoint, which has no redirect URIs, flows,
+  // branding, PAR or JAR to send: the endpoint records what kind it is.
+  expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/service');
 });
 
 test('dates a just-created client by the time the registration answered with', async ({ page }) => {
@@ -393,13 +377,12 @@ test('creates a native client authenticated by edge, without a secret or rotatio
   await addRedirectUri(page, 'https://app.example.com/callback');
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'mobile-app',
     authMethod: 'tls_client_auth',
-    applicationType: 'native',
     enrollEdgeClientCertificate: true,
-    template: { kind: 'device' },
   });
+  expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/native');
 
   // Edge enrols for the certificate, so there is no secret to copy and nothing to register.
   await expect(page.getByRole('heading', { name: 'Client created: Mobile App', exact: true })).toBeVisible();
@@ -537,7 +520,7 @@ test('keeps earlier answers when navigating back through the wizard', async ({ p
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'back-nav-client',
     redirectUris: ['https://backnav.example/callback'],
     allowedScopes: ['openid', 'profile'],
@@ -577,7 +560,7 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'change-link-client',
     clientName: { en: 'Renamed Client' },
     redirectUris: ['https://changelink.example/callback'],
@@ -596,7 +579,7 @@ test('cancels out of creation from step 1 without registering a client', async (
 
   await expect(page.getByRole('button', { name: '+ Create Client', exact: true })).toBeVisible();
   await expect(clientCard(page, 'Alpha Web')).toBeVisible();
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 });
 
 test('registers a client that authenticates with an mTLS certificate', async ({ page }) => {
@@ -626,14 +609,13 @@ test('registers a client that authenticates with an mTLS certificate', async ({ 
     .toContainText('certificate-bound');
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'mtls-client',
     authMethod: 'tls_client_auth',
     mtlsAuth: { type: 'tls_client_auth', subjectType: 'san_dns', subjectValue: 'client.example.com' },
     // tls_client_auth binds the token to the certificate by itself, so no separate flag is sent.
     certificateBoundAccessTokens: false,
     dpopBoundAccessTokens: false,
-    enrollEdgeClientCertificate: false,
     jwks: null,
   });
 });
@@ -660,7 +642,7 @@ test('blocks an mTLS client with no subject value, and one whose tenant terminat
   await page.getByLabel('Expected value').fill('client.example.com');
   await expect(page.getByText('Subject value is required')).toHaveCount(0);
   await expect(continueButton).toBeDisabled();
-  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+  expect(clientWrites(api.requests, 'POST')).toHaveLength(0);
 });
 
 test('registers a self-signed mTLS client against the key set of its certificate', async ({ page }) => {
@@ -681,13 +663,12 @@ test('registers a self-signed mTLS client against the key set of its certificate
   await page.getByLabel('Key set of the certificate').fill(JSON.stringify(keySet));
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'self-signed-client',
     authMethod: 'self_signed_tls_client_auth',
     mtlsAuth: { type: 'self_signed_tls_client_auth' },
     jwks: keySet,
     certificateBoundAccessTokens: false,
-    requireSignedRequestObject: false,
   });
 
   // No secret is generated for a client whose method is not client_secret, so the banner has
@@ -725,10 +706,9 @@ for (const profile of ['fapi2', 'standard'] as const) {
     await expect(page.getByText('This tenant is not FAPI 2.0.')).toHaveCount(profile === 'standard' ? 1 : 0);
     await submitCreate(page);
 
-    expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+    expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
       id: 'edge-web',
       authMethod: 'tls_client_auth',
-      applicationType: 'web',
       // Tokens bound to edge's certificate need every replica to present the same one, so
       // central issues it; only a native app's edge enrols for its own.
       issueEdgeClientCertificate: true,
@@ -739,8 +719,8 @@ for (const profile of ['fapi2', 'standard'] as const) {
       requireSignedRequestObject: false,
       certificateBoundAccessTokens: true,
       dpopBoundAccessTokens: false,
-      template: { kind: 'web' },
     });
+    expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/web');
     await expect(page.locator('.secret-banner .secret-value')).toHaveCount(0);
   });
 
@@ -765,19 +745,21 @@ for (const profile of ['fapi2', 'standard'] as const) {
     await expect(page.getByText('tls_client_auth · certificate enrolled by edge')).toBeVisible();
     await submitCreate(page);
 
-    expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+    expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
       id: 'mobile-client',
       authMethod: 'tls_client_auth',
-      applicationType: 'native',
       issueEdgeClientCertificate: false,
       enrollEdgeClientCertificate: true,
       mtlsAuth: null,
-      dpopBoundAccessTokens: true,
-      certificateBoundAccessTokens: false,
-      requirePushedAuthorizationRequests: true,
-      requireSignedRequestObject: false,
-      template: { kind: 'device' },
     });
+    // DPoP, PAR and the rest of what a device fixes are central's to set, not members of its
+    // request: the endpoint refuses a body that names them.
+    const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
+    expect((await findClientWrite(api.requests, 'POST')).pathname).toBe('/configuration/clients/native');
+    for (const fixed of ['dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'requirePushedAuthorizationRequests',
+      'requireSignedRequestObject', 'applicationType', 'template', 'jwks']) {
+      expect(sent).not.toHaveProperty(fixed);
+    }
   });
 }
 
@@ -821,7 +803,7 @@ test('keeps the registered subject when an edge-fronted client is edited', async
   await saveEdit(page);
 
   // Absent leaves the stored subject alone; null would clear it, which central refuses.
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body.mtlsAuth).toBeUndefined();
+  expect((await findClientWrite(api.requests, 'PUT')).body.mtlsAuth).toBeUndefined();
 });
 
 test('does not report an edge-fronted client as drifted from its template', async ({ page }) => {
@@ -860,15 +842,14 @@ test('leaves a service client with no sign-in flow to configure', async ({ page 
   await continueToReview(page);
   await submitCreate(page);
 
-  const body = (await findRequest(api.requests, 'POST', '/configuration/clients')).body as Record<string, unknown>;
+  const body = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
   expect(body).toMatchObject({
     id: 'batch-service',
     authMethod: 'private_key_jwt',
     dpopBoundAccessTokens: true,
     certificateBoundAccessTokens: false,
-    authFlow: null,
   });
-  expect(body.redirectUris).toEqual([]);
+  expect(body).not.toHaveProperty('redirectUris');
 });
 
 test('offers a service app a key or a certificate on a FAPI 2.0 tenant, and no secret', async ({ page }) => {
@@ -909,7 +890,7 @@ test('offers a service app a secret, a key or a certificate on a standard tenant
   await submitCreate(page);
 
   // A secret is a bearer credential: nothing binds the token.
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'secret-service',
     authMethod: 'client_secret',
     dpopBoundAccessTokens: false,
@@ -943,19 +924,17 @@ test('registers a private_key_jwt service client with a key set that must be val
   await page.getByLabel('Key set').fill('not json');
   await expect(page.getByText('Must be valid JSON')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Continue to permissions', exact: true })).toBeDisabled();
-  expect(api.requests.filter(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toHaveLength(0);
+  expect(clientWrites(api.requests, 'POST')).toHaveLength(0);
 
   await page.getByLabel('Key set').fill(SAMPLE_JWKS);
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     id: 'assertion-client',
     authMethod: 'private_key_jwt',
     mtlsAuth: null,
     jwks: JSON.parse(SAMPLE_JWKS),
     dpopBoundAccessTokens: true,
-    requireSignedRequestObject: false,
-    requirePushedAuthorizationRequests: false,
   });
 
   // private_key_jwt is a confidential method, but not client_secret - Central issues no
@@ -984,7 +963,7 @@ test('creates a client with localized consent name', async ({ page }) => {
   await nameEditor.locator('input').fill('Локализованный клиент');
   await finishCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     clientName: { en: 'Localized Client', ru: 'Локализованный клиент' },
   });
 });
@@ -1067,7 +1046,7 @@ test('configures a registration flow and sends it when creating a client', async
     .toContainText('on');
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     registrationFlow: {
       credential: 'phone',
       steps: [{ type: 'otp' }],
@@ -1080,7 +1059,7 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     registrationFlow: {
       steps: [{ type: 'otp' }, { type: 'setPassword' }],
       roleIds: ['user', 'alpha-admin'],
@@ -1116,7 +1095,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
   await continueToReview(page);
   await submitCreate(page);
 
-  const body = (await findRequest(api.requests, 'POST', '/configuration/clients')).body;
+  const body = (await findClientWrite(api.requests, 'POST')).body;
   expect(body).toMatchObject({
     logoUri: 'https://consenting.example/logo.png',
     policyUri: 'https://consenting.example/privacy',
@@ -1146,7 +1125,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   await page.getByLabel('Remember duration in days').fill('30');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body.consentFlow)
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
     .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
 });
 
@@ -1261,7 +1240,7 @@ test('hides registration settings when inline password is enabled', async ({ pag
 
   // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
   // the key is omitted rather than sent as an explicit null.
-  const putBody = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
+  const putBody = (await findClientWrite(api.requests, 'PUT')).body;
   expect(putBody).toMatchObject({
     authFlow: {
       primary: {
@@ -1293,7 +1272,7 @@ test('hides registration settings for a login+password flow', async ({ page }) =
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     registrationFlow: null,
   });
 });
@@ -1323,19 +1302,12 @@ test('leaves out everything a sign-in flow owns when the client has none', async
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toMatchObject({
-    authFlow: null,
-    theme: 'default',
-    redirectUris: [],
-    otpTemplateId: 'default',
-    frontChannelLogoutUri: null,
-    frontChannelLogoutSessionRequired: false,
-    backChannelLogoutUri: null,
-    logoUri: null,
-    policyUri: null,
-    tosUri: null,
-    consentFlow: null,
-  });
+  // The service endpoint has no member for any of it, so none is sent.
+  const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
+  for (const owned of ['authFlow', 'registrationFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
+    'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow']) {
+    expect(sent).not.toHaveProperty(owned);
+  }
 });
 
 test('shows client form validation before submitting', async ({ page }) => {
@@ -1352,7 +1324,7 @@ test('shows client form validation before submitting', async ({ page }) => {
   await expect(clientIdField).toHaveCSS('border-top-color', INVALID_FIELD_BORDER);
   await expect(page.getByRole('button', { name: 'Continue to sign-in', exact: true })).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 
   await page.getByLabel('Client ID').fill('good-client');
   await page.getByPlaceholder('https://app.example.com/callback').fill('https://broken.example/callback#fragment');
@@ -1384,7 +1356,7 @@ test('rejects logout notification URIs with a non-http(s) scheme', async ({ page
   await expect(page.getByText('Logout URI must use https://', { exact: true })).toBeVisible();
   await expect(continueButton).toBeDisabled();
 
-  expect(api.requests.some(request => request.method === 'POST' && request.pathname === '/configuration/clients')).toBeFalsy();
+  expect(clientWrites(api.requests, 'POST').length > 0).toBeFalsy();
 });
 
 test('preserves the front-channel URI when switching logout modes', async ({ page }) => {
@@ -1442,7 +1414,9 @@ test('sends the name and redirect URIs as a patch when General is saved', async 
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await saveEdit(page);
 
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
+  const body = (await findClientWrite(api.requests, 'PUT')).body;
+  // The client is a web client, so its update goes to the web endpoint; its kind never changes.
+  expect((await findClientWrite(api.requests, 'PUT')).pathname).toBe('/configuration/clients/web');
   expect(body).toMatchObject({
     clientId: 'alpha-web',
     clientName: { en: 'Alpha Console' },
@@ -1464,7 +1438,7 @@ test('sends scopes and permissions as a patch when they are saved', async ({ pag
   await page.locator('.checkbox-item', { hasText: 'alpha.write' }).getByRole('checkbox').check();
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     clientId: 'alpha-web',
     scope: { add: ['email'], remove: ['openid'] },
     permissions: { add: ['alpha.write'], remove: ['alpha.read'] },
@@ -1479,7 +1453,7 @@ test('sends the access token lifetime when Tokens is saved, and nothing else abo
   await page.getByRole('spinbutton', { name: 'Access Token TTL *' }).fill('2');
   await saveEdit(page);
 
-  const body = (await findRequest(api.requests, 'PUT', '/configuration/clients')).body;
+  const body = (await findClientWrite(api.requests, 'PUT')).body;
   expect(body).toMatchObject({ clientId: 'alpha-web', accessTokenTtl: 7200 });
   expect(body).not.toHaveProperty('clientName');
   expect(body.redirectUris ?? { add: [], remove: [] }).toEqual({ add: [], remove: [] });
@@ -1511,7 +1485,7 @@ test('does not patch a localized client name after reverting an edit', async ({ 
   await clientName.fill('Alpha Web');
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).not.toHaveProperty('clientName');
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('clientName');
 });
 
 test('does not let an existing client switch its sign-in flow, which would change what kind of client it is', async ({ page }) => {
@@ -1673,7 +1647,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
 
   expect(dialogShown).toBe(true);
 
-  expect((await findRequest(api.requests, 'POST', '/configuration/clients')).body).toEqual({
+  expect((await findClientWrite(api.requests, 'POST')).body).toEqual({
     tenantId: 'tenant-alpha',
     id: 'alpha-web',
     clientName: { en: 'Duplicate Client' },
@@ -1710,8 +1684,6 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
     jwks: null,
     requireSignedRequestObject: false,
     requirePushedAuthorizationRequests: true,
-    applicationType: 'web',
-    template: { kind: 'web' },
     issueEdgeClientCertificate: true,
     enrollEdgeClientCertificate: false,
   });
@@ -1748,11 +1720,13 @@ test('flags settings stored below what the client type requires, and moves them 
   await par.getByRole('button', { name: 'Set to on' }).click();
   await expect(par.locator('.locked-problem')).toHaveCount(0);
 
+  // The update goes to the device endpoint, which has no member for PAR: central writes what the
+  // kind fixes onto every update of it, so saving is what moves the stored value up.
   await saveEdit(page);
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
-    clientId: 'edge-mobile',
-    requirePushedAuthorizationRequests: true,
-  });
+  const update = await findClientWrite(api.requests, 'PUT');
+  expect(update.pathname).toBe('/configuration/clients/native');
+  expect(update.body).toMatchObject({ clientId: 'edge-mobile' });
+  expect(update.body).not.toHaveProperty('requirePushedAuthorizationRequests');
 });
 
 test('shows a web client on a secret as holding its own credential, not as one fronted by edge', async ({ page }) => {
@@ -1853,7 +1827,7 @@ test('offers PAR and JAR to a web client that authenticates for itself, since it
   await page.getByRole('checkbox', { name: /Pushed Authorization Requests/ }).uncheck();
   await saveEdit(page);
 
-  expect((await findRequest(api.requests, 'PUT', '/configuration/clients')).body).toMatchObject({
+  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
     clientId: 'web-downgraded',
     requirePushedAuthorizationRequests: false,
   });

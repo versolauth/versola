@@ -26,7 +26,8 @@ type BackendAuthFlow = { primary: { credentials: string[]; inlinePassword: boole
 type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | null };
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
-type ClientDto = { id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
+type ClientKindDto = 'web' | 'device' | 'service';
+type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -74,10 +75,10 @@ type CreateClientRequest = {
   tenantId: string;
   id: string;
   clientName: Record<string, string>;
-  redirectUris: string[];
+  redirectUris?: string[];
   allowedScopes: string[];
   audience: string[];
-  permissions: string[];
+  permissions?: string[];
   accessTokenTtl: number;
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
@@ -406,6 +407,58 @@ function json(data: unknown, status = 200) {
   return { status, contentType: 'application/json', body: JSON.stringify(data) };
 }
 
+/**
+ * What each kind's request declares (central's `Create{Web,Native,Service}ClientRequest` and the
+ * `Update...` ones). Central refuses a member outside them rather than ignoring it, so the mock
+ * does the same: a console that sends a setting its kind fixes fails here, not in production.
+ */
+const KIND_BY_PATH: Record<string, ClientKindDto> = { web: 'web', native: 'device', service: 'service' };
+
+const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
+  web: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+  ],
+  device: [
+    'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
+    'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+  ],
+  service: [
+    'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
+  ],
+};
+
+const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
+  web: [
+    'clientId', 'clientName', 'redirectUris', 'scope', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
+    'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
+    'edgeClientCertificate',
+  ],
+  device: [
+    'clientId', 'clientName', 'redirectUris', 'scope', 'permissions', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
+    'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+    'edgeClientCertificate',
+  ],
+  service: [
+    'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
+    'dpopMinRsaKeySize', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks',
+  ],
+};
+
+function unknownMembers(body: unknown, allowed: string[]): string[] {
+  return Object.keys((body ?? {}) as Record<string, unknown>).filter(name => !allowed.includes(name));
+}
+
 function applyPatchSet<T>(items: T[], patch?: SetPatch<T>): T[] {
   if (!patch) {
     return items;
@@ -524,7 +577,8 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
     }
 
     const tenantId = url.searchParams.get('tenantId') ?? '';
-    if (pathname === '/configuration/clients') {
+    const typedKind = KIND_BY_PATH[pathname.match(/^\/configuration\/clients\/(web|native|service)$/)?.[1] ?? ''];
+    if (pathname === '/configuration/clients' || (typedKind && (method === 'POST' || method === 'PUT'))) {
       if (method === 'GET') {
         await route.fulfill(json({ clients: pageSlice(state.clients[tenantId] ?? [], url) }));
         return;
@@ -533,6 +587,12 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       if (method === 'POST') {
         const payload = body as CreateClientRequest;
         const tenantClients = state.clients[payload.tenantId] ?? [];
+
+        const extra = typedKind ? unknownMembers(body, CREATE_MEMBERS[typedKind]) : [];
+        if (extra.length > 0) {
+          await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
+          return;
+        }
 
         if (tenantClients.some(client => client.id === payload.id)) {
           await route.fulfill(json({ message: `Client ${payload.id} already exists` }, 409));
@@ -545,15 +605,17 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         const createdClient: ClientDto = {
           id: payload.id,
           clientName: payload.clientName,
-          redirectUris: [...payload.redirectUris],
+          redirectUris: [...(payload.redirectUris ?? [])],
           scope: [...payload.allowedScopes],
-          permissions: [...payload.permissions],
+          permissions: [...(payload.permissions ?? [])],
           secretRotation: false,
           authMethod: payload.authMethod ?? 'client_secret',
           refreshTokenTtl: payload.refreshTokenTtl ?? 180 * 24 * 60 * 60,
           authFlow: payload.authFlow ?? null,
           consentFlow: payload.consentFlow ?? null,
-          template: payload.template ?? null,
+          // The endpoint a client was registered at is what it is, as central records it.
+          template: typedKind ? { kind: typedKind } : payload.template ?? null,
+          kind: typedKind ?? (payload.template?.kind as ClientKindDto | undefined),
           createdAt,
         };
 
@@ -580,6 +642,19 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         if (!client) {
           await route.fulfill(json({ message: `Client ${payload.clientId} was not found` }, 404));
           return;
+        }
+
+        if (typedKind) {
+          const extra = unknownMembers(body, UPDATE_MEMBERS[typedKind]);
+          if (extra.length > 0) {
+            await route.fulfill({ status: 400, contentType: 'text/plain', body: `Unknown members: ${extra.join(', ')}` });
+            return;
+          }
+          const stored = client.kind ?? client.template?.kind;
+          if (stored && stored !== typedKind) {
+            await route.fulfill({ status: 409, contentType: 'text/plain', body: `Client ${payload.clientId} is a ${stored} client` });
+            return;
+          }
         }
 
         if (payload.clientName !== undefined) {

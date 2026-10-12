@@ -1,3 +1,4 @@
+import { clientKindOf, type ClientKind } from './client-presets';
 import type {
   AuthFlow,
   AuthMethod,
@@ -131,6 +132,7 @@ type ClientsResponse = {
     secretRotation: boolean;
     authMethod?: AuthMethod;
     applicationType?: 'web' | 'native';
+    kind?: 'web' | 'device' | 'service';
     accessTokenTtl: number;
     theme: string;
     otpTemplateId: string;
@@ -723,7 +725,12 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         clientName: clientNameFromBackend(client.clientName),
         redirectUris: [...client.redirectUris],
         scope: [...client.scope],
-        clientType: client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        // Central names the kind; the application type and a missing credential are what a console
+        // that predates it had to guess from.
+        clientType: client.kind
+          ? (client.kind === 'device' ? 'native' : 'web')
+          : client.applicationType === 'native' || client.authMethod === 'none' ? 'native' : 'web',
+        kind: client.kind,
         authMethod: client.authMethod ?? 'client_secret',
         hasPreviousSecret: supplement?.hasPreviousSecret ?? client.secretRotation,
         // The backend now returns the real value directly (previously it didn't, and this
@@ -1096,11 +1103,62 @@ export async function deleteRole(tenantId: string, roleId: string): Promise<void
   invalidateRefData(rolesStore, tenantId);
 }
 
+/**
+ * One registration and one update per kind of client (`/configuration/clients/{web,native,service}`).
+ * Each endpoint refuses a member its kind does not have, so the body is cut down to the members
+ * the kind's request declares: what the kind fixes (a device's DPoP binding, a service's lack of
+ * redirect URIs) is not ours to send, and is set by central.
+ */
+const KIND_PATHS: Record<ClientKind, string> = { web: 'web', device: 'native', service: 'service' };
+
+const COMMON_CREATE_FIELDS = [
+  'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'authMethod', 'mtlsAuth',
+  'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+] as const;
+
+const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks',
+    'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_CREATE_FIELDS, ...SIGN_IN_FIELDS],
+  service: [...COMMON_CREATE_FIELDS, 'dpopBoundAccessTokens', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+const COMMON_UPDATE_FIELDS = [
+  'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
+] as const;
+
+const SIGN_IN_UPDATE_FIELDS = [
+  'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri',
+  'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+] as const;
+
+const UPDATE_FIELDS: Record<ClientKind, readonly string[]> = {
+  web: [
+    ...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS, 'dpopBoundAccessTokens', 'mtlsAuth',
+    'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests',
+  ],
+  device: [...COMMON_UPDATE_FIELDS, ...SIGN_IN_UPDATE_FIELDS],
+  service: [...COMMON_UPDATE_FIELDS, 'dpopBoundAccessTokens', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks'],
+};
+
+function pickFields(body: Record<string, unknown>, fields: readonly string[]): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(body).filter(([name]) => fields.includes(name)));
+}
+
 /** Resolves to the generated secret, or to `null` for a native client, which has none. */
 export async function createClient(tenantId: string, client: OAuthClient): Promise<CreatedClient> {
-  const response = await request<CreateClientResponse>('/configuration/clients', {
+  const kind = clientKindOf(client);
+  const response = await request<CreateClientResponse>(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'POST',
-    body: {
+    body: pickFields({
       tenantId,
       id: client.id,
       clientName: clientNameToBackend(client.clientName),
@@ -1109,7 +1167,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       permissions: unique(client.permissions),
       accessTokenTtl: client.accessTokenTtl,
       theme: client.theme ?? 'default',
-      otpTemplateId: client.otpTemplateId ?? null,
+      otpTemplateId: client.otpTemplateId ?? undefined,
       authFlow: authFlowToBackend(client.authFlow),
       registrationFlow: registrationFlowToBackend(client.registrationFlow),
       frontChannelLogoutUri: client.frontChannelLogoutUri ?? null,
@@ -1129,11 +1187,9 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       jwks: client.jwks ?? null,
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
-      template: client.template ?? null,
-      applicationType: client.clientType === 'native' ? 'native' : 'web',
-      issueEdgeClientCertificate: !!client.edgeFronted && client.clientType !== 'native',
-      enrollEdgeClientCertificate: !!client.edgeFronted && client.clientType === 'native',
-    },
+      issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
+      enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
+    }, CREATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {
@@ -1176,9 +1232,11 @@ export async function deletePreviousClientSecret(tenantId: string, clientId: str
 }
 
 export async function updateClient(tenantId: string, existing: OAuthClient, client: OAuthClient): Promise<void> {
-  await requestVoid('/configuration/clients', {
+  // The kind the client was registered as: it is fixed, so it is read off what is stored.
+  const kind = clientKindOf(existing);
+  await requestVoid(`/configuration/clients/${KIND_PATHS[kind]}`, {
     method: 'PUT',
-    body: {
+    body: pickFields({
       clientId: client.id,
       clientName: sameLocalizedDescription(existing.clientName, client.clientName)
         ? undefined
@@ -1226,7 +1284,7 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       requirePushedAuthorizationRequests: existing.requirePushedAuthorizationRequests !== client.requirePushedAuthorizationRequests
         ? client.requirePushedAuthorizationRequests
         : undefined,
-    },
+    }, UPDATE_FIELDS[kind]),
   });
 
   clientSupplementStore.set(entityKey(tenantId, client.id), {

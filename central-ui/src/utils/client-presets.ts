@@ -395,8 +395,12 @@ export function credentialBinding(mode: ClientCredentialMode): Pick<OAuthClient,
  * a device; a web one with no sign-in flow and no redirect URIs makes no authorization
  * request, which is a service. */
 export function clientKindOf(
-  client: Pick<OAuthClient, 'clientType' | 'redirectUris'> & { template?: { kind: ClientKind } | null; authFlow?: unknown },
+  client: Pick<OAuthClient, 'clientType' | 'redirectUris'> & { kind?: ClientKind; template?: { kind: ClientKind } | null; authFlow?: unknown },
 ): ClientKind {
+  // What central says the client is, where it does: the same rule it holds an update to.
+  if (client.kind) {
+    return client.kind;
+  }
   if (client.template?.kind) {
     return client.template.kind;
   }
