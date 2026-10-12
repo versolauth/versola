@@ -1,3 +1,4 @@
+import { statusIcon as renderStatusIcon } from './status-icon';
 import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
@@ -13,6 +14,7 @@ import {
   ClientKind,
   SettingLock,
   authMethodFor,
+  fapiConformance,
   clientKindOf,
   clientLocks,
   clientPreset,
@@ -285,6 +287,9 @@ export class VersolaClientForm extends LitElement {
       .tag-remove {
         display: inline-flex;
         align-items: center;
+        justify-content: center;
+        min-width: 1.5rem;
+        min-height: 1.5rem;
       }
 
       .tag-remove:hover {
@@ -1130,7 +1135,7 @@ export class VersolaClientForm extends LitElement {
         border-radius: var(--radius-sm);
         font-size: 0.8125rem;
         line-height: 1.5;
-        color: var(--text-secondary);
+        color: var(--text-primary);
         margin-top: var(--spacing-lg);
       }
       .wizard-note {
@@ -1165,7 +1170,8 @@ export class VersolaClientForm extends LitElement {
       .review-change {
         background: none;
         border: none;
-        padding: 0;
+        padding: 0 0.25rem;
+        min-height: 1.5rem;
         cursor: pointer;
         font-size: 0.8125rem;
         color: var(--accent);
@@ -1174,27 +1180,19 @@ export class VersolaClientForm extends LitElement {
         text-decoration: underline;
       }
 
-      .review-group {
-        border-top: 1px solid var(--border-dark);
-        padding: var(--spacing-md) 0;
-      }
-      .review-group-head {
-        display: flex;
+      .review-group .wizard-section-head {
         align-items: center;
-        justify-content: space-between;
-        margin-bottom: 0.5rem;
-      }
-      .review-group-title {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text-primary);
       }
       .review-row {
         display: grid;
         grid-template-columns: minmax(10rem, 16rem) 1fr;
         gap: 0.75rem;
-        padding: 0.2rem 0;
-        font-size: 0.8125rem;
+        padding: 0.625rem var(--spacing-lg);
+        border-bottom: 1px solid var(--border-dark);
+        font-size: 0.875rem;
+      }
+      .review-group > :last-child {
+        border-bottom: 0;
       }
       .review-label {
         color: var(--text-secondary);
@@ -1204,6 +1202,37 @@ export class VersolaClientForm extends LitElement {
         overflow-wrap: anywhere;
       }
       .review-row.muted .review-value {
+        color: var(--text-secondary);
+      }
+      .review-banner {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-lg);
+        padding: var(--spacing-md) var(--spacing-lg);
+        background: var(--bg-dark-card);
+        color: var(--text-primary);
+      }
+      .review-banner.ok {
+        border-color: var(--success);
+        background: rgba(63, 185, 80, 0.08);
+      }
+      .review-banner-title {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        font-weight: 600;
+      }
+      .review-banner.ok .review-banner-title {
+        color: var(--success);
+      }
+      .review-banner ul {
+        list-style: disc;
+        margin: 0.5rem 0 0;
+        padding-left: 1.25rem;
+        font-size: 0.875rem;
+      }
+      .review-banner p {
+        margin: 0.5rem 0 0;
+        font-size: 0.8125rem;
         color: var(--text-secondary);
       }
 
@@ -1249,6 +1278,49 @@ export class VersolaClientForm extends LitElement {
         font-size: 0.8125rem;
         color: var(--text-secondary);
         margin-bottom: 0.9rem;
+      }
+      .wizard-section {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-lg);
+        background: var(--bg-dark-card);
+        margin-top: var(--spacing-lg);
+        overflow: hidden;
+      }
+      .wizard-section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: var(--spacing-md);
+        padding: var(--spacing-md) var(--spacing-lg);
+        border-bottom: 1px solid var(--border-dark);
+      }
+      .wizard-section-title {
+        margin: 0;
+        font-size: 1rem;
+        font-weight: 700;
+        color: var(--text-primary);
+      }
+      .wizard-section-sub {
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+        margin-top: 0.125rem;
+      }
+      .wizard-section-body {
+        padding: var(--spacing-lg);
+      }
+      .wizard-section-flush {
+        padding: 0 var(--spacing-lg);
+      }
+      .wizard-section-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.375rem;
+        flex: none;
+        font-size: 0.8125rem;
+        color: var(--text-secondary);
+      }
+      .wizard-section .wizard-field-grid {
+        align-items: start;
       }
       .wizard-rule {
         border: none;
@@ -2735,7 +2807,7 @@ export class VersolaClientForm extends LitElement {
       ></versola-client-kind-step>
 
       <div class="form-actions">
-        <span class="wizard-actions-note">Step 1 of 4 · ⊙ marks a server rule, not a choice</span>
+        <span class="wizard-actions-note">Step 1 of 4 · a lock marks a rule the type sets, not a choice</span>
         <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
         <button
           type="button"
@@ -2747,11 +2819,12 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
-  /** A settled rule with its reason, in the notation step 1 uses: ⊙ server rule, — not applicable. */
+  /** A settled rule with its reason, in the notation step 1 uses: a lock for a rule the type
+   *  sets, a dash for what does not apply. */
   private renderPlanLine(state: 'fixed' | 'na', text: string, why: string) {
     return html`
       <div class="plan-line ${state}">
-        <span class="plan-mark ${state}">${state === 'fixed' ? '⊙' : '—'}</span>
+        <span class="plan-mark ${state}">${renderStatusIcon(state === 'fixed' ? 'lock' : 'dash', '', 14)}</span>
         <span>
           <span class="plan-text">${text}</span>
           <div class="plan-why">${why}</div>
@@ -3001,6 +3074,23 @@ export class VersolaClientForm extends LitElement {
     `;
   }
 
+  /** A group of the wizard's fields in the same bordered panel the client's page uses for its
+   *  groups, so a setting looks the same where it is chosen and where it is read. */
+  private wizardSection(title: string, subtitle: string, body: unknown, aside: unknown = '') {
+    return html`
+      <section class="wizard-section" aria-label=${title}>
+        <div class="wizard-section-head">
+          <div>
+            <h2 class="wizard-section-title">${title}</h2>
+            <div class="wizard-section-sub">${subtitle}</div>
+          </div>
+          ${aside}
+        </div>
+        <div class="wizard-section-body">${body}</div>
+      </section>
+    `;
+  }
+
   private renderBasicsStep() {
     const service = this.kind === 'service';
     return html`
@@ -3009,47 +3099,70 @@ export class VersolaClientForm extends LitElement {
         'Identity, and where auth is allowed to send users back.',
       )}
 
-      <div class="wizard-field-grid">
-        <div class="wizard-field">
-          <label for="client-id">Client ID</label>
-          <input
-            type="text"
-            id="client-id"
-            class="compact-input ${this.isClientIdInvalid ? 'input-error' : ''}"
-            .value=${this.formData.id || ''}
-            @input=${this.handleClientIdInput}
-            placeholder="checkout-web"
-          />
-          ${this.isClientIdInvalid
-            ? html`<div class="error-message">Lowercase letters, numbers and hyphens, starting with a letter.</div>`
-            : html`<div class="hint">Chosen now, never changes. It appears in every request this client makes.</div>`}
-        </div>
+      ${this.wizardSection(
+        'Identity',
+        'Who the client is, in Central and to its users.',
+        html`
+          <div class="wizard-field-grid">
+            <div class="wizard-field">
+              <label for="client-id">Client ID</label>
+              <input
+                type="text"
+                id="client-id"
+                class="compact-input ${this.isClientIdInvalid ? 'input-error' : ''}"
+                .value=${this.formData.id || ''}
+                @input=${this.handleClientIdInput}
+                placeholder="checkout-web"
+              />
+              ${this.isClientIdInvalid
+                ? html`<div class="error-message">Lowercase letters, numbers and hyphens, starting with a letter.</div>`
+                : html`<div class="hint">Chosen now, never changes. It appears in every request this client makes.</div>`}
+            </div>
 
-        <div class="wizard-field">
-          <label for="client-name">Client name</label>
-          <versola-localized-text-editor
-            .value=${this.formData.clientName || { en: '' }}
-            .locales=${this.locales}
-            fieldId="client-name"
-            label="Client Name"
-            .required=${true}
-            .showLabel=${false}
-            .showRequiredIndicator=${false}
-            .selectorBelowInput=${true}
-            @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
-              ...this.formData,
-              clientName: e.detail.value,
-            }}
-          ></versola-localized-text-editor>
-          <div class="hint">
-            ${service
-              ? 'Shown in Central only. No user ever sees a service app.'
-              : 'Shown to users on the sign-in and consent screens.'}
+            <div class="wizard-field">
+              <label for="client-name">Client name</label>
+              <versola-localized-text-editor
+                .value=${this.formData.clientName || { en: '' }}
+                .locales=${this.locales}
+                fieldId="client-name"
+                label="Client Name"
+                .required=${true}
+                .showLabel=${false}
+                .showRequiredIndicator=${false}
+                .selectorBelowInput=${true}
+                @localized-change=${(e: CustomEvent<{ value: Record<string, string> }>) => this.formData = {
+                  ...this.formData,
+                  clientName: e.detail.value,
+                }}
+              ></versola-localized-text-editor>
+              <div class="hint">
+                ${service
+                  ? 'Shown in Central only. No user ever sees a service app.'
+                  : 'Shown to users on the sign-in and consent screens.'}
+              </div>
+            </div>
+
           </div>
-        </div>
+        `,
+      )}
 
-        ${service ? '' : html`
-          <div class="wizard-field wizard-span-2">
+      ${service
+        ? this.wizardSection(
+            'Where users come back to',
+            'Nowhere: a service app has no user to send back.',
+            html`<div class="plan">
+              ${this.renderPlanLine(
+                'fixed',
+                'No redirect URIs',
+                'client_credentials never redirects. There is nowhere to send a user back to.',
+              )}
+            </div>`,
+          )
+        : this.wizardSection(
+            'Where users come back to',
+            'The URIs auth may send a user to once they have signed in.',
+            html`
+              <div class="wizard-field">
             <label for="redirect-uri">Redirect URIs</label>
             <div class="inline-action-row">
               <input
@@ -3075,28 +3188,19 @@ export class VersolaClientForm extends LitElement {
                 </div>`}
             ${this.renderRedirectUriList()}
           </div>
-        `}
-      </div>
-
-      ${service ? html`
-        <div class="plan wizard-group">
-          ${this.renderPlanLine(
-            'fixed',
-            'No redirect URIs',
-            'client_credentials never redirects. There is nowhere to send a user back to.',
+            `,
           )}
-        </div>
-      ` : ''}
 
-      <hr class="wizard-rule" />
+      ${this.wizardSection(
+        'How the client authenticates',
+        "Decided by the kind in step 1 and the tenant's security profile.",
+        this.renderWizardCredentialBlock(),
+        this.clientCredentialMode === 'edge'
+          ? html`<span class="wizard-section-tag">${renderStatusIcon('lock', '', 14)}Fixed by type</span>`
+          : '',
+      )}
 
-      <div class="wizard-group">
-        <div class="wizard-group-head">How the client authenticates</div>
-        <div class="wizard-group-sub">Decided by the kind in step 1 and the tenant's security profile.</div>
-        ${this.renderWizardCredentialBlock()}
-      </div>
-
-      ${service ? '' : html`<hr class="wizard-rule" />${this.renderWizardLogoutBlock()}`}
+      ${service ? '' : html`<section class="wizard-section wizard-section-flush">${this.renderWizardLogoutBlock()}</section>`}
 
       <div class="form-actions">
         <span class="wizard-actions-note">Step 2 of 4 · Client ID is the one field you cannot change later</span>
@@ -3119,26 +3223,32 @@ export class VersolaClientForm extends LitElement {
         'No user is present, so there is nothing to ask and nothing to consent to.',
       )}
 
-      <div class="wizard-group-head">Permissions</div>
-      <div class="wizard-group-sub">Checked by your APIs. Pick only what this worker actually calls.</div>
-      <div class="chips">
-        ${this.availablePermissions.map(permission => html`
-          <button
-            type="button"
-            class="chip"
-            aria-pressed=${selected.includes(permission.id)}
-            @click=${() => this.togglePermission(permission.id)}
-          >${permission.id}</button>
-        `)}
-      </div>
+      ${this.wizardSection(
+        'Permissions',
+        'Checked by your APIs. Pick only what this worker actually calls.',
+        html`
+          <div class="chips">
+            ${this.availablePermissions.map(permission => html`
+              <button
+                type="button"
+                class="chip"
+                aria-pressed=${selected.includes(permission.id)}
+                @click=${() => this.togglePermission(permission.id)}
+              >${permission.id}</button>
+            `)}
+          </div>
+        `,
+      )}
 
-      <hr class="wizard-rule" />
-
-      <div class="plan wizard-group">
-        ${this.renderPlanLine('fixed', 'No OIDC scopes', 'openid, profile and email all describe a subject. There is none.')}
-        ${this.renderPlanLine('fixed', 'No consent screen', 'Consent is an act by a user. client_credentials has no user to perform it.')}
-        ${this.renderPlanLine('fixed', 'No refresh token', 'The client can ask for a new access token with its own credential at any time.')}
-      </div>
+      ${this.wizardSection(
+        'Fixed for a service app',
+        'What a client with no user cannot have.',
+        html`<div class="plan">
+          ${this.renderPlanLine('fixed', 'No OIDC scopes', 'openid, profile and email all describe a subject. There is none.')}
+          ${this.renderPlanLine('fixed', 'No consent screen', 'Consent is an act by a user. client_credentials has no user to perform it.')}
+          ${this.renderPlanLine('fixed', 'No refresh token', 'The client can ask for a new access token with its own credential at any time.')}
+        </div>`,
+      )}
     `;
   }
 
@@ -3157,11 +3267,13 @@ export class VersolaClientForm extends LitElement {
     return html`
       ${this.renderWizardHead(
         'How users sign in',
-        'This client only. Two clients on one tenant can sign the same users in differently.',
+        'Sign-in, scopes and consent, for this client only. Two clients on one tenant can sign the same users in differently.',
       )}
 
-      <div class="wizard-group-head">First screen</div>
-      <div class="wizard-group-sub">What the user is asked for, and the one alternative to it.</div>
+      ${this.wizardSection(
+        'First screen',
+        'What the user is asked for, and the one alternative to it.',
+        html`
       <div class="paths">
         <div class="path">
           <div class="path-head">Credential</div>
@@ -3205,12 +3317,13 @@ export class VersolaClientForm extends LitElement {
           )}
         </div>
       </div>
+        `,
+      )}
 
-      <hr class="wizard-rule" />
-
-      <div class="wizard-group">
-        <div class="wizard-group-head">Then challenge with</div>
-        <div class="wizard-group-sub">Runs after the credential above. The passkey path skips all of it.</div>
+      ${this.wizardSection(
+        'Then challenge with',
+        'Runs after the credential above. The passkey path skips all of it.',
+        html`
         ${primary === 'login' ? html`
           ${this.renderCheckRow(
             this.inlineOtpEnabled,
@@ -3249,29 +3362,29 @@ export class VersolaClientForm extends LitElement {
             () => this.setSecondFactor(this.secondFactorType === 'password' ? '' : 'password'),
           )}
         `}
-      </div>
+        `,
+      )}
 
-      <hr class="wizard-rule" />
-
-      <div class="wizard-group">
-        <div class="wizard-group-head">Set up after sign-in</div>
-        <div class="wizard-group-sub">Offered once the user is through, not as a condition of getting in.</div>
+      ${this.wizardSection(
+        'Set up after sign-in',
+        'Offered once the user is through, not as a condition of getting in.',
+        html`
         ${this.renderCheckRow(
           this.passkeyEnrollEnabled,
           'Ask the user to add a passkey',
           'Shown after the code path succeeds, so the next sign-in can take the passkey path.',
           () => this.togglePasskeyEnroll(),
         )}
-      </div>
+        `,
+      )}
 
-      <hr class="wizard-rule" />
-
-      <div class="wizard-group">
-        <div class="wizard-group-head">Scopes</div>
-        <div class="wizard-group-sub">What the token this client receives is allowed to describe and reach.</div>
+      ${this.wizardSection(
+        'Scopes',
+        'What the token this client receives is allowed to describe and reach.',
+        html`
         <div class="chips">
           ${this.availableScopes.map(scope => scope.id === 'openid'
-            ? html`<span class="chip fixed" aria-pressed="true">openid</span>`
+            ? html`<span class="chip fixed">openid</span>`
             : html`
               <button
                 type="button"
@@ -3282,13 +3395,13 @@ export class VersolaClientForm extends LitElement {
             `)}
         </div>
         <div class="hint" style="margin-top:.45rem">openid is always present - it is what makes this an OIDC request.</div>
-      </div>
+        `,
+      )}
 
-      <hr class="wizard-rule" />
-
-      <div class="wizard-group">
-        <div class="wizard-group-head">Consent</div>
-        <div class="wizard-group-sub">No prompt is the normal choice for an app you own.</div>
+      ${this.wizardSection(
+        'Consent',
+        'No prompt is the normal choice for an app you own.',
+        html`
         <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
           <button type="button" aria-pressed=${!this.hasConsentFlow} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
             First party, no prompt
@@ -3298,7 +3411,8 @@ export class VersolaClientForm extends LitElement {
           </button>
         </div>
         ${this.hasConsentFlow ? this.renderWizardConsentSettings() : ''}
-      </div>
+        `,
+      )}
     `;
   }
 
@@ -3395,7 +3509,7 @@ export class VersolaClientForm extends LitElement {
 
       <div class="form-actions">
         <span class="wizard-actions-note">
-          ${this.kind === 'service' ? 'Step 3 of 4 · ⊙ marks a server rule, not a choice' : 'Step 3 of 4'}
+          ${this.kind === 'service' ? 'Step 3 of 4 · a lock marks a rule the type sets, not a choice' : 'Step 3 of 4'}
         </span>
         <button type="button" class="btn btn-secondary" @click=${() => (this.wizardStep = 2)}>Back</button>
         <button
@@ -3451,16 +3565,20 @@ export class VersolaClientForm extends LitElement {
     return credentials || (this.authFlow.passkey ? 'passkey only' : 'none');
   }
 
+  /** One group of the review, in the panel the client's page uses, with the step that sets it. */
   private renderReviewGroup(
     title: string,
     step: WizardStep,
     rows: Array<[label: string, value: string, muted: boolean]>,
+    fixed = false,
   ) {
     return html`
-      <div class="review-group">
-        <div class="review-group-head">
-          <span class="review-group-title">${title}</span>
-          <button type="button" class="review-change" @click=${() => (this.wizardStep = step)}>Change</button>
+      <section class="wizard-section review-group" aria-label=${title}>
+        <div class="wizard-section-head">
+          <h2 class="wizard-section-title">${title}</h2>
+          ${fixed
+            ? html`<span class="wizard-section-tag">${renderStatusIcon('lock', '', 14)}Fixed once created</span>`
+            : html`<button type="button" class="review-change" aria-label="Change ${title.toLowerCase()}" @click=${() => (this.wizardStep = step)}>Change</button>`}
         </div>
         ${rows.map(([label, value, muted]) => html`
           <div class="review-row ${muted ? 'muted' : ''}">
@@ -3468,6 +3586,34 @@ export class VersolaClientForm extends LitElement {
             <span class="review-value">${value}</span>
           </div>
         `)}
+      </section>
+    `;
+  }
+
+  /** Whether the client as it is about to be registered meets FAPI 2.0, said before it exists:
+   *  on a FAPI 2.0 tenant this is what the type guarantees, on a standard one it is a fact worth
+   *  knowing about a client that is accepted either way. */
+  private renderReviewConformance() {
+    const { conformant, gaps } = fapiConformance({
+      authMethod: authMethodFor(this.clientType, this.clientCredentialMode),
+      clientType: this.clientType,
+      dpopBoundAccessTokens: !!this.formData.dpopBoundAccessTokens,
+      certificateBoundAccessTokens: !!this.formData.certificateBoundAccessTokens || !!this.effectiveMtlsAuth,
+      redirectUris: this.kind === 'service' ? [] : this.formData.redirectUris || [],
+      requirePushedAuthorizationRequests: !!this.formData.requirePushedAuthorizationRequests,
+    });
+    if (conformant) {
+      return html`
+        <div class="review-banner ok" role="status">
+          <span class="review-banner-title">${renderStatusIcon('shield', '', 16)}Meets FAPI 2.0</span>
+        </div>
+      `;
+    }
+    return html`
+      <div class="review-banner" role="status">
+        <span class="review-banner-title">${renderStatusIcon('alert', '', 16)}Standard profile client, not FAPI 2.0</span>
+        <ul>${gaps.map(gap => html`<li>${gap.problem ?? gap.text}</li>`)}</ul>
+        ${this.securityProfile === 'fapi2' ? '' : html`<p>This tenant does not hold its clients to FAPI 2.0, so it is registered as it is.</p>`}
       </div>
     `;
   }
@@ -3485,32 +3631,26 @@ export class VersolaClientForm extends LitElement {
         'The type, and what follows from it, is final once the client is created. Everything else is edited from the client\'s page.',
       )}
 
-      <div class="review-tier">
-        <span class="review-tier-badge high">◈ ${kindName}</span>
-        <button type="button" class="review-change" @click=${() => (this.wizardStep = 1)}>Change</button>
-      </div>
+      ${this.renderReviewConformance()}
 
-      ${this.securityProfile === 'fapi2' ? '' : html`
-        <div class="wizard-warn">
-          <strong>This tenant is not FAPI 2.0.</strong> ${this.clientCredentialMode === 'secret'
-            ? 'A client secret issues bearer tokens: anyone who copies one can spend it until it expires.'
-            : 'Clients here are not held to the FAPI 2.0 profile.'}
-        </div>
-      `}
+      ${this.renderReviewGroup('Type', 1, [['Kind', `${kindName} · cannot be changed once the client is created`, false]])}
 
-      ${this.renderReviewGroup('Identity', 2, [
-        ['Client ID', this.formData.id || '—', false],
-        ['Client name', (this.formData.clientName?.en || '').trim() || '—', false],
-      ])}
-
-      ${this.renderReviewGroup(service ? 'Credential' : 'Where users come back to', 2, service
-        ? [['Authenticates with', this.credentialSummary, false]]
+      ${this.renderReviewGroup('General', 2, service
+        ? [
+            ['Client ID', this.formData.id || '—', false],
+            ['Client name', (this.formData.clientName?.en || '').trim() || '—', false],
+            ['Redirect URIs', 'none - no user to send back', true],
+          ]
         : [
+            ['Client ID', this.formData.id || '—', false],
+            ['Client name', (this.formData.clientName?.en || '').trim() || '—', false],
             ['Redirect URIs', redirectUris.length ? redirectUris.join(', ') : 'none yet', redirectUris.length === 0],
-            ['Authenticates with', this.credentialSummary, false],
           ])}
 
-      ${this.renderReviewGroup('Request integrity', 2, [
+      ${this.renderReviewGroup('Authentication', 2, [['Authenticates with', this.credentialSummary, false]])}
+
+      ${this.renderReviewGroup('Token binding and requests', 2, [
+        ['Token binding', this.tokenBindingSummary, !this.formData.dpopBoundAccessTokens && !this.effectiveMtlsAuth],
         [
           'Pushed authorization requests',
           service ? 'not applicable - no authorization request' : this.formData.requirePushedAuthorizationRequests ? 'required' : 'off',
@@ -3523,7 +3663,6 @@ export class VersolaClientForm extends LitElement {
             : this.canRequireSignedRequestObject && this.formData.requireSignedRequestObject ? 'required' : 'off',
           service || !this.formData.requireSignedRequestObject,
         ],
-        ['Token binding', this.tokenBindingSummary, !this.formData.dpopBoundAccessTokens && !this.effectiveMtlsAuth],
       ])}
 
       ${this.renderReviewGroup('Tokens', 2, [
@@ -3536,19 +3675,27 @@ export class VersolaClientForm extends LitElement {
       ])}
 
       ${service
-        ? this.renderReviewGroup('Permissions', 3, [
+        ? this.renderReviewGroup('Scopes and permissions', 3, [
             ['Permissions', permissions.length ? permissions.join(', ') : 'none', permissions.length === 0],
             ['OIDC scopes', 'none - no user to describe', true],
           ])
-        : this.renderReviewGroup('Sign-in', 3, [
-            ['First screen', this.hasAuthFlow ? this.firstScreenSummary : 'no sign-in flow', !this.hasAuthFlow],
-            ['Passkey', this.authFlow.passkey ? 'offered as an alternative' : 'not offered', !this.authFlow.passkey],
-            ['Self-service sign-up', this.hasRegistrationFlow ? 'on' : 'off - accounts come from Central', !this.hasRegistrationFlow],
-            ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
-            ['Permissions', permissions.length ? permissions.join(', ') : 'none', permissions.length === 0],
-            ['Consent', this.hasConsentFlow ? 'asked' : 'first party, no prompt', !this.hasConsentFlow],
-            ['Logout notice', this.logoutMode === 'none' ? 'none' : `${this.logoutMode}-channel`, this.logoutMode === 'none'],
-          ])}
+        : html`
+            ${this.renderReviewGroup('Sign-in', 3, [
+              ['First screen', this.hasAuthFlow ? this.firstScreenSummary : 'no sign-in flow', !this.hasAuthFlow],
+              ['Passkey', this.authFlow.passkey ? 'offered as an alternative' : 'not offered', !this.authFlow.passkey],
+              ['Self-service sign-up', this.hasRegistrationFlow ? 'on' : 'off - accounts come from Central', !this.hasRegistrationFlow],
+            ])}
+            ${this.renderReviewGroup('Scopes and permissions', 3, [
+              ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
+              ['Permissions', permissions.length ? permissions.join(', ') : 'none', permissions.length === 0],
+            ])}
+            ${this.renderReviewGroup('Consent', 3, [
+              ['Consent', this.hasConsentFlow ? 'asked' : 'first party, no prompt', !this.hasConsentFlow],
+            ])}
+            ${this.renderReviewGroup('Logout', 2, [
+              ['Logout notice', this.logoutMode === 'none' ? 'none' : `${this.logoutMode}-channel`, this.logoutMode === 'none'],
+            ])}
+          `}
 
       <div class="wizard-note">
         ${this.clientType === 'native' && this.clientCredentialMode !== 'edge'
@@ -3597,15 +3744,7 @@ export class VersolaClientForm extends LitElement {
   /** Stroke icons for state: the console loads no icon font, and an icon that fails to load
    *  would leave a lock or a tick unstated. */
   private statusIcon(name: 'lock' | 'check' | 'x' | 'alert' | 'shield', className = '') {
-    const paths: Record<string, string> = {
-      lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z',
-      check: 'M5 12.5l4.5 4.5L19 7.5',
-      x: 'M6 6l12 12M18 6L6 18',
-      alert: 'M12 4l9 16H3zM12 10v4M12 17v.5',
-      shield: 'M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6zM8.5 12l2.5 2.5L15.5 10',
-    };
-    return html`<svg class="status-icon ${className}" viewBox="0 0 24 24" width="16" height="16" fill="none"
-      stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${paths[name]}></path></svg>`;
+    return renderStatusIcon(name, className);
   }
 
   /** What the stored client is. Fixed at creation, so it is read once from what was stored. */

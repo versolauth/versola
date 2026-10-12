@@ -539,9 +539,9 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await continueToThirdStep(page);
   await continueToReview(page);
 
-  // The Identity group's Change link is step 2's, not some other group's.
-  await page.locator('versola-client-form .review-group').filter({ hasText: 'Identity' })
-    .getByRole('button', { name: 'Change', exact: true }).click();
+  // The General group's Change link is step 2's, not some other group's.
+  await page.locator('versola-client-form .review-group').filter({ hasText: 'Client ID' })
+    .getByRole('button', { name: /^Change/ }).click();
   await expect(page.locator('versola-client-form #client-id')).toHaveValue('change-link-client');
   await page.locator('versola-client-form input#client-name').fill('Renamed Client');
 
@@ -550,8 +550,8 @@ test('jumps to the right step from a review Change link, and returns with the ed
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Client name' }))
     .toContainText('Renamed Client');
 
-  // The kind badge's Change link is step 1's - the kind survives the round trip.
-  await page.locator('versola-client-form .review-tier').getByRole('button', { name: 'Change', exact: true }).click();
+  // The Type group's Change link is step 1's - the kind survives the round trip.
+  await page.getByRole('region', { name: 'Type', exact: true }).getByRole('button', { name: /^Change/ }).click();
   await expect(page.getByRole('button', { name: /Web app/ })).toHaveAttribute('aria-pressed', 'true');
 
   await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
@@ -701,9 +701,10 @@ for (const profile of ['fapi2', 'standard'] as const) {
     // The kind settles these, so review is where they are stated rather than asked for.
     await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Pushed authorization requests' }))
       .toContainText('required');
-    await expect(page.locator('versola-client-form .review-tier')).toContainText('Web app');
+    await expect(page.getByRole('region', { name: 'Type', exact: true })).toContainText('Web app');
     await expect(page.getByText('tls_client_auth · certificate issued by central for edge')).toBeVisible();
-    await expect(page.getByText('This tenant is not FAPI 2.0.')).toHaveCount(profile === 'standard' ? 1 : 0);
+    // Edge's certificate and PAR make it conformant whichever profile the tenant is on, and the review says so.
+    await expect(page.getByText('Meets FAPI 2.0', { exact: true })).toBeVisible();
     await submitCreate(page);
 
     expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
@@ -886,7 +887,8 @@ test('offers a service app a secret, a key or a certificate on a standard tenant
   await fillBasics(page, 'secret-service', 'Secret Service');
   await continueToThirdStep(page);
   await continueToReview(page);
-  await expect(page.getByText('This tenant is not FAPI 2.0.')).toBeVisible();
+  // A secret is a bearer credential, so the review says this client would not meet FAPI 2.0.
+  await expect(page.getByText('Standard profile client, not FAPI 2.0')).toBeVisible();
   await submitCreate(page);
 
   // A secret is a bearer credential: nothing binds the token.
@@ -1844,3 +1846,45 @@ test('keeps the info button above a field clear of the field', async ({ page }) 
   expect(info!.height).toBeGreaterThanOrEqual(24);
   expect(field!.y).toBeGreaterThanOrEqual(info!.y + info!.height);
 });
+
+for (const width of [375, 320]) {
+  test(`keeps every step of creating a client inside the page and its targets usable at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] } } });
+
+    const measure = () => page.evaluate(() => {
+      const small: string[] = [];
+      const visit = (root: ParentNode) => {
+        for (const element of Array.from(root.querySelectorAll('*'))) {
+          if (element.shadowRoot) visit(element.shadowRoot);
+          const interactive = element.matches('button, a[href], input:not([type="hidden"]), select, textarea, [role="button"]');
+          if (!interactive) continue;
+          const box = element.getBoundingClientRect();
+          if (box.width === 0 || box.height === 0) continue;
+          // WCAG 2.5.8: a target of at least 24x24 CSS px, unless it is an inline link.
+          if (box.width < 24 || box.height < 24) small.push(`${element.tagName.toLowerCase()} ${Math.round(box.width)}x${Math.round(box.height)} ${(element.textContent || '').trim().slice(0, 24)}`);
+        }
+      };
+      visit(document);
+      return { overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth, small };
+    });
+
+    await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+    await page.getByRole('button', { name: /Web app/ }).click();
+    expect((await measure()).overflow).toBeLessThanOrEqual(0);
+    await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+    await fillBasics(page, 'narrow-client', 'Narrow Client');
+    await addRedirectUri(page, 'https://narrow.example/callback');
+    const basics = await measure();
+    expect(basics.overflow).toBeLessThanOrEqual(0);
+    expect(basics.small).toEqual([]);
+    await continueToThirdStep(page);
+    const signIn = await measure();
+    expect(signIn.overflow).toBeLessThanOrEqual(0);
+    expect(signIn.small).toEqual([]);
+    await continueToReview(page);
+    const review = await measure();
+    expect(review.overflow).toBeLessThanOrEqual(0);
+    expect(review.small).toEqual([]);
+  });
+}

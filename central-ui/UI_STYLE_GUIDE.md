@@ -67,6 +67,16 @@ form:
    its reason (`By type`); they have no editor and no control
 5. delete is the last card, in danger colours, named for what it deletes
 
+Creating such a record is a stepped wizard that uses the same vocabulary, so a setting looks the
+same where it is chosen and where it is read:
+
+- each step is a stack of the same bordered panels (title, one-line subtitle, body), not fields
+  separated by rules
+- a rule the type sets is shown as a locked row (lock icon, text, reason), never as a glyph; state
+  icons come from `status-icon.ts`
+- the last step is a review in the page's own groups, each with `Change` to the step that sets it,
+  and the same FAPI 2.0 banner the page will show
+
 Lists of such records are tables (cards below 720px), rows open the page, and the row menu holds
 open, copy ID and delete. Nothing in the list edits.
 
