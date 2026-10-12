@@ -30,6 +30,7 @@ object OAuthClientSpec extends ZIOSpecDefault:
     authMutualTlsTrustedCertificates = "ca.crt",
     centralLauncher = "central-postgres-impl",
     centralEnvConf = "env.conf",
+    authCellId = "local-1",
   )
   private val userId = UUID.fromString("018f0f2a-1c7b-7000-9000-000000000901")
 

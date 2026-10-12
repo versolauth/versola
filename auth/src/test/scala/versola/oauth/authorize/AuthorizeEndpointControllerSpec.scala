@@ -127,6 +127,25 @@ object AuthorizeEndpointControllerSpec extends UnitSpecBase:
           )),
       ),
       controllerTestCase(
+        // The redirect carries the code the way the token endpoint reads it back: as the routed
+        // string when it was issued under a cell, with the key no client is expected to strip.
+        description = "places a code issued under a cell on the redirect with its routing key",
+        request = Request.get(URL.root / "authorize"),
+        expectedStatus = Status.SeeOther,
+        setup = services =>
+          for
+            _ <- services.parser.parse.succeedsWith(baseRequest)
+            _ <- services.configService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
+            _ <- services.authService.authorize.succeedsWith(
+              AuthorizeResponse.Authorized(AuthorizationCode.issue(Some(TestEnvConfig.cellId), Array.fill(32)(1.toByte)), None),
+            )
+          yield (),
+        verify = resp =>
+          ZIO.succeed(assertTrue(
+            resp.header(Header.Location).exists(_.url.encode.contains(s"code=v1.${TestEnvConfig.cellId}.")),
+          )),
+      ),
+      controllerTestCase(
         description = "redirects to redirect_uri with code on Authorized response",
         request = Request.get(URL.root / "authorize"),
         expectedStatus = Status.SeeOther,

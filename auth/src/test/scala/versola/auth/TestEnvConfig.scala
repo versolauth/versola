@@ -21,7 +21,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.model.AccessToken
 import versola.oauth.mtls.ClientCertificate
 import versola.user.model.UserId
-import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, Secret}
+import versola.util.{CoreConfig, Email, EnvName, JWT, JsonWebKeySet, RoutingKey, Secret}
 import zio.durationInt
 import zio.http.{Method, URL}
 import zio.json.*
@@ -245,7 +245,12 @@ L/5QAiEAn9SciXW0wsr6ctErHUWF7J5ieBlZadVpUBW4bV8uyxY=
     // No listener of `auth`'s own: the specs that exercise RFC 8705 reach the authenticator
     // directly, and a certificate on the request is what stands in for a handshake.
     mutualTls = None,
+    cellId = None,
   )
+
+  /** The same deployment configured as one cell of several (versolauth/versola#547 §6.2). */
+  val cellId: RoutingKey.CellId = RoutingKey.CellId.parse("kz-1").toOption.get
+  val cellCoreConfig: CoreConfig = coreConfig.copy(cellId = Some(cellId))
 
   /** The address [[coreConfigWithMutualTls]]'s listener is advertised at -- deliberately a
     * different authority from [[jwtConfig]]'s issuer, since telling the two apart is the whole

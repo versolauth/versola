@@ -13,9 +13,12 @@ trait AuthPropertyGenerator:
   def nextRefreshTokenFamilyId: UIO[RefreshTokenFamilyId]
 
 object AuthPropertyGenerator:
-  def live = ZLayer.fromFunction(Impl(_))
+  def live = ZLayer.fromFunction(Impl(_, _))
 
-  class Impl(secureRandom: SecureRandom) extends AuthPropertyGenerator:
+  /** The values a client presents back to redeem something -- codes and refresh tokens --
+    * are issued under this deployment's cell id, when it has one, so that a router can send
+    * them home; see [[CoreConfig.cellId]]. */
+  class Impl(secureRandom: SecureRandom, config: CoreConfig) extends AuthPropertyGenerator:
     // 32 bytes, not 16. A code is presented in a redirect to claim a login, so RFC 6819 §5.1.4.2.2
     // asks for at least 128 bits, and 16 random bytes are exactly that. But the OpenID
     // Foundation conformance suite (EnsureMinimumAuthorizationCodeEntropy) estimates entropy
@@ -25,7 +28,7 @@ object AuthPropertyGenerator:
     // short-lived and single-use, so the extra length costs nothing; codes issued at 16 bytes
     // before this still redeem, since nothing checks the length on the way in.
     override def nextAuthorizationCode: UIO[AuthorizationCode] =
-      secureRandom.nextBytes(32).map(AuthorizationCode(_))
+      secureRandom.nextBytes(32).map(AuthorizationCode.issue(config.cellId, _))
 
     override def nextSessionId: UIO[SessionId] =
       secureRandom.nextBytes(32).map(SessionId(_))
@@ -37,7 +40,7 @@ object AuthPropertyGenerator:
       secureRandom.nextBytes(16).map(AccessToken(_))
 
     override def nextRefreshToken: UIO[RefreshToken] =
-      secureRandom.nextBytes(32).map(RefreshToken(_))
+      secureRandom.nextBytes(32).map(RefreshToken.issue(config.cellId, _))
 
     // 16 bytes, like the public session id and unlike the refresh token itself: this names a
     // family, it is not presented to claim one, so it needs to be unguessable only in the

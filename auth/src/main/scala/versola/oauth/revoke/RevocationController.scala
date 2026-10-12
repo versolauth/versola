@@ -5,7 +5,7 @@ import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessTokenPayload, RefreshToken}
 import versola.oauth.revoke.model.{RevocationError, RevocationErrorResponse}
 import versola.util.http.{Controller, Observability, extractCredentials}
-import versola.util.{Base64, CoreConfig, FormDecoder, JWT}
+import versola.util.{CoreConfig, FormDecoder, JWT}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -74,7 +74,7 @@ object RevocationController extends Controller:
 
           case Some(Left(refreshToken)) =>
             Observability.setRouteLabel("token_type", "refresh") *>
-              Observability.setRefreshToken(Base64.urlEncode(refreshToken)) *>
+              Observability.setRefreshToken(RefreshToken.present(refreshToken)) *>
               revocationService.revokeRefreshToken(refreshToken, credentials, certificate)
       yield Response.ok)
         .catchAll {
@@ -98,4 +98,4 @@ object RevocationController extends Controller:
     * lookup optimization, not a declaration the server may trust. */
   private def classify(token: String): Option[Either[RefreshToken, String]] =
     if token.isJWT then Some(Right(token))
-    else RefreshToken.fromBase64Url(token).toOption.map(Left(_))
+    else RefreshToken.fromPresented(token).toOption.map(Left(_))

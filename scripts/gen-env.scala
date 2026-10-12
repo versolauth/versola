@@ -1555,10 +1555,23 @@ object SecretSchema:
 
   // ── Build config files ────────────────────────────────────────────────────────
 
+  // The cell this auth is, when a deployment is made of several (versolauth/versola#547):
+  // named at the front of the opaque values it issues and in the `cell` JOSE header of
+  // its tokens, so a router can find their home cell without a lookup. Set for the local
+  // stack so e2e exercises the prefixed values; every other target starts without one,
+  // which leaves it exactly as it was (no prefix, no claim) until an operator names it.
+  val cellIdLine =
+    if isLocal then "cell-id = \"local-1\""
+    else "# cell-id = \"kz-1\""
+
   val authConf =
     s"""env = $env
        |
        |configuration-cache-refresh-interval = "$configurationCacheRefreshInterval"
+       |
+       |# The cell this deployment is, when it is one of several. Globally unique, lowercase
+       |# letters, digits and hyphens (`kz-1`). Leave unset on a single-cell deployment.
+       |$cellIdLine
        |
        |# otel-exporter = "http://localhost:4317"
        |

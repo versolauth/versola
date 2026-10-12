@@ -32,7 +32,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.util.Dpop
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Base64, CoreConfig, JWT, Secret, TestCertificates, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, JWT, RoutingKey, Secret, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -1102,6 +1102,51 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
         yield assertTrue(response.status == Status.InternalServerError)
       }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     ),
+    suite("routing key")(
+      // What is decoded is the bytes the grant is keyed on: the whole routed string for a value
+      // issued under a cell, the bare bytes for one issued before -- both are presented back.
+      test("decodes a code and a refresh token issued under a cell to the bytes they are keyed on") {
+        val routedCode = s"v1.${TestEnvConfig.cellId}.${Base64.urlEncode(authCode1)}"
+        val routedRefreshToken = s"v1.${TestEnvConfig.cellId}.${Base64.urlEncode(refreshToken1)}"
+        for
+          code <- TokenEndpointController.codeExchangeRequestDecoder.decode(Form.fromStrings(
+            "code" -> routedCode,
+            "redirect_uri" -> redirectUri,
+            "code_verifier" -> codeVerifier1,
+          ))
+          refresh <- TokenEndpointController.refreshTokenRequestDecoder.decode(Form.fromStrings(
+            "refresh_token" -> routedRefreshToken,
+          ))
+        yield assertTrue(
+          code.code.sameElements(routedCode.getBytes("UTF-8")),
+          refresh.refreshToken.sameElements(routedRefreshToken.getBytes("UTF-8")),
+        )
+      },
+      test("decodes a code and a refresh token issued without a routing key as before") {
+        for
+          code <- TokenEndpointController.codeExchangeRequestDecoder.decode(Form.fromStrings(
+            "code" -> Base64.urlEncode(authCode1),
+            "redirect_uri" -> redirectUri,
+            "code_verifier" -> codeVerifier1,
+          ))
+          refresh <- TokenEndpointController.refreshTokenRequestDecoder.decode(Form.fromStrings(
+            "refresh_token" -> Base64.urlEncode(refreshToken1),
+          ))
+        yield assertTrue(code.code == authCode1, refresh.refreshToken == refreshToken1)
+      },
+      test("rejects a code or a refresh token whose routing key is malformed") {
+        for
+          code <- TokenEndpointController.codeExchangeRequestDecoder.decode(Form.fromStrings(
+            "code" -> s"v1.KZ-1.${Base64.urlEncode(authCode1)}",
+            "redirect_uri" -> redirectUri,
+            "code_verifier" -> codeVerifier1,
+          )).either
+          refresh <- TokenEndpointController.refreshTokenRequestDecoder.decode(Form.fromStrings(
+            "refresh_token" -> s"v1.${TestEnvConfig.cellId}.",
+          )).either
+        yield assertTrue(code.isLeft, refresh.isLeft)
+      },
+    ),
     suite("resource parameter")(
       test("does not decode resource for authorization_code") {
         val form = Form.fromStrings(
@@ -1172,6 +1217,61 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
             claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
           yield assertTrue(claims.getStringClaim("fam") == null),
+      ),
+      tokenEndpointTestCase(
+        // versolauth/versola#547 §6.2: a router in front of several cells reads the cell off
+        // the token's header, before verifying it, instead of looking the session up. A
+        // header parameter, not a claim: processing metadata, like kid.
+        description = "names the cell it was issued by in the cell header parameter, when the deployment is one",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            jwt = SignedJWT.parse(tokenResponse.accessToken)
+          yield assertTrue(
+            jwt.getHeader.getCustomParam(RoutingKey.JoseHeader) == (TestEnvConfig.cellId: String),
+            jwt.getJWTClaimsSet.getClaim(RoutingKey.JoseHeader) == null,
+          ),
+        config = TestEnvConfig.cellCoreConfig,
+      ),
+      tokenEndpointTestCase(
+        description = "names no cell in the header on a deployment that is not a cell",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(issuedTokens),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+            jwt = SignedJWT.parse(tokenResponse.accessToken)
+          yield assertTrue(
+            jwt.getHeader.getCustomParam(RoutingKey.JoseHeader) == null,
+            jwt.getJWTClaimsSet.getClaim(RoutingKey.JoseHeader) == null,
+          ),
+      ),
+      tokenEndpointTestCase(
+        // The response hands the token back the way the service keyed it: a routed token as
+        // the routed string, which is what a client presents on the next refresh.
+        description = "returns a refresh token issued under a cell with its routing key",
+        request = codeExchangeRequest,
+        expectedStatus = Status.Ok,
+        setup = services =>
+          services.oauthTokenService.exchangeAuthorizationCode.succeedsWith(
+            issuedTokens.copy(refreshToken = Some(RefreshToken.issue(Some(TestEnvConfig.cellId), Array.fill(32)(3.toByte)))),
+          ),
+        verify = response =>
+          for
+            body <- response.body.asString
+            tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
+          yield assertTrue(
+            tokenResponse.refreshToken.contains(s"v1.${TestEnvConfig.cellId}.${Base64.urlEncode(Array.fill(32)(3.toByte))}"),
+          ),
+        config = TestEnvConfig.cellCoreConfig,
       ),
       tokenEndpointTestCase(
         description = "issues a DPoP-bound token and echoes the binding in cnf.jkt",

@@ -154,7 +154,10 @@ components:
           type: string
           description: |
             Single-use reference in the `urn:ietf:params:oauth:request_uri:` namespace. Pass it
-            to `/authorize` together with `client_id`.
+            to `/authorize` together with `client_id`. The reference part is opaque: on a
+            deployment made of several cells it starts with a routing prefix (`v1.<cell>.`)
+            naming the cell that stored the request, inside the namespace rather than in front
+            of it, so the value keeps the shape RFC 9126 promises.
           example: urn:ietf:params:oauth:request_uri:6esc_11ACC5bwc014ltc14eY22c
         expires_in:
           type: integer

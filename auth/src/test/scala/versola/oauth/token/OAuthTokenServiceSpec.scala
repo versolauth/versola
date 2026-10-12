@@ -43,7 +43,7 @@ import versola.oauth.userinfo.model.{ClaimRequest, RequestedClaims}
 import versola.role.model.RoleId
 import versola.user.UserRepository
 import versola.user.model.UserId
-import versola.util.{AuthPropertyGenerator, CoreConfig, JsonSchemaValidator, MAC, Secret, SecurityService}
+import versola.util.{AuthPropertyGenerator, Base64, CoreConfig, JsonSchemaValidator, MAC, RoutingKey, Secret, SecureRandom, SecurityService}
 import zio.*
 import zio.http.URL
 import zio.json.*
@@ -51,6 +51,7 @@ import zio.json.ast.Json
 import zio.prelude.EqualOps
 import zio.test.*
 
+import java.nio.charset.StandardCharsets
 import java.time.Instant
 import java.util.UUID
 
@@ -307,7 +308,162 @@ object OAuthTokenServiceSpec extends ZIOSpecDefault, ZIOStubs:
       TestEnvConfig.coreConfig,
     )
 
+  /** Real MAC and real generator under `config`: what a routing key changes is which bytes a
+    * token is keyed on, so a stubbed MAC would prove nothing about whether an old or a routed
+    * token is found. The repository stays a stub and records the MAC it was asked for.
+    */
+  class RoutedEnv(config: CoreConfig):
+    val clientService = stub[OAuthConfigurationService]
+    clientService.getResourcesForClient.returnsWith(ZIO.succeed(Nil))
+    clientService.find.returnsWith(ZIO.none)
+    val clientAuthentication = ClientAuthentication.Impl(clientService, stub[ClientAssertionService], config)
+    val tokenRepo = stub[SessionRepository]
+    val userRepo = stub[UserRepository]
+
+    def build: UIO[(OAuthTokenService, SecurityService)] =
+      SecureRandom.live.build.flatMap { env =>
+        val secureRandom = env.get[SecureRandom]
+        Semaphore.make(1).map { hashingSemaphore =>
+          val securityService = SecurityService.Impl(secureRandom, hashingSemaphore)
+          val service = OAuthTokenService.Impl(
+            stub[AuthorizationCodeRepository],
+            clientService,
+            clientAuthentication,
+            tokenRepo,
+            stub[AccessTokenRevocationService],
+            securityService,
+            AuthPropertyGenerator.Impl(secureRandom, config),
+            userRepo,
+            schemaValidator,
+            config,
+          )
+          (service, securityService)
+        }
+      }.provideLayer(Scope.default)
+
+    def liveToken(now: Instant): RefreshTokenRecord = RefreshTokenRecord(
+      familyId = familyId1,
+      sessionId = sessionId1,
+      publicSessionId = publicSessionId1,
+      userId = userId1,
+      clientId = clientId1,
+      audience = List.empty,
+      authorizationDetails = None,
+      scope = scope1,
+      issuedAt = now.minusSeconds(3600),
+      expiresAt = now.plusSeconds(testClient.refreshTokenTtl.toSeconds),
+      requestedClaims = None,
+      uiLocales = None,
+      nonce = None,
+      amr = amr1,
+      authTime = authTime1,
+      acr = None,
+      cnf = None,
+    )
+
+    def happyRefresh(now: Instant): UIO[Unit] =
+      for
+        _ <- clientService.verifySecret.succeedsWith(Some(testClient))
+        _ <- tokenRepo.findToken.succeedsWith(Some(liveToken(now)))
+        _ <- tokenRepo.createRefreshToken.succeedsWith(())
+        _ <- userRepo.findRolesByUserAndTenant.succeedsWith(List.empty)
+      yield ()
+
+    def refresh(service: OAuthTokenService, presented: String): IO[Throwable | TokenEndpointError, IssuedTokens] =
+      for
+        token <- ZIO.fromEither(RefreshToken.fromPresented(presented)).mapError(RuntimeException(_))
+        result <- service.refreshAccessToken(
+          RefreshTokenRequest(token, None, None, None),
+          ClientIdWithSecret(clientId1, Some(clientSecret1)),
+          None,
+          None,
+          None,
+        )
+      yield result
+
+  private val routedPrefix = s"v1.${TestEnvConfig.cellId}."
+
   def spec = suite("OAuthTokenService")(
+    // versolauth/versola#547 §6.2: a refresh token is keyed on the whole string the client
+    // presents, routing key included; one issued before the deployment became a cell is
+    // keyed on its bare bytes, as it was stored, and still rotates into a routed successor.
+    suite("routing key")(
+      test("looks a routed token up by the MAC of the whole presented string and rotates it into a routed one") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val random = Array.fill(32)(4.toByte)
+        val presented = RefreshToken.present(RefreshToken.issue(Some(TestEnvConfig.cellId), random))
+        for
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, securityService) <- env.build
+          result <- env.refresh(service, presented)
+          lookedUp = env.tokenRepo.findToken.calls.head
+          storedUnder <-
+            securityService.mac(Secret(presented.getBytes(StandardCharsets.UTF_8)), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+          successor = result.refreshToken.map(RefreshToken.present)
+          successorStoredUnder <-
+            ZIO.foreach(result.refreshToken)(token => securityService.mac(Secret(token), TestEnvConfig.coreConfig.security.refreshTokensSecret))
+          created = env.tokenRepo.createRefreshToken.calls.head
+        yield assertTrue(
+          presented.startsWith(routedPrefix),
+          lookedUp.sameElements(storedUnder),
+          successor.exists(_.startsWith(routedPrefix)),
+          successorStoredUnder.exists(mac => created._1.sameElements(mac)),
+          created._2.exists(_.sameElements(storedUnder)),
+        )
+      },
+      test("still accepts a token issued before the deployment became a cell, keyed on its bare bytes") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val random = Array.fill(32)(4.toByte)
+        val presented = Base64.urlEncode(random)
+        for
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, securityService) <- env.build
+          result <- env.refresh(service, presented)
+          lookedUp = env.tokenRepo.findToken.calls.head
+          // What an auth without a cell id stored for this token when it issued it.
+          storedUnder <- securityService.mac(Secret(random), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+        yield assertTrue(
+          lookedUp.sameElements(storedUnder),
+          result.refreshToken.map(RefreshToken.present).exists(_.startsWith(routedPrefix)),
+        )
+      },
+      test("does not find a routed token presented without its routing key") {
+        val env = RoutedEnv(TestEnvConfig.cellCoreConfig)
+        val random = Array.fill(32)(4.toByte)
+        val presented = RefreshToken.present(RefreshToken.issue(Some(TestEnvConfig.cellId), random))
+        for
+          _ <- env.clientService.verifySecret.succeedsWith(Some(testClient))
+          _ <- env.tokenRepo.findToken.succeedsWith(None)
+          _ <- env.tokenRepo.revokeFamily.succeedsWith(None)
+          (service, securityService) <- env.build
+          result <- env.refresh(service, RoutingKey.strip(presented)).either
+          lookedUp = env.tokenRepo.findToken.calls.head
+          storedUnder <-
+            securityService.mac(Secret(presented.getBytes(StandardCharsets.UTF_8)), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+        yield assertTrue(
+          result == Left(TokenEndpointError.InvalidGrant.RefreshTokenNotFound),
+          !lookedUp.sameElements(storedUnder),
+        )
+      },
+      test("issues bare tokens and looks them up by their bare bytes when no cell is configured") {
+        val env = RoutedEnv(TestEnvConfig.coreConfig)
+        val random = Array.fill(32)(4.toByte)
+        val presented = Base64.urlEncode(random)
+        for
+          now <- Clock.instant
+          _ <- env.happyRefresh(now)
+          (service, securityService) <- env.build
+          result <- env.refresh(service, presented)
+          lookedUp = env.tokenRepo.findToken.calls.head
+          storedUnder <- securityService.mac(Secret(random), TestEnvConfig.coreConfig.security.refreshTokensSecret)
+        yield assertTrue(
+          lookedUp.sameElements(storedUnder),
+          result.refreshToken.map(RefreshToken.present).exists(token => !token.startsWith("v1.") && token.length == 43),
+        )
+      },
+    ),
     suite("exchangeAuthorizationCode")(
       test("successfully exchange code for tokens with offline_access") {
         val env = new Env

@@ -18,6 +18,13 @@ case class CoreConfig(
     dpop: Option[CoreConfig.DpopConfig],
     argon2: Option[Argon2Config],
     mutualTls: Option[CoreConfig.MutualTlsConfig],
+    /** The cell this deployment is, when it is one of several (versolauth/versola#547 §6.2):
+      * written at the front of the opaque values it issues and as the `cell` JOSE header of
+      * the tokens and security event tokens it signs, so a router can find their home cell
+      * without a lookup. Absent, nothing is prefixed or claimed, and values issued before
+      * a cell id was configured are accepted either way.
+      */
+    cellId: Option[RoutingKey.CellId],
 ):
   def parOrDefault: CoreConfig.ParConfig = par.getOrElse(CoreConfig.ParConfig.default)
 

@@ -46,6 +46,10 @@ final case class E2EConfig(
       * specs that start a second central to see what its bootstrap does. */
     centralLauncher: String,
     centralEnvConf: String,
+    /** The `cell-id` the staged `auth` runs with (`scripts/gen-env.scala`'s `local` target), which
+      * it writes at the front of the codes, refresh tokens and `request_uri`s it issues and in
+      * the `cell` JOSE header parameter of its access tokens. */
+    authCellId: String,
 )
 
 object E2EConfig:
@@ -85,6 +89,8 @@ object E2EConfig:
       authMutualTlsTrustedCertificates <- env("AUTH_MTLS_CA", "../auth/dev/mtls/ca.crt")
       centralLauncher <- env("CENTRAL_LAUNCHER", "../central/implementations/postgres/target/universal/stage/bin/central-postgres-impl")
       centralEnvConf <- env("CENTRAL_ENV_CONF", "../central/dev/env.conf")
+      // Default matches scripts/gen-env.scala's `local` target.
+      authCellId <- env("AUTH_CELL_ID", "local-1")
     yield E2EConfig(
       authUrl,
       authAdditionalUrl,
@@ -107,6 +113,7 @@ object E2EConfig:
       authMutualTlsTrustedCertificates,
       centralLauncher,
       centralEnvConf,
+      authCellId,
     )
 
   private def env(name: String, default: String): Task[String] =

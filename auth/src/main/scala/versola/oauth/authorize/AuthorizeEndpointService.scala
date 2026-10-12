@@ -17,7 +17,7 @@ import versola.user.UserRepository
 import versola.user.model.UserId
 import versola.util.MAC
 import versola.util.http.Observability
-import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
+import versola.util.{AuthPropertyGenerator, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
 import zio.json.ast.Json
 import zio.json.{JsonDecoder, ast}
 import zio.prelude.{NonEmptyList, NonEmptySet}
@@ -495,7 +495,7 @@ object AuthorizeEndpointService:
         // key's algorithm -- so the key has to be resolved before the hash, not alongside it.
         client <- configurationService.get(request.clientId)
         signingKey <- jwksService.signingKey(client.tenantId)
-        cHash = JWT.leftHalfHash(Base64Url.encode(code), signingKey.algorithm)
+        cHash = JWT.leftHalfHash(AuthorizationCode.present(code), signingKey.algorithm)
         // FAPI 1.0 Advanced §5.2.2-4: `s_hash` binds the id_token to the `state` it was
         // issued for, the same way `c_hash` binds it to the code. Absent when the request
         // carried no state, since there is then nothing to bind to.

@@ -138,7 +138,11 @@ components:
           const: authorization_code
         code:
           type: string
-          description: Authorization code from the `/authorize` redirect. Single-use and short-lived.
+          description: |
+            Authorization code from the `/authorize` redirect. Single-use and short-lived.
+            Opaque: pass it back exactly as received. A deployment made of several cells
+            issues it with a routing prefix (`v1.<cell>.`) that names the cell holding the
+            grant; the prefix is part of the value, not something a client reads or strips.
         redirect_uri:
           type: string
           format: uri
@@ -170,6 +174,9 @@ components:
           const: refresh_token
         refresh_token:
           type: string
+          description: |
+            Opaque: pass it back exactly as received, routing prefix included when it has one
+            (see the `code` parameter of the authorization code grant).
         scope:
           type: string
           description: |
@@ -243,7 +250,16 @@ components:
           description: |
             Signed JWT. Beyond the registered claims it carries `client_id`, `scope`, `jti`,
             `roles`, `tenant_id`, and — for user-bound tokens — `sid`, `amr`, `auth_time`
-            and `acr`.
+            and `acr`. On a deployment made of several cells its JOSE header also carries
+            the parameter `cell` (RFC 9068 §2.1 allows additional header parameters): the
+            globally unique id (`kz-1`) of the cell that issued the token and holds its
+            session, which a router in front of the cells reads, before verifying anything,
+            to send calls presenting the token there without a lookup. A header parameter
+            rather than a claim because it is processing metadata like `kid`, not a
+            statement about the subject; it is signed with the payload and is not echoed by
+            introspection or userinfo. Absent on a single-cell deployment. The security
+            event tokens that cell sends (back-channel logout and access token revocation)
+            carry the same header parameter.
         token_type:
           type: string
           enum: [Bearer, DPoP]
@@ -257,7 +273,11 @@ components:
           description: Access token lifetime in seconds.
         refresh_token:
           type: string
-          description: Present for `authorization_code` and `refresh_token` when the client is allowed to refresh.
+          description: |
+            Present for `authorization_code` and `refresh_token` when the client is allowed to
+            refresh. Opaque to the client: on a deployment made of several cells it starts with
+            a routing prefix (`v1.<cell>.`), which is part of the value and is presented back
+            with it.
         scope:
           type: string
           description: Space-delimited granted scopes. Omitted when empty.
