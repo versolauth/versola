@@ -96,6 +96,20 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
           found <- env.repository.findByTenant(tenantA)
         yield assertTrue(!written, found == Some(original))
       },
+      test("upsert round-trips dedicated step-up submission limits") {
+        val stepUp = StepUpLimits(
+          otpRequest = List(RateLimit(1, 60)),
+          otpSubmit = List(RateLimit(2, 120)),
+          passwordSubmit = List(RateLimit(3, 900)),
+          passkeyAssertion = List(RateLimit(3, 300)),
+          banDurationSeconds = 3600,
+        )
+        val record = settingsFor(tenantA).copy(submissionLimits = SubmissionLimits.recommended.copy(stepUp = Some(stepUp)))
+        for
+          _ <- env.repository.upsert(record)
+          found <- env.repository.findByTenant(tenantA)
+        yield assertTrue(found == Some(record))
+      },
       test("upsert round-trips a configured mTLS certificate header and encoding") {
         val record = settingsFor(tenantA).copy(
           mtlsCertificateHeader = Some("ssl-client-cert"),

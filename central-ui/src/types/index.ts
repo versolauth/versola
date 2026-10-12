@@ -176,12 +176,22 @@ export interface RateLimit {
   windowSeconds: number;
 }
 
+export interface StepUpLimits {
+  otpRequest: RateLimit[];
+  otpSubmit: RateLimit[];
+  passwordSubmit: RateLimit[];
+  passkeyAssertion: RateLimit[];
+  banDurationSeconds: number;
+}
+
 export interface SubmissionLimits {
   otpRequest: RateLimit[];
   otpSubmit: RateLimit[];
   passwordSubmit: RateLimit[];
   passkeyAssertion: RateLimit[];
   banDurationSeconds: number;
+  /** Absent: step-up follows the sign-in limits (with its own counters). Present: replaces them for step-up. */
+  stepUp?: StepUpLimits;
 }
 
 // Passkey (WebAuthn) settings

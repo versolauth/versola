@@ -247,6 +247,78 @@ test('edits passkeys and sends them in the save payload', async ({ page }) => {
   });
 });
 
+const passkeySettings = { rpId: 'example.com', rpName: 'Example Inc.', origins: ['https://example.com'], userVerification: 'preferred' };
+
+const signInLimits = {
+  otpRequest: [{ maxAttempts: 2, windowSeconds: 60 }],
+  otpSubmit: [{ maxAttempts: 3, windowSeconds: 120 }],
+  passwordSubmit: [{ maxAttempts: 5, windowSeconds: 900 }],
+  passkeyAssertion: [{ maxAttempts: 5, windowSeconds: 300 }],
+  banDurationSeconds: 1800,
+};
+
+test('shows that step-up follows the sign-in limits when none are configured', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, submissionLimits: signInLimits } } },
+  });
+
+  await expect(page.getByTestId('step-up-limits-card')).toContainText('Follow the submission limits above');
+});
+
+test('shows dedicated step-up limits in view mode', async ({ page }) => {
+  const stepUp = { ...signInLimits, passwordSubmit: [{ maxAttempts: 3, windowSeconds: 600 }], banDurationSeconds: 3600 };
+  await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, submissionLimits: { ...signInLimits, stepUp } } } },
+  });
+
+  const card = page.getByTestId('step-up-limits-card');
+  await expect(card).toContainText('Ban: 1 hr');
+  await expect(card).not.toContainText('Follow the submission limits above');
+});
+
+test('sends dedicated step-up limits, edited apart from sign-in, in the save payload', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: { ...baseState, challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, passkeySettings, submissionLimits: signInLimits } } },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByTestId('step-up-limits-toggle').check();
+  // Starts from a copy of sign-in; changing step-up's first Password Submit window must not touch sign-in's.
+  await page.getByText('Step-up Password Submit Rate Limits').locator('..').locator('input[type=number]').first().fill('2');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    submissionLimits: typeof signInLimits & { stepUp?: typeof signInLimits };
+  };
+  expect(body.submissionLimits.passwordSubmit).toEqual(signInLimits.passwordSubmit);
+  expect(body.submissionLimits.stepUp?.passwordSubmit).toEqual([{ maxAttempts: 2, windowSeconds: 900 }]);
+  expect(body.submissionLimits.stepUp?.banDurationSeconds).toBe(1800);
+});
+
+test('switching step-up limits off drops them from the save payload', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...baseState,
+      challengeSettings: { 'tenant-alpha': { ...settingsWithoutPasskey, passkeySettings, submissionLimits: { ...signInLimits, stepUp: { ...signInLimits } } } },
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByTestId('step-up-limits-toggle').uncheck();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    submissionLimits: Record<string, unknown>;
+  };
+  expect('stepUp' in body.submissionLimits).toBe(false);
+});
+
 test('lists only the keys central can sign with, and sends the selected kid', async ({ page }) => {
   const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
 

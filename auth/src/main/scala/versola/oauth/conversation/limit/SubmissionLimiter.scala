@@ -64,13 +64,18 @@ object SubmissionLimiter:
       * it. Returning `NonEmptyChunk` means "has any windows configured" is answered once, here,
       * and every downstream call to [[ThrottlePolicy]] carries the proof instead of re-checking.
       */
-    private def windowLimits(limits: SubmissionLimits, ct: ChallengeType): Option[NonEmptyChunk[RateLimit]] =
+    private def windowLimits(allLimits: SubmissionLimits, ct: ChallengeType): Option[NonEmptyChunk[RateLimit]] =
+      val limits = limitsFor(allLimits, ct)
       val configured = ct match
         case ChallengeType.OtpRequest | ChallengeType.StepUpOtpRequest => limits.otpRequest
         case ChallengeType.OtpSubmit | ChallengeType.StepUpOtpSubmit => limits.otpSubmit
         case ChallengeType.PasswordSubmit | ChallengeType.StepUpPasswordSubmit => limits.passwordSubmit
         case ChallengeType.PasskeyAssertion | ChallengeType.StepUpPasskeyAssertion => limits.passkeyAssertion
       NonEmptyChunk.fromIterableOption(configured)
+
+    /** Step-up challenge types are governed by the tenant's step-up limits, the rest by the sign-in ones. */
+    private def limitsFor(limits: SubmissionLimits, ct: ChallengeType): SubmissionLimits =
+      if ct.isStepUp then limits.forStepUp else limits
 
     private def worstStatus(a: LimitStatus, b: LimitStatus): LimitStatus =
       (a, b) match
@@ -168,7 +173,7 @@ object SubmissionLimiter:
             configService.find(clientId).flatMap:
               case None => ZIO.succeed(LimitStatus.Allowed)
               case Some(client) =>
-                Clock.instant.flatMap(now => f(client.tenantId, limits, wLimits, now))
+                Clock.instant.flatMap(now => f(client.tenantId, limitsFor(limits, challengeType), wLimits, now))
 
     override def recordLimit(clientId: ClientId, subject: String, challengeType: ChallengeType): Task[LimitStatus] =
       withWindows(clientId, challengeType): (tenantId, limits, wLimits, now) =>

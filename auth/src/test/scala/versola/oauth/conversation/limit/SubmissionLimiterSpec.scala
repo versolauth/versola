@@ -1,7 +1,7 @@
 package versola.oauth.conversation.limit
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, RateLimit, ScopeToken, SubmissionLimits, TenantId}
+import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, RateLimit, ScopeToken, StepUpLimits, SubmissionLimits, TenantId}
 import versola.util.UnitSpecBase
 import zio.*
 import zio.test.*
@@ -63,6 +63,19 @@ object SubmissionLimiterSpec extends UnitSpecBase:
     passwordSubmit = List(RateLimit(maxAttempts = 3, windowSeconds = 30)),
     passkeyAssertion = List(RateLimit(maxAttempts = 4, windowSeconds = 40)),
     banDurationSeconds = 600,
+  )
+
+  // Step-up configured apart from sign-in: distinct windows and a distinct ban duration.
+  private val withStepUp = allWindowsConfigured.copy(
+    stepUp = Some(
+      StepUpLimits(
+        otpRequest = List(RateLimit(maxAttempts = 11, windowSeconds = 110)),
+        otpSubmit = List(RateLimit(maxAttempts = 12, windowSeconds = 120)),
+        passwordSubmit = List(RateLimit(maxAttempts = 13, windowSeconds = 130)),
+        passkeyAssertion = List(RateLimit(maxAttempts = 14, windowSeconds = 140)),
+        banDurationSeconds = 7200,
+      ),
+    ),
   )
 
   private val allChallengeTypes = List(
@@ -349,6 +362,69 @@ object SubmissionLimiterSpec extends UnitSpecBase:
       },
     ),
     suite("recordLimit window selection")(windowSelectionTests*),
+    suite("dedicated step-up limits")(
+      test("a step-up challenge uses the step-up windows and ban duration, sign-in keeps its own") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(withStepUp)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.recordAttempt.succeedsWith(LimitStatus.Allowed)
+          _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.StepUpPasswordSubmit)
+          _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.PasswordSubmit)
+          List(stepUpCall, signInCall) = env.throttleRepo.recordAttempt.calls
+        yield assertTrue(
+          stepUpCall._5.toChunk.toList == withStepUp.stepUp.get.passwordSubmit,
+          stepUpCall._6 == 7200L,
+          signInCall._5.toChunk.toList == allWindowsConfigured.passwordSubmit,
+          signInCall._6 == 600L,
+        )
+      },
+      test("without a step-up section, step-up falls back to the sign-in windows") {
+        val env = Env()
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(allWindowsConfigured)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          _ <- env.throttleRepo.recordAttempt.succeedsWith(LimitStatus.Allowed)
+          _ <- env.limiter.recordLimit(clientId, subject, ChallengeType.StepUpPasswordSubmit)
+          call = env.throttleRepo.recordAttempt.calls.head
+        yield assertTrue(
+          call._3 == ChallengeType.StepUpPasswordSubmit,
+          call._5.toChunk.toList == allWindowsConfigured.passwordSubmit,
+          call._6 == 600L,
+        )
+      },
+      test("an empty step-up category switches step-up throttling off even when sign-in has windows") {
+        val env = Env()
+        val limits = withStepUp.copy(stepUp = withStepUp.stepUp.map(_.copy(otpSubmit = Nil)))
+        for
+          _ <- env.configService.getSubmissionLimits.succeedsWith(limits)
+          status <- env.limiter.isBanned(clientId, subject, ChallengeType.StepUpOtpSubmit)
+        yield assertTrue(status == LimitStatus.Allowed, env.throttleRepo.find.calls.isEmpty)
+      },
+      test("statusFor evaluates step-up records against the step-up windows") {
+        val env = Env()
+        for
+          now <- Clock.instant
+          nowEpoch = now.getEpochSecond
+          _ <- env.configService.getSubmissionLimits.succeedsWith(withStepUp)
+          _ <- env.configService.find.succeedsWith(Some(client))
+          // 3 attempts would trip the sign-in otpSubmit window (2 per 20s), but not the step-up one (12 per 120s)
+          _ <- env.throttleRepo.findAll.succeedsWith(
+            List(
+              ChallengeThrottleRecord(
+                tenantId,
+                subject,
+                ChallengeType.StepUpOtpSubmit,
+                List(nowEpoch, nowEpoch, nowEpoch),
+                None,
+                now.plusSeconds(3600),
+              ),
+            ),
+          )
+          status <- env.limiter.statusFor(clientId, subject, List(ChallengeType.StepUpOtpSubmit))
+        yield assertTrue(status == LimitStatus.Allowed)
+      },
+    ),
     suite("ChallengeType.forConversation")(
       test("keeps the regular type for a sign-in") {
         assertTrue(

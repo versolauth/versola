@@ -4053,6 +4053,34 @@ components:
         windowSeconds:
           type: integer
       required: [maxAttempts, windowSeconds]
+    StepUpLimits:
+      type: object
+      description: Sliding-window limits for step-up, counted apart from sign-in; same shape as SubmissionLimits.
+      properties:
+        otpRequest:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        otpSubmit:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        passwordSubmit:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        passkeyAssertion:
+          type: array
+          items:
+            $ref: '#/components/schemas/RateLimit'
+        banDurationSeconds:
+          type: integer
+      required:
+        - otpRequest
+        - otpSubmit
+        - passwordSubmit
+        - passkeyAssertion
+        - banDurationSeconds
     SubmissionLimits:
       type: object
       description: Sliding-window limits per action, and how long a breach bans the credential.
@@ -4075,6 +4103,13 @@ components:
             $ref: '#/components/schemas/RateLimit'
         banDurationSeconds:
           type: integer
+        stepUp:
+          $ref: '#/components/schemas/StepUpLimits'
+          description: >-
+            Limits for step-up (re-verifying an existing session toward a target ACR), counted
+            apart from sign-in. When absent, step-up follows the limits above, still with its own
+            counters; when present it replaces them for step-up entirely, including the ban
+            duration.
       required:
         - otpRequest
         - otpSubmit
