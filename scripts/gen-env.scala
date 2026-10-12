@@ -1661,7 +1661,7 @@ object SecretSchema:
        |      key-column = "request_uri"
        |    }
        |    {
-       |      table-name = "identifier_change_intents"
+       |      table-name = "user_intents"
        |      batch-size = 1000
        |      interval   = "5 minutes"
        |      key-column = "user_id"

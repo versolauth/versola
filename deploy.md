@@ -432,7 +432,7 @@ logins on the still-running previous version wait while it runs. The tables are 
 short, but run `versola migrate` at low traffic.
 
 **Migration `auth` V0015: self-service change of a phone number or email (#634).** Adds the
-table `identifier_change_intents` (logged: a change of phone number or email is rare) and a
+table `user_intents` (what a signed-in user asked for on the account page; logged, because such requests are rare) and a
 nullable `auth_conversations.identifier_change` column; no existing row changes, and the previous
 version keeps running on the new schema. Two things to know when upgrading:
 
@@ -443,7 +443,7 @@ version keeps running on the new schema. Two things to know when upgrading:
   `SELECT id, client_id FROM authorization_presets WHERE id = 'current';` (in the database `central`
   uses) and rename any it returns.
 - A configuration generated before this release has no `cleanup` entry for the new table, so expired
-  intents are not purged until `identifier_change_intents` (`key-column = "user_id"`, like the
+  intents are not purged until `user_intents` (`key-column = "user_id"`, like the
   other entries, see `scripts/gen-env.scala`) is added to `cleanup.tables`. They are one row per
   user at most and expire after five minutes whether or not they are purged.
 

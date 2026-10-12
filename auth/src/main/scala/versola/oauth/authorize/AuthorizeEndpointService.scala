@@ -7,15 +7,15 @@ import versola.oauth.client.model.*
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.{ConversationRepository, ConversationRouter, EmailSubmission, PhoneSubmission}
-import versola.oauth.identifier.{IdentifierChange, IdentifierChangeIntentRepository, IdentifierChangeStage}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeStage}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AuthorizationCode, AuthorizationCodeRecord}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{SessionId, SessionInfo, SessionRecord}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import versola.util.MAC
 import versola.util.http.Observability
 import versola.util.{AuthPropertyGenerator, Base64Url, CoreConfig, JWT, Secret, SecureRandom, SecurityService}
@@ -62,7 +62,7 @@ object AuthorizeEndpointService:
       conversationRouter: ConversationRouter,
       acrResolutionService: AcrResolutionService,
       consentService: ConsentService,
-      identifierChangeIntents: IdentifierChangeIntentRepository,
+      userIntents: UserIntentRepository,
   ) extends AuthorizeEndpointService:
 
     override def authorize(
@@ -343,7 +343,7 @@ object AuthorizeEndpointService:
             case None =>
               ZIO.fail(Error.LoginRequired(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
             case Some(info) =>
-              identifierChangeIntents.consume(info.record.userId, request.clientId, kind, credential).flatMap:
+              userIntents.consume(info.record.userId, request.clientId, UserIntent.change(credential)).flatMap:
                 case true => ZIO.some(IdentifierChange(kind, credential, IdentifierChangeStage.Pending))
                 case false =>
                   ZIO.fail(Error.IdentifierChangeNotInitiated(

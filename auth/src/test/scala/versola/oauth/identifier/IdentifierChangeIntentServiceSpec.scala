@@ -2,8 +2,8 @@ package versola.oauth.identifier
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.user.UserRepository
 import versola.user.model.{UserId, UserRecord}
+import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -19,7 +19,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
   private val user = UserRecord.empty(userId).copy(email = Some(currentEmail), phone = Some(currentPhone))
 
   class Env:
-    val intents = stub[IdentifierChangeIntentRepository]
+    val intents = stub[UserIntentRepository]
     val userRepository = stub[UserRepository]
     val configuration = stub[OAuthConfigurationService]
     val service = IdentifierChangeIntentService.Impl(intents, userRepository, configuration)
@@ -34,7 +34,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
         _ <- env.intents.create.succeedsWith(())
         _ <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+77011234568")
         calls = env.intents.create.calls
-      yield assertTrue(calls == List((userId, clientId, IdentifierChangeKind.Phone, Right(Phone("+77011234568")), 5.minutes)))
+      yield assertTrue(calls == List((userId, clientId, UserIntent.ChangePhone(Phone("+77011234568")), 5.minutes)))
     },
     test("records an intent for a new email without asking for phone prefixes") {
       val env = Env()
@@ -46,7 +46,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
         calls = env.intents.create.calls
         prefixLookups = env.configuration.getAllowedPhonePrefixes.calls
       yield assertTrue(
-        calls == List((userId, clientId, IdentifierChangeKind.Email, Left(Email("new@example.com")), 5.minutes)),
+        calls == List((userId, clientId, UserIntent.ChangeEmail(Email("new@example.com")), 5.minutes)),
         prefixLookups.isEmpty,
       )
     },

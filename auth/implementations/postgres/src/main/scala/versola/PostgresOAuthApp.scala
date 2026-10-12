@@ -31,7 +31,7 @@ import versola.oauth.conversation.{
   PostgresConversationRepository,
 }
 import versola.oauth.dpop.{DpopNonceService, DpopProofRepository, DpopService, EdgeAssertionService, PostgresDpopProofRepository}
-import versola.oauth.identifier.{IdentifierChangeIntentRepository, IdentifierChangeIntentService, UserContactSyncClient}
+import versola.oauth.identifier.{IdentifierChangeIntentService, UserContactSyncClient}
 import versola.oauth.introspect.{IntrospectionController, IntrospectionService}
 import versola.oauth.jwks.{JwksController, JwksService, JwksSyncClient}
 import versola.oauth.logout.{BackChannelDispatcher, BackChannelOutbox, LogoutController, LogoutService}
@@ -40,8 +40,16 @@ import versola.oauth.revoke.{AccessTokenRevocationService, RevocationController,
 import versola.oauth.session.{PostgresSessionRepository, PostgresUserAgentRepository, SessionRepository, SessionService, UserAgentRepository}
 import versola.oauth.token.{AuthorizationCodeRepository, OAuthTokenService, TokenEndpointController}
 import versola.oauth.userinfo.{UserInfoController, UserInfoService}
-import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresIdentifierChangeIntentRepository, PostgresPushedAuthorizationRepository}
-import versola.user.{PostgresUserRepository, UserController, UserRegistrationSyncClient, UserRepository, UserService}
+import versola.oauth.{PostgresAuthorizationCodeRepository, PostgresPushedAuthorizationRepository}
+import versola.user.{
+  PostgresUserIntentRepository,
+  PostgresUserRepository,
+  UserController,
+  UserIntentRepository,
+  UserRegistrationSyncClient,
+  UserRepository,
+  UserService,
+}
 import versola.util.*
 import versola.util.SequentialLayers.*
 import versola.util.http.VersolaApp
@@ -112,7 +120,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       LogoutService &
       SessionService &
       UserRegistrationSyncClient &
-      IdentifierChangeIntentRepository &
+      UserIntentRepository &
       IdentifierChangeIntentService &
       UserContactSyncClient
 
@@ -193,7 +201,7 @@ object PostgresOAuthApp extends VersolaApp("auth"):
       PostgresConsentRepository.live >++>
       PostgresAuthorizationCodeRepository.live >++>
       PostgresPushedAuthorizationRepository.live >++>
-      PostgresIdentifierChangeIntentRepository.live >++>
+      PostgresUserIntentRepository.live >++>
       PostgresSessionRepository.live >++>
       PostgresUserAgentRepository.live >++>
       PostgresPasswordRepository.live >++>

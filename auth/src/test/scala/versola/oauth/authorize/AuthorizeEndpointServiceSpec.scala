@@ -25,15 +25,15 @@ import versola.oauth.client.model.{
 }
 import versola.oauth.consent.{ConsentDecision, ConsentService}
 import versola.oauth.conversation.{ConversationRepository, ConversationResult, ConversationRouter, EmailSubmission, PhoneSubmission}
-import versola.oauth.identifier.{IdentifierChange, IdentifierChangeIntentRepository, IdentifierChangeKind, IdentifierChangeStage}
+import versola.oauth.identifier.{IdentifierChange, IdentifierChangeKind, IdentifierChangeStage}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{AccessToken, AuthorizationCode, CodeChallenge, CodeChallengeMethod, Nonce, State}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, RefreshTokenFamilyId, SessionId, SessionInfo, SessionRecord, UserAgentId}
 import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
-import versola.user.UserRepository
 import versola.user.model.UserRecord
+import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import versola.util.{AuthPropertyGenerator, Email, JWT, MAC, Phone, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.*
 import zio.http.URL
@@ -150,7 +150,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
-    val identifierChangeIntents = stub[IdentifierChangeIntentRepository]
+    val userIntents = stub[UserIntentRepository]
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -166,7 +166,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       conversationRouter,
       acrResolver,
       consentService,
-      identifierChangeIntents,
+      userIntents,
     )
 
   val phoneHint = Phone("+12025551234")
@@ -1811,7 +1811,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
           _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
           _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
-          _ <- env.identifierChangeIntents.consume.succeedsWith(true)
+          _ <- env.userIntents.consume.succeedsWith(true)
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
           _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
@@ -1820,7 +1820,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.conversationRouter.advance.succeedsWith(())
           result <- env.service.authorize(changeRequest)
           created = env.conversationRepository.create.calls.head._2
-          consumed = env.identifierChangeIntents.consume.calls.head
+          consumed = env.userIntents.consume.calls.head
           advanceTimes = env.conversationRouter.advance.times
           submitCalls = env.conversationRouter.submit.calls
         yield assertTrue(
@@ -1833,7 +1833,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           created.identifierChange == Some(IdentifierChange(IdentifierChangeKind.Phone, Right(newPhone), IdentifierChangeStage.Pending)),
           advanceTimes == 1,
           submitCalls.isEmpty,
-          consumed == (session.userId, clientId, IdentifierChangeKind.Phone, Right(newPhone)),
+          consumed == (session.userId, clientId, UserIntent.ChangePhone(newPhone)),
         )
       },
       test("fail with IdentifierChangeNotInitiated when the account page did not start it") {
@@ -1843,7 +1843,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
-          _ <- env.identifierChangeIntents.consume.succeedsWith(false)
+          _ <- env.userIntents.consume.succeedsWith(false)
           result <- env.service.authorize(changeRequest).flip
           createCalls = env.conversationRepository.create.calls
         yield assertTrue(
@@ -1857,7 +1857,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           result <- env.service.authorize(changeRequest.copy(sessionId = None)).flip
-          consumeCalls = env.identifierChangeIntents.consume.calls
+          consumeCalls = env.userIntents.consume.calls
         yield assertTrue(
           result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
           consumeCalls.isEmpty,
@@ -1871,7 +1871,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
           result <- env.service.authorize(changeRequest.copy(prompt = Set(Prompt.none))).flip
-          consumeCalls = env.identifierChangeIntents.consume.calls
+          consumeCalls = env.userIntents.consume.calls
         yield assertTrue(
           result == Error.LoginRequired(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query),
           consumeCalls.isEmpty,
@@ -1887,7 +1887,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow.copy(authFlow = Some(inlinePasswordFlow))))
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.sessionService.find.succeedsWith(Some(SessionInfo(sessionMac, session)))
-          _ <- env.identifierChangeIntents.consume.succeedsWith(true)
+          _ <- env.userIntents.consume.succeedsWith(true)
           _ <- env.configurationService.getAcrVocabulary.succeedsWith(Map.empty)
           result <- env.service.authorize(changeRequest).flip
           createCalls = env.conversationRepository.create.calls
@@ -1906,7 +1906,7 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
           _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
           _ <- env.conversationRepository.create.succeedsWith(())
           _ <- env.service.authorize(baseRequest)
-          consumeCalls = env.identifierChangeIntents.consume.calls
+          consumeCalls = env.userIntents.consume.calls
           created = env.conversationRepository.create.calls.head._2
         yield assertTrue(
           consumeCalls.isEmpty,

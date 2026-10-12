@@ -2,8 +2,8 @@ package versola.oauth.identifier
 
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.user.UserRepository
 import versola.user.model.UserId
+import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import zio.{IO, ZIO, ZLayer, durationInt}
 
 enum IdentifierChangeIntentError:
@@ -31,11 +31,11 @@ object IdentifierChangeIntentService:
   /** Long enough for the redirect to `/authorize` that follows; the intent is not a session. */
   private val IntentTtl = 5.minutes
 
-  def live: ZLayer[IdentifierChangeIntentRepository & UserRepository & OAuthConfigurationService, Nothing, IdentifierChangeIntentService] =
+  def live: ZLayer[UserIntentRepository & UserRepository & OAuthConfigurationService, Nothing, IdentifierChangeIntentService] =
     ZLayer.fromFunction(Impl(_, _, _))
 
   class Impl(
-      intents: IdentifierChangeIntentRepository,
+      intents: UserIntentRepository,
       userRepository: UserRepository,
       configuration: OAuthConfigurationService,
   ) extends IdentifierChangeIntentService:
@@ -56,5 +56,5 @@ object IdentifierChangeIntentService:
         // identifier on the page rather than after proving the old one and typing a code.
         holder <- userRepository.findByCredential(credential)
         _ <- ZIO.fail(IdentifierChangeIntentError.AlreadyInUse).when(holder.isDefined)
-        _ <- intents.create(userId, clientId, kind, credential, IntentTtl)
+        _ <- intents.create(userId, clientId, UserIntent.change(credential), IntentTtl)
       yield ()
