@@ -2289,6 +2289,10 @@ export class VersolaClientForm extends LitElement {
       return;
     }
 
+    if (scope === 'offline_access') {
+      this.offlineAccessAddedByKind = false;
+      this.offlineAccessChosen = true;
+    }
     const scopes = this.formData.scope || [];
     this.formData = {
       ...this.formData,
@@ -2325,6 +2329,11 @@ export class VersolaClientForm extends LitElement {
     this.formData = { ...this.formData, clientType };
   }
 
+  /** `offline_access` is on because the kind asked for it, not because the operator picked it. */
+  private offlineAccessAddedByKind = false;
+  /** The operator has toggled it themselves, so the kind's default no longer applies. */
+  private offlineAccessChosen = false;
+
   private selectKind(kind: ClientKind) {
     this.kind = kind;
     this.applyPreset();
@@ -2344,7 +2353,18 @@ export class VersolaClientForm extends LitElement {
     const mode = defaultCredentialMode(this.kind, this.securityProfile);
     const signsUsersIn = this.kind !== 'service';
 
-    const scope = (this.formData.scope || []).filter(s => s !== 'openid');
+    let scope = (this.formData.scope || []).filter(s => s !== 'openid');
+    // An app on a device is expected to keep its user signed in, which is what offline_access
+    // asks a refresh token for: so it is on to begin with for that kind, and off again if the
+    // kind is changed before the operator has touched the scope themselves.
+    if (this.offlineAccessAddedByKind) {
+      scope = scope.filter(s => s !== 'offline_access');
+      this.offlineAccessAddedByKind = false;
+    }
+    if (this.kind === 'device' && !this.offlineAccessChosen && !scope.includes('offline_access') && this.availableScopes.some(s => s.id === 'offline_access')) {
+      scope = [...scope, 'offline_access'];
+      this.offlineAccessAddedByKind = true;
+    }
 
     this.clientCredentialMode = mode;
     this.formData = {
