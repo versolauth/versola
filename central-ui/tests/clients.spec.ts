@@ -1912,6 +1912,7 @@ test('lists the permissions of a service client, and sends them when they are sa
   const update = await findClientWrite(api.requests, 'PUT');
   expect(update.pathname).toBe('/configuration/clients/service');
   expect(update.body).toMatchObject({ clientId: 'batch-job', permissions: { add: ['alpha.write'], remove: [] } });
+});
 
 // The seeded central-admin on a local stack: a web client that authenticates with a certificate, over
 // loopback http, with the binding flag never stored. It meets FAPI 2.0, and says so plainly.
