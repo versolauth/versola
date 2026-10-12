@@ -5,9 +5,9 @@
 -- `urn:versola:acr:{phone,email}-change` values only when a matching intent exists, so a client
 -- cannot start the flow on its own. At most one intent per user (a newer one replaces the older);
 -- it is consumed once, when the authorization request that follows it is accepted, and expires
--- after a few minutes. Like the other short-lived login state it holds nothing that outlives its
--- ttl, so it is UNLOGGED (see V0014 for what that costs).
-CREATE UNLOGGED TABLE identifier_change_intents (
+-- after a few minutes. A change of phone number or email is rare, so unlike the login-state
+-- tables of V0014 it stays logged: the write cost is negligible and an intent survives a crash.
+CREATE TABLE identifier_change_intents (
     user_id    UUID PRIMARY KEY,
     client_id  TEXT NOT NULL,
     kind       TEXT NOT NULL,

@@ -432,7 +432,7 @@ logins on the still-running previous version wait while it runs. The tables are 
 short, but run `versola migrate` at low traffic.
 
 **Migration `auth` V0015: self-service change of a phone number or email (#634).** Adds the
-UNLOGGED table `identifier_change_intents` (minutes-old state, like the tables above) and a
+table `identifier_change_intents` (logged: a change of phone number or email is rare) and a
 nullable `auth_conversations.identifier_change` column; no existing row changes, and the previous
 version keeps running on the new schema. Two things to know when upgrading:
 
