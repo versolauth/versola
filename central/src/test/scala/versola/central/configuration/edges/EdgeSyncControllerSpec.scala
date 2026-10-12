@@ -25,13 +25,7 @@ import versola.central.configuration.clients.{
 import versola.central.configuration.jwks.JwksService
 import versola.central.configuration.metadata.ServerMetadataService
 import versola.central.configuration.permissions.{Permission, PermissionRecord, PermissionService}
-import versola.central.configuration.resources.{
-  ResourceEndpointId,
-  ResourceEndpointRecord,
-  ResourceId,
-  ResourceRecord,
-  ResourceService,
-}
+import versola.central.configuration.resources.{ResourceEndpointId, ResourceEndpointRecord, ResourceId, ResourceRecord, ResourceService}
 import versola.central.configuration.roles.{RoleId, RoleRecord, RoleService}
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
