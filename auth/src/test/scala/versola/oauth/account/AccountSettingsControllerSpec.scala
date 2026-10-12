@@ -487,7 +487,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       description = "changes password when current password is correct",
       request = Request.patch(
         URL.empty / "settings" / "password",
-        Body.fromString("""{"userId":"f077fb08-9935-4a6d-8643-bf97c073bf0f","currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"NewPass1!"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = (_, _, _, _, _, _, passwordService) =>
@@ -503,7 +503,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       description = "rejects change when current password is wrong",
       request = Request.patch(
         URL.empty / "settings" / "password",
-        Body.fromString("""{"userId":"f077fb08-9935-4a6d-8643-bf97c073bf0f","currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
+        Body.fromString("""{"currentPassword":"WrongPass1!","newPassword":"NewPass1!"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = (_, _, _, _, _, _, passwordService) =>
@@ -515,7 +515,7 @@ object AccountSettingsControllerSpec extends UnitSpecBase:
       description = "rejects a reused password",
       request = Request.patch(
         URL.empty / "settings" / "password",
-        Body.fromString("""{"userId":"f077fb08-9935-4a6d-8643-bf97c073bf0f","currentPassword":"OldPass1!","newPassword":"OldPass1!"}"""),
+        Body.fromString("""{"currentPassword":"OldPass1!","newPassword":"OldPass1!"}"""),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.BadRequest,
       setup = (_, _, _, _, _, _, passwordService) =>
