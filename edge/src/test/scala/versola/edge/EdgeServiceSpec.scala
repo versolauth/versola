@@ -116,7 +116,13 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val rsaKey = RSAKey.Builder(keyPair.getPublic.asInstanceOf[RSAPublicKey]).keyID(edgeConfig.keyId).build()
       JWT.PublicKeys(JWKSet(rsaKey))
 
-    def signToken(jti: String = UUID.randomUUID().toString, ttlSeconds: Long = 600, sid: String = "sso-session-1"): Task[AccessToken] =
+    def signToken(
+        jti: String = UUID.randomUUID().toString,
+        ttlSeconds: Long = 600,
+        sid: String = "sso-session-1",
+        // adds the claims `AccessTokenClaims` requires on top of the minimal set
+        fullClaims: Boolean = false,
+    ): Task[AccessToken] =
       Clock.instant.flatMap { now =>
         ZIO.attemptBlocking {
           val header = JWSHeader.Builder(JWSAlgorithm.RS256)
@@ -131,8 +137,8 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
             .expirationTime(Date.from(now.plusSeconds(ttlSeconds)))
             .claim("client_id", "user-1-client")
             .claim("sid", sid)
-            .build()
-          val jwt = SignedJWT(header, claims)
+          if fullClaims then claims.claim("tenant_id", "default").claim("roles", Collections.emptyList[String]())
+          val jwt = SignedJWT(header, claims.build())
           jwt.sign(RSASSASigner(edgeConfig.privateKey))
           AccessToken(jwt.serialize())
         }
@@ -244,6 +250,7 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("EdgeService")(
     authorizeSuite,
+    authorizeForSessionSuite,
     completeSuite,
     frontChannelLogoutSuite,
     backChannelLogoutSuite,
@@ -558,6 +565,163 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
       },
     )
   }
+
+  private val sessionExpiresAt = Instant.EPOCH.plusSeconds(3600)
+  private val overrideParams = Map("login_hint" -> "+77011234567", "acr_values" -> "mfa", "max_age" -> "0")
+
+  private def sessionRecord(
+      jti: String,
+      presetId: PresetId = Fixtures.presetId,
+      expiresAt: Instant = sessionExpiresAt,
+  ) =
+    EdgeSessionRecord(
+      publicSessionId = SessionId("sso-session-1"),
+      presetId = presetId,
+      accessTokenId = AccessTokenId(jti),
+      encryptedRefreshToken = None,
+      expiresAt = expiresAt,
+    )
+
+  /** Wires the SSO side of a successful `authorize` and builds the service under test. */
+  private def sessionService(env: Env, presets: AuthorizationPreset*) =
+    for
+      _ <- env.withPresets(presets*)
+      _ <- env.withClients(Fixtures.client)
+      _ <- env.jwksService.getPublicKeys.succeedsWith(env.publicKeys)
+      _ <- env.revocationService.isRevoked.succeedsWith(false)
+      _ <- env.secureRandom.nextBytes.returnsZIOOnCall:
+        case 1 => ZIO.succeed(Fixtures.codeVerifierBytes)
+        case _ => ZIO.succeed(Fixtures.stateBytes)
+      _ <- env.loginRepository.create.succeedsWith(())
+      _ <- env.ssoClient.authorizeUri.succeedsWith(Fixtures.authorizeUrl)
+      security <- ZIO.service[SecurityService]
+      client <- ZIO.service[Client]
+    yield env.buildService(client, security)
+
+  private val authorizeForSessionSuite = suite("authorizeForSession")(
+    test("authorizes the preset of the session record and forwards the override params") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-1", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-1")))
+        service <- sessionService(env, Fixtures.preset)
+        url <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token"), overrideParams)
+        authorizeCalls = env.ssoClient.authorizeUri.calls
+      yield assertTrue(
+        url == Fixtures.authorizeUrl,
+        env.sessionRepository.findByAccessTokenId.calls == List(AccessTokenId("jti-1")),
+        // redirect_uri is the preset's own: the override params carry nothing that could replace it
+        authorizeCalls.map(call => (call._1, call._5)) == List((Fixtures.preset, overrideParams)),
+        env.loginRepository.create.calls.map(_._1.presetId) == List(Fixtures.presetId),
+      )
+    },
+    test("accepts an expired access token while the edge session record is alive") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-expired", ttlSeconds = -60, fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-expired")))
+        service <- sessionService(env, Fixtures.preset)
+        url <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token"))
+      yield assertTrue(url == Fixtures.authorizeUrl)
+    },
+    test("fails with PresetNotFound when there is no cookie") {
+      val env = new Env
+      for
+        service <- sessionService(env, Fixtures.preset)
+        result <- service.authorizeForSession(None, overrideParams).either
+      yield assertTrue(
+        result == Left(PresetNotFound()),
+        env.sessionRepository.findByAccessTokenId.calls.isEmpty,
+        env.ssoClient.authorizeUri.calls.isEmpty,
+      )
+    },
+    test("fails with PresetNotFound when the cookie carries a token with a forged signature") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-forged", fullClaims = true)
+        forged = token.reverse.drop(8).reverse + "AAAAAAAA"
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-forged")))
+        service <- sessionService(env, Fixtures.preset)
+        result <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$forged")).either
+      yield assertTrue(
+        result == Left(PresetNotFound()),
+        env.sessionRepository.findByAccessTokenId.calls.isEmpty,
+        env.ssoClient.authorizeUri.calls.isEmpty,
+      )
+    },
+    test("fails with PresetNotFound for a cookie that is not a token at all") {
+      val env = new Env
+      for
+        service <- sessionService(env, Fixtures.preset)
+        legacy <- service.authorizeForSession(Some("garbage")).either
+        withPreset <- service.authorizeForSession(Some(s"${Fixtures.presetId}:garbage")).either
+      yield assertTrue(
+        legacy == Left(PresetNotFound()),
+        withPreset == Left(PresetNotFound()),
+        env.ssoClient.authorizeUri.calls.isEmpty,
+      )
+    },
+    test("fails with PresetNotFound when no edge session record exists for the token") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-unknown", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(None)
+        service <- sessionService(env, Fixtures.preset)
+        result <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+    test("fails with PresetNotFound when the cookie's preset id differs from the session record's") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-mismatch", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-mismatch")))
+        service <- sessionService(env, Fixtures.preset, Fixtures.preset.copy(id = Fixtures.otherPresetId))
+        result <- service.authorizeForSession(Some(s"${Fixtures.otherPresetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+    test("fails with PresetNotFound when the session record has lapsed") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-lapsed", ttlSeconds = -60, fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(
+          Some(sessionRecord("jti-lapsed", expiresAt = Instant.EPOCH.minusSeconds(1))),
+        )
+        service <- sessionService(env, Fixtures.preset)
+        result <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+    test("fails with PresetNotFound when the access token has been revoked") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-revoked", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-revoked")))
+        service <- sessionService(env, Fixtures.preset)
+        _ <- env.revocationService.isRevoked.succeedsWith(true)
+        result <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+    test("fails with PresetNotFound when the session's preset is gone from the cache") {
+      val env = new Env
+      for
+        token <- env.signToken(jti = "jti-nopreset", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(Some(sessionRecord("jti-nopreset")))
+        service <- sessionService(env)
+        result <- service.authorizeForSession(Some(s"${Fixtures.presetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+    test("never resolves the reserved id current as a preset, even for a legacy session") {
+      val env = new Env
+      val current = Fixtures.preset.copy(id = EdgeService.ReservedPresetId)
+      for
+        token <- env.signToken(jti = "jti-current", fullClaims = true)
+        _ <- env.sessionRepository.findByAccessTokenId.succeedsWith(
+          Some(sessionRecord("jti-current", presetId = EdgeService.ReservedPresetId)),
+        )
+        service <- sessionService(env, current)
+        result <- service.authorizeForSession(Some(s"${EdgeService.ReservedPresetId}:$token")).either
+      yield assertTrue(result == Left(PresetNotFound()), env.ssoClient.authorizeUri.calls.isEmpty)
+    },
+  )
 
   private val frontChannelLogoutSuite = suite("frontChannelLogout")(
     test("deletes session rows and clears EDGE_SESSION cookie for the session's preset") {

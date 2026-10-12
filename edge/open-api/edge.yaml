@@ -15,7 +15,7 @@ info:
 
     ## Surfaces
 
-    * **Browser login** — `/login/{presetId}`, `/complete`, `/logout/{presetId}`. A preset
+    * **Browser login** — `/login/{presetId}`, `/login/current`, `/complete`, `/logout/{presetId}`. A preset
       (configured in Central) binds an OAuth client, a redirect URI and the cookie that holds
       the session. Edge runs the authorization-code + PKCE flow itself, so the browser never
       sees a token endpoint or a client secret.
@@ -83,6 +83,72 @@ tags:
     description: Health, metrics and configuration refresh.
 
 paths:
+  /login/current:
+    get:
+      operationId: loginCurrent
+      summary: Re-authorize for the preset of the current session
+      description: |
+        Like `GET /login/{presetId}`, for the preset the caller's own `EDGE_SESSION` cookie was
+        issued for, so an app that does not know its preset id can ask the user to authenticate
+        again (for instance to change a verified phone number or email). The literal path takes
+        precedence over `/login/{presetId}`; `current` is a reserved preset id and Central refuses
+        to create a preset with it.
+
+        The preset is not read from the cookie text: edge verifies the access token's signature
+        and looks the session up in its own session store, and the cookie's preset id must agree
+        with that record. An access token that has merely expired is accepted while its session
+        is alive.
+
+        The same query parameter whitelist as `/login/{presetId}` applies: `acr_values`,
+        `max_age`, `prompt`, `login_hint`, `ui_locales`. Everything else is ignored.
+      tags: [Login]
+      security: []
+      parameters:
+        - name: acr_values
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Space-separated authentication context class references requested of Auth.
+        - name: max_age
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Maximum acceptable age, in seconds, of the user's last authentication.
+        - name: prompt
+          in: query
+          required: false
+          schema:
+            type: string
+          description: OIDC `prompt` value, e.g. `login`.
+        - name: login_hint
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Hint about the identifier the user is expected to sign in with.
+        - name: ui_locales
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Space-separated BCP 47 language tags, in order of preference.
+      responses:
+        '303':
+          description: Redirect to Auth's authorization endpoint.
+          headers:
+            Location:
+              description: Authorization request URL.
+              schema:
+                type: string
+                format: uri
+        '404':
+          description: |
+            No `EDGE_SESSION` cookie, or it is unreadable, forged, expired, revoked or names a
+            session this edge does not know, or its preset no longer exists. Every one of these
+            answers alike.
+
   /login/{presetId}:
     get:
       operationId: login

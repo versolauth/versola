@@ -327,6 +327,58 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     },
   )
 
+  private val loginCurrentSuite = suite("GET /login/current")(
+    test("redirects to the authorize URL of the session's preset with the whitelisted params") {
+      val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
+      val request = Request.get(
+        URL.decode("/login/current?login_hint=%2B77011234567&acr_values=mfa&max_age=0&prompt=login&ui_locales=ru&redirect_uri=https://evil.example").toOption.get,
+      ).addCookie(Cookie.Request(EdgeSessionCookie.name, "preset-1:header.payload.signature"))
+      for
+        (response, service, _) <- run(request, (s, _) => s.authorizeForSession.succeedsWith(authorizeUrl))
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        response.header(Header.Location).map(_.url).contains(authorizeUrl),
+        service.authorizeForSession.calls == List(
+          (
+            Some("preset-1:header.payload.signature"),
+            Map("login_hint" -> "+77011234567", "acr_values" -> "mfa", "max_age" -> "0", "prompt" -> "login", "ui_locales" -> "ru"),
+          ),
+        ),
+        // the literal route wins: `current` is never looked up as a preset id
+        service.authorize.calls.isEmpty,
+      )
+    },
+    test("returns 404 when there is no session cookie") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/current").toOption.get),
+          (s, _) => s.authorizeForSession.failsWith(PresetNotFound()),
+        )
+      yield assertTrue(
+        response.status == Status.NotFound,
+        service.authorizeForSession.calls == List((None, Map.empty[String, String])),
+        service.authorize.calls.isEmpty,
+      )
+    },
+    test("returns 404 when the service rejects the session cookie") {
+      for
+        (response, service, _) <- run(
+          Request.get(URL.decode("/login/current").toOption.get)
+            .addCookie(Cookie.Request(EdgeSessionCookie.name, "forged")),
+          (s, _) => s.authorizeForSession.failsWith(PresetNotFound()),
+        )
+      yield assertTrue(response.status == Status.NotFound, service.authorize.calls.isEmpty)
+    },
+    test("returns 500 when authorizing the session fails with an unexpected error") {
+      for
+        (response, _, _) <- run(
+          Request.get(URL.decode("/login/current").toOption.get),
+          (s, _) => s.authorizeForSession.failsWith(RuntimeException("sso client unreachable")),
+        )
+      yield assertTrue(response.status == Status.InternalServerError)
+    },
+  )
+
   private val loginSuite = suite("GET /login/{presetId}")(
     test("redirects to the SSO authorize URL on a known preset") {
       val authorizeUrl = URL.decode("https://idp.example/authorize?client_id=web-app").toOption.get
@@ -772,6 +824,7 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   def spec = suite("EdgeController")(
     permissionsSuite,
+    loginCurrentSuite,
     loginSuite,
     logoutSuite,
     completeSuite,
