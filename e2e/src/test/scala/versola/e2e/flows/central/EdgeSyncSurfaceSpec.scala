@@ -12,7 +12,7 @@ import zio.test.*
 import java.security.KeyFactory
 import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Instant
-import java.util.{Base64, Date}
+import java.util.{Base64, Date, UUID}
 
 /** Central's edge-facing surface, `/edge/sync/<resource>` (#554), seen from a second edge registered
   * for a tenant of its own.
@@ -45,8 +45,8 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
   )
 
   /** What edge's `CentralSyncTokenService` presents: `RS256` with the registered key, naming
-    * the edge in the `edge_id` header. Built with Nimbus directly, since e2e has no access to
-    * the services' own `JWT` helper. */
+    * the edge in the `edge_id` header, and a `jti`, which central's verifier insists on. Built
+    * with Nimbus directly, since e2e has no access to the services' own `JWT` helper. */
   private def edgeToken(edgeId: String, keyId: String, privateKey: String): Task[String] =
     ZIO.attempt:
       val key = KeyFactory.getInstance("RSA").generatePrivate(PKCS8EncodedKeySpec(Base64.getUrlDecoder.decode(privateKey)))
@@ -55,6 +55,7 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
         .issuer("edge")
         .subject("edge")
         .audience("central")
+        .jwtID(UUID.randomUUID().toString)
         .issueTime(Date.from(now))
         .expirationTime(Date.from(now.plusSeconds(60)))
         .build()
@@ -85,6 +86,11 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
       keyId <- registered.stringAt("keyId")
       privateKey <- registered.stringAt("privateKey")
       token <- edgeToken(edgeId, keyId, privateKey)
+      // Central authenticates an edge against a cache a Postgres notification refreshes after
+      // the registration lands; what is awaited is the new edge being known at all.
+      known <- eventually(central.withBearer(token).get("/edge/sync/dpop"))(_.status == Status.Ok)
+      _ <- ZIO.fail(RuntimeException(s"central never authenticated the new edge: ${known.status} ${known.body}"))
+        .unless(known.status == Status.Ok)
       _ <- central.post("/configuration/tenants", Fixtures.tenant(tenantId, edgeId = Some(edgeId)))
       _ <- central.post("/configuration/clients", Fixtures.client(ownClient, tenantId = tenantId))
       _ <- central.post("/configuration/clients", Fixtures.client(otherClient))
@@ -130,9 +136,13 @@ object EdgeSyncSurfaceSpec extends CentralApiSpec:
   /** The ids in the named array of a sync document, read as the edge would. Central serves
     * these from caches a Postgres notification refreshes after the write, so the reads below
     * poll until the edge's own row has arrived -- what is awaited is the write landing, and
-    * the other tenant's row is then judged on the same snapshot. */
+    * the other tenant's row is then judged on the same snapshot. A refusal reads as no ids,
+    * so the assertion then reports the missing own row rather than a parse error. */
   private def syncIds(central: CentralApi, edge: SecondEdge, resource: String, items: String, id: String)(own: String): Task[Set[String]] =
-    eventually(central.withBearer(edge.token).get(s"/edge/sync/$resource").flatMap(_.items(items)).map(_.flatMap(_.str(id)).toSet))(_.contains(own))
+    val read = central.withBearer(edge.token).get(s"/edge/sync/$resource").flatMap: result =>
+      if result.status == Status.Ok then result.items(items).map(_.flatMap(_.str(id)).toSet)
+      else ZIO.succeed(Set.empty[String])
+    eventually(read)(_.contains(own))
 
   def spec = suite("Central API: the edge-facing surface")(
     test("a second edge reads only the tenant bound to it, on every sync resource") {
