@@ -20,7 +20,8 @@ The script first asks for the environment **Name** (default `local`):
 
   This is the only target that sets auth's optional `cell-id` (`local-1`), so the stack
   `sbt e2e/test` drives issues its authorization codes, refresh tokens and PAR `request_uri`s
-  with the `v1.<cell>.` routing prefix and puts a `cell` claim in access tokens (#547, #558).
+  with the `v1.<cell>.` routing prefix and names the cell in the `cell` JOSE header parameter of
+  access tokens (#547, #558).
   Every other target leaves the key commented out, which keeps those values exactly as they
   were; an unprefixed value is accepted either way.
 - **`docker-local`** — also runs non-interactively, for the case where auth/central/edge

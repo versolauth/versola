@@ -1556,8 +1556,8 @@ object SecretSchema:
   // ── Build config files ────────────────────────────────────────────────────────
 
   // The cell this auth is, when a deployment is made of several (versolauth/versola#547):
-  // named at the front of the opaque values it issues and in the `cell` claim of its
-  // tokens, so a router can find their home cell without a lookup. Set for the local
+  // named at the front of the opaque values it issues and in the `cell` JOSE header of
+  // its tokens, so a router can find their home cell without a lookup. Set for the local
   // stack so e2e exercises the prefixed values; every other target starts without one,
   // which leaves it exactly as it was (no prefix, no claim) until an operator names it.
   val cellIdLine =

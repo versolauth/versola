@@ -250,12 +250,16 @@ components:
           description: |
             Signed JWT. Beyond the registered claims it carries `client_id`, `scope`, `jti`,
             `roles`, `tenant_id`, and — for user-bound tokens — `sid`, `amr`, `auth_time`
-            and `acr`. On a deployment made of several cells it also carries `cell`, the
-            globally unique id (`kz-1`) of the cell that issued it and holds its session: a
-            router in front of the cells sends calls that present the token there without
-            a lookup. Absent on a single-cell deployment. The same claim is set on the
-            security event tokens (back-channel logout and access token revocation) that
-            cell sends.
+            and `acr`. On a deployment made of several cells its JOSE header also carries
+            the parameter `cell` (RFC 9068 §2.1 allows additional header parameters): the
+            globally unique id (`kz-1`) of the cell that issued the token and holds its
+            session, which a router in front of the cells reads, before verifying anything,
+            to send calls presenting the token there without a lookup. A header parameter
+            rather than a claim because it is processing metadata like `kid`, not a
+            statement about the subject; it is signed with the payload and is not echoed by
+            introspection or userinfo. Absent on a single-cell deployment. The security
+            event tokens that cell sends (back-channel logout and access token revocation)
+            carry the same header parameter.
         token_type:
           type: string
           enum: [Bearer, DPoP]

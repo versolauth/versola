@@ -32,7 +32,7 @@ import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.util.Dpop
 import versola.util.http.{ControllerSpec, NoopTracing, Observability}
-import versola.util.{Base64, CoreConfig, JWT, Secret, TestCertificates, UnitSpecBase}
+import versola.util.{Base64, CoreConfig, JWT, RoutingKey, Secret, TestCertificates, UnitSpecBase}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -1220,8 +1220,9 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
       ),
       tokenEndpointTestCase(
         // versolauth/versola#547 §6.2: a router in front of several cells reads the cell off
-        // the token instead of looking the session up.
-        description = "carries the cell it was issued by in cell, when the deployment is one",
+        // the token's header, before verifying it, instead of looking the session up. A
+        // header parameter, not a claim: processing metadata, like kid.
+        description = "names the cell it was issued by in the cell header parameter, when the deployment is one",
         request = codeExchangeRequest,
         expectedStatus = Status.Ok,
         setup = services =>
@@ -1230,12 +1231,15 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
-            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
-          yield assertTrue(claims.getStringClaim("cell") == (TestEnvConfig.cellId: String)),
+            jwt = SignedJWT.parse(tokenResponse.accessToken)
+          yield assertTrue(
+            jwt.getHeader.getCustomParam(RoutingKey.JoseHeader) == (TestEnvConfig.cellId: String),
+            jwt.getJWTClaimsSet.getClaim(RoutingKey.JoseHeader) == null,
+          ),
         config = TestEnvConfig.cellCoreConfig,
       ),
       tokenEndpointTestCase(
-        description = "omits cell on a deployment that is not a cell",
+        description = "names no cell in the header on a deployment that is not a cell",
         request = codeExchangeRequest,
         expectedStatus = Status.Ok,
         setup = services =>
@@ -1244,8 +1248,11 @@ object TokenEndpointControllerSpec extends UnitSpecBase:
           for
             body <- response.body.asString
             tokenResponse <- ZIO.fromEither(body.fromJson[TokenResponse]).mapError(new RuntimeException(_))
-            claims = SignedJWT.parse(tokenResponse.accessToken).getJWTClaimsSet
-          yield assertTrue(claims.getStringClaim("cell") == null),
+            jwt = SignedJWT.parse(tokenResponse.accessToken)
+          yield assertTrue(
+            jwt.getHeader.getCustomParam(RoutingKey.JoseHeader) == null,
+            jwt.getJWTClaimsSet.getClaim(RoutingKey.JoseHeader) == null,
+          ),
       ),
       tokenEndpointTestCase(
         // The response hands the token back the way the service keyed it: a routed token as

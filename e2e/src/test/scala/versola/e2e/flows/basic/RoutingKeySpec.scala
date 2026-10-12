@@ -8,9 +8,9 @@ import zio.json.ast.Json
 import zio.test.*
 
 /** The routing key a multi-cell deployment writes at the front of its opaque values and the
-  * `cell` claim of its access tokens (versolauth/versola#547 §6.2, #558): the staged `auth`
-  * runs as cell `local-1` (`scripts/gen-env.scala`), so every code, refresh token and
-  * `request_uri` it issues names that cell, and every one of them redeems as before.
+  * `cell` JOSE header parameter of its access tokens (versolauth/versola#547 §6.2, #558): the
+  * staged `auth` runs as cell `local-1` (`scripts/gen-env.scala`), so every code, refresh
+  * token and `request_uri` it issues names that cell, and every one of them redeems as before.
   */
 object RoutingKeySpec extends E2ESpec:
 
@@ -21,16 +21,17 @@ object RoutingKeySpec extends E2ESpec:
 
   private def prefixOf(auth: OAuthClient): String = s"v1.${auth.cellId}."
 
-  private def claims(accessToken: String): Task[Json.Obj] =
+  /** The JOSE header of `accessToken`, where a cell names itself; the claims are left alone. */
+  private def header(accessToken: String): Task[Json.Obj] =
     for
-      payload <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(1)), "UTF-8"))
+      segment <- ZIO.attempt(String(java.util.Base64.getUrlDecoder.decode(accessToken.split('.')(0)), "UTF-8"))
         .mapError(error => RuntimeException(s"Access token is not a JWT [$error]: $accessToken"))
-      json <- ZIO.fromEither(payload.fromJson[Json.Obj])
-        .mapError(error => RuntimeException(s"Access token payload is not a JSON object [$error]: $payload"))
+      json <- ZIO.fromEither(segment.fromJson[Json.Obj])
+        .mapError(error => RuntimeException(s"Access token header is not a JSON object [$error]: $segment"))
     yield json
 
-  private def cellClaim(accessToken: String): Task[Option[String]] =
-    claims(accessToken).map(_.get("cell").collect { case Json.Str(value) => value })
+  private def cellHeader(accessToken: String): Task[Option[String]] =
+    header(accessToken).map(_.get("cell").collect { case Json.Str(value) => value })
 
   private def refreshTokenOf(tokens: TokenResult.Success): Task[String] =
     ZIO.fromOption(tokens.refreshToken)
@@ -59,8 +60,8 @@ object RoutingKeySpec extends E2ESpec:
       code <- auth.submitOtp(cookie, fixedOtp, otp.csrf).assertRedirect
     yield code
 
-  def spec = suite("Routing key and cell claim")(
-    test("the code, both refresh tokens and both access tokens of a login name the staged cell") {
+  def spec = suite("Routing key and cell header")(
+    test("the code, both refresh tokens and the header of both access tokens of a login name the staged cell") {
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
         authorize <- auth.authorize(
@@ -77,25 +78,25 @@ object RoutingKeySpec extends E2ESpec:
           redirectUri = Some(s.redirectUri),
         ).success
         refreshToken <- refreshTokenOf(tokens)
-        cell <- cellClaim(tokens.accessToken)
+        cell <- cellHeader(tokens.accessToken)
         refreshed <- auth.refresh(
           refreshToken,
           clientId = Some(s.clientId),
           clientSecret = Some(s.clientSecret),
         ).success
         rotated <- refreshTokenOf(refreshed)
-        refreshedCell <- cellClaim(refreshed.accessToken)
+        refreshedCell <- cellHeader(refreshed.accessToken)
         userinfo <- auth.userinfo(refreshed.accessToken).success
       yield assertTrue(code.startsWith(prefixOf(auth)))
         .label(s"the authorization code must start with ${prefixOf(auth)}, got $code") &&
         assertTrue(refreshToken.startsWith(prefixOf(auth)))
           .label(s"the refresh token must start with ${prefixOf(auth)}") &&
         assertTrue(cell.contains(auth.cellId))
-          .label(s"the access token must carry cell=${auth.cellId}, got $cell") &&
+          .label(s"the access token header must carry cell=${auth.cellId}, got $cell") &&
         assertTrue(rotated.startsWith(prefixOf(auth)))
           .label(s"the rotated refresh token must start with ${prefixOf(auth)}") &&
         assertTrue(refreshedCell.contains(auth.cellId))
-          .label(s"the refreshed access token must carry cell=${auth.cellId}, got $refreshedCell") &&
+          .label(s"the refreshed access token header must carry cell=${auth.cellId}, got $refreshedCell") &&
         assertTrue(userinfo.sub == s.userId)
           .label("the refreshed access token must still resolve to the user")
     },
@@ -122,7 +123,7 @@ object RoutingKeySpec extends E2ESpec:
           redirectUri = Some(s.redirectUri),
         ).success
         refreshToken <- refreshTokenOf(tokens)
-        cell <- cellClaim(tokens.accessToken)
+        cell <- cellHeader(tokens.accessToken)
       yield assertTrue(pushed.requestUri.startsWith("urn:ietf:params:oauth:request_uri:" + prefixOf(auth)))
         .label(s"the request_uri must keep the RFC 9126 namespace ahead of the routing key, got ${pushed.requestUri}") &&
         assertTrue(code.startsWith(prefixOf(auth)))

@@ -24,7 +24,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.user.model.UserId
 import versola.util.CoreConfig.JwtConfig
 import versola.util.http.{Controller, Observability, extractCredentials}
-import versola.util.{Base64Url, CoreConfig, FormDecoder, JWT, Secret}
+import versola.util.{Base64Url, CoreConfig, FormDecoder, JWT, RoutingKey, Secret}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -183,10 +183,6 @@ object TokenEndpointController extends Controller:
       ) ++
         tokens.sessionId.map(sid => "sid" -> Json.Str(sid)) ++
         tokens.refreshTokenFamilyId.map(family => "fam" -> Json.Str(family)) ++
-        // The cell that holds the session and the chain behind this token, for a router in
-        // front of several cells (versolauth/versola#547 §6.2). Absent on a deployment that
-        // is not a cell, which leaves its tokens exactly as they were.
-        config.cellId.map(cell => "cell" -> Json.Str(cell)) ++
         tokens.cnf.map("cnf" -> _.toJsonObj) ++
         tokens.requestedClaims.map(rc => "requested_claims" -> rc.toJsonAST.toOption.get) ++
         authorizationDetailsClaim(tokens).map("authorization_details" -> _) ++
@@ -205,6 +201,10 @@ object TokenEndpointController extends Controller:
         ),
         ttl = tokens.accessTokenTtl,
         signature = signingKey,
+        // The cell that holds the session and the chain behind this token, for a router in
+        // front of several cells (versolauth/versola#547 §6.2). Absent on a deployment that
+        // is not a cell, which leaves its tokens exactly as they were.
+        headers = config.cellId.map(cell => RoutingKey.JoseHeader -> (cell: String)).toMap,
       )
       idToken <- generateIdToken(tokens, config, signingKey, serializedAT)
     yield TokenResponse(

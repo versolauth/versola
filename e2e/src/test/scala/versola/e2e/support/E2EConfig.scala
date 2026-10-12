@@ -48,7 +48,7 @@ final case class E2EConfig(
     centralEnvConf: String,
     /** The `cell-id` the staged `auth` runs with (`scripts/gen-env.scala`'s `local` target), which
       * it writes at the front of the codes, refresh tokens and `request_uri`s it issues and in
-      * the `cell` claim of its access tokens. */
+      * the `cell` JOSE header parameter of its access tokens. */
     authCellId: String,
 )
 

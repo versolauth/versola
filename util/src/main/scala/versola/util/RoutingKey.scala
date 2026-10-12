@@ -22,6 +22,15 @@ import scala.util.Try
 object RoutingKey:
   val Version = "v1"
 
+  /** The JOSE header parameter a token signed by a cell names the cell in. A header rather
+    * than a claim: it is processing metadata like `kid`, not a statement about the subject,
+    * so a router reads it with [[JWT.parseHeader]] before verifying anything, it stays
+    * readable if the payload is ever encrypted, and introspection and userinfo never echo
+    * it. JWS signs the header with the payload, so nothing is lost. RFC 9068 §2.1 allows
+    * additional header parameters on an access token.
+    */
+  val JoseHeader = "cell"
+
   private val Separator = '.'
 
   /** Globally unique cell identifier, `kz-1` rather than `1`, so that artifacts of two

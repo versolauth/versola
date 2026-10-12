@@ -500,7 +500,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
   val issuer: String = config.authUrl
 
   /** The cell the staged `auth` is configured as (`cell-id`), named at the front of the opaque
-    * values it issues and in the `cell` claim of its access tokens. */
+    * values it issues and in the `cell` JOSE header parameter of its access tokens. */
   val cellId: String = config.authCellId
 
   /** RFC 8705 §5: `auth`'s own mutual-TLS listener and the PEM material `MutualTlsListenerSpec`
