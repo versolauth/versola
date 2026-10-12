@@ -567,9 +567,9 @@ object InvalidRegistrationConfiguration:
     "client_secret, private_key_jwt, tls_client_auth or self_signed_tls_client_auth"
 
   /** A client fronted by edge presents edge's certificate, which is shared by every user it
-    * serves -- so its tokens are bound to that certificate, its authorization requests are pushed
-    * over the authenticated channel, and it holds no key to sign a request object or prove DPoP
-    * with. */
+    * serves -- so its tokens are bound to that certificate and its authorization requests are
+    * pushed over the authenticated channel (both written on by the typed request), and it holds no
+    * key to sign a request object or prove DPoP with (refused here). */
   private def edgeFronted(request: CreateClientRequest): Boolean =
     request.issueEdgeClientCertificate || request.enrollEdgeClientCertificate || request.edgeClientCertificate.nonEmpty
 
@@ -582,10 +582,6 @@ object InvalidRegistrationConfiguration:
           invalid(s"is confidential: authMethod must be $ConfidentialAuthMethods, not none")
         else if request.redirectUris.isEmpty then
           invalid("needs at least one redirect URI - users sign in through it")
-        else if edgeFronted(request) && !request.certificateBoundAccessTokens then
-          invalid("fronted by edge needs certificateBoundAccessTokens - edge's certificate is what binds its tokens")
-        else if edgeFronted(request) && !request.requirePushedAuthorizationRequests then
-          invalid("fronted by edge needs requirePushedAuthorizationRequests - only edge's pushed request is trustworthy")
         else if edgeFronted(request) && request.dpopBoundAccessTokens then
           invalid("fronted by edge cannot set dpopBoundAccessTokens - the certificate is its sender constraint")
         else if edgeFronted(request) && request.requireSignedRequestObject then

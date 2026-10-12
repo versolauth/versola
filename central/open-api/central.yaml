@@ -2434,8 +2434,9 @@ components:
         `self_signed_tls_client_auth` -- never `none` -- and at least one redirect URI is required.
 
         Fronted by edge (`issueEdgeClientCertificate`, `enrollEdgeClientCertificate` or a supplied
-        certificate) it must set `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests`,
-        and cannot set `dpopBoundAccessTokens` or `requireSignedRequestObject`.
+        certificate) its tokens are bound to edge's certificate and its authorization requests are
+        pushed: `certificateBoundAccessTokens` and `requirePushedAuthorizationRequests` are set on
+        whatever is sent. It cannot set `dpopBoundAccessTokens` or `requireSignedRequestObject`.
 
         Recorded as a `web` client. `frontChannelLogoutUri` and `backChannelLogoutUri` are never both
         set, and `logoUri`, `policyUri` and `tosUri` must be absolute HTTPS URLs.

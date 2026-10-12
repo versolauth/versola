@@ -111,15 +111,16 @@ object ClientApiSpec extends CentralApiSpec:
       yield assertTrue(record.flatMap(_.int("refreshTokenTtl")).contains(15552000))
         .label("clients registered without a refresh lifetime must still get a usable default")
     },
-    test("a client registered from a console template reads it back, and a registration time") {
+    test("a client reads back the kind of the endpoint it was registered at, and a registration time") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
-        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("device")))
+        body = Fixtures.client(id, template = Some(Fixtures.clientTemplate("service")), redirectUris = Set.empty)
         record <- withClient(central, body)(_ => read(central, id))
         template = record.flatMap(_.obj("template"))
-      yield assertTrue(template.flatMap(_.str("kind")).contains("device"))
-        .label("the console shows the client's settings against this, so it has to survive the round trip") &&
+      yield assertTrue(template.flatMap(_.str("kind")).contains("service")) &&
+        assertTrue(record.flatMap(_.str("kind")).contains("service"))
+          .label("the console updates a client at the endpoint of this kind, so it has to survive the round trip") &&
         assertTrue(record.flatMap(_.str("createdAt")).exists(_.nonEmpty))
     },
     test("a template that still names the retired tier is accepted and read back without it") {
@@ -146,13 +147,13 @@ object ClientApiSpec extends CentralApiSpec:
         assertTrue(record.flatMap(_.str("createdAt")).contains(answered))
           .label("the console dates a client it just registered by this, so it has to be the stored one")
     },
-    test("a client registered without a template reads back without one") {
+    test("a client registered with a template that disagrees with its settings is still the kind of its endpoint") {
       for
         central <- api
         id <- CentralApi.id("e2e-client")
         record <- withClient(central, Fixtures.client(id))(_ => read(central, id))
-      yield assertTrue(record.exists(_.obj("template").isEmpty))
-        .label("an API registration names no combination, and a guessed one would look like a recorded choice")
+      yield assertTrue(record.flatMap(_.str("kind")).contains("web"))
+        .label("a client with redirect URIs and a secret is a web client, whatever a caller's template says")
     },
     test("a new client reports no secret rotation in progress") {
       for

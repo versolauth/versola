@@ -105,21 +105,20 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       test("no redirect URI is refused") {
         assertTrue(registration(ClientKind.web, web.copy(redirectUris = Set.empty).toCreateClientRequest).exists(_.contains("redirect URI")))
       },
-      test("fronted by edge it must bind tokens to the certificate and push requests, and cannot also use DPoP or a request object") {
+      test("fronted by edge it is bound to the certificate and pushes its requests, and cannot also use DPoP or a request object") {
         val edge = web.copy(authMethod = AuthMethod.tls_client_auth, enrollEdgeClientCertificate = true)
-        val bound = edge.copy(certificateBoundAccessTokens = true, requirePushedAuthorizationRequests = true)
+        val written = edge.toCreateClientRequest
         assertTrue(
-          registration(ClientKind.web, edge.toCreateClientRequest).exists(_.contains("certificateBoundAccessTokens")),
+          written.certificateBoundAccessTokens,
+          written.requirePushedAuthorizationRequests,
+          registration(ClientKind.web, written).isEmpty,
+          registration(ClientKind.web, edge.copy(dpopBoundAccessTokens = true).toCreateClientRequest).exists(_.contains("dpopBoundAccessTokens")),
           registration(
             ClientKind.web,
-            edge.copy(certificateBoundAccessTokens = true).toCreateClientRequest,
-          ).exists(_.contains("requirePushedAuthorizationRequests")),
-          registration(ClientKind.web, bound.copy(dpopBoundAccessTokens = true).toCreateClientRequest).exists(_.contains("dpopBoundAccessTokens")),
-          registration(
-            ClientKind.web,
-            bound.copy(requireSignedRequestObject = true).toCreateClientRequest,
+            edge.copy(requireSignedRequestObject = true).toCreateClientRequest,
           ).exists(_.contains("requireSignedRequestObject")),
-          registration(ClientKind.web, bound.toCreateClientRequest).isEmpty,
+          // Not edge-fronted, nothing is written on.
+          !web.toCreateClientRequest.certificateBoundAccessTokens,
         )
       },
     ),
