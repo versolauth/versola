@@ -29,3 +29,42 @@ for (const theme of themes) {
     });
   }
 }
+
+for (const theme of themes) {
+  test(`a client's page and its section editor have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });
+    await page.getByRole('button', { name: 'Open client alpha-web', exact: true }).click();
+    await expect(page.locator('versola-clients-list .view-title')).toBeVisible();
+
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await page.getByRole('button', { name: 'Edit tokens', exact: true }).click();
+    await expect(page.getByRole('button', { name: /^Save tokens/ })).toBeVisible();
+    expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
+  test(`every step of creating a client has no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
+    await page.getByRole('button', { name: /Web app/ }).click();
+    await clean();
+    await page.getByRole('button', { name: 'Continue to basics', exact: true }).click();
+    await page.locator('versola-client-form #client-id').fill('wizard-axe');
+    await page.locator('versola-client-form input#client-name').fill('Wizard Axe');
+    await page.locator('versola-client-form #redirect-uri').fill('https://wizard.example/callback');
+    await page.locator('versola-client-form #redirect-uri').press('Enter');
+    await clean();
+    await page.getByRole('button', { name: 'Continue to sign-in', exact: true }).click();
+    await clean();
+    await page.getByRole('button', { name: 'Continue to review', exact: true }).click();
+    await clean();
+  });
+}

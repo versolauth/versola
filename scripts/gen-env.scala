@@ -1208,14 +1208,24 @@ object SecretSchema:
   val edgeInternalUrl = if isLocal then s"https://localhost:$edgeInternalTlsPort" else authInternalUrl
   val edgeInternalTrustPath: Option[String] =
     if isLocal then Some(File(edgeInternalTlsDir, "server.crt").getAbsolutePath) else None
-  // #353: `central-admin` is authenticated by edge with `tls_client_auth` through that same
-  // terminator, which is the only credential the default tenant's FAPI 2.0 profile admits for
-  // it. isLocal alone, for the same reason: docker-local/vps/interactive have no terminator in
-  // front of auth, so central-admin stays on its client_secret there (bootstrap seeds it
-  // outside the profile, with a warning -- see BootstrapService). The CA has to exist before
-  // central's config is rendered, because the certificate it signs goes into that config; it
-  // is generated here, once, and not again when the files are written below -- a second CA
-  // would leave this certificate signed by an issuer nginx no longer advertises.
+  // #353: `central-admin` is authenticated by edge with `tls_client_auth`, which is the only
+  // credential the default tenant's FAPI 2.0 profile admits for it.
+  //
+  // isLocal: through that same terminator, with a certificate generated here. The CA has to
+  // exist before central's config is rendered, because the certificate it signs goes into that
+  // config; it is generated here, once, and not again when the files are written below -- a
+  // second CA would leave this certificate signed by an issuer nginx no longer advertises.
+  //
+  // docker-local/vps: no terminator, and no certificate in the config at all -- central issues
+  // it, through the step-ca it already issues edge-fronted clients' certificates from
+  // (`client-certificates`), and renews it. Edge presents it to auth's own mutual-TLS listener
+  // (edge.conf's `native`), which trusts that same CA. The header names are only what the
+  // default tenant records so that central will register an `mtlsAuth` at all (see
+  // `validateMtlsTermination`): the listener's handshake is what auth reads, and the proxy in
+  // front of auth clears that header (`proxy_params.conf.template`), so nothing outside can
+  // assert a certificate through it. k8s stays on its client_secret until the chart is wired
+  // for the same (bootstrap seeds it outside the profile, with a warning -- see
+  // BootstrapService).
   val centralAdminMtlsLines =
     if isLocal then
       genInternalTlsCertificate(edgeInternalTlsDir)
@@ -1223,6 +1233,11 @@ object SecretSchema:
       val tripleQuote = "\"" * 3
       "  central-admin-mtls {\n" +
         s"    certificate = $tripleQuote$pem$tripleQuote\n" +
+        "    certificate-header = \"ssl-client-cert\"\n" +
+        "    certificate-encoding = \"urlEncodedPem\"\n" +
+        "  }\n"
+    else if isDockerLocal || isVps then
+      "  central-admin-mtls {\n" +
         "    certificate-header = \"ssl-client-cert\"\n" +
         "    certificate-encoding = \"urlEncodedPem\"\n" +
         "  }\n"

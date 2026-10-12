@@ -6,6 +6,7 @@ import versola.central.configuration.clients.{
   AuthFlow,
   AuthMethod,
   ClientId,
+  ClientKind,
   ClientTemplate,
   ConsentFlow,
   MutualTlsAuth,
@@ -374,6 +375,10 @@ case class OAuthClientResponse(
     createdAt: Instant,
     /** OIDC Registration §2 `application_type`. */
     applicationType: ApplicationType,
+    /** What kind of client this is -- the one `/configuration/clients/{web,native,service}` took
+      * it at, which an update must be sent to. Fixed for the client's life; read off the template
+      * and the settings for a client registered before the kinds had endpoints. */
+    kind: ClientKind,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(

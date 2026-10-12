@@ -20,8 +20,12 @@ object ClientController extends Controller:
   def routes: Routes[Env, Throwable] = Routes(
     getAllClientsEndpoint,
     getAllClientsSyncEndpoint,
-    createClientEndpoint,
-    updateClientEndpoint,
+    createWebClientEndpoint,
+    createNativeClientEndpoint,
+    createServiceClientEndpoint,
+    updateWebClientEndpoint,
+    updateNativeClientEndpoint,
+    updateServiceClientEndpoint,
     renewEdgeCertificateEndpoint,
     signEdgeCertificateEndpoint,
     rotateSecretEndpoint,
@@ -73,6 +77,7 @@ object ClientController extends Controller:
               template = client.template,
               createdAt = client.createdAt,
               applicationType = client.applicationType,
+              kind = ClientKind.of(client),
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -154,68 +159,109 @@ object ClientController extends Controller:
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
     }
 
-  val createClientEndpoint =
-    Method.POST / "configuration" / "clients" -> handler { (request: Request) =>
+  // ── One registration and one update per kind of client ─────────────────────────────────────
+  //
+  // Each takes the request type of its kind (TypedClientRequests.scala), fixes what the kind
+  // fixes, holds the result to the kind's rules, and then registers or updates exactly as the
+  // general endpoint does -- the same checks, the same tenant security profile.
+
+  val createWebClientEndpoint =
+    Method.POST / "configuration" / "clients" / "web" ->
+      createTyped[CreateWebClientRequest](ClientKind.web)(_.toCreateClientRequest)
+
+  val createNativeClientEndpoint =
+    Method.POST / "configuration" / "clients" / "native" ->
+      createTyped[CreateNativeClientRequest](ClientKind.device)(_.toCreateClientRequest)
+
+  val createServiceClientEndpoint =
+    Method.POST / "configuration" / "clients" / "service" ->
+      createTyped[CreateServiceClientRequest](ClientKind.service)(_.toCreateClientRequest)
+
+  val updateWebClientEndpoint =
+    Method.PUT / "configuration" / "clients" / "web" ->
+      updateTyped[UpdateWebClientRequest](ClientKind.web)(_.clientId, _.toUpdateClientRequest)
+
+  val updateNativeClientEndpoint =
+    Method.PUT / "configuration" / "clients" / "native" ->
+      updateTyped[UpdateNativeClientRequest](ClientKind.device)(_.clientId, _.toUpdateClientRequest)
+
+  val updateServiceClientEndpoint =
+    Method.PUT / "configuration" / "clients" / "service" ->
+      updateTyped[UpdateServiceClientRequest](ClientKind.service)(_.clientId, _.toUpdateClientRequest)
+
+  private def createTyped[A: JsonDecoder](kind: ClientKind)(
+      toRequest: A => CreateClientRequest,
+  ): Handler[Env, Throwable, Request, Response] =
+    handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[ClientCertificateService]
-        body <- request.bodyAs[CreateClientRequest]
-        _ <- ZIO.when(body.frontChannelLogoutUri.isDefined && body.backChannelLogoutUri.isDefined):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.id))
-        registered <- service.register(body)
-        response = CreateClientResponse(
-          registered.secret.map(Base64Url.encode),
-          registered.createdAt,
-          registered.privateKey,
-        )
+        body <- request.bodyAs[A]
+        create = toRequest(body)
+        _ <- ZIO.when(create.frontChannelLogoutUri.isDefined && create.backChannelLogoutUri.isDefined):
+          ZIO.fail(InvalidClientLogoutConfiguration(create.id))
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindRegistration(kind, create))(ZIO.fail(_))
+        registered <- service.register(create)
+        response = CreateClientResponse(registered.secret.map(Base64Url.encode), registered.createdAt, registered.privateKey)
       yield Response.json(response.toJson).status(Status.Created))
-        .catchAll {
-          case error: ClientAlreadyExists =>
-            ZIO.succeed:
-              Response.status(Status.Conflict)
-          case error: InvalidClientLogoutConfiguration =>
-            ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
-          case error: InvalidConsentUri =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
-          case error: InvalidRegistrationConfiguration =>
-            ZIO.succeed:
-              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
-          case error: Throwable =>
-            ZIO.fail(error)
-        }
+        .catchAll(typedFailure)
     }
 
-  val updateClientEndpoint =
-    Method.PUT / "configuration" / "clients" -> handler { (request: Request) =>
+  private def updateTyped[A: JsonDecoder](kind: ClientKind)(
+      clientIdOf: A => ClientId,
+      toRequest: A => UpdateClientRequest,
+  ): Handler[Env, Throwable, Request, Response] =
+    handler { (request: Request) =>
       (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[OAuthClientService]
         certificates <- ZIO.service[ClientCertificateService]
-        body <- request.bodyAs[UpdateClientRequest]
-        _ <- ZIO.when(hasInvalidLogoutConfiguration(body)):
-          ZIO.fail(InvalidClientLogoutConfiguration(body.clientId))
-        enrolled <- certificates.isEnrolled(body.clientId)
-        _ <- service.updateClient(body, edgeCertificateEnrolled = enrolled)
-        // After the update has been accepted: an operator-supplied certificate is theirs from
-        // here on, and central stops renewing the one it issued.
-        _ <- certificates.forgetIfReplaced(body)
-      yield Response.status(Status.NoContent))
-        .catchAll {
-          case error: InvalidClientLogoutConfiguration =>
+        body <- request.bodyAs[A]
+        update = toRequest(body)
+        _ <- ZIO.when(hasInvalidLogoutConfiguration(update)):
+          ZIO.fail(InvalidClientLogoutConfiguration(update.clientId))
+        current <- service.findClient(clientIdOf(body))
+        response <- current match
+          case None => ZIO.succeed(Response.status(Status.NotFound))
+          // A client's kind is fixed when it is registered: a request to another kind's endpoint
+          // is a conflict with the client's own state, like rotating a secret it does not have.
+          case Some(client) if ClientKind.of(client) != kind =>
             ZIO.succeed:
-              Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
-                .status(Status.BadRequest)
-          case error: InvalidConsentUri =>
-            ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
-          case error: InvalidRegistrationConfiguration =>
-            ZIO.succeed:
-              Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest)
-          case error: Throwable =>
-            ZIO.fail(error)
-        }
+              Response.text(
+                s"Client '${client.id}' is a ${ClientKind.of(client)} client; update it at " +
+                  s"/configuration/clients/${path(ClientKind.of(client))}",
+              ).status(Status.Conflict)
+          case Some(client) =>
+            for
+              enrolled <- certificates.isEnrolled(client.id)
+              edgeFronted = client.edgeClientCertificate.nonEmpty || enrolled
+              _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateKindUpdate(kind, update, client, edgeFronted))(ZIO.fail(_))
+              fixed = InvalidRegistrationConfiguration.withKindFixed(kind, update, client, edgeFronted)
+              _ <- service.updateClient(fixed, edgeCertificateEnrolled = enrolled)
+              _ <- certificates.forgetIfReplaced(fixed)
+            yield Response.status(Status.NoContent)
+      yield response)
+        .catchAll(typedFailure)
     }
+
+  private def path(kind: ClientKind): String = kind match
+    case ClientKind.web => "web"
+    case ClientKind.device => "native"
+    case ClientKind.service => "service"
+
+  private def typedFailure(
+      error: Throwable | ClientAlreadyExists | InvalidClientLogoutConfiguration | InvalidConsentUri | InvalidRegistrationConfiguration,
+  ): IO[Throwable, Response] =
+    error match
+      case _: ClientAlreadyExists => ZIO.succeed(Response.status(Status.Conflict))
+      case _: InvalidClientLogoutConfiguration =>
+        ZIO.succeed:
+          Response.text("A client can only have one of frontChannelLogoutUri or backChannelLogoutUri configured")
+            .status(Status.BadRequest)
+      case error: InvalidConsentUri => ZIO.succeed(Response.text(error.getMessage).status(Status.BadRequest))
+      case error: InvalidRegistrationConfiguration =>
+        ZIO.succeed(Response.text(s"Invalid registration configuration: ${error.reason}").status(Status.BadRequest))
+      case error: Throwable => ZIO.fail(error)
 
   private def hasInvalidLogoutConfiguration(request: UpdateClientRequest): Boolean =
     isSettingValue(request.frontChannelLogoutUri) && isSettingValue(request.backChannelLogoutUri)

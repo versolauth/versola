@@ -458,6 +458,21 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
+#### Breaking change: clients are registered and updated per kind
+
+`POST` and `PUT /configuration/clients` are removed. A client is registered at
+`POST /configuration/clients/{web,native,service}` and updated at the `PUT` of the same path; see
+`central/open-api/central.yaml`. Nothing stored changes: no migration, no schema change, and
+every existing client keeps working. `GET` and `DELETE /configuration/clients` are unchanged, and
+`GET` now reports each client's `kind`.
+
+What to do: point anything that registers or updates clients through the admin API (scripts,
+`versola-cli` versions that call it, `loadgen`) at the endpoint of the client's kind. The kinds
+are stricter than the old endpoint: a `web` client cannot be public (`none`), so a public browser
+client is registered as `native`; a `service` client cannot have redirect URIs. `loadgen` and
+`migrate-tool`'s cert-sync are already updated. A client's kind cannot change: an update sent to
+another kind's endpoint is a `409`.
+
 #### Behaviour change: refresh tokens have a fixed lifetime
 
 Refresh tokens are **no longer extended on use**. A token's expiry is fixed when it is issued
@@ -467,7 +482,7 @@ renewed in place keeps the expiry already on its row. After that instant the gra
 user has to authorize again. This removes the per-refresh write of `refresh_tokens.expires_at`
 (about 14% of auth's WAL on the load test).
 
-- **Default for new clients is 180 days** (`refreshTokenTtl` omitted at `POST /configuration/clients`,
+- **Default for new clients is 180 days** (`refreshTokenTtl` omitted at `POST /configuration/clients/web` or `/native`,
   and the admin console's form), was 90. Existing clients keep the value stored in
   `oauth_clients.refresh_token_ttl`; there is no data migration, and no schema change.
 - **Tokens issued before the upgrade** keep the `expires_at` they were last written with and stop

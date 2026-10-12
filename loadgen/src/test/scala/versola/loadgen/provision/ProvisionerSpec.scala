@@ -76,7 +76,7 @@ object ProvisionerSpec extends ZIOSpecDefault:
         state <- fake.snapshot
         settings = state.challengeSettings.get
         settingsAt = state.calls.indexWhere(call => call.path == "/configuration/challenges/challenge-settings" && call.method == Method.PUT)
-        firstClient = state.calls.indexWhere(call => call.path == "/configuration/clients" && call.method == Method.POST)
+        firstClient = state.calls.indexWhere(call => FakeCentral.isClientWrite(call) && call.method == Method.POST)
       yield assertTrue(
         state.tenants("loadgen-fapi2").profile == "fapi2",
         FakeCentral.optionalStr(settings, "mtlsCertificateHeader").contains("ssl-client-cert"),
@@ -175,7 +175,7 @@ object ProvisionerSpec extends ZIOSpecDefault:
         granted = blueprint.clients.flatMap(_.registrationFlow).flatMap(_.asObject)
           .flatMap(flow => FakeCentral.strings(flow, "roleIds"))
         lastRole = state.calls.lastIndexWhere(_.path == "/configuration/roles")
-        firstClient = state.calls.indexWhere(_.path == "/configuration/clients")
+        firstClient = state.calls.indexWhere(call => call.path == "/configuration/clients" || FakeCentral.isClientWrite(call))
       yield assertTrue(
         granted.toSet == Set(CampaignBlueprint.retailUserRoleId),
         granted.toSet.subsetOf(state.roles.keySet),

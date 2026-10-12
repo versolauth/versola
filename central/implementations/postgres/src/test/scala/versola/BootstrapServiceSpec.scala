@@ -35,7 +35,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
     )
 
   private def mtlsSeed(certificate: String) =
-    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(certificate, "ssl-client-cert", "urlEncodedPem")
+    CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(Some(certificate), "ssl-client-cert", "urlEncodedPem")
 
   /** The stored `central-admin` a previous boot left behind, varying only the one column
     * [[BootstrapService.authMethodMismatch]] reads. */
@@ -110,6 +110,19 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
         credential.map(_.mtlsAuth) == Right(Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, certificate.subjectDn))),
         credential.map(_.edgeClientCertificate.map(_.pem)) == Right(Some(certificate.bundle)),
+        credential.map(_.requirePushedAuthorizationRequests) == Right(true),
+        credential.exists(_.conformant),
+      )
+    },
+    test("has central issue central-admin's tls_client_auth certificate when the seed carries none") {
+      val credential = BootstrapService.centralAdminCredential(
+        Some(CentralConfig.BootstrapConfig.CentralAdminMtlsSeed(None, "ssl-client-cert", "urlEncodedPem")),
+      )
+      assertTrue(
+        credential.map(_.authMethod) == Right(AuthMethod.tls_client_auth),
+        credential.map(_.mtlsAuth) == Right(None),
+        credential.map(_.edgeClientCertificate) == Right(None),
+        credential.map(_.issueEdgeClientCertificate) == Right(true),
         credential.map(_.requirePushedAuthorizationRequests) == Right(true),
         credential.exists(_.conformant),
       )

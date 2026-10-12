@@ -119,52 +119,94 @@ final class HttpAdminClient(
     * which is what makes a third and fourth `provision` run work the same as the second.
     */
   private def adoptClient(spec: ClientSpec, current: ClientState): Task[ClientCreds] =
-    updateClient(spec, current) *>
+    // A client's kind is fixed when it is registered, so one a previous configuration made as
+    // another kind cannot be updated into this one: central would answer a conflict on every
+    // `provision`, and this says which client and what to do about it.
+    ZIO.foreachDiscard(current.kind.filter(_ != storedKind(spec))): actual =>
+      ZIO.fail(AdminCallFailed(
+        "registerClient",
+        Status.Conflict,
+        s"client '${spec.clientId}' is registered as a $actual client and the blueprint wants a ${storedKind(spec)} one; " +
+          "a client's kind cannot change, so delete it and provision again",
+      ))
+    *> updateClient(spec, current) *>
       (if spec.publicClient || spec.fapi2 then ZIO.none else rotateClientSecret(spec.clientId).asSome)
         .map(ClientCreds(spec.clientId, _))
 
+  /** Central has one registration and one update per kind of client, each taking only what the
+    * kind has: the blueprint's public mobile client is a `native` one, every other is `web`. */
+  private def kindOf(spec: ClientSpec): String =
+    if spec.publicClient then nativeKind else webKind
+
+  /** The same kind as central reports it on a listing: its `ClientKind`, where the endpoint says
+    * `native` for the one it calls `device`. */
+  private def storedKind(spec: ClientSpec): String =
+    if spec.publicClient then "device" else webKind
+
   private def createClient(spec: ClientSpec): Task[Option[Option[String]]] =
-    val body = CreateClientBody(
-      tenantId = tenantId,
-      id = spec.clientId,
-      clientName = Map(englishTag -> spec.clientName),
-      redirectUris = spec.redirectUris,
-      allowedScopes = spec.allowedScopes,
-      permissions = Set.empty,
-      accessTokenTtl = spec.accessTokenTtlSeconds,
-      refreshTokenTtl = spec.refreshTokenTtlSeconds,
-      theme = defaultTheme,
-      authFlow = spec.authFlow,
-      registrationFlow = spec.registrationFlow,
-      otpTemplateId = defaultOtpTemplateId,
-      frontChannelLogoutUri = None,
-      frontChannelLogoutSessionRequired = false,
-      backChannelLogoutUri = spec.backChannelLogoutUri,
-      logoUri = None,
-      policyUri = None,
-      tosUri = None,
-      consentFlow = None,
-      // A campaign's clients never vary DPoP, mTLS, JAR/PAR or an edge signing key -- see
-      // AdminSpecs.ClientSpec -- but the DTO requires every one of these named regardless.
-      dpopBoundAccessTokens = fapi2Native(spec),
-      dpopSigningAlgs = Set.empty,
-      dpopMinRsaKeySize = None,
-      authMethod =
-        if spec.fapi2 then tlsClientAuthMethod
-        else if spec.publicClient then publicAuthMethod
-        else clientSecretAuthMethod,
-      mtlsAuth = None,
-      certificateBoundAccessTokens = false,
-      jwks = None,
-      requireSignedRequestObject = false,
-      requirePushedAuthorizationRequests = spec.fapi2,
-      edgeSigningKey = None,
-      template = None,
-      applicationType = applicationType(spec),
-      issueEdgeClientCertificate = spec.fapi2,
-      enrollEdgeClientCertificate = false,
-    )
-    send(Method.POST, central("configuration", "clients"), Some(body.toJson)).flatMap: response =>
+    val body =
+      if spec.publicClient then
+        CreateNativeClientBody(
+          tenantId = tenantId,
+          id = spec.clientId,
+          clientName = Map(englishTag -> spec.clientName),
+          redirectUris = spec.redirectUris,
+          allowedScopes = spec.allowedScopes,
+          permissions = Set.empty,
+          accessTokenTtl = spec.accessTokenTtlSeconds,
+          refreshTokenTtl = spec.refreshTokenTtlSeconds,
+          theme = defaultTheme,
+          authFlow = spec.authFlow,
+          registrationFlow = spec.registrationFlow,
+          otpTemplateId = defaultOtpTemplateId,
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = false,
+          backChannelLogoutUri = spec.backChannelLogoutUri,
+          logoUri = None,
+          policyUri = None,
+          tosUri = None,
+          consentFlow = None,
+          dpopSigningAlgs = Set.empty,
+          // Fronted by edge in a FAPI 2.0 tenant, public otherwise. What edge's authentication
+          // fixes -- the device's DPoP key, PAR -- is central's to set, so it is not sent.
+          authMethod = if spec.fapi2 then tlsClientAuthMethod else publicAuthMethod,
+          issueEdgeClientCertificate = spec.fapi2,
+          enrollEdgeClientCertificate = false,
+        ).toJson
+      else
+        CreateWebClientBody(
+          tenantId = tenantId,
+          id = spec.clientId,
+          clientName = Map(englishTag -> spec.clientName),
+          redirectUris = spec.redirectUris,
+          allowedScopes = spec.allowedScopes,
+          permissions = Set.empty,
+          accessTokenTtl = spec.accessTokenTtlSeconds,
+          refreshTokenTtl = spec.refreshTokenTtlSeconds,
+          theme = defaultTheme,
+          authFlow = spec.authFlow,
+          registrationFlow = spec.registrationFlow,
+          otpTemplateId = defaultOtpTemplateId,
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = false,
+          backChannelLogoutUri = spec.backChannelLogoutUri,
+          logoUri = None,
+          policyUri = None,
+          tosUri = None,
+          consentFlow = None,
+          // A campaign's clients never vary DPoP, JAR or an edge signing key -- see
+          // AdminSpecs.ClientSpec. Fronted by edge, a web client's tokens are bound to the
+          // certificate edge presents and its requests are pushed.
+          dpopBoundAccessTokens = false,
+          dpopSigningAlgs = Set.empty,
+          authMethod = if spec.fapi2 then tlsClientAuthMethod else clientSecretAuthMethod,
+          certificateBoundAccessTokens = spec.fapi2,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = spec.fapi2,
+          issueEdgeClientCertificate = spec.fapi2,
+          enrollEdgeClientCertificate = false,
+        ).toJson
+    send(Method.POST, central("configuration", "clients", kindOf(spec)), Some(body)).flatMap: response =>
       if response.status == Status.Conflict then ZIO.none
       else
         expectSuccess("registerClient", response)
@@ -176,51 +218,58 @@ final class HttpAdminClient(
     * OAuth redirect target or privilege behind every re-run.
     */
   private def updateClient(spec: ClientSpec, current: ClientState): Task[Unit] =
-    val body = UpdateClientBody(
-      clientId = spec.clientId,
-      clientName = Map(englishTag -> spec.clientName),
-      redirectUris = PatchSet(add = spec.redirectUris, remove = current.redirectUris -- spec.redirectUris),
-      scope = PatchSet(add = spec.allowedScopes, remove = current.scopes -- spec.allowedScopes),
-      // The campaign grants its permissions through roles, so a client that carries one directly
-      // carries it from a configuration nothing names any more.
-      permissions = PatchSet(add = Set.empty, remove = current.permissions),
-      accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
-      refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
-      theme = Some(defaultTheme),
-      otpTemplateId = Some(defaultOtpTemplateId),
-      authFlow = spec.authFlow,
-      // A patchable field is cleared by an explicit `null` and left alone by omission, so the
-      // blueprint's `None` has to be written rather than dropped -- a client that carried a
-      // registration flow or a logout URI the campaign no longer wants would otherwise keep it.
-      registrationFlow = spec.registrationFlow.getOrElse(Json.Null),
-      backChannelLogoutUri = spec.backChannelLogoutUri.fold(Json.Null)(Json.Str(_)),
-      // Written on the update too, so a client a previous configuration left bound to a
-      // certificate or narrowed to one proof algorithm converges on the blueprint instead of
-      // keeping a setting the campaign cannot satisfy.
-      certificateBoundAccessTokens = false,
-      dpopSigningAlgs = Set.empty,
-      dpopBoundAccessTokens = fapi2Native(spec),
-      requireSignedRequestObject = false,
-      requirePushedAuthorizationRequests = spec.fapi2,
-      // Written on the update too, on the same convergence terms as the resets above -- a
-      // client a previous configuration left `native` (or vice versa) converges on the
-      // blueprint's type rather than keeping whatever it registered with.
-      applicationType = applicationType(spec),
-    )
-    send(Method.PUT, central("configuration", "clients"), Some(body.toJson))
+    val redirectUris = PatchSet(add = spec.redirectUris, remove = current.redirectUris -- spec.redirectUris)
+    val scope = PatchSet(add = spec.allowedScopes, remove = current.scopes -- spec.allowedScopes)
+    // The campaign grants its permissions through roles, so a client that carries one directly
+    // carries it from a configuration nothing names any more.
+    val permissions = PatchSet(add = Set.empty, remove = current.permissions)
+    // A patchable field is cleared by an explicit `null` and left alone by omission, so the
+    // blueprint's `None` has to be written rather than dropped -- a client that carried a
+    // registration flow or a logout URI the campaign no longer wants would otherwise keep it.
+    val registrationFlow = spec.registrationFlow.getOrElse(Json.Null)
+    val backChannelLogoutUri = spec.backChannelLogoutUri.fold(Json.Null)(Json.Str(_))
+    val body =
+      if spec.publicClient then
+        UpdateNativeClientBody(
+          clientId = spec.clientId,
+          clientName = Map(englishTag -> spec.clientName),
+          redirectUris = redirectUris,
+          scope = scope,
+          permissions = permissions,
+          accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
+          refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
+          theme = Some(defaultTheme),
+          otpTemplateId = Some(defaultOtpTemplateId),
+          authFlow = spec.authFlow,
+          registrationFlow = registrationFlow,
+          backChannelLogoutUri = backChannelLogoutUri,
+          dpopSigningAlgs = Set.empty,
+        ).toJson
+      else
+        UpdateWebClientBody(
+          clientId = spec.clientId,
+          clientName = Map(englishTag -> spec.clientName),
+          redirectUris = redirectUris,
+          scope = scope,
+          permissions = permissions,
+          accessTokenTtl = Some(spec.accessTokenTtlSeconds.toLong),
+          refreshTokenTtl = spec.refreshTokenTtlSeconds.map(_.toLong),
+          theme = Some(defaultTheme),
+          otpTemplateId = Some(defaultOtpTemplateId),
+          authFlow = spec.authFlow,
+          registrationFlow = registrationFlow,
+          backChannelLogoutUri = backChannelLogoutUri,
+          // Written on the update too, so a client a previous configuration left bound to a
+          // certificate or narrowed to one proof algorithm converges on the blueprint instead of
+          // keeping a setting the campaign cannot satisfy.
+          certificateBoundAccessTokens = spec.fapi2,
+          dpopSigningAlgs = Set.empty,
+          dpopBoundAccessTokens = false,
+          requireSignedRequestObject = false,
+          requirePushedAuthorizationRequests = spec.fapi2,
+        ).toJson
+    send(Method.PUT, central("configuration", "clients", kindOf(spec)), Some(body))
       .flatMap(expectSuccess("updateClient", _))
-
-  /** OIDC Registration §2 `application_type`, as central's `ApplicationType` enum encodes it:
-    * `spec.publicClient` is the same PKCE-only-vs-confidential distinction [[ClientSpec]] names
-    * it for (see its scaladoc), just under central's own vocabulary. */
-  /** Only the edge-fronted native client is DPoP-bound at registration: the device key is its
-    * sender constraint, and central refuses to register it without (`validateEdgeFrontedNative`).
-    * The web client is constrained by the certificate it authenticates with.
-    */
-  private def fapi2Native(spec: ClientSpec): Boolean = spec.fapi2 && spec.publicClient
-
-  private def applicationType(spec: ClientSpec): String =
-    if spec.publicClient then nativeApplicationType else webApplicationType
 
   private def rotateClientSecret(clientId: String): Task[String] =
     val url = central("configuration", "clients", "rotate-secret").addQueryParam("clientId", clientId)
@@ -233,7 +282,7 @@ final class HttpAdminClient(
     send(Method.GET, url, None).flatMap: response =>
       expectSuccess("listClients", response)
         *> decode[ClientListBody]("listClients", response).map(_.clients.map { entry =>
-          entry.id -> ClientState(entry.redirectUris, entry.scope, entry.permissions)
+          entry.id -> ClientState(entry.redirectUris, entry.scope, entry.permissions, entry.kind)
         }.toMap)
 
   override def registerResource(spec: ResourceSpec): Task[Unit] =
@@ -684,8 +733,8 @@ object HttpAdminClient:
   private val publicAuthMethod = "none"
   private val clientSecretAuthMethod = "client_secret"
   private val tlsClientAuthMethod = "tls_client_auth"
-  private val nativeApplicationType = "native"
-  private val webApplicationType = "web"
+  private val nativeKind = "native"
+  private val webKind = "web"
 
   /** The internal resource id `BootstrapService` seeds central's admin API under; the RFC 8707
     * identifier of an internal resource is `resource://<id>`, which is what edge's proxy checks
@@ -717,7 +766,10 @@ object HttpAdminClient:
 
   private case class PatchText(add: Map[String, String], delete: Set[String]) derives JsonEncoder
 
-  private case class CreateClientBody(
+  // One body per kind, each only the members central's request for that kind declares: central
+  // refuses an unknown member rather than ignoring it, so a setting the kind fixes is not sent.
+
+  private case class CreateWebClientBody(
       tenantId: String,
       id: String,
       clientName: Map[String, String],
@@ -737,26 +789,45 @@ object HttpAdminClient:
       policyUri: Option[String],
       tosUri: Option[String],
       consentFlow: Option[Json],
-      // None of these carry a Scala default on central's `CreateClientRequest`: a create
-      // request is a full snapshot, and a campaign that never varies a setting still has to
-      // say so, rather than lean on a default the DTO does not offer.
       dpopBoundAccessTokens: Boolean,
       dpopSigningAlgs: Set[String],
-      dpopMinRsaKeySize: Option[Int],
       authMethod: String,
-      mtlsAuth: Option[Json],
       certificateBoundAccessTokens: Boolean,
-      jwks: Option[Json],
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
-      edgeSigningKey: Option[Json],
-      template: Option[Json],
-      applicationType: String,
+      // Declared by every caller, never defaulted by central, so a client never gets a
+      // certificate mode it did not name.
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
   ) derives JsonEncoder
 
-  private case class UpdateClientBody(
+  private case class CreateNativeClientBody(
+      tenantId: String,
+      id: String,
+      clientName: Map[String, String],
+      redirectUris: Set[String],
+      allowedScopes: Set[String],
+      permissions: Set[String],
+      accessTokenTtl: Int,
+      refreshTokenTtl: Option[Int],
+      theme: String,
+      authFlow: Json,
+      registrationFlow: Option[Json],
+      otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
+      backChannelLogoutUri: Option[String],
+      logoUri: Option[String],
+      policyUri: Option[String],
+      tosUri: Option[String],
+      consentFlow: Option[Json],
+      dpopSigningAlgs: Set[String],
+      authMethod: String,
+      issueEdgeClientCertificate: Boolean,
+      enrollEdgeClientCertificate: Boolean,
+  ) derives JsonEncoder
+
+  private case class UpdateWebClientBody(
       clientId: String,
       clientName: Map[String, String],
       redirectUris: PatchSet,
@@ -774,7 +845,22 @@ object HttpAdminClient:
       dpopBoundAccessTokens: Boolean,
       requireSignedRequestObject: Boolean,
       requirePushedAuthorizationRequests: Boolean,
-      applicationType: String,
+  ) derives JsonEncoder
+
+  private case class UpdateNativeClientBody(
+      clientId: String,
+      clientName: Map[String, String],
+      redirectUris: PatchSet,
+      scope: PatchSet,
+      permissions: PatchSet,
+      accessTokenTtl: Option[Long],
+      refreshTokenTtl: Option[Long],
+      theme: Option[String],
+      otpTemplateId: Option[String],
+      authFlow: Json,
+      registrationFlow: Json,
+      backChannelLogoutUri: Json,
+      dpopSigningAlgs: Set[String],
   ) derives JsonEncoder
 
   private case class CreateClientResponseBody(secret: Option[String]) derives JsonDecoder
@@ -786,15 +872,16 @@ object HttpAdminClient:
       redirectUris: Set[String],
       scope: Set[String],
       permissions: Set[String],
+      kind: Option[String],
   ) derives JsonDecoder
 
   /** A client's patched, multi-value state as central's listing reports it -- what a
     * desired-state update has to diff the blueprint against to know what to remove.
     */
-  private case class ClientState(redirectUris: Set[String], scopes: Set[String], permissions: Set[String])
+  private case class ClientState(redirectUris: Set[String], scopes: Set[String], permissions: Set[String], kind: Option[String])
 
   private object ClientState:
-    val empty: ClientState = ClientState(Set.empty, Set.empty, Set.empty)
+    val empty: ClientState = ClientState(Set.empty, Set.empty, Set.empty, None)
 
   private case class ClientListBody(clients: List[ClientListEntry]) derives JsonDecoder
 
