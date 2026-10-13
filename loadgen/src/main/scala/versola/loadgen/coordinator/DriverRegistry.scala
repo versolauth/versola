@@ -109,7 +109,19 @@ final case class DriverObservation(
     latest: DriverReport,
     previous: Option[DriverReport],
     carried: CarriedTotals = CarriedTotals.empty,
-)
+    peakCpu: Option[Double] = None,
+    peakScheduleLagMicros: Option[Long] = None,
+):
+  /** The worst readings this driver has reported so far, `report` included. A campaign is judged on its worst
+    * moment, not on the last report: a driver that saturated for a minute (and drove the failures with it) is idle again
+    * by the time the campaign ends, and its final reading would say it was fine. Peaks survive a restart of the
+    * driver: they are facts about the campaign, unlike the "now" readings in [[DriverVitals]].
+    */
+  def peaks(report: DriverReport): DriverObservation =
+    copy(
+      peakCpu = (peakCpu ++ report.vitals.cpuRatio).maxOption,
+      peakScheduleLagMicros = (peakScheduleLagMicros ++ report.vitals.scheduleLagP99Micros).maxOption,
+    )
 
 /** The fleet as one figure per question `GET /status` and the report ask.
   *
@@ -169,10 +181,10 @@ final class DriverRegistry private (
           // in. `previous` is cleared with them, so the achieved rate re-baselines on the next
           // report rather than differencing two different processes' counters.
           case Some(existing) if restarted(existing.latest, report) =>
-            current.updated(report.driverId, DriverObservation(report, None, existing.carried.plus(existing.latest)))
+            current.updated(report.driverId, existing.copy(latest = report, previous = None, carried = existing.carried.plus(existing.latest)).peaks(report))
           case Some(existing) =>
-            current.updated(report.driverId, DriverObservation(report, Some(existing.latest), existing.carried))
-          case None => current.updated(report.driverId, DriverObservation(report, None))
+            current.updated(report.driverId, existing.copy(latest = report, previous = Some(existing.latest)).peaks(report))
+          case None => current.updated(report.driverId, DriverObservation(report, None).peaks(report))
 
   def view(now: Instant, epoch: Long): UIO[FleetView] =
     observations.get.map: current =>
@@ -231,10 +243,12 @@ final class DriverRegistry private (
               if delta < 0L then accumulated
               else accumulated.updatedWith(scenario)(existing => Some(existing.getOrElse(0.0) + delta / seconds))
 
-  /** Counters add, readings take the worst of the fleet.
+  /** Counters add, readings take the worst of the fleet *and of the campaign so far*.
     *
     * `CampaignHealth`'s own doc fixes that asymmetry: one saturated driver distorts the latencies
-    * of its own shard, and a mean CPU or a mean schedule lag averages exactly that away.
+    * of its own shard, and a mean CPU or a mean schedule lag averages exactly that away. The same
+    * goes for time: the last report is a reading about the end of the campaign, so CPU and lag are
+    * the peaks each driver has reported (see [[DriverObservation.peaks]]).
     */
   private def health(reports: List[DriverObservation]): CampaignHealth =
     val vitals = reports.map(_.latest.vitals)
@@ -242,8 +256,8 @@ final class DriverRegistry private (
     CampaignHealth(
       refreshRejectedTotal = vitals.map(_.refreshRejectedTotal).sum + carried.map(_.refreshRejectedTotal).sum,
       flushDroppedTotal = vitals.map(_.storeFlushDroppedTotal).sum + carried.map(_.storeFlushDroppedTotal).sum,
-      maxDriverCpu = vitals.flatMap(_.cpuRatio).maxOption,
-      scheduleLagP99Micros = vitals.flatMap(_.scheduleLagP99Micros).maxOption,
+      maxDriverCpu = reports.flatMap(_.peakCpu).maxOption,
+      scheduleLagP99Micros = reports.flatMap(_.peakScheduleLagMicros).maxOption,
       latencyClampedTotal = vitals.map(_.latencyClampedTotal).sum + carried.map(_.latencyClampedTotal).sum,
     )
 
