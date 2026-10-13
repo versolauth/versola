@@ -2,8 +2,7 @@
 # (see ci-cd.yml's "Stage edge for release image" step, `sbt
 # edge-postgres-impl/stage`) and downloaded as an artifact by the
 # docker-edge job before this Dockerfile ever runs -- this just copies
-# the already-built application onto a bare JRE, the same shape as
-# Dockerfile.gateway. Migrations come straight from the checkout (they're
+# the already-built application onto a bare JRE. Migrations come straight from the checkout (they're
 # source files, not build output), no staging needed for those.
 #
 # Pinned by digest, not just `:25-jre` -- a floating tag would let an

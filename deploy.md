@@ -594,7 +594,7 @@ Environment variables read by the containers:
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (see [`RUN_MIGRATIONS`](#run_migrations)) |
-| `JAVA_OPTS` | `-XX:+UseG1GC -XX:MaxRAMPercentage=75.0` | JVM flags |
+| `JAVA_OPTS` | see below | JVM flags. The images set a fixed budget: `-Xms512m -Xmx512m`, `-XX:MaxDirectMemorySize=64m` (`96m` for edge, which proxies), `-XX:MaxMetaspaceSize=128m`, `-XX:ReservedCodeCacheSize=64m`, `-Xss512k`; a heap dump and a rotating GC log are written to `/diagnostics`. Overriding `JAVA_OPTS` replaces the whole string, so repeat any of these you still want |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
 and OpenBao ([5](#5-secrets-and-configuration)), not in environment variables.
@@ -704,9 +704,10 @@ edited a migration production had already applied. There is no clean fix: recrea
 schemas; see the check in [4](#4-deploying-a-new-version).
 
 **October 2026: the `ALTER TABLE` migrations were folded into the migrations that create their
-tables** (auth `V0001`–`V0013`, central `V1001`–`V1020`, edge unchanged). The resulting schema is
-byte-for-byte the one the old chain produced — same tables, column order, constraints, indexes and
-triggers — but the files, versions and checksums are new, so **an existing database fails
+tables** (auth `V0001`–`V0014`, central `V1001`–`V1020`, edge unchanged). The folded chain
+(auth up to `V0013`) produces byte-for-byte the schema the old chain did — same tables, column
+order, constraints, indexes and triggers; auth `V0014` is a separate, later change on top (three
+login-state tables become `UNLOGGED`, see [above](#4-deploying-a-new-version)), not part of the fold. But the files, versions and checksums are new, so **an existing database fails
 validation** and has to be re-adopted. Its data is untouched by that: the column layout is
 identical, so a data-only dump loads into a freshly migrated schema. Per schema, with the services
 stopped:

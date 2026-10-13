@@ -28,7 +28,7 @@ The script first asks for the environment **Name** (default `local`):
       `http://auth:8080`, `jdbc:postgresql://postgres:5432/...` — containers on a bridge
       network can't reach each other via `localhost`.
     - **Anything a browser has to load** (auth/edge's own public URLs, the post-login
-      redirect) points at nginx's published port instead, `http://localhost:8080` — a
+      redirect) points at the proxy's published port instead, `http://localhost:2821` — a
       browser outside the Compose network has no way to resolve `auth` or `edge` as
       hostnames, and edge's own port isn't published to the host at all.
 

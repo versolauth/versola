@@ -125,7 +125,7 @@ COPY docker/versola-tools/openbao.hcl.template .
 COPY docker/versola-tools/openbao.hcl.vps.template .
 COPY docker/versola-tools/entrypoint.sh .
 # Built admin console (central-ui's `npm run build` output -- a CI step in
-# the docker-tools job, not done here, same as for the gateway image).
+# the docker-tools job, not done here).
 # entrypoint.sh copies it into every deployment bundle; see the comment
 # there. .dockerignore already re-includes central-ui/dist for this.
 COPY central-ui/dist central-ui
