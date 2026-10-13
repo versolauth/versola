@@ -95,11 +95,10 @@ object PostgresTlsConnectionSpec extends ZIOSpecDefault:
           .provideSome[Scope](ZLayer.succeed(config(tlsHost, sslRootCert = None))).exit
       yield assertTrue(connects.isSuccess) && refusedByTls(refused, "PKIX path building failed")
     },
-    test("a plaintext server is refused by default") {
-      // CI's and the dev compose's Postgres speak no TLS. Pointed at it, the pool must refuse to fall back to plaintext.
-      for
-        address <- System.env("POSTGRES_HOST").someOrElse("localhost:5432")
-        result <- ZIO.scoped(pool(config(address, sslRootCert = Some(ca)))).exit
-      yield refusedByTls(result, "The server does not support SSL")
-    },
+    // Not tested here: that a server without TLS is refused by default (no fallback to plaintext).
+    // It needs a Postgres that speaks no TLS, and the test Postgres is one TLS server shared with
+    // every other spec. Verified by hand against such a server (`docker run -d -p 5440:5432
+    // -e POSTGRES_PASSWORD=1234 -e POSTGRES_USER=dev -e POSTGRES_DB=auth postgres:18`): a pool
+    // built with `sslRootCert = Some(ca)` against localhost:5440 must fail with "The server does
+    // not support SSL". Redo it if PostgresTls or the pool's sslmode handling changes.
   ) @@ TestAspect.withLiveClock @@ TestAspect.sequential
