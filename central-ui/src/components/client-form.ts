@@ -355,20 +355,20 @@ export class VersolaClientForm extends LitElement {
         border-radius: 999px;
         background: rgba(var(--accent-tint), 0.12);
         color: var(--accent);
-        font-size: 0.75rem;
+        font-size: 0.625rem;
         font-weight: 700;
         line-height: 1;
-        padding: 0.25rem 0.45rem;
-        min-width: 1.5rem;
-        min-height: 1.5rem;
+        padding: 0.15rem 0.35rem;
+        min-width: 1.125rem;
+        min-height: 1.125rem;
         cursor: pointer;
         font-family: var(--font-family);
       }
 
-      /* A label row that carries an info button is as tall as the button (24px), with room under
+      /* A label row that carries an info button is as tall as the button (18px), with room under
          it, so the button never reaches into the field below. */
       div:has(> .option-info) {
-        min-height: 1.5rem;
+        min-height: 1.125rem;
         margin-bottom: 0.375rem;
       }
 
@@ -3450,7 +3450,10 @@ export class VersolaClientForm extends LitElement {
             Ask for consent
           </button>
         </div>
-        ${this.hasConsentFlow ? this.renderWizardConsentSettings() : ''}
+        ${this.hasConsentFlow ? html`
+          <div class="hint" style="margin:-.4rem 0 .9rem">This makes the client a partner: its SMS codes name the app, and consent cannot be turned off once the client is created.</div>
+          ${this.renderWizardConsentSettings()}
+        ` : ''}
         `,
       )}
     `;
@@ -4630,16 +4633,22 @@ export class VersolaClientForm extends LitElement {
                     html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
                     'Consent settings info',
                   )}
-                  <label class="toggle">
-                    <input
-                      type="checkbox"
-                      .checked=${this.hasConsentFlow}
-                      ?disabled=${this.consentLocked}
-                      title=${this.consentLocked ? 'A partner client cannot stop asking for consent' : ''}
-                      @change=${() => this.toggleConsentEnabled()}
-                    />
-                  </label>
+                  ${this.consentLocked ? html`
+                    ${this.statusIcon('lock', 'locked-icon')}
+                    <span class="locked-state on">Always on</span>
+                  ` : html`
+                    <label class="toggle">
+                      <input
+                        type="checkbox"
+                        .checked=${this.hasConsentFlow}
+                        @change=${() => this.toggleConsentEnabled()}
+                      />
+                    </label>
+                  `}
                 </div>
+                ${this.consentLocked ? html`
+                  <div class="hint" style="margin-top:.35rem">A partner client asks users for consent for good: this cannot be turned off.</div>
+                ` : ''}
 
                 ${this.hasConsentFlow ? html`
                   <div class="registration-settings">
