@@ -603,24 +603,26 @@ object ObservabilitySpec extends ZIOSpecDefault:
       // Where a pool is too small this gauge is what climbs: a request waiting for a connection is in
       // flight from its caller's side. It must also go back down, whatever way the request ends.
       test("counts outbound requests in flight per peer and returns to where it was afterwards") {
-        val peer = Set(MetricLabel("peer", "unknown"))
+        // The gauge is process-wide and the util tests share one JVM, so any other spec's relative-URL
+        // request moves peer=unknown. An absolute URL to a host no other spec uses gives this test a
+        // gauge series of its own, which makes the absolute counts below exact.
+        val peer = Set(MetricLabel("peer", "in-flight-gauge.test:4711"))
         def inFlight = Metric.gauge("http_client_active_requests").tagged(peer).value.map(_.value)
         for
-          // The gauge is process-wide and other specs' requests move it, so what is asserted is the
-          // change this test makes, not an absolute count.
           before <- inFlight
           release <- Promise.make[Nothing, Unit]
           _ <- TestClient.addRoutes(Routes(Method.GET / "held" -> handler(release.await.as(Response.ok))))
           rawClient <- ZIO.service[Client]
           tracing <- ZIO.service[Tracing]
           client = rawClient @@ Observability.clientMiddleware(tracing)
-          fibers <- ZIO.foreach(1 to 3)(_ => client.batched(Request.get(URL.empty / "held")).fork)
-          _ <- inFlight.repeatUntil(_ == before + 3.0).timeoutFail(new RuntimeException("never 3 more in flight"))(5.seconds)
+          url <- ZIO.fromEither(URL.decode("http://in-flight-gauge.test:4711/held")).orDie
+          fibers <- ZIO.foreach(1 to 3)(_ => client.batched(Request.get(url)).fork)
+          _ <- inFlight.repeatUntil(_ == 3.0).timeoutFail(new RuntimeException("never 3 in flight"))(5.seconds)
           during <- inFlight
           _ <- release.succeed(())
           _ <- ZIO.foreachDiscard(fibers)(_.join)
           after <- inFlight
-        yield assertTrue(during == before + 3.0, after == before)
+        yield assertTrue(before == 0.0, during == 3.0, after == 0.0)
       }.provideSomeLayer[Scope](testLayer) @@ TestAspect.silentLogging @@ TestAspect.withLiveClock,
       test("logs WARN for 5xx responses") {
         for
