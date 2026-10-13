@@ -1,8 +1,8 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
-import versola.central.configuration.{CreateClientRequest, UpdateClientRequest}
-import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
+import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
 import zio.{Duration, duration2DurationOps}
@@ -39,6 +39,22 @@ object InvalidRegistrationConfiguration:
         s"authMethod is $stored and cannot be changed to $method after the client is registered; " +
           "delete the client and register it again to use another method",
       )
+
+  /** A client that asks users for consent is a partner (its OTP messages name the app, and it
+    * is shown as one), so the consent flow can be changed but not taken away. Giving a client
+    * without one a consent flow is still allowed. */
+  def validateConsentFlowKept(
+      clientId: ClientId,
+      requested: Option[Patch[ConsentFlowDto]],
+      stored: Option[ConsentFlow],
+  ): Option[InvalidRegistrationConfiguration] =
+    requested.collect:
+      case Patch.Deleted if stored.isDefined =>
+        InvalidRegistrationConfiguration(
+          clientId,
+          "consentFlow cannot be removed from a client that asks for consent (a partner client); " +
+            "delete the client and register it again to make it a first-party one",
+        )
 
   def validateAccessTokenTtl(
       clientId: ClientId,

@@ -623,6 +623,14 @@ object BootstrapService:
       "You are entering Versola. Your verification code is: {{code}}",
       "Вы входите в Versola. Ваш код подтверждения: {{code}}",
     )
+
+  /** SMS template for partner clients (those with a consent flow); names the app being signed in to. */
+  private val partnerOtpTemplateId = "partner"
+  private val partnerOtpTemplate: Map[String, String] =
+    localized(
+      "Your verification code for {{appName}}: {{code}}",
+      "Ваш код для входа в {{appName}}: {{code}}",
+    )
   private val defaultEmailOtpTemplateId = defaultOtpTemplateId
   private val defaultEmailOtpTemplate: Map[String, String] =
     localized(
@@ -1036,6 +1044,7 @@ object BootstrapService:
       ZIO.foreachDiscard(
         List(
           (defaultOtpTemplateId, defaultOtpTemplate, OtpTemplateChannel.sms),
+          (partnerOtpTemplateId, partnerOtpTemplate, OtpTemplateChannel.sms),
           (defaultEmailOtpTemplateId, defaultEmailOtpTemplate, OtpTemplateChannel.email),
         ),
       ): (id, localizations, channel) =>

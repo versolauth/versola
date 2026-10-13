@@ -393,6 +393,8 @@ object OAuthClientService:
         // it is refused as that, rather than as whichever credential check it would also fail.
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateConsentFlowKept(request.clientId, request.consentFlow, client.consentFlow))(ZIO.fail(_))
         // Only what the patch adds: a URI registered before this rule existed stays removable.
         _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)

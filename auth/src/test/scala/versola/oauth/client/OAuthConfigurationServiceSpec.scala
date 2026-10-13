@@ -107,6 +107,16 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     securityProfile = SecurityProfile.fapi2,
   )
   val systemSettings = SystemSettingsRecord.default
+  val smsTemplates = Vector(
+    OtpTemplateRecord("default", tenantId, Map("en" -> "Default {{code}}"), OtpTemplatePurpose.otp, OtpTemplateChannel.sms),
+    OtpTemplateRecord(
+      "partner",
+      tenantId,
+      Map("en" -> "Code for {{appName}}: {{code}}", "ru" -> "Код для {{appName}}: {{code}}"),
+      OtpTemplatePurpose.otp,
+      OtpTemplateChannel.sms,
+    ),
+  )
 
   def makeEnv(
       clients: Map[ClientId, OAuthClientRecord] = Map(clientId1 -> privateClient, publicClientId -> publicClient),
@@ -223,6 +233,30 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         env <- makeEnv()
         result <- env.getLocales
       yield assertTrue(result == testLocales)
+    },
+    test("getClientTemplate fills {{appName}} with the client's localized name") {
+      val client = privateClient.copy(
+        otpTemplateId = "partner",
+        clientName = Map("en" -> "Acme", "ru" -> "Акме"),
+      )
+      for
+        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates)
+        ru <- env.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
+        en <- env.getClientTemplate(clientId1, OtpType.sms, None)
+      yield assertTrue(ru == OtpTemplate("Код для Акме: {{code}}"), en == OtpTemplate("Code for Acme: {{code}}"))
+    },
+    test("getClientTemplate falls back to the client id when the client has no name in any locale") {
+      val client = privateClient.copy(otpTemplateId = "partner", clientName = Map.empty)
+      for
+        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates)
+        result <- env.getClientTemplate(clientId1, OtpType.sms, None)
+      yield assertTrue(result == OtpTemplate("Code for client-1: {{code}}"))
+    },
+    test("getClientTemplate leaves a template without {{appName}} as it is") {
+      for
+        env <- makeEnv(otpTemplates = smsTemplates)
+        result <- env.getClientTemplate(clientId1, OtpType.sms, None)
+      yield assertTrue(result == OtpTemplate("Default {{code}}"))
     },
     test("getAllowedPhonePrefixes returns prefixes for known client") {
       for

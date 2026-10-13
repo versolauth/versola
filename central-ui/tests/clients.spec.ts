@@ -2014,3 +2014,59 @@ test('calls a certificate client over loopback http FAPI 2.0, with nothing to co
   await expect(page.getByText('Stored as off')).toHaveCount(0);
   await expect(page.getByLabel('Require DPoP-bound access tokens')).toHaveCount(0);
 });
+
+const partnerClient = {
+  ...alphaClient,
+  id: 'acme-app',
+  clientName: { en: 'Acme Wallet' },
+  otpTemplateId: 'partner',
+  consentFlow: { allowPartial: false, rememberDuration: 15552000 },
+};
+
+const smsTemplate = (id: string) => ({
+  id,
+  tenantId: 'tenant-alpha',
+  localizations: { en: id === 'partner' ? 'Your code for {{appName}}: {{code}}' : 'Your code {{code}}' },
+  purpose: 'otp',
+  channel: 'sms' as const,
+});
+
+test('marks a client that asks for consent as a partner and keeps its consent switched on', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: { 'tenant-alpha': [partnerClient, serviceClient] },
+      otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] },
+    },
+  });
+
+  await expect(clientCard(page, 'Acme Wallet').locator('.chip', { hasText: 'Partner' })).toBeVisible();
+  await expect(clientCard(page, 'Service Client').locator('.chip', { hasText: 'Partner' })).toHaveCount(0);
+
+  await openClientPage(page, 'acme-app');
+  await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
+
+  await openEditSection(page, 'Registration and consent');
+  // Not a switch at all: there is nothing to flip, only a lock and what it holds.
+  await expect(page.locator('versola-client-form .locked-state', { hasText: 'Always on' })).toBeVisible();
+  await expect(page.getByText('A partner client asks users for consent for good')).toBeVisible();
+});
+
+test('registering a client that asks for consent picks the partner OTP template', async ({ page }) => {
+  const { requests } = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { otpTemplates: { 'tenant-alpha': [smsTemplate('default'), smsTemplate('partner')] } },
+  });
+
+  await startCreate(page);
+  await fillBasics(page, 'new-partner', 'New Partner');
+  await addRedirectUri(page, 'https://partner.example/callback');
+  await continueToThirdStep(page);
+  await page.getByRole('button', { name: 'Ask for consent' }).click();
+  await continueToReview(page);
+  await submitCreate(page);
+
+  const body = (await findClientWrite(requests, 'POST')).body as { otpTemplateId: string; consentFlow: unknown };
+  expect(body.otpTemplateId).toBe('partner');
+  expect(body.consentFlow).not.toBeNull();
+});

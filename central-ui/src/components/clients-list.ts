@@ -34,7 +34,7 @@ import {
   profilePosture,
 } from '../utils/client-presets';
 import type { ClientEditSection } from './client-form';
-import { copyToClipboard, formatDuration, getLocalizedDescription } from '../utils/helpers';
+import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
 import './content-header';
 import './error-card';
@@ -1533,6 +1533,12 @@ export class VersolaClientsList extends LitElement {
       stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d=${paths[kind]}></path></svg>`;
   }
 
+  private partnerChip(client: OAuthClient) {
+    return isPartnerClient(client)
+      ? html`<span class="chip" title="Asks users for consent: a partner's app signing in your users">Partner</span>`
+      : '';
+  }
+
   private securityChip(client: OAuthClient) {
     const { conformant } = fapiConformance(client);
     return conformant
@@ -1601,7 +1607,7 @@ export class VersolaClientsList extends LitElement {
                 </td>
                 <td class="cell-type"><span class="type-label">${this.kindIcon(clientKindOf(client))}${this.kindName(client)}</span></td>
                 <td class="cell-cred">${credentialLabel(client)}</td>
-                <td class="cell-sec"><div class="chips">${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div></td>
+                <td class="cell-sec"><div class="chips">${this.partnerChip(client)}${this.securityChip(client)}${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}</div></td>
                 <td class="cell-actions" @click=${(e: Event) => e.stopPropagation()}>
                   <button type="button" class="icon-action menu-button" aria-label=${`Actions for ${client.id}`}
                     aria-haspopup="menu" aria-expanded=${this.openMenuId === client.id}
@@ -1718,6 +1724,7 @@ export class VersolaClientsList extends LitElement {
           <span class="client-id">${client.id}</span>
           <button type="button" class="icon-action" aria-label="Copy client ID" title="Copy client ID" @click=${() => this.copyClientId(client)}>${this.icon('copy')}</button>
           <span class="chip">${descriptor ? this.kindIcon(kind) : ''}${descriptor?.name ?? 'Client'}</span>
+          ${this.partnerChip(client)}
           ${this.securityChip(client)}
           ${client.hasPreviousSecret ? html`<span class="chip warn">Secret rotation</span>` : ''}
           ${client.createdAt ? html`<span class="muted created">${this.createdAgo(client.createdAt)}</span>` : ''}
@@ -1801,7 +1808,7 @@ export class VersolaClientsList extends LitElement {
 
       ${signsUsersIn ? this.viewSection('Registration and consent', '', 'registration', client, html`
         ${this.viewRow('Self-registration', client.registrationFlow ? 'On' : 'Off')}
-        ${this.viewRow('Consent screen', client.consentFlow ? 'On' : 'Off')}
+        ${this.viewRow('Consent screen', client.consentFlow ? 'On (partner, cannot be turned off)' : 'Off')}
       `) : ''}
 
       ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`

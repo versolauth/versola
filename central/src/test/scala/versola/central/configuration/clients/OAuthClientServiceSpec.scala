@@ -812,6 +812,20 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         updateCalls == 0,
       )
     },
+    test("updateClient refuses to remove the consent flow of a partner client") {
+      val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
+      val env = new Env(Vector(partner))
+
+      for
+        result <- env.service.updateClient(updateRequest.copy(consentFlow = Some(Patch.Deleted))).either
+        updateCalls = env.repository.updateClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("consentFlow cannot be removed")
+          case _ => false,
+        updateCalls == 0,
+      )
+    },
     test("updateClient passes the request form through to the repository") {
       val env = new Env(Vector(cachedClient.copy(
         authMethod = AuthMethod.private_key_jwt,
