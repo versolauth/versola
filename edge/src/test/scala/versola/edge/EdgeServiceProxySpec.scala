@@ -285,6 +285,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(storedBytes)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
@@ -1789,6 +1792,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
@@ -1836,6 +1842,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
@@ -1887,6 +1896,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
@@ -1935,6 +1947,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         // No env.withPresets(preset): clientService.findPreset(record.presetId) misses.
@@ -1967,6 +1982,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = None,
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
@@ -2003,6 +2021,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
@@ -2059,6 +2080,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         _ <- env.sessionRepository.claimRefresh.succeedsWith(Some(record))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(failure)
@@ -2091,6 +2115,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         ))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         gate <- Promise.make[Nothing, Unit]
@@ -2136,6 +2163,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         ))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(
@@ -2179,6 +2209,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         ))
         newAccessToken <- env.signToken(jti = "new-jti", ttlSeconds = 600L)
         _ <- env.ssoClient.exchangeRefreshToken.succeedsWith(
@@ -2217,6 +2250,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         ))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(SSOClient.InvalidGrant)
         service = env.buildService(client, security, sessions = sessions)
@@ -2251,6 +2287,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("old-jti"),
           encryptedRefreshToken = Some(Secret(encryptedRefresh)),
           expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         ))
         _ <- env.ssoClient.exchangeRefreshToken.failsWith(failure)
         service = env.buildService(client, security, sessions = sessions)
@@ -2281,6 +2320,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
             accessTokenId = AccessTokenId("old-jti"),
             encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
             expiresAt = now.plusSeconds(7200),
+            previousAccessTokenId = None,
+            encryptedAccessToken = None,
+            rotatedAt = None,
           ),
           lease = Some(now.plusSeconds(3600)),
         )

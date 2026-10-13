@@ -48,6 +48,8 @@ trait EdgeSessionRepositorySpec extends DatabaseSpecBase[EdgeSessionRepositorySp
     encryptedRefreshToken = refreshToken,
     expiresAt = expiresAt,
     encryptedAccessToken = accessToken,
+    previousAccessTokenId = None,
+    rotatedAt = None,
   )
 
   private val leaseLength = 10.seconds

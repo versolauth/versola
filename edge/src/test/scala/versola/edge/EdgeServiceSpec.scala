@@ -569,6 +569,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId("jti-logout-1"),
         encryptedRefreshToken = Some(Secret(Array.fill(16)(1.toByte))),
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -592,6 +595,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId("jti-logout-2"),
         encryptedRefreshToken = None,
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -614,6 +620,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId(accessTokenId),
         encryptedRefreshToken = Some(Secret(Array.fill(16)(2.toByte))),
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -651,6 +660,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId("jti-logout-3"),
         encryptedRefreshToken = None,
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -705,6 +717,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId("jti-unbacked"),
         encryptedRefreshToken = None,
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -748,6 +763,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
         accessTokenId = AccessTokenId("jti-first-party"),
         encryptedRefreshToken = None,
         expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+        previousAccessTokenId = None,
+        encryptedAccessToken = None,
+        rotatedAt = None,
       )
       for
         _ <- env.withPresets(Fixtures.preset)
@@ -831,6 +849,9 @@ object EdgeServiceSpec extends ZIOSpecDefault, ZIOStubs:
           accessTokenId = AccessTokenId("jti-logout-equivalent"),
           encryptedRefreshToken = None,
           expiresAt = Instant.parse("2024-01-01T00:00:00Z"),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
         )
         for
           _ <- env.withPresets(Fixtures.preset)

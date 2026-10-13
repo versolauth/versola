@@ -315,7 +315,9 @@ object EdgeService:
             accessTokenId = ids.accessTokenId,
             encryptedRefreshToken = encryptedRefreshToken,
             expiresAt = now.plusSeconds(cookieTtl.toSeconds + sessionExpiryGracePeriod.toSeconds),
+            previousAccessTokenId = None,
             encryptedAccessToken = Some(encryptedAccessToken),
+            rotatedAt = None,
           ),
         )
       yield ()
