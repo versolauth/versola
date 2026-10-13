@@ -724,20 +724,20 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       )
     },
     // The `request` parameter is accepted because AuthorizeRequestParser resolves one, and a
-    // `request_uri` here is always a pushed request rather than a document to fetch. Neither
+    // `request_uri` here is a pushed request reference, which is the supported use. Neither
     // is a claim a stored document gets to contradict.
     test("getMetadata states the request parameter support this build actually has") {
       for
         env <- makeEnv(metadata =
           Json.Obj(
             "request_parameter_supported" -> Json.Bool(false),
-            "request_uri_parameter_supported" -> Json.Bool(true),
+            "request_uri_parameter_supported" -> Json.Bool(false),
           ),
         )
         served <- env.getMetadata
       yield assertTrue(
         served.get("request_parameter_supported").contains(Json.Bool(true)),
-        served.get("request_uri_parameter_supported").contains(Json.Bool(false)),
+        served.get("request_uri_parameter_supported").contains(Json.Bool(true)),
       )
     },
     // private_key_jwt is accepted unconditionally -- see ClientAuthentication -- so a stored
