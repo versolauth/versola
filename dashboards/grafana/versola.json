@@ -40,6 +40,37 @@
         "hide": 0
       },
       {
+        "name": "tail",
+        "label": "Tail quantile",
+        "type": "custom",
+        "query": "p99 : 0.99, p99.9 : 0.999, p99.99 : 0.9999",
+        "current": {
+          "text": "p99",
+          "value": "0.99",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "p99",
+            "value": "0.99",
+            "selected": true
+          },
+          {
+            "text": "p99.9",
+            "value": "0.999",
+            "selected": false
+          },
+          {
+            "text": "p99.99",
+            "value": "0.9999",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      },
+      {
         "name": "namespace",
         "label": "Environment",
         "type": "query",
@@ -246,8 +277,8 @@
     },
     {
       "type": "stat",
-      "title": "Latency p99",
-      "description": "99 of 100 requests are faster than this, over every endpoint of the service.",
+      "title": "Latency ${tail:text}",
+      "description": "Tail latency over every endpoint of the service, at the quantile chosen in the Tail quantile selector at the top (p99 by default: 99 of 100 requests are faster).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -286,7 +317,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
           "instant": false
         }
       ],
@@ -731,8 +762,8 @@
     },
     {
       "type": "stat",
-      "title": "Latency p99",
-      "description": "99 of 100 requests are faster than this, over every endpoint of the service.",
+      "title": "Latency ${tail:text}",
+      "description": "Tail latency over every endpoint of the service, at the quantile chosen in the Tail quantile selector at the top (p99 by default: 99 of 100 requests are faster).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -771,7 +802,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
           "instant": false
         }
       ],
@@ -1208,8 +1239,8 @@
     },
     {
       "type": "stat",
-      "title": "Latency p99",
-      "description": "99 of 100 requests are faster than this, over every endpoint of the service.",
+      "title": "Latency ${tail:text}",
+      "description": "Tail latency over every endpoint of the service, at the quantile chosen in the Tail quantile selector at the top (p99 by default: 99 of 100 requests are faster).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1248,7 +1279,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
           "instant": false
         }
       ],
@@ -1750,7 +1781,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1822,6 +1853,24 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
       "id": 34,
@@ -1834,7 +1883,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Slowest endpoints (p99)",
+      "title": "Slowest endpoints (${tail:text})",
       "description": "The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.",
       "datasource": {
         "type": "prometheus",
@@ -1871,7 +1920,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, histogram_quantile(0.99, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))))",
+          "expr": "topk(5, histogram_quantile($tail, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))))",
           "legendFormat": "{{method}} {{route}}"
         }
       ],
@@ -2132,6 +2181,24 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
       "id": 40,
@@ -2305,7 +2372,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Token issuance latency p99 by grant type",
+      "title": "Token issuance latency ${tail:text} by grant type",
       "description": "p99 of each token grant. The dashed line is the 120 ms /token target.",
       "datasource": {
         "type": "prometheus",
@@ -2358,7 +2425,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.*\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.*\"}[$__rate_interval])))",
           "legendFormat": "{{route}}"
         }
       ],
@@ -2924,7 +2991,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Hash wait and hash time (p99)",
+      "title": "Hash wait and hash time (${tail:text})",
       "description": "The wait is the part of a login's latency that more replicas remove; the hash itself is the cost of the parameters.",
       "datasource": {
         "type": "prometheus",
@@ -2962,7 +3029,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(argon2_hash_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le) (rate(argon2_hash_wait_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
           "legendFormat": "waiting for a permit"
         },
         {
@@ -2971,7 +3038,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(argon2_hash_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le) (rate(argon2_hash_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
           "legendFormat": "hashing"
         }
       ],
@@ -4432,8 +4499,8 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
-              "legendFormat": "wait p99"
+              "expr": "histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+              "legendFormat": "wait ${tail:text}"
             },
             {
               "refId": "B",
@@ -4507,7 +4574,7 @@
         },
         {
           "type": "timeseries",
-          "title": "Slowest queries (p99)",
+          "title": "Slowest queries (${tail:text})",
           "description": "The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.",
           "datasource": {
             "type": "prometheus",
@@ -4544,7 +4611,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))))",
+              "expr": "topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval]))))",
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
@@ -4609,7 +4676,7 @@
         },
         {
           "type": "timeseries",
-          "title": "Calls to other services — latency p99",
+          "title": "Calls to other services — latency ${tail:text}",
           "description": "How long this service waits for each service it calls. Part of our own latency.",
           "datasource": {
             "type": "prometheus",
@@ -4646,7 +4713,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
               "legendFormat": "{{peer}}"
             }
           ],
@@ -5124,7 +5191,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -5180,6 +5247,24 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
       "id": 98,
@@ -5192,7 +5277,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Slowest endpoints (p99)",
+      "title": "Slowest endpoints (${tail:text})",
       "description": "The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.",
       "datasource": {
         "type": "prometheus",
@@ -5229,7 +5314,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, histogram_quantile(0.99, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))))",
+          "expr": "topk(5, histogram_quantile($tail, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))))",
           "legendFormat": "{{method}} {{route}}"
         }
       ],
@@ -5417,7 +5502,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Config sync latency p99",
+      "title": "Config sync latency ${tail:text}",
       "description": "How long auth and edge wait for configuration. Slow syncs mean slow propagation of every admin change.",
       "datasource": {
         "type": "prometheus",
@@ -5454,7 +5539,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\", route=~\".*/sync\"}[$__rate_interval])))",
+          "expr": "histogram_quantile($tail, sum by (le, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\", route=~\".*/sync\"}[$__rate_interval])))",
           "legendFormat": "{{route}}"
         }
       ],
@@ -6544,8 +6629,8 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
-              "legendFormat": "wait p99"
+              "expr": "histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+              "legendFormat": "wait ${tail:text}"
             },
             {
               "refId": "B",
@@ -6619,7 +6704,7 @@
         },
         {
           "type": "timeseries",
-          "title": "Slowest queries (p99)",
+          "title": "Slowest queries (${tail:text})",
           "description": "The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.",
           "datasource": {
             "type": "prometheus",
@@ -6656,7 +6741,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))))",
+              "expr": "topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval]))))",
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
@@ -6721,7 +6806,7 @@
         },
         {
           "type": "timeseries",
-          "title": "Calls to other services — latency p99",
+          "title": "Calls to other services — latency ${tail:text}",
           "description": "How long this service waits for each service it calls. Part of our own latency.",
           "datasource": {
             "type": "prometheus",
@@ -6758,7 +6843,7 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
               "legendFormat": "{{peer}}"
             }
           ],
@@ -7236,7 +7321,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -7292,6 +7377,24 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
       "id": 140,
@@ -7304,7 +7407,7 @@
     },
     {
       "type": "timeseries",
-      "title": "Slowest endpoints (p99)",
+      "title": "Slowest endpoints (${tail:text})",
       "description": "The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.",
       "datasource": {
         "type": "prometheus",
@@ -7341,7 +7444,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, histogram_quantile(0.99, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))))",
+          "expr": "topk(5, histogram_quantile($tail, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))))",
           "legendFormat": "{{method}} {{route}}"
         }
       ],
@@ -7601,8 +7704,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
-          "legendFormat": "p99"
+          "expr": "histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 145,
@@ -7614,83 +7717,7 @@
       }
     },
     {
-      "type": "timeseries",
-      "title": "Edge overhead (estimated from backend latency)",
-      "description": "What edge adds over calling the backend directly, at the tail (p99) and on average. The mean includes the auth lookup. The dashed line is the 15 ms budget. Excludes /resources/central, which goes through central, not a backend.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "dashed"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0.015
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))) - histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", peer!~\"versola-(auth|central)[:.].*\"}[$__rate_interval])))",
-          "legendFormat": "proxy p99 − backend p99"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(http_server_request_duration_seconds_sum{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])) - sum(rate(http_client_request_duration_seconds_sum{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", peer!~\"versola-(auth|central)[:.].*\"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))",
-          "legendFormat": "proxy mean − backend mean"
-        }
-      ],
       "id": 146,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 307
-      }
-    },
-    {
-      "id": 147,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -7699,7 +7726,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 315
+        "y": 307
       }
     },
     {
@@ -7749,12 +7776,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 148,
+      "id": 147,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7804,18 +7831,18 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 149,
+      "id": 148,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 316
+        "y": 308
       }
     },
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -7871,19 +7898,37 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
-      "id": 150,
+      "id": 149,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 324
+        "y": 316
       }
     },
     {
       "type": "timeseries",
-      "title": "Slowest endpoints (p99)",
+      "title": "Slowest endpoints (${tail:text})",
       "description": "The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.",
       "datasource": {
         "type": "prometheus",
@@ -7920,16 +7965,16 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, histogram_quantile(0.99, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval]))))",
+          "expr": "topk(5, histogram_quantile($tail, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval]))))",
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 151,
+      "id": 150,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 324
+        "y": 316
       }
     },
     {
@@ -7979,12 +8024,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 152,
+      "id": 151,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 332
+        "y": 324
       }
     },
     {
@@ -8030,16 +8075,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 153,
+      "id": 152,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 332
+        "y": 324
       }
     },
     {
-      "id": 154,
+      "id": 153,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -8048,7 +8093,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 340
+        "y": 332
       }
     },
     {
@@ -8098,12 +8143,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 155,
+      "id": 154,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 341
+        "y": 333
       }
     },
     {
@@ -8153,18 +8198,18 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 156,
+      "id": 155,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 341
+        "y": 333
       }
     },
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -8220,19 +8265,37 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
           "legendFormat": "p99"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
+          "legendFormat": "p99.99"
         }
       ],
-      "id": 157,
+      "id": 156,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 349
+        "y": 341
       }
     },
     {
       "type": "timeseries",
-      "title": "Slowest endpoints (p99)",
+      "title": "Slowest endpoints (${tail:text})",
       "description": "The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.",
       "datasource": {
         "type": "prometheus",
@@ -8269,16 +8332,16 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "topk(5, histogram_quantile(0.99, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval]))))",
+          "expr": "topk(5, histogram_quantile($tail, sum by (le, method, route) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval]))))",
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 158,
+      "id": 157,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 349
+        "y": 341
       }
     },
     {
@@ -8328,12 +8391,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 159,
+      "id": 158,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 357
+        "y": 349
       }
     },
     {
@@ -8379,16 +8442,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 160,
+      "id": 159,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 357
+        "y": 349
       }
     },
     {
-      "id": 161,
+      "id": 160,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -8397,7 +8460,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 365
+        "y": 357
       }
     },
     {
@@ -8443,12 +8506,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 162,
+      "id": 161,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 366
+        "y": 358
       }
     },
     {
@@ -8511,12 +8574,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 163,
+      "id": 162,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 366
+        "y": 358
       }
     },
     {
@@ -8578,12 +8641,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 164,
+      "id": 163,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 374
+        "y": 366
       }
     },
     {
@@ -8638,16 +8701,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 165,
+      "id": 164,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 374
+        "y": 366
       }
     },
     {
-      "id": 166,
+      "id": 165,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -8656,7 +8719,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 382
+        "y": 374
       }
     },
     {
@@ -8705,12 +8768,12 @@
           "instant": false
         }
       ],
-      "id": 167,
+      "id": 166,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8759,12 +8822,12 @@
           "instant": false
         }
       ],
-      "id": 168,
+      "id": 167,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8813,12 +8876,12 @@
           "instant": false
         }
       ],
-      "id": 169,
+      "id": 168,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8930,12 +8993,12 @@
           "instant": true
         }
       ],
-      "id": 170,
+      "id": 169,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 386
+        "y": 378
       }
     },
     {
@@ -8982,12 +9045,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 171,
+      "id": 170,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9043,12 +9106,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 172,
+      "id": 171,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9095,12 +9158,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 173,
+      "id": 172,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9147,12 +9210,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 174,
+      "id": 173,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 404
+        "y": 396
       }
     },
     {
@@ -9199,16 +9262,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 175,
+      "id": 174,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 404
+        "y": 396
       }
     },
     {
-      "id": 176,
+      "id": 175,
       "type": "row",
       "title": "edge — Database write-ahead log (WAL)",
       "collapsed": false,
@@ -9217,7 +9280,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 412
+        "y": 404
       }
     },
     {
@@ -9275,12 +9338,12 @@
           "instant": false
         }
       ],
-      "id": 177,
+      "id": 176,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 0,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9330,12 +9393,12 @@
           "instant": false
         }
       ],
-      "id": 178,
+      "id": 177,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 4,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9385,12 +9448,12 @@
           "instant": false
         }
       ],
-      "id": 179,
+      "id": 178,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 8,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9440,12 +9503,12 @@
           "instant": false
         }
       ],
-      "id": 180,
+      "id": 179,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 12,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9499,12 +9562,12 @@
           "instant": false
         }
       ],
-      "id": 181,
+      "id": 180,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 16,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9554,12 +9617,12 @@
           "instant": false
         }
       ],
-      "id": 182,
+      "id": 181,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 20,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9645,12 +9708,12 @@
           "legendFormat": "limit: max_wal_size / checkpoint_timeout"
         }
       ],
-      "id": 183,
+      "id": 182,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 416
+        "y": 408
       }
     },
     {
@@ -9701,12 +9764,12 @@
           "legendFormat": "{{type}}"
         }
       ],
-      "id": 184,
+      "id": 183,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 416
+        "y": 408
       }
     },
     {
@@ -9754,12 +9817,12 @@
           "legendFormat": "share of WAL"
         }
       ],
-      "id": 185,
+      "id": 184,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 424
+        "y": 416
       }
     },
     {
@@ -9815,12 +9878,12 @@
           "legendFormat": "bytes per record"
         }
       ],
-      "id": 186,
+      "id": 185,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 424
+        "y": 416
       }
     },
     {
@@ -9867,16 +9930,16 @@
           "legendFormat": "{{slot}}"
         }
       ],
-      "id": 187,
+      "id": 186,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 432
+        "y": 424
       }
     },
     {
-      "id": 188,
+      "id": 187,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -9942,12 +10005,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 189,
+          "id": 188,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 441
+            "y": 433
           }
         },
         {
@@ -9989,8 +10052,8 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
-              "legendFormat": "wait p99"
+              "expr": "histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+              "legendFormat": "wait ${tail:text}"
             },
             {
               "refId": "B",
@@ -10002,12 +10065,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 190,
+          "id": 189,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 441
+            "y": 433
           }
         },
         {
@@ -10054,17 +10117,17 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 191,
+          "id": 190,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 449
+            "y": 441
           }
         },
         {
           "type": "timeseries",
-          "title": "Slowest queries (p99)",
+          "title": "Slowest queries (${tail:text})",
           "description": "The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.",
           "datasource": {
             "type": "prometheus",
@@ -10101,16 +10164,16 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))))",
+              "expr": "topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval]))))",
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 192,
+          "id": 191,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 449
+            "y": 441
           }
         },
         {
@@ -10156,17 +10219,17 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 193,
+          "id": 192,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 457
+            "y": 449
           }
         },
         {
           "type": "timeseries",
-          "title": "Calls to other services — latency p99",
+          "title": "Calls to other services — latency ${tail:text}",
           "description": "How long this service waits for each service it calls. Part of our own latency.",
           "datasource": {
             "type": "prometheus",
@@ -10203,16 +10266,16 @@
                 "type": "prometheus",
                 "uid": "${datasource}"
               },
-              "expr": "histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+              "expr": "histogram_quantile($tail, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 194,
+          "id": 193,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 457
+            "y": 449
           }
         },
         {
@@ -10259,12 +10322,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 195,
+          "id": 194,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 465
+            "y": 457
           }
         },
         {
@@ -10310,12 +10373,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 196,
+          "id": 195,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 465
+            "y": 457
           }
         }
       ],
@@ -10323,11 +10386,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 440
+        "y": 432
       }
     },
     {
-      "id": 197,
+      "id": 196,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -10375,12 +10438,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 198,
+          "id": 197,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 442
+            "y": 434
           }
         },
         {
@@ -10436,12 +10499,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 199,
+          "id": 198,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 442
+            "y": 434
           }
         },
         {
@@ -10488,12 +10551,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 200,
+          "id": 199,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 450
+            "y": 442
           }
         },
         {
@@ -10539,12 +10602,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 201,
+          "id": 200,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 450
+            "y": 442
           }
         }
       ],
@@ -10552,7 +10615,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 441
+        "y": 433
       }
     }
   ]
