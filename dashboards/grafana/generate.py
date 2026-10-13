@@ -513,10 +513,10 @@ def add_edge(b: Board, phase: str) -> None:
     web = ', route=~"/login.*|/complete|/logout.*|/permissions.*"'
     mobile = ', route=~"/native/.*"'
     overview(b, [
+        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http()}[$__rate_interval])))", dict(
+            unit="s", thresholds=steps((None, GREEN), (0.015, RED)),
+            desc="What edge adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, the lookup at auth), at the quantile chosen in the Tail quantile selector. The wait for the resource itself is not included. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
         ("Proxied/s", f"sum({b.req_rate(proxied)})", dict(unit="reqps", desc="Requests edge forwards to protected resources -- the traffic edge exists to carry.")),
-        ("Revocation sync lag", f"max(revocation_cache_staleness_seconds{b.http()})", dict(
-            unit="s", thresholds=steps((None, GREEN), (1, RED)),
-            desc="0 = the last attempt to refresh the revocation list succeeded. Above 0 = refreshes are failing, and this is how long edge has gone without one: a token revoked in that time is still accepted.")),
     ])
     if phase == "overview":
         return
