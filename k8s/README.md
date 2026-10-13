@@ -299,9 +299,20 @@ helm upgrade --install versola k8s/versola --namespace versola --create-namespac
 On a first install **auth and edge come up before central is answering**, and wait for it. Both
 sync their configuration from central while building their own dependencies, and nothing orders
 the three — a Helm install schedules them at once. A service in that state is `Running` and
-`0/1` Ready, logging `Still waiting for the source of cache ...`, and becomes ready by itself
-once central binds its port; `restartCount` stays 0 throughout, so it remains usable as a health
-signal after a rollout ([#378](https://github.com/versolauth/versola/issues/378)).
+`0/1` Ready, logging `Still waiting for the source of cache ...`
+([#378](https://github.com/versolauth/versola/issues/378)).
+
+How that ends depends on the outbound pool (`HTTP_CLIENT_POOL_KIND`, below):
+
+- With `dynamic` (min 0) the service becomes ready by itself once central binds its port, and
+  `restartCount` stays 0.
+- With the default `fixed` pool it does **not**. The first request to central opens all the pool's
+  connections, and when central refuses them the pool keeps one failed connection per slot (128 by
+  default). Each retry, every 5 seconds, consumes one of them, so the wait cannot recover inside
+  its budget even though central is already listening. The service exits with code 1 after the two
+  minutes and relies on the restart policy (`restartPolicy: Always` in Kubernetes,
+  `restart: unless-stopped` in the compose templates); the restarted process builds a fresh pool
+  and starts normally. Expect one restart on a cold install.
 
 The wait is two minutes, and only for a central that cannot be *reached*. A central that answers
 and rejects the request — wrong URL, wrong sync key — still fails startup within seconds rather

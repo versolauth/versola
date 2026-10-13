@@ -18,8 +18,14 @@ object ReloadingCache:
     * central during their own startup) fails its first load whenever it wins the race against that
     * service. Without a retry the failure propagates out of layer construction and takes the whole
     * application down - observed in production, with central becoming ready ~0.4s after auth had
-    * already given up (see deploy.md 9.5). Waiting is strictly better than dying and relying on
-    * the orchestrator to restart us.
+    * already given up (see deploy.md 9.5). Waiting is better than dying and relying on the
+    * orchestrator to restart us.
+    *
+    * The wait only recovers with a `dynamic` outbound pool. A `fixed` pool (the default) keeps
+    * one failed connection per slot after its first refused attempt and hands out one per
+    * retry, so with 128 slots the wait is over long before the pool is clean: the service exits
+    * after [[DependencyWait]] and relies on the restart policy (`restart: unless-stopped`, a
+    * pod restart), whose fresh pool then connects. See `ClientRecoverySpec`.
     *
     * Two minutes covers a cold Kubernetes install, where every service is scheduled at once and
     * central still has a JVM, a connection pool and a schema validation ahead of it before it
