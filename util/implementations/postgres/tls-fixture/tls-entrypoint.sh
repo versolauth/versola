@@ -1,5 +1,5 @@
 #!/bin/sh
-# Generates a throwaway CA and a server certificate valid for the DNS name `localhost` only (so
+# Runs as the postgres user. Generates a throwaway CA and a server certificate valid for the DNS name `localhost` only (so
 # connecting to 127.0.0.1 fails hostname verification -- PostgresTlsConnectionSpec relies on that),
 # then starts Postgres as the stock image would. Everything is regenerated on every start, so
 # nothing is committed and nothing expires. The CA is copied to /tls-out when that is mounted
@@ -17,13 +17,11 @@ printf 'subjectAltName=DNS:localhost' > san.ext
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 3650 \
   -extfile san.ext -out server.crt 2>/dev/null
 
-chown postgres:postgres server.key server.crt
 chmod 600 server.key
 chmod 644 server.crt ca.crt
 
 if [ -d /tls-out ]; then
-  cp ca.crt /tls-out/ca.crt
-  chmod 644 /tls-out/ca.crt
+  cp ca.crt /tls-out/ca.crt || echo "tls-entrypoint: cannot write the CA to /tls-out; make the mounted directory writable (chmod a+w target/postgres-tls)" >&2
 fi
 
 exec docker-entrypoint.sh "$@"

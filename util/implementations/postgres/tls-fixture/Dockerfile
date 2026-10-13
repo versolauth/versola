@@ -4,6 +4,9 @@
 # nothing secret is committed -- and exist only to be trusted by that spec through POSTGRES_TLS_CA.
 FROM postgres:18
 COPY --chmod=755 tls-entrypoint.sh /usr/local/bin/tls-entrypoint.sh
+# Not root: the entrypoint writes the certificates into the postgres user's own directory, and the stock
+# docker-entrypoint.sh runs the server as whoever it is started as.
+USER postgres
 ENTRYPOINT ["tls-entrypoint.sh"]
 CMD ["postgres", "-c", "max_connections=200", "-c", "shared_buffers=512MB", \
      "-c", "ssl=on", \

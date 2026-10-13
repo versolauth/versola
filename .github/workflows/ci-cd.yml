@@ -206,6 +206,7 @@ jobs:
       - name: Start Postgres with TLS
         run: |
           mkdir -p target/postgres-tls
+          chmod a+w target/postgres-tls
           POSTGRES_PORT=5433 docker compose -f services.yml up -d --build --wait postgres
 
       - name: Run tests
