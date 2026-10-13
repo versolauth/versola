@@ -40,8 +40,23 @@
         "hide": 0
       },
       {
-        "name": "namespace",
+        "name": "env",
         "label": "Env",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": "label_values(up{app_kubernetes_io_component=~\"auth|central|edge\"}, environment)",
+        "refresh": 1,
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*",
+        "hide": 0
+      },
+      {
+        "name": "namespace",
+        "label": "Namespace",
         "type": "query",
         "datasource": {
           "type": "prometheus",

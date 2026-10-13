@@ -28,6 +28,9 @@ Labels common to every resource in this chart.
 helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{ include "versola.selectorLabels" . }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- with .Values.global.environment }}
+environment: {{ . | quote }}
+{{- end }}
 {{- end -}}
 
 {{/*
