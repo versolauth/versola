@@ -162,11 +162,7 @@ object LogoutController extends Controller:
   // its logout silently ignored.
   private def sessionIdFromIdToken(token: String): RIO[JwksService, Option[LogoutHintClaims]] =
     ZIO.serviceWithZIO[JwksService](_.getPublicKeys).flatMap: keys =>
-      JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT)
-        .catchSome:
-          case JWT.Error.Expired(_) =>
-            JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
-        .option
+      JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT, validateExpiry = false).option
 
   private case class LogoutConfirmSubmission(
       csrfToken: String,
