@@ -1382,11 +1382,21 @@ object SecretSchema:
   // speaks no TLS, so those targets say `sslmode=disable` explicitly; a remote vps database
   // gets the verified default, with its CA bundle set through `postgres.ssl-root-cert` if the
   // JVM does not already trust it (see deploy.md).
+  // The database's name: `auth` unless the deployment says otherwise (vps only -- docker-local's
+  // bundled Postgres creates `auth`). One value for all three services, like the host.
+  val pgDatabase = sys.env.get("POSTGRES_DB").filter(_.nonEmpty).filter(_ => isVps).getOrElse("auth")
+  if !pgDatabase.matches("[A-Za-z0-9_-]{1,63}") then
+    throw RuntimeException(s"POSTGRES_DB '$pgDatabase' is not a plain database name (letters, digits, '_' and '-', up to 63)")
+  // Path, inside the service containers, of the CA bundle `versola-tools`' entrypoint put in the
+  // bundle (POSTGRES_CA_FILE): written as `postgres.ssl-root-cert` so `verify-full` can validate a
+  // database whose CA the JVM does not trust. Absent unless a CA was given.
+  val pgSslRootCert = sys.env.get("POSTGRES_SSL_ROOT_CERT").filter(_.nonEmpty).filter(_ => isVps)
+  val pgSslRootCertLine = pgSslRootCert.fold("")(path => s"\n       |  ssl-root-cert = \"$path\"")
   val pgPlaintext = !isVps || Set("127.0.0.1", "localhost", "[::1]").contains(pgHostDefault.replaceAll(":\\d+$", ""))
   val pgTlsParam = if pgPlaintext then "sslmode=disable" else ""
   def pgUrl(host: String, schema: Option[String]): String =
     val query = (schema.map("currentSchema=" + _).toList ++ Option.when(pgTlsParam.nonEmpty)(pgTlsParam).toList).mkString("&")
-    s"jdbc:postgresql://$host/auth" + (if query.isEmpty then "" else "?" + query)
+    s"jdbc:postgresql://$host/$pgDatabase" + (if query.isEmpty then "" else "?" + query)
   val authPgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("auth"))
   else if isVps then pgUrl(pgHostDefault, Some("auth")) else pgUrl("localhost:5432", None)
   val authPgUrl = prompt(s"  Postgres URL [$authPgUrlDefault]: ", authPgUrlDefault, flag = "auth-postgres-url")
@@ -1625,7 +1635,7 @@ object SecretSchema:
        |$otpBlock$smtpBlock
        |postgres {
        |  url = "$authPgUrl"
-       |  user = "$authPgUser"
+       |  user = "$authPgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), authPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
@@ -1792,7 +1802,7 @@ object SecretSchema:
        |
        |postgres {
        |  url = "$centralPgUrl"
-       |  user = "$centralPgUser"
+       |  user = "$centralPgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), centralPgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 15
        |  minimum-idle = 15
@@ -1846,7 +1856,7 @@ object SecretSchema:
        |
        |postgres {
        |  url = "$edgePgUrl"
-       |  user = "$edgePgUser"
+       |  user = "$edgePgUser"${pgSslRootCertLine}
        |  password = ${secretField((isVps || isKubernetes), edgePgPass, "POSTGRES_PASSWORD")}
        |  maximum-pool-size = 10
        |  minimum-idle = 10
