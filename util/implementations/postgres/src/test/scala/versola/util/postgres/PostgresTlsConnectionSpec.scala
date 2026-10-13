@@ -9,13 +9,14 @@ import zio.test.*
   *
   * [[PostgresTlsSpec]] can only show which properties are handed to the driver; whether pgjdbc then
   * actually validates the chain and the host name, through the pool and through the separate
-  * `LISTEN` connection, is a property of the driver and the server together. Needs the fixture
-  * from `util/implementations/postgres/tls-fixture/start.sh` (CI starts it, develop.md says how to
-  * locally); its CA is not in any trust store, which is what makes the "no CA" case fail.
+  * `LISTEN` connection, is a property of the driver and the server together. Runs against the Postgres
+  * of `services.yml` (the image in `util/implementations/postgres/tls-fixture`), at POSTGRES_HOST unless
+  * POSTGRES_TLS_HOST says otherwise; its CA, written to target/postgres-tls/ca.crt, is not in any trust
+  * store, which is what makes the "no CA" case fail.
   */
 object PostgresTlsConnectionSpec extends ZIOSpecDefault:
 
-  private val tlsHost = sys.env.getOrElse("POSTGRES_TLS_HOST", "localhost:5433")
+  private val tlsHost = sys.env.get("POSTGRES_TLS_HOST").orElse(sys.env.get("POSTGRES_HOST")).getOrElse("localhost:5432")
   private val ca = sys.env.getOrElse("POSTGRES_TLS_CA", "target/postgres-tls/ca.crt")
 
   // No migrations to apply: only the connection is under test.
