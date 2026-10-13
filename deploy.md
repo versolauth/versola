@@ -251,6 +251,13 @@ postgres {
 }
 ```
 
+On a vps deployment you do not write this yourself: pass the CA bundle to `versola configure`
+(or `bootstrap`) as `--postgres-ca <file>`. It is copied into the bundle as `postgres-ca/ca.crt`,
+mounted read-only into `central`, `auth`, `edge` and the `migrate` container, and set as
+`postgres.ssl-root-cert` in the three configs; `versola migrate` then verifies the database with
+the same CA. Like `--auth-url`, the flag has to be given on every `configure`, because each
+`configure` regenerates the bundle.
+
 A URL that does not verify (`sslmode=disable|allow|prefer|require`, or `ssl=false`) logs a warning
 at startup and, when `env = "prod"`, stops the service from starting. Loopback hosts are exempt
 from the warning and the refusal. `gen-env` writes `sslmode=disable` for the bundled/local Postgres
@@ -258,9 +265,11 @@ and for a vps whose `POSTGRES_HOST` is loopback, and leaves a remote vps host on
 
 ### 3.3 Database, role and schemas
 
-All three services share **one** Postgres database, `auth`, isolated by schema — not three
-databases. The generated configs already point each service at its own schema
-(`jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central`, etc.).
+All three services share **one** Postgres database, `auth` by default, isolated by schema — not
+three databases. The generated configs already point each service at its own schema
+(`jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central`, etc.). To use another database
+name, pass `--postgres-db <name>` to `versola configure`/`bootstrap` and use that name in the
+`CREATE DATABASE` and `\c` lines below.
 
 On a first `configure` against an empty OpenBao, the Postgres password is generated then and there,
 so the role can only be created **after** `configure`. `configure` prints the exact statements:

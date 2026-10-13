@@ -57,7 +57,7 @@ object MigrateTool:
     * long-lived config value out of a service's own logs/toString over its whole process
     * lifetime; this process reads it once, hands it straight to Flyway, and exits.
     */
-  private case class PgConnection(url: String, user: String, password: String)
+  private case class PgConnection(url: String, user: String, password: String, sslRootCert: Option[String])
 
   /** Reads just the `postgres.url`/`postgres.user`/`postgres.password` fields straight off the
     * mounted .conf file via plain typesafe-config -- no `ConfigProvider`/kebab-case conversion
@@ -78,7 +78,23 @@ object MigrateTool:
       url = conf.getString("postgres.url"),
       user = conf.getString("postgres.user"),
       password = conf.getString("postgres.password"),
+      sslRootCert = Option.when(conf.hasPath("postgres.ssl-root-cert"))(conf.getString("postgres.ssl-root-cert")),
     )
+
+  /** The URL as the services themselves would connect with it. They verify the database's
+    * certificate (`sslmode=verify-full`, see `PostgresTls`), against `postgres.ssl-root-cert` when
+    * the config names one -- a plain pgjdbc URL does neither, so without this the migrations of a
+    * deployment with its own CA would run over a connection nothing verified. Only applied when a
+    * CA is configured: without one this tool keeps connecting exactly as before, and a URL that
+    * already carries its own `sslmode`/`sslrootcert` is left alone, as for the services.
+    */
+  private def withTls(connection: PgConnection): String =
+    connection.sslRootCert match
+      case Some(path) if !connection.url.contains("sslmode=") =>
+        val separator = if connection.url.contains("?") then "&" else "?"
+        val rootCert = if connection.url.contains("sslrootcert=") then "" else s"&sslrootcert=$path"
+        s"${connection.url}${separator}sslmode=verify-full$rootCert"
+      case _ => connection.url
 
   /** Builds the one Flyway instance both `migrate` and `checkPending` need --
     * identical configuration either way, since a dry run has to validate
@@ -98,7 +114,7 @@ object MigrateTool:
     val config = Flyway
       .configure()
       .locations(target.migrationsLocation)
-      .dataSource(connection.url, connection.user, connection.password)
+      .dataSource(withTls(connection), connection.user, connection.password)
       // Never disabled, unlike `PostgresHikariDataSource.layer`'s own `validateOnMigrate` (which
       // services can turn off in tests/development) -- this is the one place that actually
       // mutates a real schema, so there's no context where skipping Flyway's own pre-migrate
