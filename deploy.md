@@ -341,8 +341,10 @@ psql -c "CREATE SCHEMA IF NOT EXISTS edge AUTHORIZATION versola_app"
 
 The pooler applies a new password a few seconds late: `password authentication failed` right after
 an `ALTER ROLE` is worth one retry before looking further. These `PG*` variables are what the
-`psql`/`pg_dump` commands in the rest of this document assume; `psql` comes from the
-`postgresql-client` package.
+`psql`/`pg_dump` commands in the rest of this document assume. They need a client of the server's
+major version: Debian 12's own `postgresql-client` is 15 and `pg_dump` refuses a version 18 server
+(`server version mismatch`), so install `postgresql-client-18` from the PostgreSQL project's apt
+repository (`apt.postgresql.org`, `bookworm-pgdg`).
 
 **Native Postgres (shared-host variant).** As the `postgres` superuser (`sudo -u postgres psql`), run
 the `CREATE ROLE` line (or `ALTER ROLE`, if the role was created earlier with a password of its
