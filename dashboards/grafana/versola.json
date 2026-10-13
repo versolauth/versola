@@ -1293,6 +1293,64 @@
     },
     {
       "type": "stat",
+      "title": "Edge overhead ${tail:text}",
+      "description": "What edge adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, the lookup at auth), at the quantile chosen in the Tail quantile selector. The wait for the resource itself is not included. Red from the 15 ms budget. Proxied traffic is in the graphs below.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.015
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
+          "instant": false
+        }
+      ],
+      "id": 24,
+      "gridPos": {
+        "h": 3,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "type": "stat",
       "title": "Proxied/s",
       "description": "Requests edge forwards to protected resources -- the traffic edge exists to carry.",
       "datasource": {
@@ -1334,64 +1392,6 @@
             "uid": "${datasource}"
           },
           "expr": "sum(rate(http_server_requests_total{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))",
-          "instant": false
-        }
-      ],
-      "id": 24,
-      "gridPos": {
-        "h": 3,
-        "w": 6,
-        "x": 0,
-        "y": 18
-      }
-    },
-    {
-      "type": "stat",
-      "title": "Revocation sync lag",
-      "description": "0 = the last attempt to refresh the revocation list succeeded. Above 0 = refreshes are failing, and this is how long edge has gone without one: a token revoked in that time is still accepted.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max(revocation_cache_staleness_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
           "instant": false
         }
       ],
