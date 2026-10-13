@@ -407,6 +407,10 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     // it asserts is not decided by a profile it never mentions.
     challengeSettingsService.getSecurityProfile.returnsWith(ZIO.succeed(SecurityProfile.standard))
 
+    // A write re-reads the client to refresh the cache; the tests that do not assert on that
+    // see an empty repository.
+    repository.find.returnsWith(ZIO.succeed(None))
+
     /** The tenant asserts FAPI 2.0 and terminates mTLS. */
     def onFapi2: UIO[Unit] =
       terminatesMtls *> challengeSettingsService.getSecurityProfile.succeedsWith(SecurityProfile.fapi2)
@@ -531,6 +535,51 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         encryptCall._1.sameElements(secretBytes),
         created === expectedClient,
       )
+    },
+    // The client_change notification refreshes this cache asynchronously; a /configuration/clients/sync
+    // request in between would answer without the client and auth would keep that list.
+    test("registerClient makes the client visible to the sync read before any notification") {
+      val env = new Env()
+      val stored = cachedClient.copy(id = clientId, secret = Some(Secret.fromString("encrypted")))
+      val plaintext = "plaintext".getBytes(java.nio.charset.StandardCharsets.UTF_8)
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.repository.find.succeedsWith(Some(stored))
+        _ <- env.securityService.decryptAes256.succeedsWith(plaintext)
+        before <- env.cache.get
+        _ <- env.service.registerClient(createRequest)
+        after <- env.service.getClientsForSync(None)
+      yield assertTrue(before.isEmpty, after.map(_.id) == Vector(clientId))
+    },
+    test("registerClient still succeeds when the committed client cannot be re-read for the cache") {
+      val env = new Env()
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.repository.find.failsWith(RuntimeException("db down"))
+        _ <- env.service.registerClient(createRequest)
+      yield assertTrue(env.repository.createClient.calls.size == 1)
+    },
+    test("updateClient and deleteClient apply the committed write to the sync read immediately") {
+      val before = cachedClient.copy(id = clientId, clientName = Map("en" -> "Old"))
+      val updated = before.copy(clientName = Map("en" -> "New"))
+      val env = new Env(Vector(before))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.repository.find.succeedsWith(Some(updated))
+        _ <- env.securityService.decryptAes256.succeedsWith(Array.emptyByteArray)
+        _ <- env.service.updateClient(updateRequest.copy(clientId = clientId))
+        afterUpdate <- env.service.getClientsForSync(None)
+        _ <- env.repository.deleteClient.succeedsWith(())
+        _ <- env.service.deleteClient(clientId)
+        afterDelete <- env.service.getClientsForSync(None)
+      yield assertTrue(afterUpdate.map(_.clientName) == Vector(updated.clientName), afterDelete.isEmpty)
     },
     test("registerClient stores the template the registration named, and the time it arrived") {
       val env = new Env()
