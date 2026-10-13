@@ -234,38 +234,27 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getLocales
       yield assertTrue(result == testLocales)
     },
-    test("getClientTemplate gives a partner client the partner template with its localized app name") {
-      val partnerClient = privateClient.copy(
+    test("getClientTemplate fills {{appName}} with the client's localized name") {
+      val client = privateClient.copy(
+        otpTemplateId = "partner",
         clientName = Map("en" -> "Acme", "ru" -> "Акме"),
-        consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
       )
       for
-        env <- makeEnv(clients = Map(clientId1 -> partnerClient), otpTemplates = smsTemplates)
+        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates)
         ru <- env.getClientTemplate(clientId1, OtpType.sms, Some(List("ru")))
         en <- env.getClientTemplate(clientId1, OtpType.sms, None)
       yield assertTrue(ru == OtpTemplate("Код для Акме: {{code}}"), en == OtpTemplate("Code for Acme: {{code}}"))
     },
-    test("getClientTemplate keeps the default template for a client without a consent flow") {
+    test("getClientTemplate falls back to the client id when the client has no name in any locale") {
+      val client = privateClient.copy(otpTemplateId = "partner", clientName = Map.empty)
+      for
+        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates)
+        result <- env.getClientTemplate(clientId1, OtpType.sms, None)
+      yield assertTrue(result == OtpTemplate("Code for client-1: {{code}}"))
+    },
+    test("getClientTemplate leaves a template without {{appName}} as it is") {
       for
         env <- makeEnv(otpTemplates = smsTemplates)
-        result <- env.getClientTemplate(clientId1, OtpType.sms, None)
-      yield assertTrue(result == OtpTemplate("Default {{code}}"))
-    },
-    test("getClientTemplate keeps an explicitly chosen template for a partner client") {
-      val client = privateClient.copy(
-        otpTemplateId = "custom",
-        consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)),
-      )
-      val custom = OtpTemplateRecord("custom", tenantId, Map("en" -> "Custom {{appName}} {{code}}"), OtpTemplatePurpose.otp, OtpTemplateChannel.sms)
-      for
-        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates :+ custom)
-        result <- env.getClientTemplate(clientId1, OtpType.sms, None)
-      yield assertTrue(result == OtpTemplate("Custom Private {{code}}"))
-    },
-    test("getClientTemplate falls back to the default template when no partner template exists") {
-      val client = privateClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
-      for
-        env <- makeEnv(clients = Map(clientId1 -> client), otpTemplates = smsTemplates.take(1))
         result <- env.getClientTemplate(clientId1, OtpType.sms, None)
       yield assertTrue(result == OtpTemplate("Default {{code}}"))
     },

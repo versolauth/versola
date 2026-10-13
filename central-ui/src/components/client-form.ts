@@ -4,7 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
 import './client-kind-step';
@@ -2505,11 +2505,29 @@ export class VersolaClientForm extends LitElement {
     };
   }
 
+  /** A client that already asks for consent is a partner for good: central refuses to take the consent flow away. */
+  private get consentLocked(): boolean {
+    return this.client?.consentFlow != null;
+  }
+
   private toggleConsentEnabled() {
-    this.formData = {
-      ...this.formData,
-      consentFlow: this.hasConsentFlow ? null : createDefaultConsentFlow(),
-    };
+    if (this.consentLocked) return;
+    const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
+    this.formData = { ...this.formData, consentFlow };
+    this.syncPartnerTemplate();
+  }
+
+  /** Keeps the OTP template in step with consent: partners get the one that names their app. */
+  private syncPartnerTemplate() {
+    const otpTemplateId = otpTemplateForConsent(
+      this.formData.otpTemplateId,
+      this.hasConsentFlow,
+      this.otpChannel,
+      this.otpTemplateOptions.map(template => template.id),
+    );
+    if (otpTemplateId !== this.formData.otpTemplateId) {
+      this.formData = { ...this.formData, otpTemplateId };
+    }
   }
 
   /** `null` remembers the grant until it is revoked; a number expires it after that many days. */
@@ -2560,6 +2578,7 @@ export class VersolaClientForm extends LitElement {
   private setOtpType(otpType: 'sms' | 'email') {
     if (this.otpChannelLocked) return;
     this.setAuthFlow({ otpType });
+    this.syncPartnerTemplate();
   }
 
   private toggleInlinePassword() {
@@ -3424,7 +3443,7 @@ export class VersolaClientForm extends LitElement {
         'No prompt is the normal choice for an app you own.',
         html`
         <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
-          <button type="button" aria-pressed=${!this.hasConsentFlow} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
+          <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
             First party, no prompt
           </button>
           <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
@@ -4615,6 +4634,8 @@ export class VersolaClientForm extends LitElement {
                     <input
                       type="checkbox"
                       .checked=${this.hasConsentFlow}
+                      ?disabled=${this.consentLocked}
+                      title=${this.consentLocked ? 'A partner client cannot stop asking for consent' : ''}
                       @change=${() => this.toggleConsentEnabled()}
                     />
                   </label>

@@ -389,15 +389,7 @@ object OAuthConfigurationService:
       val templateOpt = clientOpt.flatMap:
         case None => ZIO.none
         case Some(client) =>
-          // Partner clients (those with a consent flow) get the template naming the app,
-          // unless an explicit template was chosen for them.
-          val partner =
-            if otpType == OtpType.sms && client.consentFlow.isDefined && client.otpTemplateId == DefaultTemplateId
-            then getOtpTemplates(client.tenantId, PartnerTemplateId, otpType)
-            else ZIO.none
-          partner.flatMap:
-            case Some(t) => ZIO.some(t)
-            case None => getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
+          getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
 
       for
         template <- templateOpt
@@ -659,5 +651,3 @@ object OAuthConfigurationService:
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")
-    private val DefaultTemplateId = "default"
-    private val PartnerTemplateId = "partner"
