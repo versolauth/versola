@@ -1696,6 +1696,12 @@ object SecretSchema:
        |      batch-size = 1000
        |      interval   = "10 minutes"
        |    }
+       |    {
+       |      table-name = "user_consents"
+       |      batch-size = 1000
+       |      interval   = "1 hour"
+       |      key-column = "ctid"
+       |    }
        |  ]
        |}
        |""".stripMargin
