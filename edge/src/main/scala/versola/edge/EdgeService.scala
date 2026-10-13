@@ -201,6 +201,22 @@ object EdgeService:
       */
     private val sessionExpiryGracePeriod = 10.seconds
 
+    // How long a request may hold the right to refresh one session. It has to outlast the round trip
+    // to auth; if the holder dies the lease simply runs out. Requests that lose the claim wait up to
+    // this long for the holder's result.
+    private val refreshLeaseDuration = 10.seconds
+    private val refreshPollInterval = 50.millis
+
+    // How long after a rotation a cookie of the previous generation is still served the current access
+    // token. It only has to cover requests already in flight with the old cookie and the browser's
+    // propagation of the new one. Bounding it matters: without it a stolen old cookie would keep
+    // working until the next rotation, since nothing else invalidates it. Auth does not do this for
+    // us, it refuses the old refresh token at once.
+    private val rotationGracePeriod = 10.seconds
+    // The floor for the cookie handed to a request that adopts another's token, so a row about to
+    // lapse does not produce a cookie that expires before the browser stores it.
+    private val minAdoptedCookieTtl = 1.second
+
     override def authorize(
         presetId: PresetId,
         overrideParams: Map[String, String] = Map.empty,
@@ -291,6 +307,7 @@ object EdgeService:
         ids <- extractTokenIds(tokens)
         _ <- ZIO.foreachDiscard(tokens.refreshToken)(Observability.setRefreshToken)
         encryptedRefreshToken <- ZIO.foreach(tokens.refreshToken)(encryptRefreshToken)
+        encryptedAccessToken <- encryptAccessToken(tokens.accessToken)
         _ <- sessionRepository.create(
           EdgeSessionRecord(
             publicSessionId = ids.sessionId,
@@ -298,6 +315,7 @@ object EdgeService:
             accessTokenId = ids.accessTokenId,
             encryptedRefreshToken = encryptedRefreshToken,
             expiresAt = now.plusSeconds(cookieTtl.toSeconds + sessionExpiryGracePeriod.toSeconds),
+            encryptedAccessToken = Some(encryptedAccessToken),
           ),
         )
       yield ()
@@ -316,6 +334,18 @@ object EdgeService:
         refreshToken.getBytes(StandardCharsets.UTF_8),
         encryptionKey,
       ).map(Secret(_))
+
+    // Stored so that a request which lost a refresh race can be handed the winner's token. It is
+    // sealed like the refresh token: the row then reveals no more than it did before.
+    private def encryptAccessToken(accessToken: AccessToken): Task[Secret] =
+      securityService.encryptAes256(
+        accessToken.getBytes(StandardCharsets.UTF_8),
+        encryptionKey,
+      ).map(Secret(_))
+
+    private def decryptAccessToken(encrypted: Secret): Task[AccessToken] =
+      securityService.decryptAes256(encrypted, encryptionKey)
+        .map(bytes => AccessToken(new String(bytes, StandardCharsets.UTF_8)))
 
     private def decryptRefreshToken(encrypted: Secret): Task[RefreshToken] =
       securityService.decryptAes256(encrypted, encryptionKey)
@@ -815,34 +845,144 @@ object EdgeService:
             case outcome: Outcome => ZIO.fail(outcome)
       .as(context)
 
+    // Auth rotates refresh tokens strictly: presenting one a second time revokes the whole family
+    // (OAuthTokenService.detectReplay), with no grace window. Two requests carrying the same expired
+    // cookie must therefore not both refresh. The one that claims the row's lease does; the others
+    // are handed the token it produces. The lease is a column and not a database lock because the
+    // refresh is an HTTP call to auth, and no connection or transaction may stay open across it.
     private def refreshSession(
         accessTokenId: AccessTokenId,
         cookiePresetId: PresetId,
         now: Instant,
     ): IO[Throwable | Outcome, ActiveSession] =
+      sessionRepository.claimRefresh(accessTokenId, now, now.plus(refreshLeaseDuration))
+        .flatMap:
+          case Some(record) => refreshClaimed(accessTokenId, record, cookiePresetId)
+          case None => adoptRotation(accessTokenId, cookiePresetId)
+
+    private def refreshClaimed(
+        accessTokenId: AccessTokenId,
+        record: EdgeSessionRecord,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
       // When the session record, its preset or its refresh token is gone the
       // session is fully expired; fall back to the preset carried by the cookie so
       // the caller is sent to the right app's login, whichever app this edge is fronting.
+      val refreshed =
+        for
+          preset <- clientService.findPreset(record.presetId)
+            .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
+          encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
+            .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
+          decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
+            // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
+            // (lost or replaced key) or altered in the store fails the tag check; a value shorter
+            // than IV + tag is rejected before that. Both mean this row can never be read again:
+            // send the caller to log in, which overwrites the row. Any other failure of the
+            // decryption itself -- a key that is not an AES key, say -- is not the session's fault
+            // and stays a failure.
+            // No separate log line: the error code on the HTTP log context is enough.
+            case _: AEADBadTagException | _: IllegalArgumentException =>
+              Observability.setError("refresh_token_undecryptable") *>
+                failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
+          session <- rotate(decryptedRefreshToken, preset, record.presetId)
+        yield session
+
+      // A successful rotation ends the lease itself (the upsert in storeSession). Anything else must
+      // hand it back, or the requests waiting on this one sit out the whole lease. A failed release
+      // is ignored so it cannot replace the error that got us here; the lease then just expires.
+      refreshed.onError(_ => sessionRepository.releaseRefresh(accessTokenId).ignore)
+
+    /** Reached when this request did not get the lease: either another request is refreshing the same
+      * session right now, or it already did and this request carries the cookie from before. In both
+      * cases the result is the other request's access token, so auth is not called.
+      */
+    private def adoptRotation(
+        accessTokenId: AccessTokenId,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
+      findRotated(accessTokenId).flatMap:
+        case Some(rotated) => sessionFromRotated(rotated, cookiePresetId)
+        case None =>
+          sessionRepository.findByAccessTokenId(accessTokenId).flatMap:
+            case Some(_) => awaitRotation(accessTokenId, cookiePresetId, refreshLeaseDuration.toMillis / refreshPollInterval.toMillis)
+            case None =>
+              // No row under the old id. Either the session is gone, or the holder committed after
+              // the read above and before this one; reading again tells the two apart.
+              findRotated(accessTokenId).flatMap:
+                case Some(rotated) => sessionFromRotated(rotated, cookiePresetId)
+                case None => failWithReauthenticate(cookiePresetId, None, None)
+
+    // The row this request's stale cookie lost to, if the rotation is recent enough to honour it (see
+    // rotationGracePeriod). Rotation time is stamped when the holder stores its result, so a waiter
+    // that sees the result is always inside the window.
+    private def findRotated(accessTokenId: AccessTokenId): Task[Option[EdgeSessionRecord]] =
+      Clock.instant.flatMap(now =>
+        sessionRepository.findByPreviousAccessTokenId(accessTokenId, now.minus(rotationGracePeriod)),
+      )
+
+    // Polls instead of subscribing to anything: edge replicas share nothing but the database. Each
+    // round also retries the claim, so a holder that failed (and released) or died (lease expired)
+    // does not leave its waiters to time out; one of them takes over and refreshes.
+    private def awaitRotation(
+        accessTokenId: AccessTokenId,
+        cookiePresetId: PresetId,
+        remaining: Long,
+    ): IO[Throwable | Outcome, ActiveSession] =
+      if remaining <= 0 then reauthenticateFromCookie(cookiePresetId)
+      else
+        for
+          _ <- ZIO.sleep(refreshPollInterval)
+          rotated <- findRotated(accessTokenId)
+          session <- rotated match
+            case Some(record) => sessionFromRotated(record, cookiePresetId)
+            case None =>
+              for
+                now <- Clock.instant
+                claimed <- sessionRepository.claimRefresh(accessTokenId, now, now.plus(refreshLeaseDuration))
+                session <- claimed match
+                  case Some(record) => refreshClaimed(accessTokenId, record, cookiePresetId)
+                  case None => awaitRotation(accessTokenId, cookiePresetId, remaining - 1)
+              yield session
+        yield session
+
+    /** Serves the access token another request obtained by refreshing this session, validated again
+      * here. The cookie lifetime is what is left of the row's, so it ends when the winner's does.
+      */
+    private def sessionFromRotated(
+        rotated: EdgeSessionRecord,
+        cookiePresetId: PresetId,
+    ): IO[Throwable | Outcome, ActiveSession] =
       for
-        record <- sessionRepository.findByAccessTokenId(accessTokenId)
+        preset <- clientService.findPreset(rotated.presetId)
           .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
-        preset <- clientService.findPreset(record.presetId)
-          .someOrElseZIO(failWithReauthenticate(cookiePresetId, None, None))
-        encryptedRefreshToken <- ZIO.succeed(record.encryptedRefreshToken)
-          .someOrElseZIO(failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath))
-        decryptedRefreshToken <- decryptRefreshToken(encryptedRefreshToken).catchSome:
-          // GCM authenticates as it decrypts, so a token sealed under another EDGE_TOKEN_ENC_KEY
-          // (lost or replaced key) or altered in the store fails the tag check; a value shorter
-          // than IV + tag is rejected before that. Both mean this row can never be read again:
-          // send the caller to log in, which overwrites the row. Any other failure of the
-          // decryption itself -- a key that is not an AES key, say -- is not the session's fault
-          // and stays a failure.
-          // No separate log line: the error code on the HTTP log context is enough.
+        reauthenticate = failWithReauthenticate(rotated.presetId, preset.cookieDomain, preset.cookiePath)
+        encryptedAccessToken <- ZIO.succeed(rotated.encryptedAccessToken).someOrElseZIO(reauthenticate)
+        // An unreadable value is handled as for the refresh token: this row cannot serve the caller.
+        accessToken <- decryptAccessToken(encryptedAccessToken).catchSome:
           case _: AEADBadTagException | _: IllegalArgumentException =>
-            Observability.setError("refresh_token_undecryptable") *>
-              failWithReauthenticate(record.presetId, preset.cookieDomain, preset.cookiePath)
-        session <- rotate(decryptedRefreshToken, preset, record.presetId)
-      yield session
+            Observability.setError("access_token_undecryptable") *> reauthenticate
+        publicKeys <- jwksService.getPublicKeys
+        // Expired or malformed: the winner's token is no better than the one the caller came with.
+        claims <- JWT.deserialize[Json.Obj](accessToken, publicKeys, JWT.Type.AccessToken)
+          .orElse(reauthenticate)
+        now <- Clock.instant
+        remaining = Duration.fromSeconds(rotated.expiresAt.getEpochSecond - sessionExpiryGracePeriod.toSeconds - now.getEpochSecond)
+        cookie = EdgeSessionCookie(
+          presetId = rotated.presetId,
+          accessToken = accessToken,
+          ttl = if remaining.compareTo(minAdoptedCookieTtl) < 0 then minAdoptedCookieTtl else remaining,
+          domain = preset.cookieDomain,
+          path = preset.cookiePath,
+          now = now,
+        )
+      yield ActiveSession(accessToken, claims, Some(cookie))
+
+    // Waiting for the holder timed out. The preset is looked up for the cookie's domain and path, so
+    // that clearing it reaches the cookie that was set.
+    private def reauthenticateFromCookie(cookiePresetId: PresetId): IO[Throwable | Outcome, Nothing] =
+      clientService.findPreset(cookiePresetId).flatMap: preset =>
+        failWithReauthenticate(cookiePresetId, preset.flatMap(_.cookieDomain), preset.flatMap(_.cookiePath))
 
     private def rotate(
         refreshToken: RefreshToken,
