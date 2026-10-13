@@ -7614,83 +7614,7 @@
       }
     },
     {
-      "type": "timeseries",
-      "title": "Edge overhead (estimated from backend latency)",
-      "description": "What edge adds over calling the backend directly, at the tail (p99) and on average. The mean includes the auth lookup. The dashed line is the 15 ms budget. Excludes /resources/central, which goes through central, not a backend.",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "drawStyle": "line",
-            "lineWidth": 1,
-            "fillOpacity": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "thresholdsStyle": {
-              "mode": "dashed"
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 0.015
-              }
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))) - histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", peer!~\"versola-(auth|central)[:.].*\"}[$__rate_interval])))",
-          "legendFormat": "proxy p99 − backend p99"
-        },
-        {
-          "refId": "B",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum(rate(http_server_request_duration_seconds_sum{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])) - sum(rate(http_client_request_duration_seconds_sum{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", peer!~\"versola-(auth|central)[:.].*\"}[$__rate_interval])) / sum(rate(http_server_request_duration_seconds_count{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval]))",
-          "legendFormat": "proxy mean − backend mean"
-        }
-      ],
       "id": 146,
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 307
-      }
-    },
-    {
-      "id": 147,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -7699,7 +7623,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 315
+        "y": 307
       }
     },
     {
@@ -7749,12 +7673,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 148,
+      "id": 147,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7804,12 +7728,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 149,
+      "id": 148,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 316
+        "y": 308
       }
     },
     {
@@ -7873,12 +7797,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 150,
+      "id": 149,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 324
+        "y": 316
       }
     },
     {
@@ -7924,12 +7848,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 151,
+      "id": 150,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 324
+        "y": 316
       }
     },
     {
@@ -7979,12 +7903,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 152,
+      "id": 151,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 332
+        "y": 324
       }
     },
     {
@@ -8030,16 +7954,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 153,
+      "id": 152,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 332
+        "y": 324
       }
     },
     {
-      "id": 154,
+      "id": 153,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -8048,7 +7972,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 340
+        "y": 332
       }
     },
     {
@@ -8098,12 +8022,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 155,
+      "id": 154,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 341
+        "y": 333
       }
     },
     {
@@ -8153,12 +8077,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 156,
+      "id": 155,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 341
+        "y": 333
       }
     },
     {
@@ -8222,12 +8146,12 @@
           "legendFormat": "p99"
         }
       ],
-      "id": 157,
+      "id": 156,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 349
+        "y": 341
       }
     },
     {
@@ -8273,12 +8197,12 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 158,
+      "id": 157,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 349
+        "y": 341
       }
     },
     {
@@ -8328,12 +8252,12 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 159,
+      "id": 158,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 357
+        "y": 349
       }
     },
     {
@@ -8379,16 +8303,16 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 160,
+      "id": 159,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 357
+        "y": 349
       }
     },
     {
-      "id": 161,
+      "id": 160,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -8397,7 +8321,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 365
+        "y": 357
       }
     },
     {
@@ -8443,12 +8367,12 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 162,
+      "id": 161,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 366
+        "y": 358
       }
     },
     {
@@ -8511,12 +8435,12 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 163,
+      "id": 162,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 366
+        "y": 358
       }
     },
     {
@@ -8578,12 +8502,12 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 164,
+      "id": 163,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 374
+        "y": 366
       }
     },
     {
@@ -8638,16 +8562,16 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 165,
+      "id": 164,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 374
+        "y": 366
       }
     },
     {
-      "id": 166,
+      "id": 165,
       "type": "row",
       "title": "edge — Data volume and cleanup of expired rows",
       "collapsed": false,
@@ -8656,7 +8580,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 382
+        "y": 374
       }
     },
     {
@@ -8705,12 +8629,12 @@
           "instant": false
         }
       ],
-      "id": 167,
+      "id": 166,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 0,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8759,12 +8683,12 @@
           "instant": false
         }
       ],
-      "id": 168,
+      "id": 167,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 8,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8813,12 +8737,12 @@
           "instant": false
         }
       ],
-      "id": 169,
+      "id": 168,
       "gridPos": {
         "h": 3,
         "w": 8,
         "x": 16,
-        "y": 383
+        "y": 375
       }
     },
     {
@@ -8930,12 +8854,12 @@
           "instant": true
         }
       ],
-      "id": 170,
+      "id": 169,
       "gridPos": {
         "h": 9,
         "w": 24,
         "x": 0,
-        "y": 386
+        "y": 378
       }
     },
     {
@@ -8982,12 +8906,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 171,
+      "id": 170,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 0,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9043,12 +8967,12 @@
           "legendFormat": "{{table}} expired"
         }
       ],
-      "id": 172,
+      "id": 171,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 8,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9095,12 +9019,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 173,
+      "id": 172,
       "gridPos": {
         "h": 9,
         "w": 8,
         "x": 16,
-        "y": 395
+        "y": 387
       }
     },
     {
@@ -9147,12 +9071,12 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 174,
+      "id": 173,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 404
+        "y": 396
       }
     },
     {
@@ -9199,16 +9123,16 @@
           "legendFormat": "{{table}}"
         }
       ],
-      "id": 175,
+      "id": 174,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 404
+        "y": 396
       }
     },
     {
-      "id": 176,
+      "id": 175,
       "type": "row",
       "title": "edge — Database write-ahead log (WAL)",
       "collapsed": false,
@@ -9217,7 +9141,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 412
+        "y": 404
       }
     },
     {
@@ -9275,12 +9199,12 @@
           "instant": false
         }
       ],
-      "id": 177,
+      "id": 176,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 0,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9330,12 +9254,12 @@
           "instant": false
         }
       ],
-      "id": 178,
+      "id": 177,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 4,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9385,12 +9309,12 @@
           "instant": false
         }
       ],
-      "id": 179,
+      "id": 178,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 8,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9440,12 +9364,12 @@
           "instant": false
         }
       ],
-      "id": 180,
+      "id": 179,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 12,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9499,12 +9423,12 @@
           "instant": false
         }
       ],
-      "id": 181,
+      "id": 180,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 16,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9554,12 +9478,12 @@
           "instant": false
         }
       ],
-      "id": 182,
+      "id": 181,
       "gridPos": {
         "h": 3,
         "w": 4,
         "x": 20,
-        "y": 413
+        "y": 405
       }
     },
     {
@@ -9645,12 +9569,12 @@
           "legendFormat": "limit: max_wal_size / checkpoint_timeout"
         }
       ],
-      "id": 183,
+      "id": 182,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 416
+        "y": 408
       }
     },
     {
@@ -9701,12 +9625,12 @@
           "legendFormat": "{{type}}"
         }
       ],
-      "id": 184,
+      "id": 183,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 416
+        "y": 408
       }
     },
     {
@@ -9754,12 +9678,12 @@
           "legendFormat": "share of WAL"
         }
       ],
-      "id": 185,
+      "id": 184,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 424
+        "y": 416
       }
     },
     {
@@ -9815,12 +9739,12 @@
           "legendFormat": "bytes per record"
         }
       ],
-      "id": 186,
+      "id": 185,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 424
+        "y": 416
       }
     },
     {
@@ -9867,16 +9791,16 @@
           "legendFormat": "{{slot}}"
         }
       ],
-      "id": 187,
+      "id": 186,
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 432
+        "y": 424
       }
     },
     {
-      "id": 188,
+      "id": 187,
       "type": "row",
       "title": "edge — Database and dependencies",
       "collapsed": true,
@@ -9942,12 +9866,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 189,
+          "id": 188,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 441
+            "y": 433
           }
         },
         {
@@ -10002,12 +9926,12 @@
               "legendFormat": "threads waiting"
             }
           ],
-          "id": 190,
+          "id": 189,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 441
+            "y": 433
           }
         },
         {
@@ -10054,12 +9978,12 @@
               "legendFormat": "{{pool_name}}"
             }
           ],
-          "id": 191,
+          "id": 190,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 449
+            "y": 441
           }
         },
         {
@@ -10105,12 +10029,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 192,
+          "id": 191,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 449
+            "y": 441
           }
         },
         {
@@ -10156,12 +10080,12 @@
               "legendFormat": "{{repository}}.{{operation}}"
             }
           ],
-          "id": 193,
+          "id": 192,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 457
+            "y": 449
           }
         },
         {
@@ -10207,12 +10131,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 194,
+          "id": 193,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 457
+            "y": 449
           }
         },
         {
@@ -10259,12 +10183,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 195,
+          "id": 194,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 465
+            "y": 457
           }
         },
         {
@@ -10310,12 +10234,12 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 196,
+          "id": 195,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 465
+            "y": 457
           }
         }
       ],
@@ -10323,11 +10247,11 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 440
+        "y": 432
       }
     },
     {
-      "id": 197,
+      "id": 196,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -10375,12 +10299,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 198,
+          "id": 197,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 442
+            "y": 434
           }
         },
         {
@@ -10436,12 +10360,12 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 199,
+          "id": 198,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 442
+            "y": 434
           }
         },
         {
@@ -10488,12 +10412,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 200,
+          "id": 199,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
-            "y": 450
+            "y": 442
           }
         },
         {
@@ -10539,12 +10463,12 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 201,
+          "id": 200,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 12,
-            "y": 450
+            "y": 442
           }
         }
       ],
@@ -10552,7 +10476,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 441
+        "y": 433
       }
     }
   ]

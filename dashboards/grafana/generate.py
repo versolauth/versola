@@ -537,11 +537,6 @@ def add_edge(b: Board, phase: str) -> None:
         (f"histogram_quantile(0.99, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "p99"),
     ], unit="s", line=steps((None, GREEN), (0.015, RED)),
          desc="Time edge spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules, the token lookup at auth. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so p99 here is the real p99. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
-    b.ts("Edge overhead (estimated from backend latency)", [
-        (f"{b.quantile(0.99, ', route=~\"/resources/.*\"')} - histogram_quantile(0.99, sum by (le) (rate(http_client_request_duration_seconds_bucket{backend}[$__rate_interval])))", "proxy p99 − backend p99"),
-        (f"{whole} - {in_backend}", "proxy mean − backend mean"),
-    ], unit="s", line=steps((None, GREEN), (0.015, RED)),
-         desc="What edge adds over calling the backend directly, at the tail (p99) and on average. The mean includes the auth lookup. The dashed line is the 15 ms budget. Excludes /resources/central, which goes through central, not a backend.")
 
     traffic(b, title="Web apps (browser sign-in and sign-out)", extra=web,
             what="/login and /complete finish a sign-in; /complete includes a code exchange with auth, so it carries auth's latency")
