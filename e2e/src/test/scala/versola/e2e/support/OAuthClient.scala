@@ -421,8 +421,9 @@ case class AccountCaller(userId: java.util.UUID, clientId: String, sessionId: St
   private[support] def bodyWith(extra: (String, Json)*): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
-        "userId" -> Json.Str(userId.toString),
-        "clientId" -> Json.Str(clientId),
+        "userId"    -> Json.Str(userId.toString),
+        "clientId"  -> Json.Str(clientId),
+        "sessionId" -> Json.Str(sessionId),
       ) ++ Chunk.fromIterable(extra),
     )
 
