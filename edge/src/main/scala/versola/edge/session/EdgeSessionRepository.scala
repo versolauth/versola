@@ -17,7 +17,7 @@ trait EdgeSessionRepository:
   /** The row whose `accessTokenId` was `accessTokenId` before its last rotation, i.e. the one a request
     * with a stale cookie lost the refresh race to. Ignores rows that have expired, and rows rotated
     * at or before `rotatedAfter` (or never rotated): the previous generation's cookie stops being
-    * honoured once that moment has passed.
+    * honoured once that moment has passed. At most one row matches, since access token ids (`jti`) are unique.
     */
   def findByPreviousAccessTokenId(accessTokenId: AccessTokenId, rotatedAfter: Instant): Task[Option[EdgeSessionRecord]]
 

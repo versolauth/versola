@@ -96,6 +96,10 @@ trait EdgeService:
   def backChannelLogout(logoutToken: String): IO[Throwable | InvalidLogoutToken, Unit]
 
 object EdgeService:
+
+  /** The exchange with auth outlasted the refresh lease's budget; see `refreshExchangeTimeout`. */
+  final class RefreshExchangeTimedOut extends RuntimeException("refresh token exchange with auth timed out")
+
   case class LoginCompletion(
       presetId: PresetId,
       accessToken: AccessToken,
@@ -205,7 +209,14 @@ object EdgeService:
     // to auth; if the holder dies the lease simply runs out. Requests that lose the claim wait up to
     // this long for the holder's result.
     private val refreshLeaseDuration = 10.seconds
-    private val refreshPollInterval = 50.millis
+    private val refreshPollInterval = 100.millis
+    // Waiters look for the holder's result every poll but only retry the claim every few polls, so a
+    // burst of requests on one session costs about one query per poll each instead of two.
+    private val claimRetryEveryPolls = 5L
+    // The exchange with auth is abandoned before the lease runs out. Otherwise a slow auth would let
+    // a waiter claim the lease while the holder's request is still in flight and present the same
+    // refresh token a second time, which revokes the family.
+    private val refreshExchangeTimeout = 8.seconds
 
     // How long after a rotation a cookie of the previous generation is still served the current access
     // token. It only has to cover requests already in flight with the old cookie and the browser's
@@ -893,7 +904,11 @@ object EdgeService:
       // A successful rotation ends the lease itself (the upsert in storeSession). Anything else must
       // hand it back, or the requests waiting on this one sit out the whole lease. A failed release
       // is ignored so it cannot replace the error that got us here; the lease then just expires.
-      refreshed.onError(_ => sessionRepository.releaseRefresh(accessTokenId).ignore)
+      // A timed-out exchange is the exception: auth may still have spent the token, so the lease is
+      // kept and runs out on its own rather than letting a waiter present the token at once.
+      refreshed.onError: cause =>
+        if cause.failureOption.exists(_.isInstanceOf[RefreshExchangeTimedOut]) then ZIO.unit
+        else sessionRepository.releaseRefresh(accessTokenId).ignore
 
     /** Reached when this request did not get the lease: either another request is refreshing the same
       * session right now, or it already did and this request carries the cookie from before. In both
@@ -938,6 +953,8 @@ object EdgeService:
           rotated <- findRotated(accessTokenId)
           session <- rotated match
             case Some(record) => sessionFromRotated(record, cookiePresetId)
+            case None if remaining % claimRetryEveryPolls != 0 =>
+              awaitRotation(accessTokenId, cookiePresetId, remaining - 1)
             case None =>
               for
                 now <- Clock.instant
@@ -996,6 +1013,7 @@ object EdgeService:
           _ <- Observability.setPreviousRefreshToken(refreshToken)
           client <- clientService.findClient(preset.clientId).someOrFail(ClientNotFound(preset.clientId))
           tokens <- ssoClient.exchangeRefreshToken(refreshToken, client.id, client.credential)
+            .timeoutFail(RefreshExchangeTimedOut())(refreshExchangeTimeout)
           cookieTtl = Duration.fromSeconds(tokens.refreshTokenExpiresIn.getOrElse(tokens.expiresIn))
           _ <- storeSession(tokens, presetId, cookieTtl)
           publicKeys <- jwksService.getPublicKeys

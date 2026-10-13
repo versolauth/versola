@@ -2298,6 +2298,46 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         leaseAfter <- sessions.lease(AccessTokenId("old-jti"))
       yield assertTrue(result == Left(failure), leaseAfter.isEmpty)
     },
+    // Auth answering slower than the lease would let a waiter claim it while the holder's request is
+    // still in flight; the holder gives up first and keeps the lease, since auth may have spent the token.
+    test("an exchange with auth that outlasts its budget fails and keeps the lease") {
+      val env = new Env
+      for
+        _ <- env.setupDefaults()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResource(usersEndpoint()))
+        _ <- env.withPresets(preset)
+        _ <- env.withClients(oauthClient)
+        sessions <- FakeSessions.make
+        expiredToken <- env.signToken(jti = "old-jti", ttlSeconds = 1L)
+        _ <- TestClock.adjust(2.seconds)
+        encryptionKey = SecretKeySpec(env.edgeConfig.security.tokenEncryption.key, "AES")
+        encryptedRefresh <- security.encryptAes256("rt-secret".getBytes("UTF-8"), encryptionKey)
+        now <- Clock.instant
+        _ <- sessions.seed(session.EdgeSessionRecord(
+          publicSessionId = SessionId("sso-session-1"),
+          presetId = presetId,
+          accessTokenId = AccessTokenId("old-jti"),
+          encryptedRefreshToken = Some(Secret(encryptedRefresh)),
+          expiresAt = now.plusSeconds(3600),
+          previousAccessTokenId = None,
+          encryptedAccessToken = None,
+          rotatedAt = None,
+        ))
+        _ <- env.ssoClient.exchangeRefreshToken.returnsZIO((_, _, _) => ZIO.never)
+        service = env.buildService(client, security, sessions = sessions)
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(expiredToken))
+        fiber <- service.proxy(ResourceId("users-api"), Path.decode("/users"), request).either.fork
+        _ <- runClockUntilDone(fiber)
+        result <- fiber.join
+        leaseAfter <- sessions.lease(AccessTokenId("old-jti"))
+      yield assertTrue(
+        result.left.exists(_.isInstanceOf[EdgeService.RefreshExchangeTimedOut]),
+        leaseAfter.isDefined,
+        env.ssoClient.exchangeRefreshToken.calls.size == 1,
+      )
+    },
     // The holder of the lease may have died; waiting must end, with the lease still held, in a login
     // redirect and without ever calling auth.
     test("a request that keeps finding the lease taken gives up with Reauthenticate when the wait runs out") {
