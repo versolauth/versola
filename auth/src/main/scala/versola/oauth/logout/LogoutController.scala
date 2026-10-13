@@ -156,9 +156,18 @@ object LogoutController extends Controller:
         claims <- sessionIdFromIdToken(value)
       yield claims.filter(_.iss == config.jwt.issuer).filter(_.aud.nonEmpty).map(_.sid)
 
+  // OIDC RP-Initiated Logout 1.0 §2: the OP SHOULD accept an expired ID token as the hint. The
+  // signature and type are still verified; only `exp` is waived, and only here. The ID token's
+  // lifetime is the access-token TTL, so an RP that was idle for an hour would otherwise have
+  // its logout silently ignored.
   private def sessionIdFromIdToken(token: String): RIO[JwksService, Option[LogoutHintClaims]] =
     ZIO.serviceWithZIO[JwksService](_.getPublicKeys).flatMap: keys =>
-      JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT).option
+      JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT)
+        .catchSome:
+          case JWT.Error.Expired(jti) =>
+            ZIO.logInfo(s"Accepting expired id_token_hint $jti for logout") *>
+              JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
+        .option
 
   private case class LogoutConfirmSubmission(
       csrfToken: String,
