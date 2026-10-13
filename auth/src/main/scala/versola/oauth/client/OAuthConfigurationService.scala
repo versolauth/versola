@@ -385,23 +385,35 @@ object OAuthConfigurationService:
         otpType: OtpType,
         uiLocales: Option[List[String]],
     ): UIO[OtpTemplate] =
-      val templateOpt = find(id).flatMap:
+      val clientOpt = find(id)
+      val templateOpt = clientOpt.flatMap:
         case None => ZIO.none
         case Some(client) =>
-          getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
+          // Partner clients (those with a consent flow) get the template naming the app,
+          // unless an explicit template was chosen for them.
+          val partner =
+            if otpType == OtpType.sms && client.consentFlow.isDefined && client.otpTemplateId == DefaultTemplateId
+            then getOtpTemplates(client.tenantId, PartnerTemplateId, otpType)
+            else ZIO.none
+          partner.flatMap:
+            case Some(t) => ZIO.some(t)
+            case None => getOtpTemplates(client.tenantId, client.otpTemplateId, otpType)
 
       for
         template <- templateOpt
+        client <- clientOpt
         locales <- getLocales
       yield template match
         case None => IllegalStateTemplate
         case Some(t) =>
           val preferredLocales = uiLocales.getOrElse(Nil) :+ locales.default
-          val body = preferredLocales
-            .collectFirst { case loc if t.localizations.contains(loc) => t.localizations(loc) }
-            .orElse(t.localizations.values.headOption)
-            .getOrElse(IllegalStateTemplate)
-          OtpTemplate(body)
+          def pick(values: Map[String, String]): Option[String] =
+            preferredLocales
+              .collectFirst { case loc if values.contains(loc) => values(loc) }
+              .orElse(values.values.headOption)
+          val body = pick(t.localizations).getOrElse(IllegalStateTemplate)
+          val appName = client.flatMap(c => pick(c.clientName)).getOrElse(id.toString)
+          OtpTemplate(body.replace("{{appName}}", appName))
 
     override def getPasswordTemplate(channel: OtpTemplateChannel, uiLocales: Option[List[String]]): Task[OtpTemplate] =
       for
@@ -647,3 +659,5 @@ object OAuthConfigurationService:
       yield ()
 
     private val IllegalStateTemplate = OtpTemplate("{{code}}")
+    private val DefaultTemplateId = "default"
+    private val PartnerTemplateId = "partner"
