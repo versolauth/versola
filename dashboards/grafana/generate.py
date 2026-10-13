@@ -16,7 +16,7 @@ One board, so nobody switches between dashboards to follow a request across serv
 
 The board is generated, not hand-edited: edit this script, re-run it, commit the JSON.
 
-Selectors: Env (the namespace), Tail quantile (p99, p99.9, p99.99, p99.999: the quantile of the tiles and of the graphs
+Selectors: Env (the deployment's name, `global.environment` in the chart: prod, stage, qa), Namespace, Tail quantile (p99, p99.9, p99.99, p99.999: the quantile of the tiles and of the graphs
 that split by a dimension), and Service on the database board. Graphs that answer "how is latency?" for a whole service,
 the ingress or the database draw every quantile at once; see QUANTILES.
 
@@ -68,7 +68,7 @@ class Board:
     def __init__(self, uid: str, title: str, description: str, namespace_query: str | None = None, tags: list[str] | None = None,
                  with_tail: bool = True, extra_vars: list[dict] | None = None):
         self.uid, self.title, self.description = uid, title, description
-        self.namespace_query = namespace_query or 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, namespace)'
+        self.namespace_query = namespace_query or 'label_values(up{app_kubernetes_io_component=~"auth|central|edge", environment=~"$env"}, namespace)'
         self.tags = tags or ["versola", "versola-service"]
         self.with_tail, self.extra_vars = with_tail, extra_vars or []
         self.panels: list[dict] = []
@@ -213,8 +213,15 @@ class Board:
             "links": [{"type": "dashboards", "title": "Services", "tags": ["versola-service"], "asDropdown": False, "includeVars": True, "keepTime": True, "icon": "external link"}],
             "templating": {"list": [
                 {"name": "datasource", "label": "Data source", "type": "datasource", "query": "prometheus", "current": {}, "hide": 0},
+                # The deployment's name (prod, stage, qa), from `global.environment` in the chart. A release without
+                # the label still works: it matches ".*" through "All".
+                *([{
+                    "name": "env", "label": "Env", "type": "query", "datasource": DS,
+                    "query": 'label_values(up{app_kubernetes_io_component=~"auth|central|edge"}, environment)',
+                    "refresh": 1, "multi": False, "includeAll": True, "allValue": ".*", "hide": 0,
+                }] if self.uid != "versola-loadgen" else []),
                 {
-                    "name": "namespace", "label": "Env", "type": "query", "datasource": DS,
+                    "name": "namespace", "label": "Namespace", "type": "query", "datasource": DS,
                     "query": self.namespace_query,
                     "refresh": 1, "multi": False, "includeAll": False, "hide": 0,
                 },
