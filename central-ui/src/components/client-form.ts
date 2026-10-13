@@ -349,26 +349,37 @@ export class VersolaClientForm extends LitElement {
         overflow-wrap: anywhere;
       }
 
+      /* The button stays a 24px target (WCAG 2.5.8); only the circle drawn inside it is small. */
       .option-info-button {
+        position: relative;
+        isolation: isolate;
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
-        border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        border: 0;
+        background: transparent;
         color: var(--accent);
         font-size: 0.625rem;
         font-weight: 700;
         line-height: 1;
-        padding: 0.15rem 0.35rem;
-        min-width: 1.125rem;
-        min-height: 1.125rem;
+        padding: 0;
+        min-width: 1.5rem;
+        min-height: 1.5rem;
         cursor: pointer;
         font-family: var(--font-family);
       }
+      .option-info-button::before {
+        content: '';
+        position: absolute;
+        inset: 0.25rem;
+        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border-radius: 999px;
+        background: rgba(var(--accent-tint), 0.12);
+        z-index: -1;
+      }
 
-      /* A label row that carries an info button is as tall as the button (18px), with room under
+      /* A label row that carries an info button is as tall as the button (24px), with room under
          it, so the button never reaches into the field below. */
       div:has(> .option-info) {
-        min-height: 1.125rem;
+        min-height: 1.5rem;
         margin-bottom: 0.375rem;
       }
 
@@ -379,13 +390,14 @@ export class VersolaClientForm extends LitElement {
         flex: none;
       }
 
-      .option-info-button:hover {
+      .option-info-button:hover::before {
         background: rgba(var(--accent-tint), 0.18);
         border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
+        border-radius: 999px;
         box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
