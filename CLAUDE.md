@@ -22,7 +22,7 @@ config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
 ```bash
 sbt compile                              # all services
 sbt Test/compile                         # also compiles e2e
-scripts/test.sh                          # sbt test against throwaway Postgres (plain + TLS), no set-up
+scripts/test.sh                          # sbt test against throwaway Postgres (TLS), no set-up
 sbt test                                 # needs Postgres: docker-compose -f services.yml up -d postgres
 sbt "auth/testOnly versola.oauth.revoke.RevocationServiceSpec"   # one spec
 sbt e2e/test                             # needs the staged stack, see develop.md

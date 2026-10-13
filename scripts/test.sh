@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the unit tests against throwaway Postgres containers, so a local run needs no set-up and
+# Runs the unit tests against a throwaway Postgres, so a local run needs no set-up and
 # cannot collide with another run, another worktree or the stack on :5432.
 #
 #   scripts/test.sh                       # sbt test
