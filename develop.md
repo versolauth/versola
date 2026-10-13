@@ -64,7 +64,7 @@ The script first asks for the environment **Name** (default `local`):
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres` - and, for `PostgresTlsConnectionSpec`, a Postgres that serves TLS - `util/implementations/postgres/tls-fixture/start.sh` (port 5433, CA written to `target/postgres-tls/ca.crt`; needs `docker` and `openssl`)
+3. Run tests - `scripts/test.sh` (`sbt test`; pass sbt commands as arguments, e.g. `scripts/test.sh "auth/testOnly versola.oauth.revoke.RevocationServiceSpec"`). It starts a throwaway Postgres and a Postgres serving TLS (for `PostgresTlsConnectionSpec`) on free ports, points the tests at them via `POSTGRES_HOST`, `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA`, and removes them afterwards, so it is safe next to other runs, other worktrees and the stack on :5432. Needs `docker`, `openssl` and `sbt`. To run `sbt test` yourself instead, start Postgres - `docker-compose -f services.yml up -d postgres` - and, for `PostgresTlsConnectionSpec`, `util/implementations/postgres/tls-fixture/start.sh` (port 5433 unless `POSTGRES_TLS_PORT` is set; CA written to `target/postgres-tls/ca.crt`); override `POSTGRES_TLS_HOST`/`POSTGRES_TLS_CA` if the TLS Postgres is elsewhere.
 4. ```bash
     cd central-ui
     npm install

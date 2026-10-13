@@ -4,6 +4,7 @@
       "Bash(sbt compile)",
       "Bash(sbt Test/compile)",
       "Bash(sbt test)",
+      "Bash(scripts/test.sh)",
       "Bash(npm run type-check)",
       "Bash(npm run test:unit)",
       "Bash(npx playwright test *)",

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts a TLS-enabled Postgres on localhost:${POSTGRES_TLS_PORT:-5433} for PostgresTlsConnectionSpec
-# and leaves its CA at ${POSTGRES_TLS_CA:-target/postgres-tls/ca.crt} (relative to the repo root).
+# in the container ${POSTGRES_TLS_CONTAINER:-versola-postgres-tls} and leaves its CA at ${POSTGRES_TLS_CA:-target/postgres-tls/ca.crt} (relative to the repo root).
 # The server certificate is valid for the DNS name `localhost` only, so connecting to 127.0.0.1
 # fails hostname verification -- the spec relies on that.
 set -euo pipefail
@@ -9,6 +9,7 @@ root="$(git rev-parse --show-toplevel)"
 here="$root/util/implementations/postgres/tls-fixture"
 ca="${POSTGRES_TLS_CA:-$root/target/postgres-tls/ca.crt}"
 port="${POSTGRES_TLS_PORT:-5433}"
+name="${POSTGRES_TLS_CONTAINER:-versola-postgres-tls}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
@@ -24,18 +25,18 @@ cp "$work/ca.crt" "$ca"
 cp "$here/Dockerfile" "$work/Dockerfile"
 docker build -q -t versola-postgres-tls "$work" >/dev/null
 
-docker rm -f versola-postgres-tls >/dev/null 2>&1 || true
-docker run -d --name versola-postgres-tls -p "$port:5432" \
+docker rm -f "$name" >/dev/null 2>&1 || true
+docker run -d --name "$name" -p "$port:5432" \
   -e POSTGRES_DB=auth -e POSTGRES_USER=dev -e POSTGRES_PASSWORD=1234 \
   versola-postgres-tls >/dev/null
 
 for _ in $(seq 1 30); do
-  if docker exec versola-postgres-tls pg_isready -U dev -d auth >/dev/null 2>&1; then
+  if docker exec "$name" pg_isready -U dev -d auth >/dev/null 2>&1; then
     echo "postgres with TLS is up on localhost:$port, CA at $ca"
     exit 0
   fi
   sleep 1
 done
 echo "postgres with TLS did not become ready" >&2
-docker logs versola-postgres-tls >&2
+docker logs "$name" >&2
 exit 1
