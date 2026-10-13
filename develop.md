@@ -28,7 +28,7 @@ The script first asks for the environment **Name** (default `local`):
       `http://auth:8080`, `jdbc:postgresql://postgres:5432/...` — containers on a bridge
       network can't reach each other via `localhost`.
     - **Anything a browser has to load** (auth/edge's own public URLs, the post-login
-      redirect) points at nginx's published port instead, `http://localhost:8080` — a
+      redirect) points at the proxy's published port instead, `http://localhost:2821` — a
       browser outside the Compose network has no way to resolve `auth` or `edge` as
       hostnames, and edge's own port isn't published to the host at all.
 
@@ -64,7 +64,7 @@ The script first asks for the environment **Name** (default `local`):
 
 1. Compilation - `compile`
 2. Test compilation - `Test / compile`
-3. Run tests - `test`. First, you need to start postgres - `docker-compose -f services.yml up -d postgres` - and, for `PostgresTlsConnectionSpec`, a Postgres that serves TLS - `util/implementations/postgres/tls-fixture/start.sh` (port 5433, CA written to `target/postgres-tls/ca.crt`; needs `docker` and `openssl`)
+3. Run tests - `test`. First, start postgres - `docker-compose -f services.yml up -d --build postgres`. It serves TLS (and still accepts plaintext), so every spec, `PostgresTlsConnectionSpec` included, runs against it; the CA it generates is written to `target/postgres-tls/ca.crt` (the container runs as the `postgres` user, so on Linux run `mkdir -p target/postgres-tls && chmod a+w target/postgres-tls` first). To run next to another stack or worktree, publish it elsewhere with `POSTGRES_PORT=5433` and run the tests with `POSTGRES_HOST=localhost:5433`; `POSTGRES_TLS_HOST` and `POSTGRES_TLS_CA` override where the TLS spec connects and which CA it trusts.
 4. ```bash
     cd central-ui
     npm install

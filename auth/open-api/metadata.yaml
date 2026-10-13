@@ -177,10 +177,11 @@ components:
         request_uri_parameter_supported:
           type: boolean
           description: |
-            RFC 9101 §5.2: whether a request object may be passed by reference for this
-            server to fetch. Always false — a `request_uri` here always names a pushed
-            authorization request (RFC 9126), which carries the same object over an
-            authenticated back channel instead of one this server would have to fetch.
+            OpenID Connect Discovery 1.0 §3: whether the `request_uri` parameter is
+            supported. Always true — a `request_uri` here names a pushed authorization
+            request (RFC 9126), the `urn:ietf:params:oauth:request_uri:` reference returned
+            by the PAR endpoint. A URL the client hosts itself, for this server to fetch
+            (RFC 9101 §5.2), is refused.
 
   responses:
     Metadata:
@@ -211,4 +212,4 @@ components:
             subject_types_supported: [public]
             request_object_signing_alg_values_supported: [ES256, PS256]
             request_parameter_supported: true
-            request_uri_parameter_supported: false
+            request_uri_parameter_supported: true

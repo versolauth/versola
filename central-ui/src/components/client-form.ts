@@ -4,7 +4,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
 import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
 import './client-kind-step';
@@ -349,20 +349,31 @@ export class VersolaClientForm extends LitElement {
         overflow-wrap: anywhere;
       }
 
+      /* The button stays a 24px target (WCAG 2.5.8); only the circle drawn inside it is small. */
       .option-info-button {
+        position: relative;
+        isolation: isolate;
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
-        border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        border: 0;
+        background: transparent;
         color: var(--accent);
-        font-size: 0.75rem;
+        font-size: 0.625rem;
         font-weight: 700;
         line-height: 1;
-        padding: 0.25rem 0.45rem;
+        padding: 0;
         min-width: 1.5rem;
         min-height: 1.5rem;
         cursor: pointer;
         font-family: var(--font-family);
+      }
+      .option-info-button::before {
+        content: '';
+        position: absolute;
+        inset: 0.25rem;
+        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border-radius: 999px;
+        background: rgba(var(--accent-tint), 0.12);
+        z-index: -1;
       }
 
       /* A label row that carries an info button is as tall as the button (24px), with room under
@@ -379,13 +390,14 @@ export class VersolaClientForm extends LitElement {
         flex: none;
       }
 
-      .option-info-button:hover {
+      .option-info-button:hover::before {
         background: rgba(var(--accent-tint), 0.18);
         border-color: rgba(var(--accent-tint), 0.55);
       }
 
       .option-info-button:focus-visible {
         outline: none;
+        border-radius: 999px;
         box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
       }
 
@@ -2505,11 +2517,29 @@ export class VersolaClientForm extends LitElement {
     };
   }
 
+  /** A client that already asks for consent is a partner for good: central refuses to take the consent flow away. */
+  private get consentLocked(): boolean {
+    return this.client?.consentFlow != null;
+  }
+
   private toggleConsentEnabled() {
-    this.formData = {
-      ...this.formData,
-      consentFlow: this.hasConsentFlow ? null : createDefaultConsentFlow(),
-    };
+    if (this.consentLocked) return;
+    const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
+    this.formData = { ...this.formData, consentFlow };
+    this.syncPartnerTemplate();
+  }
+
+  /** Keeps the OTP template in step with consent: partners get the one that names their app. */
+  private syncPartnerTemplate() {
+    const otpTemplateId = otpTemplateForConsent(
+      this.formData.otpTemplateId,
+      this.hasConsentFlow,
+      this.otpChannel,
+      this.otpTemplateOptions.map(template => template.id),
+    );
+    if (otpTemplateId !== this.formData.otpTemplateId) {
+      this.formData = { ...this.formData, otpTemplateId };
+    }
   }
 
   /** `null` remembers the grant until it is revoked; a number expires it after that many days. */
@@ -2560,6 +2590,7 @@ export class VersolaClientForm extends LitElement {
   private setOtpType(otpType: 'sms' | 'email') {
     if (this.otpChannelLocked) return;
     this.setAuthFlow({ otpType });
+    this.syncPartnerTemplate();
   }
 
   private toggleInlinePassword() {
@@ -3424,14 +3455,17 @@ export class VersolaClientForm extends LitElement {
         'No prompt is the normal choice for an app you own.',
         html`
         <div class="seg" style="margin-bottom:${this.hasConsentFlow ? '0.9rem' : '0'}">
-          <button type="button" aria-pressed=${!this.hasConsentFlow} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
+          <button type="button" aria-pressed=${!this.hasConsentFlow} ?disabled=${this.consentLocked} @click=${() => this.hasConsentFlow && this.toggleConsentEnabled()}>
             First party, no prompt
           </button>
           <button type="button" aria-pressed=${this.hasConsentFlow} @click=${() => !this.hasConsentFlow && this.toggleConsentEnabled()}>
             Ask for consent
           </button>
         </div>
-        ${this.hasConsentFlow ? this.renderWizardConsentSettings() : ''}
+        ${this.hasConsentFlow ? html`
+          <div class="hint" style="margin:-.4rem 0 .9rem">This makes the client a partner: its SMS codes name the app, and consent cannot be turned off once the client is created.</div>
+          ${this.renderWizardConsentSettings()}
+        ` : ''}
         `,
       )}
     `;
@@ -4611,14 +4645,22 @@ export class VersolaClientForm extends LitElement {
                     html`<div class="option-tooltip-item">Shows the user which scopes the client is requesting before an authorization code is issued.</div>`,
                     'Consent settings info',
                   )}
-                  <label class="toggle">
-                    <input
-                      type="checkbox"
-                      .checked=${this.hasConsentFlow}
-                      @change=${() => this.toggleConsentEnabled()}
-                    />
-                  </label>
+                  ${this.consentLocked ? html`
+                    ${this.statusIcon('lock', 'locked-icon')}
+                    <span class="locked-state on">Always on</span>
+                  ` : html`
+                    <label class="toggle">
+                      <input
+                        type="checkbox"
+                        .checked=${this.hasConsentFlow}
+                        @change=${() => this.toggleConsentEnabled()}
+                      />
+                    </label>
+                  `}
                 </div>
+                ${this.consentLocked ? html`
+                  <div class="hint" style="margin-top:.35rem">A partner client asks users for consent for good: this cannot be turned off.</div>
+                ` : ''}
 
                 ${this.hasConsentFlow ? html`
                   <div class="registration-settings">

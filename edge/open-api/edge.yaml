@@ -680,7 +680,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
         '400':
-          $ref: '#/components/responses/NativeError'
+          $ref: '#/components/responses/NativeErrorOrNonceRequired'
         '401':
           $ref: '#/components/responses/NativeNonceRequired'
         '404':
@@ -717,7 +717,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/TokenResponse'
         '400':
-          $ref: '#/components/responses/NativeError'
+          $ref: '#/components/responses/NativeErrorOrNonceRequired'
         '401':
           $ref: '#/components/responses/NativeNonceRequired'
         '404':
@@ -901,10 +901,42 @@ components:
           example:
             error: invalid_grant
             error_description: blob has expired
+    NativeErrorOrNonceRequired:
+      description: |
+        A refusal in the RFC 6749 §5.2 shape, from edge or relayed from Auth (see
+        `NativeError`). One of the relayed refusals is Auth's DPoP nonce challenge, which
+        differs from edge's own (`NativeNonceRequired`): the status is `400`, the body is
+        `{"error":"use_dpop_nonce", ...}`, the nonce is in `DPoP-Nonce`, and there is **no**
+        `WWW-Authenticate` header. A client must handle both shapes: on either, retry with a
+        proof that includes the `DPoP-Nonce` value.
+      headers:
+        DPoP-Nonce:
+          description: Present only when `error` is `use_dpop_nonce`.
+          schema:
+            type: string
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OAuthError'
+          examples:
+            refusal:
+              value:
+                error: invalid_grant
+                error_description: blob has expired
+            nonceRequired:
+              value:
+                error: use_dpop_nonce
+                error_description: Authorization server requires a nonce in the DPoP proof
     NativeNonceRequired:
       description: |
-        A DPoP nonce is required (RFC 9449 §9). Retry with a proof that includes the nonce
-        from `DPoP-Nonce`. Auth's own `use_dpop_nonce` challenge is relayed the same way.
+        Edge's own DPoP nonce challenge (RFC 9449 §9): `401` with `WWW-Authenticate`. Retry
+        with a proof that includes the nonce from `DPoP-Nonce`. This is what `/native/start`
+        answers. On `/native/complete` and `/native/token` Auth's own
+        challenge is relayed instead, in a different shape: see `NativeErrorOrNonceRequired`.
       headers:
         WWW-Authenticate:
           schema:

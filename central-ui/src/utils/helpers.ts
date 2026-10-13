@@ -41,6 +41,35 @@ export function createDefaultConsentFlow(): ConsentFlow {
   };
 }
 
+export const DEFAULT_OTP_TEMPLATE_ID = 'default';
+export const PARTNER_OTP_TEMPLATE_ID = 'partner';
+
+/** A client that asks users for consent is a partner: someone else's app signing in our users. */
+export function isPartnerClient(client: { consentFlow?: ConsentFlow | null }): boolean {
+  return client.consentFlow != null;
+}
+
+/**
+ * The OTP template a client should use once consent is on or off: a partner's SMS names its app,
+ * so it moves from the default template to the partner one, and back when consent is switched
+ * off before the client is saved. A template chosen by hand is left alone.
+ */
+export function otpTemplateForConsent(
+  current: string | null | undefined,
+  partner: boolean,
+  channel: 'sms' | 'email',
+  availableIds: string[],
+): string | null | undefined {
+  if (partner && channel === 'sms' && (current == null || current === DEFAULT_OTP_TEMPLATE_ID)
+      && availableIds.includes(PARTNER_OTP_TEMPLATE_ID)) {
+    return PARTNER_OTP_TEMPLATE_ID;
+  }
+  if (!partner && current === PARTNER_OTP_TEMPLATE_ID) {
+    return DEFAULT_OTP_TEMPLATE_ID;
+  }
+  return current;
+}
+
 export type ResolvedPermissionEndpoint = {
   method: string;
   path: string;

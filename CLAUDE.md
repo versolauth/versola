@@ -22,7 +22,7 @@ config generation), `deploy.md` (topology, migrations, secrets), `SECURITY.md`.
 ```bash
 sbt compile                              # all services
 sbt Test/compile                         # also compiles e2e
-sbt test                                 # needs Postgres: docker-compose -f services.yml up -d postgres
+sbt test                                 # needs Postgres (serves TLS): docker-compose -f services.yml up -d --build postgres
 sbt "auth/testOnly versola.oauth.revoke.RevocationServiceSpec"   # one spec
 sbt e2e/test                             # needs the staged stack, see develop.md
 cd central-ui && npm run type-check && npm run test:unit   # admin UI; npm run test:ui = Playwright
@@ -30,7 +30,6 @@ cd central-ui && npm run build:forms     # required before central is built or s
 ```
 
 Scala formatting follows `.scalafmt.conf` (Scala 3, maxColumn 150); keep touched files formatted.
-`PostgresTlsConnectionSpec` needs a TLS Postgres: `util/implementations/postgres/tls-fixture/start.sh`.
 Running a service locally needs `RUN_MIGRATIONS=true` against a fresh database; the exact
 commands are in `develop.md`. Do not paste them from memory.
 

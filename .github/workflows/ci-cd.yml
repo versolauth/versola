@@ -201,20 +201,26 @@ jobs:
 
       # `PostgresTlsConnectionSpec` needs a Postgres that serves TLS; the `postgres` service above
       # does not (and a service container cannot take the server flags or certificates it
-      # needs), so it is started here. Writes its CA to target/postgres-tls/ca.crt.
+      # needs), so the one from services.yml is started here, on 5433. Its CA lands in
+      # target/postgres-tls/ca.crt, and the test steps below point POSTGRES_TLS_HOST at it.
       - name: Start Postgres with TLS
-        run: util/implementations/postgres/tls-fixture/start.sh
+        run: |
+          mkdir -p target/postgres-tls
+          chmod a+w target/postgres-tls
+          POSTGRES_PORT=5433 docker compose -f services.yml up -d --build --wait postgres
 
       - name: Run tests
         if: github.event_name != 'push'
         env:
           POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
         run: sbt test
 
       - name: Run tests with coverage
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           POSTGRES_HOST: localhost:5432
+          POSTGRES_TLS_HOST: localhost:5433
         run: sbt coverage test coverageReport coverageAggregate
 
       # loadgen/mockapi aren't part of root's aggregate (see build.sbt), so neither `sbt

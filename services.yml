@@ -1,22 +1,25 @@
 services:
+  # Serves TLS (and still accepts plaintext), so `sbt test` needs nothing else: the unit tests and
+  # PostgresTlsConnectionSpec both run against it. The CA it generates lands in
+  # target/postgres-tls/ca.crt, where the spec reads it. POSTGRES_PORT moves the published port.
   postgres:
-    image: postgres:18
-    command: postgres -c max_connections=200 -c shared_buffers=512MB
-    # No platform: pin -- postgres:18 already publishes a linux/arm64
-    # image (verified against the registry manifest list), so forcing
-    # amd64 here would only make this slower on Apple Silicon for no
-    # reason. Same reasoning as compose.fragment.yml.template's postgres
-    # entry.
+    build: util/implementations/postgres/tls-fixture
     container_name: postgres
     restart: always
     environment:
       POSTGRES_USER: ${PG_USER:-dev}
       POSTGRES_PASSWORD: ${PG_PASSWORD:-1234}
       POSTGRES_DB: auth
-    #volumes:
+    volumes:
+      - ./target/postgres-tls:/tls-out
     #  - ./postgres/init-sql:/docker-entrypoint-initdb.d:ro
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-dev} -d auth"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
 
   # The pooler the coordinator reads section 4 of the campaign report off
   # (`PoolerStatsReaderSpec`). Not on the path of any service here -- auth,

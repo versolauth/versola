@@ -251,6 +251,13 @@ postgres {
 }
 ```
 
+On a vps deployment you do not write this yourself: pass the CA bundle to `versola configure`
+(or `bootstrap`) as `--postgres-ca <file>`. It is copied into the bundle as `postgres-ca/ca.crt`,
+mounted read-only into `central`, `auth`, `edge` and the `migrate` container, and set as
+`postgres.ssl-root-cert` in the three configs; `versola migrate` then verifies the database with
+the same CA. Like `--auth-url`, the flag has to be given on every `configure`, because each
+`configure` regenerates the bundle.
+
 A URL that does not verify (`sslmode=disable|allow|prefer|require`, or `ssl=false`) logs a warning
 at startup and, when `env = "prod"`, stops the service from starting. Loopback hosts are exempt
 from the warning and the refusal. `gen-env` writes `sslmode=disable` for the bundled/local Postgres
@@ -258,9 +265,11 @@ and for a vps whose `POSTGRES_HOST` is loopback, and leaves a remote vps host on
 
 ### 3.3 Database, role and schemas
 
-All three services share **one** Postgres database, `auth`, isolated by schema — not three
-databases. The generated configs already point each service at its own schema
-(`jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central`, etc.).
+All three services share **one** Postgres database, `auth` by default, isolated by schema — not
+three databases. The generated configs already point each service at its own schema
+(`jdbc:postgresql://127.0.0.1:5432/auth?currentSchema=central`, etc.). To use another database
+name, pass `--postgres-db <name>` to `versola configure`/`bootstrap` and use that name in the
+`CREATE DATABASE` and `\c` lines below.
 
 On a first `configure` against an empty OpenBao, the Postgres password is generated then and there,
 so the role can only be created **after** `configure`. `configure` prints the exact statements:
@@ -431,7 +440,7 @@ client retries. Sessions, tokens, consents and users are unaffected. The migrati
 logins on the still-running previous version wait while it runs. The tables are small, so it is
 short, but run `versola migrate` at low traffic.
 
-**Migration `auth` V0015: self-service change of a phone number or email (#634).** Adds the
+**Migration `auth` V0016: self-service change of a phone number or email (#634).** Adds the
 table `user_intents` (what a signed-in user asked for on the account page; logged, because such requests are rare) and a
 nullable `auth_conversations.identifier_change` column; no existing row changes, and the previous
 version keeps running on the new schema. Two things to know when upgrading:
@@ -624,7 +633,7 @@ Environment variables read by the containers:
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (see [`RUN_MIGRATIONS`](#run_migrations)) |
-| `JAVA_OPTS` | `-XX:+UseG1GC -XX:MaxRAMPercentage=75.0` | JVM flags |
+| `JAVA_OPTS` | see below | JVM flags. The images set a fixed budget: `-Xms512m -Xmx512m`, `-XX:MaxDirectMemorySize=64m` (`96m` for edge, which proxies), `-XX:MaxMetaspaceSize=128m`, `-XX:ReservedCodeCacheSize=64m`, `-Xss512k`; a heap dump and a rotating GC log are written to `/diagnostics`. Overriding `JAVA_OPTS` replaces the whole string, so repeat any of these you still want |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
 and OpenBao ([5](#5-secrets-and-configuration)), not in environment variables.
@@ -734,9 +743,10 @@ edited a migration production had already applied. There is no clean fix: recrea
 schemas; see the check in [4](#4-deploying-a-new-version).
 
 **October 2026: the `ALTER TABLE` migrations were folded into the migrations that create their
-tables** (auth `V0001`–`V0013`, central `V1001`–`V1020`, edge unchanged). The resulting schema is
-byte-for-byte the one the old chain produced — same tables, column order, constraints, indexes and
-triggers — but the files, versions and checksums are new, so **an existing database fails
+tables** (auth `V0001`–`V0014`, central `V1001`–`V1020`, edge unchanged). The folded chain
+(auth up to `V0013`) produces byte-for-byte the schema the old chain did — same tables, column
+order, constraints, indexes and triggers; auth `V0014` is a separate, later change on top (three
+login-state tables become `UNLOGGED`, see [above](#4-deploying-a-new-version)), not part of the fold. But the files, versions and checksums are new, so **an existing database fails
 validation** and has to be re-adopted. Its data is untouched by that: the column layout is
 identical, so a data-only dump loads into a freshly migrated schema. Per schema, with the services
 stopped:

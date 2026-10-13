@@ -2834,6 +2834,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
 
         A client's method and kind are fixed when it is registered. `requireSignedRequestObject` cannot
         be turned on for a client fronted by edge, which holds no key to sign one with. No patch may
@@ -2954,6 +2956,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
 
         What the kind fixes is not a member, and central
         writes it onto the client whatever it was stored as: no certificate binding or signed request
@@ -3039,6 +3043,8 @@ components:
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
+        A client that has a `consentFlow` is a partner client: `null` is refused for it (400) -- the
+        flow can be changed, not removed.
 
         Limited to what a service client has: no redirect URIs, flows, consent, logout, branding or
         refresh token.
