@@ -164,9 +164,8 @@ object LogoutController extends Controller:
     ZIO.serviceWithZIO[JwksService](_.getPublicKeys).flatMap: keys =>
       JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT)
         .catchSome:
-          case JWT.Error.Expired(jti) =>
-            ZIO.logInfo(s"Accepting expired id_token_hint $jti for logout") *>
-              JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
+          case JWT.Error.Expired(_) =>
+            JWT.deserialize[LogoutHintClaims](token, keys, JWT.Type.JWT, validateExpiry = false)
         .option
 
   private case class LogoutConfirmSubmission(
