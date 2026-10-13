@@ -188,6 +188,13 @@ class Board:
             "links": [{"type": "dashboards", "title": "Services", "tags": ["versola-service"], "asDropdown": False, "includeVars": True, "keepTime": True, "icon": "external link"}],
             "templating": {"list": [
                 {"name": "datasource", "label": "Data source", "type": "datasource", "query": "prometheus", "current": {}, "hide": 0},
+                *([{
+                    "name": "tail", "label": "Tail quantile", "type": "custom",
+                    "query": "p99 : 0.99, p99.9 : 0.999, p99.99 : 0.9999",
+                    "current": {"text": "p99", "value": "0.99", "selected": True},
+                    "options": [{"text": t, "value": v, "selected": v == "0.99"} for t, v in (("p99", "0.99"), ("p99.9", "0.999"), ("p99.99", "0.9999"))],
+                    "multi": False, "includeAll": False, "hide": 0,
+                }] if self.uid == "versola" else []),
                 {
                     "name": "namespace", "label": "Environment", "type": "query", "datasource": DS,
                     "query": self.namespace_query,
@@ -217,7 +224,7 @@ def overview(b: Board, specific: list[tuple]) -> None:
     b.stat("Server errors", b.ratio(b.req_rate(', status_class="5xx"'), b.req_rate()), unit="percentunit", decimals=2,
            desc="Share of requests answered 5xx -- the service failing, not the caller erring. Yellow from 0.1%, red from 1%.",
            thresholds=steps((None, GREEN), (0.001, YELLOW), (0.01, RED)))
-    b.stat("Latency p99", f"{b.quantile(0.99)}", unit="s", desc="99 of 100 requests are faster than this, over every endpoint of the service.")
+    b.stat("Latency ${tail:text}", f"{b.quantile('$tail')}", unit="s", desc="Tail latency over every endpoint of the service, at the quantile chosen in the Tail quantile selector at the top (p99 by default: 99 of 100 requests are faster).")
     for args in specific:
         b.stat(args[0], args[1], **args[2])
     b.stat("DB pool", POOL_PCT.format(sel=b.sel), unit="percentunit", decimals=0,
@@ -238,9 +245,9 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
          desc="Where the traffic goes. `/token?grant_type=…` is split by grant type." + where)
     b.ts("Server errors (5xx) / s by endpoint", [(f'sum by (method, route) ({b.req_rate(extra + ", status_class=\"5xx\"")})', "{{method}} {{route}}")], unit="reqps", stack=True,
          desc="Empty is healthy. Every series here is a bug or an outage of a dependency; the endpoint says where to start.")
-    b.ts("Latency", [(b.quantile(0.5, extra), "p50"), (b.quantile(0.95, extra), "p95"), (b.quantile(0.99, extra), "p99")], unit="s", line=latency_line,
-         desc="Typical (p50), slow (p95) and worst-case (p99) request. Watch p99 -- averages hide the users who are suffering.")
-    b.ts("Slowest endpoints (p99)", [(f"topk(5, {b.quantile(0.99, extra, by='method, route')})", "{{method}} {{route}}")], unit="s",
+    b.ts("Latency", [(b.quantile(0.5, extra), "p50"), (b.quantile(0.95, extra), "p95"), (b.quantile(0.99, extra), "p99"), (b.quantile(0.999, extra), "p99.9"), (b.quantile(0.9999, extra), "p99.99")], unit="s", line=latency_line,
+         desc="Typical (p50), slow (p95) and worst-case (p99, p99.9, p99.99) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything, and is rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.")
+    b.ts("Slowest endpoints (${tail:text})", [(f"topk(5, {b.quantile('$tail', extra, by='method, route')})", "{{method}} {{route}}")], unit="s",
          desc="The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.")
     b.ts("Client errors (4xx) / s by endpoint", [(f'sum by (method, route, status) ({b.req_rate(extra + ", status_class=\"4xx\"")})', "{{method}} {{route}} {{status}}")], unit="reqps", stack=True,
          desc="Callers sending bad or unauthorized requests. Not an outage, but a sudden jump is a broken client, an expired credential or probing.")
@@ -390,9 +397,9 @@ def argon2(b: Board) -> None:
         (f"sum by (pod) (argon2_hashes_in_flight{{{s}}}) / clamp_min(max by (pod) (argon2_max_concurrent{{{s}}}), 1)", "{{pod}}"),
     ], unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.9, RED)),
          desc="Hashes being computed over the permits the pod has. At 100% CPU no longer follows demand and the queue on the left starts to grow.")
-    b.ts("Hash wait and hash time (p99)", [
-        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_wait_seconds_bucket{{{s}}}[$__rate_interval])))", "waiting for a permit"),
-        (f"histogram_quantile(0.99, sum by (le) (rate(argon2_hash_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "hashing"),
+    b.ts("Hash wait and hash time (${tail:text})", [
+        (f"histogram_quantile($tail, sum by (le) (rate(argon2_hash_wait_seconds_bucket{{{s}}}[$__rate_interval])))", "waiting for a permit"),
+        (f"histogram_quantile($tail, sum by (le) (rate(argon2_hash_duration_seconds_bucket{{{s}}}[$__rate_interval])))", "hashing"),
     ], unit="s", minimum=0,
          desc="The wait is the part of a login's latency that more replicas remove; the hash itself is the cost of the parameters.")
     b.ts("Hashes / s", [(f"sum(rate(argon2_hash_duration_seconds_count{{{s}}}[$__rate_interval]))", "hashes")], unit="ops", minimum=0,
@@ -406,16 +413,16 @@ def dependencies(b: Board) -> None:
          unit="percentunit", minimum=0, maximum=1, line=steps((None, GREEN), (0.9, RED)),
          desc="Checked-out connections / pool size, per pool. Pinned at 100% means the pool is the bottleneck, not the database." + NO_POOL_DATA)
     b.ts("Waiting for a DB connection", [
-        (f"histogram_quantile(0.99, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", "wait p99"),
+        (f"histogram_quantile($tail, sum by (le) (rate(db_client_connection_wait_time_seconds_bucket{{{sel}}}[$__rate_interval])))", "wait ${tail:text}"),
         (f"sum(db_client_connection_pending_requests{{{sel}}})", "threads waiting"),
     ], unit="s", desc="Time a request spends queued before it even reaches the database (seconds), and how many are queued. Should be ~0; anything visible is added straight to user latency.")
     b.ts("DB connection timeouts / s", [(f"sum by (pool_name) (rate(db_client_connection_timeouts_total{{{sel}}}[$__rate_interval]))", "{{pool_name}}")], unit="ops", minimum=0,
          desc="Requests that gave up waiting for a database connection (connection-timeout). Empty is healthy; any value is a request that failed because the pool was exhausted for the whole timeout." + NO_POOL_DATA)
-    b.ts("Slowest queries (p99)", [(f"topk(5, histogram_quantile(0.99, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
+    b.ts("Slowest queries (${tail:text})", [(f"topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
          desc="The five slowest database operations by repository and method. First place to look when latency rises but the pool is fine.")
     b.ts("Failed queries / s", [(f'sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{{{sel}, outcome!="success"}}[$__rate_interval]))', "{{repository}}.{{operation}}")], unit="ops",
          desc="Database operations that did not succeed. Empty is healthy.")
-    b.ts("Calls to other services — latency p99", [(f"histogram_quantile(0.99, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}}")], unit="s",
+    b.ts("Calls to other services — latency ${tail:text}", [(f"histogram_quantile($tail, sum by (le, peer) (rate(http_client_request_duration_seconds_bucket{{{sel}}}[$__rate_interval])))", "{{peer}}")], unit="s",
          desc="How long this service waits for each service it calls. Part of our own latency.")
     b.ts("Calls to other services — in flight", [(f"sum by (peer) (http_client_active_requests{{{sel}}})", "{{peer}}")], unit="short", minimum=0,
          desc="Outbound requests in flight per target, including those queued for a pooled connection (the outbound pool). Where the pool is too small this climbs long before CPU or latency averages move; a line pinned at the pool size is the outbound pool being the limit.")
@@ -459,7 +466,7 @@ def add_auth(b: Board, phase: str) -> None:
         (f'sum by (status_class) ({b.req_rate(refresh)})', "{{status_class}}"),
     ], unit="reqps", stack=True,
          desc="2xx = new tokens issued. 4xx = refresh refused (expired, revoked, or a refresh token replayed -- compare with revocations on the right). 5xx = our failure.")
-    b.ts("Refresh latency", [(b.quantile(0.5, refresh), "p50"), (b.quantile(0.95, refresh), "p95"), (b.quantile(0.99, refresh), "p99")], unit="s",
+    b.ts("Refresh latency", [(b.quantile(0.5, refresh), "p50"), (b.quantile(0.95, refresh), "p95"), (b.quantile(0.99, refresh), "p99"), (b.quantile(0.999, refresh), "p99.9"), (b.quantile(0.9999, refresh), "p99.99")], unit="s",
          line=steps((None, GREEN), (0.12, RED)), desc="Time to answer a refresh. The dashed line is the 120 ms target for /token.")
     b.ts("Refresh rejections / s by status", [(f'sum by (status) ({b.req_rate(refresh + ", status_class!=\"2xx\"")})', "HTTP {{status}}")], unit="reqps", stack=True,
          desc="Why refreshes fail, by HTTP status. 400/401 are the token being refused; 5xx is the service.")
@@ -467,7 +474,7 @@ def add_auth(b: Board, phase: str) -> None:
          desc="Clients and users explicitly revoking a refresh token (logout, 'sign out everywhere'). A spike is followed by rejected refreshes.")
     b.ts("Token requests / s by grant type", [(f'sum by (route) ({b.req_rate(", route=~\"/token.*\"")})', "{{route}}")], unit="reqps", stack=True,
          desc="authorization_code = a fresh sign-in finishing, refresh_token = an existing session renewing, client_credentials = service-to-service. A healthy system is dominated by refreshes.")
-    b.ts("Token issuance latency p99 by grant type", [(b.quantile(0.99, ', route=~"/token.*"', by="route"), "{{route}}")], unit="s",
+    b.ts("Token issuance latency ${tail:text} by grant type", [(b.quantile("$tail", ', route=~"/token.*"', by="route"), "{{route}}")], unit="s",
          line=steps((None, GREEN), (0.12, RED)), desc="p99 of each token grant. The dashed line is the 120 ms /token target.")
 
     b.row("auth — Sign-in")
@@ -534,7 +541,7 @@ def add_edge(b: Board, phase: str) -> None:
          desc="Average time per proxied request, split into the resource's own answer, the token lookup at auth, and what edge adds on top. The three add up to the proxy latency.")
     b.ts("Edge overhead (measured)", [
         (f"histogram_quantile(0.5, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "p50"),
-        (f"histogram_quantile(0.99, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "p99"),
+        (f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "${tail:text}"),
     ], unit="s", line=steps((None, GREEN), (0.015, RED)),
          desc="Time edge spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules, the token lookup at auth. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so p99 here is the real p99. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
 
@@ -575,7 +582,7 @@ def add_central(b: Board, phase: str) -> None:
     s = b.sel
     b.ts("Config syncs / s by resource", [(f"sum by (route) ({b.req_rate(sync)})", "{{route}}")], unit="reqps", stack=True,
          desc="Pulls by auth and edge, per configuration kind. Expect a steady rate per replica of those services.")
-    b.ts("Config sync latency p99", [(b.quantile(0.99, sync, by="route"), "{{route}}")], unit="s",
+    b.ts("Config sync latency ${tail:text}", [(b.quantile("$tail", sync, by="route"), "{{route}}")], unit="s",
          desc="How long auth and edge wait for configuration. Slow syncs mean slow propagation of every admin change.")
     b.ts("Config changes / s by endpoint", [(f"sum by (method, route) ({b.req_rate(writes)})", "{{method}} {{route}}")], unit="reqps", stack=True,
          desc="Admin changes by endpoint. A burst here is a deployment or a bulk edit -- expect syncs and cache reloads in auth/edge shortly after.")
