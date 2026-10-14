@@ -231,7 +231,7 @@ const emptySubmissionLimits = (): SubmissionLimitsDto => ({
   banDurationSeconds: 0,
 });
 
-const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
+export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   tenantId,
   phoneRegions: [],
   emailRegistration: { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false },

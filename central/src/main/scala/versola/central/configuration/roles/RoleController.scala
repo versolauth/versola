@@ -46,13 +46,16 @@ object RoleController extends Controller:
 
   val deleteRoleEndpoint =
     Method.DELETE / "configuration" / "roles" -> handler { (request: Request) =>
-      for
+      (for
         _ <- authorizeBasic(request)
         service <- ZIO.service[RoleService]
         tenantId <- request.url.queryZIO[TenantId]("tenantId")
         roleId <- request.url.queryZIO[RoleId]("roleId")
         _ <- service.deleteRole(tenantId, roleId)
-      yield Response.status(Status.NoContent)
+      yield Response.status(Status.NoContent))
+        .catchSome:
+          case error: RoleService.RoleInUseError =>
+            ZIO.succeed(Response.json(s"""{"message":"${error.getMessage}"}""").status(Status.Conflict))
     }
 
   val getAllRolesEndpoint =
