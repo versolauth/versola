@@ -2522,6 +2522,13 @@ export class VersolaClientForm extends LitElement {
     return this.client?.consentFlow != null;
   }
 
+  private toggleRequiredScope(scope: string) {
+    const required = this.consentFlow.requiredScopes;
+    this.setConsentFlow({
+      requiredScopes: required.includes(scope) ? required.filter(s => s !== scope) : [...required, scope],
+    });
+  }
+
   private toggleConsentEnabled() {
     if (this.consentLocked) return;
     const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
@@ -4686,6 +4693,37 @@ export class VersolaClientForm extends LitElement {
                         <div class="registration-hint"><code>openid</code> and <code>offline_access</code> can never be deselected.</div>
                       </div>
                     </div>
+
+                    ${this.consentFlow.allowPartial ? html`
+                      <div class="registration-row">
+                        <div class="registration-label consent-property-label">
+                          <span>Required scopes</span>
+                          ${this.renderOptionInfo(
+                            'consent-required-scopes',
+                            'Required scopes',
+                            html`<div class="option-tooltip-item">Scopes the user cannot untick. If the client requests one, the consent screen keeps it ticked and the server refuses a grant that drops it. The user can still deny everything.</div>`,
+                            'Required scopes consent info',
+                          )}
+                        </div>
+                        <div>
+                          ${(this.formData.scope || []).every(s => s === 'openid' || s === 'offline_access') ? html`
+                            <div class="registration-hint">Add scopes to the client to make some of them required.</div>
+                          ` : html`
+                          <div class="chips" role="group" aria-label="Required scopes">
+                            ${(this.formData.scope || []).filter(s => s !== 'openid' && s !== 'offline_access').map(scope => html`
+                              <button
+                                type="button"
+                                class="chip"
+                                aria-pressed=${this.consentFlow.requiredScopes.includes(scope)}
+                                @click=${() => this.toggleRequiredScope(scope)}
+                              >${scope}</button>
+                            `)}
+                          </div>
+                          <div class="registration-hint">Highlighted scopes are always granted. The rest stay optional.</div>
+                          `}
+                        </div>
+                      </div>
+                    ` : ''}
 
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">

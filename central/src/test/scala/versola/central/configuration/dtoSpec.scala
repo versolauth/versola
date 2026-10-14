@@ -1,6 +1,7 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, RegistrationFlow}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, RegistrationFlow}
+import versola.central.configuration.scopes.ScopeToken
 import versola.util.Patch
 import zio.json.*
 import zio.test.*
@@ -64,6 +65,16 @@ object dtoSpec extends ZIOSpecDefault:
       assertTrue(
         json.contains("\"rememberDuration\":1209600"),
         !json.contains("PT"),
+      )
+    },
+    test("ConsentFlowDto carries required scopes and reads a record stored without them as empty") {
+      val dto = ConsentFlowDto(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))
+      val legacy = """{"allowPartial":true,"rememberDuration":1209600}"""
+      assertTrue(
+        dto.toJson.contains("\"requiredScopes\":[\"phone\"]"),
+        dto.toJson.fromJson[ConsentFlowDto] == Right(dto),
+        legacy.fromJson[ConsentFlowDto].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
+        """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
       )
     },
     test("PatchDescription encodes and decodes correctly") {

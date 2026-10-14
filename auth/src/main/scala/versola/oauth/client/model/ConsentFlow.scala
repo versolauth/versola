@@ -13,8 +13,11 @@ import zio.schema.*
   *                      subset of the requested scope
   * @param rememberDuration how long a granted consent is reused without re-prompting; `None`
   *                          means the grant is remembered until revoked
+  * @param requiredScopes scopes the user cannot deselect when they are requested, in addition to
+  *                       `openid`/`offline_access`; only meaningful with `allowPartial`
   */
 case class ConsentFlow(
     allowPartial: Boolean,
     rememberDuration: Option[Duration],
+    requiredScopes: Set[ScopeToken] = Set.empty,
 ) derives Schema, JsonCodec, Equal

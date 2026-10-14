@@ -1106,7 +1106,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
   });
-  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [] });
 });
 
 test('reads and updates a finite consent duration as seconds', async ({ page }) => {
@@ -1131,7 +1131,59 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
-    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400 });
+    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [] });
+});
+
+test('marks required consent scopes and sends them with the flow', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone', 'profile', 'offline_access'],
+          consentFlow: { allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['phone'] },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Registration and consent');
+
+  const required = page.getByRole('group', { name: 'Required scopes' });
+  // openid and offline_access are always required, so they are not offered as a choice.
+  await expect(required.getByRole('button')).toHaveText(['phone', 'profile']);
+  await expect(required.getByRole('button', { name: 'phone' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(required.getByRole('button', { name: 'profile' })).toHaveAttribute('aria-pressed', 'false');
+
+  await required.getByRole('button', { name: 'profile' }).click();
+  await required.getByRole('button', { name: 'phone' }).click();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['profile'] });
+});
+
+test('offers required scopes only while partial grants are allowed', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          scope: ['openid', 'phone'],
+          consentFlow: { allowPartial: false, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Registration and consent');
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toHaveCount(0);
+  await page.getByLabel('Let the user deselect optional scopes').check();
+  await expect(page.getByRole('group', { name: 'Required scopes' })).toBeVisible();
 });
 
 test('explains consent settings with info buttons', async ({ page }) => {

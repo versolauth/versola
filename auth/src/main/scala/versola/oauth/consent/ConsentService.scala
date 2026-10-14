@@ -1,7 +1,7 @@
 package versola.oauth.consent
 
 import versola.oauth.authorize.model.Prompt
-import versola.oauth.client.model.{OAuthClientRecord, ScopeToken}
+import versola.oauth.client.model.{ConsentFlow, OAuthClientRecord, ScopeToken}
 import versola.oauth.consent.model.ConsentRecord
 import versola.user.model.UserId
 import zio.{Clock, Task, ZIO, ZLayer}
@@ -52,6 +52,12 @@ object ConsentService:
     */
   val NonDeselectable: Set[ScopeToken] = Set(ScopeToken.OpenId, ScopeToken.OfflineAccess)
 
+  /** What the user may not drop from this client's consent screen: the protocol-level scopes plus
+    * whatever the client marked as required.
+    */
+  def mandatoryScopes(consentFlow: Option[ConsentFlow]): Set[ScopeToken] =
+    NonDeselectable ++ consentFlow.fold(Set.empty[ScopeToken])(_.requiredScopes)
+
   def live = ZLayer.fromFunction(Impl(_))
 
   class Impl(consentRepository: ConsentRepository) extends ConsentService:
@@ -85,7 +91,7 @@ object ConsentService:
         requestedScope: Set[ScopeToken],
         submittedScope: Set[ScopeToken],
     ): Either[String, Set[ScopeToken]] =
-      val missingMandatory = (requestedScope & NonDeselectable) -- submittedScope
+      val missingMandatory = (requestedScope & mandatoryScopes(client.consentFlow)) -- submittedScope
       if !submittedScope.subsetOf(requestedScope) then
         Left(s"Granted scope exceeds the requested scope - ${(submittedScope -- requestedScope).mkString(" ")}")
       else if missingMandatory.nonEmpty then

@@ -96,6 +96,13 @@ object Flows:
     "rememberDuration" -> Json.Null,
   )
 
+  /** Partial grants allowed, but `email` cannot be deselected. */
+  val requiredScopeConsentFlow: Json = Json.Obj(
+    "allowPartial" -> Json.Bool(true),
+    "rememberDuration" -> Json.Null,
+    "requiredScopes" -> Json.Arr(Json.Str("email")),
+  )
+
   // ── Setup result ────────────────────────────────────────────────────────
 
   /** Everything a test needs to run a flow against a freshly-created client and user. */

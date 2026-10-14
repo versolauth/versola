@@ -2361,6 +2361,19 @@ components:
           description: |
             Whether the user may deselect optional scopes. `openid` and `offline_access` are
             never deselectable.
+        requiredScopes:
+          type: array
+          uniqueItems: true
+          items:
+            type: string
+          default: []
+          description: |
+            Scopes the user cannot deselect when the client requests them, on top of `openid`
+            and `offline_access`, which are always required. The consent screen keeps them
+            ticked and the authorization server refuses a grant that drops one; the user can
+            still deny the whole request. A scope the client did not request is ignored.
+            Meaningful only with `allowPartial`: without it the whole requested scope is
+            granted or denied.
         rememberDuration:
           description: |
             Seconds a granted consent is reused without re-prompting. `null` remembers it

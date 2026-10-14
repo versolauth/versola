@@ -384,11 +384,13 @@ case class OAuthClientResponse(
 case class ConsentFlowDto(
     allowPartial: Boolean,
     rememberDuration: Option[Long],
+    requiredScopes: Set[ScopeToken] = Set.empty,
 ) derives Schema, JsonCodec:
   def toDomain: ConsentFlow =
     ConsentFlow(
       allowPartial = allowPartial,
       rememberDuration = rememberDuration.map(Duration.fromSeconds),
+      requiredScopes = requiredScopes,
     )
 
 object ConsentFlowDto:
@@ -396,6 +398,7 @@ object ConsentFlowDto:
     ConsentFlowDto(
       allowPartial = flow.allowPartial,
       rememberDuration = flow.rememberDuration.map(_.toSeconds),
+      requiredScopes = flow.requiredScopes,
     )
 
 case class GetAllClientsResponse(
