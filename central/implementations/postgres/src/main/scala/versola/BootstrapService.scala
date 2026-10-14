@@ -57,6 +57,7 @@ object BootstrapService:
       authMethod: AuthMethod,
       mtlsAuth: Option[MutualTlsAuth],
       edgeClientCertificate: Option[PrivateClientCertificate],
+      issueEdgeClientCertificate: Boolean,
       requirePushedAuthorizationRequests: Boolean,
   ):
     def conformant: Boolean = authMethod == AuthMethod.tls_client_auth
@@ -66,18 +67,29 @@ object BootstrapService:
   ): Either[String, CentralAdminCredential] =
     seed match
       case None =>
-        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, requirePushedAuthorizationRequests = false))
+        Right(CentralAdminCredential(AuthMethod.client_secret, None, None, issueEdgeClientCertificate = false, requirePushedAuthorizationRequests = false))
       case Some(mtls) =>
-        for
-          certificate <- PrivateClientCertificate.validate(mtls.certificate)
-            .left.map(reason => s"bootstrap.central-admin-mtls.certificate $reason")
-          material <- certificate.material
-        yield CentralAdminCredential(
-          authMethod = AuthMethod.tls_client_auth,
-          mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
-          edgeClientCertificate = Some(certificate),
-          requirePushedAuthorizationRequests = true,
-        )
+        mtls.certificate match
+          case None =>
+            Right(CentralAdminCredential(
+              authMethod = AuthMethod.tls_client_auth,
+              mtlsAuth = None,
+              edgeClientCertificate = None,
+              issueEdgeClientCertificate = true,
+              requirePushedAuthorizationRequests = true,
+            ))
+          case Some(pem) =>
+            for
+              certificate <- PrivateClientCertificate.validate(pem)
+                .left.map(reason => s"bootstrap.central-admin-mtls.certificate $reason")
+              material <- certificate.material
+            yield CentralAdminCredential(
+              authMethod = AuthMethod.tls_client_auth,
+              mtlsAuth = Some(MutualTlsAuth.TlsClientAuth(MutualTlsSubjectType.subject_dn, material.subjectDn)),
+              edgeClientCertificate = Some(certificate),
+              issueEdgeClientCertificate = false,
+              requirePushedAuthorizationRequests = true,
+            )
 
   /** `central-admin` and `utils` are registered with the method bootstrap's configuration calls
     * for, and keep it: a client's authentication method is fixed when it is created. A boot
