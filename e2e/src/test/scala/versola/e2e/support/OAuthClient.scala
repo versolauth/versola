@@ -1204,7 +1204,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       issueEdgeClientCertificate = issueEdgeClientCertificate,
       enrollEdgeClientCertificate = enrollEdgeClientCertificate,
     ).toJson)
-    val req = Request.post(s"${config.centralUrl}/configuration/clients", body)
+    val kind = applicationType match
+      case Some("native") => "native"
+      case _              => if redirectUris.isEmpty then "service" else "web"
+    val req = Request.post(s"${config.centralUrl}/configuration/clients/$kind", body)
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap(RegisterClientResult.parse)
@@ -1214,8 +1217,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
     * The body is an `UpdateClientRequest`, whose three mandatory patches `Fixtures.clientUpdate`
     * already fills in as no-ops, so a caller names only the member it is changing.
     */
-  def updateClient(body: Json.Obj): Task[Unit] =
-    val req = Request.put(s"${config.centralUrl}/configuration/clients", Body.fromString(body.toJson))
+  def updateClient(body: Json.Obj, kind: String = "web"): Task[Unit] =
+    val req = Request.put(s"${config.centralUrl}/configuration/clients/$kind", Body.fromString(body.toJson))
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
     Client.batched(req).provide(ZLayer.succeed(client)).flatMap: resp =>
