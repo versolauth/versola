@@ -95,9 +95,9 @@ extension (task: Task[AuthorizeResult])
 case class ChallengeResult(response: Response, html: String):
   val step: Option[ConversationStep] = ConversationStep.fromHtml(html)
   val csrf: String = """"csrf"\s*:\s*"([^"]+)"""".r
-  .findFirstMatchIn(html)
-  .map(_.group(1))
-  .getOrElse(throw RuntimeException("CSRF token not found in challenge HTML"))
+    .findFirstMatchIn(html)
+    .map(_.group(1))
+    .getOrElse(throw RuntimeException("CSRF token not found in challenge HTML"))
 
   def assertStep(expected: ConversationStep): Task[ChallengeResult] =
     step.assertIs(expected).as(this)
@@ -142,16 +142,17 @@ object TokenResult:
       if response.status.isSuccess then
         body.fromJson[Raw].fold(
           err => Failure(response, s"JSON parse error [$err] body=$body"),
-          raw => Success(
-            response,
-            raw.access_token,
-            raw.token_type,
-            raw.expires_in,
-            raw.refresh_token,
-            raw.id_token,
-            raw.scope,
-            raw.authorization_details,
-          ),
+          raw =>
+            Success(
+              response,
+              raw.access_token,
+              raw.token_type,
+              raw.expires_in,
+              raw.refresh_token,
+              raw.id_token,
+              raw.scope,
+              raw.authorization_details,
+            ),
         )
       else Failure(response, body)
 
@@ -243,7 +244,7 @@ object RegisterClientResult:
     * absent otherwise. Readable here and nowhere else: central stores only its public half.
     */
   case class Success(response: Response, secret: String, privateKey: Option[zio.json.ast.Json])
-      extends RegisterClientResult
+    extends RegisterClientResult
   case class Failure(response: Response, body: String) extends RegisterClientResult
 
   private case class Raw(secret: Option[String], privateKey: Option[zio.json.ast.Json]) derives JsonDecoder
@@ -296,7 +297,7 @@ sealed trait PushedAuthorizationResult:
 
 object PushedAuthorizationResult:
   case class Success(response: Response, requestUri: String, expiresIn: Long, verifier: String, state: String)
-      extends PushedAuthorizationResult
+    extends PushedAuthorizationResult
   case class Failure(response: Response, body: String, error: Option[String]) extends PushedAuthorizationResult
 
   private case class RawSuccess(request_uri: String, expires_in: Long) derives JsonDecoder
@@ -317,6 +318,7 @@ extension (task: Task[PushedAuthorizationResult])
 
 case class SubmitResult(response: Response):
   val location: String = response.location
+
   /** `SSO_SESSION` cookie set by the server when an auth conversation finishes. */
   val sessionCookie: Option[String] =
     response.headers.getAll(Header.SetCookie)
@@ -421,8 +423,8 @@ case class AccountCaller(userId: java.util.UUID, clientId: String, sessionId: St
   private[support] def bodyWith(extra: (String, Json)*): Json.Obj =
     Json.Obj(
       Chunk[(String, Json)](
-        "userId"    -> Json.Str(userId.toString),
-        "clientId"  -> Json.Str(clientId),
+        "userId" -> Json.Str(userId.toString),
+        "clientId" -> Json.Str(clientId),
         "sessionId" -> Json.Str(sessionId),
       ) ++ Chunk.fromIterable(extra),
     )
@@ -584,33 +586,33 @@ final class OAuthClient(client: Client, config: E2EConfig):
       base <- ZIO.fromEither(URL.decode(s"${config.authUrl}/authorize")).mapError(new RuntimeException(_))
       params = requestUri.fold(
         List(
-          "client_id"            -> Some(clientId),
-          "redirect_uri"         -> Some(redirectUri),
-          "scope"                -> scope,
-          "response_type"        -> responseType,
-          "code_challenge"       -> (if omitCodeChallenge then None else Some(challenge)),
-          "code_challenge_method"-> (if omitCodeChallenge then None else codeChallengeMethod),
-          "state"                -> Some(state),
-          "prompt"               -> prompt,
-          "max_age"              -> maxAge.map(_.toString),
-          "acr_values"           -> acrValues,
-          "id_token_hint"        -> idTokenHint,
+          "client_id" -> Some(clientId),
+          "redirect_uri" -> Some(redirectUri),
+          "scope" -> scope,
+          "response_type" -> responseType,
+          "code_challenge" -> (if omitCodeChallenge then None else Some(challenge)),
+          "code_challenge_method" -> (if omitCodeChallenge then None else codeChallengeMethod),
+          "state" -> Some(state),
+          "prompt" -> prompt,
+          "max_age" -> maxAge.map(_.toString),
+          "acr_values" -> acrValues,
+          "id_token_hint" -> idTokenHint,
           "authorization_details" -> authorizationDetails,
-          "nonce"                -> nonce,
-          "request"              -> request,
-          "response_mode"        -> responseMode,
-          "ui_locales"           -> uiLocales,
-          "login_hint"           -> loginHint,
+          "nonce" -> nonce,
+          "request" -> request,
+          "response_mode" -> responseMode,
+          "ui_locales" -> uiLocales,
+          "login_hint" -> loginHint,
         ),
       )(uri =>
         List(
-          "client_id"    -> (if omitClientId then None else Some(clientId)),
-          "request_uri"  -> Some(uri),
+          "client_id" -> (if omitClientId then None else Some(clientId)),
+          "request_uri" -> Some(uri),
         ),
       ).collect { case (k, Some(v)) => k -> v }
       req = Request.get(base.addQueryParams(params))
       reqWithSession = sessionCookie.fold(req)(sc =>
-        req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc))))
+        req.addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_SESSION", sc)))),
       )
       response <- Client.batched(reqWithSession).provide(ZLayer.succeed(client))
     yield AuthorizeResult(response, verifier, state, OAuthClient.extractConversationCookie(response))
@@ -637,12 +639,12 @@ final class OAuthClient(client: Client, config: E2EConfig):
     // instead, `client_secret` must travel in the same body — a client must not combine
     // both authentication methods in a single request.
     val formParams = Map(
-      "client_id"             -> clientId,
-      "response_type"         -> responseType,
-      "redirect_uri"          -> redirectUri,
-      "scope"                 -> scope,
-      "state"                 -> state,
-      "code_challenge"        -> challenge,
+      "client_id" -> clientId,
+      "response_type" -> responseType,
+      "redirect_uri" -> redirectUri,
+      "scope" -> scope,
+      "state" -> state,
+      "code_challenge" -> challenge,
       "code_challenge_method" -> "S256",
     ) ++ (if useBasicAuth || assertion.nonEmpty then Map.empty else Map("client_secret" -> clientSecret)) ++
       assertion.fold(Map.empty)(value =>
@@ -1170,43 +1172,86 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** Seconds; absent takes central's default (180 days). */
       refreshTokenTtl: Option[Int] = None,
   ): Task[RegisterClientResult] =
-    val body = Body.fromString(OAuthClient.RegisterClientBody(
-      tenantId = tenantId,
-      id = clientId,
-      clientName = Map("en" -> clientName),
-      redirectUris = redirectUris,
-      allowedScopes = allowedScopes,
-      audience = List.empty,
-      permissions = Set.empty,
-      accessTokenTtl = 3600,
-      refreshTokenTtl = refreshTokenTtl,
-      theme = "default",
-      authFlow = authFlow,
-      registrationFlow = registrationFlow,
-      consentFlow = consentFlow,
-      otpTemplateId = "default",
-      frontChannelLogoutUri = None,
-      frontChannelLogoutSessionRequired = false,
-      backChannelLogoutUri = backChannelLogoutUri,
-      authMethod = authMethod,
-      mtlsAuth = mtlsAuth,
-      certificateBoundAccessTokens = certificateBoundAccessTokens,
-      dpopBoundAccessTokens = dpopBoundAccessTokens,
-      jwks = jwks,
-      generateJwks = generateJwks,
-      requireSignedRequestObject = requireSignedRequestObject,
-      requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
-      edgeSigningKey = edgeSigningKey,
-      edgeClientCertificate = edgeClientCertificate,
-      dpopSigningAlgs = dpopSigningAlgs,
-      dpopMinRsaKeySize = dpopMinRsaKeySize,
-      applicationType = applicationType,
-      issueEdgeClientCertificate = issueEdgeClientCertificate,
-      enrollEdgeClientCertificate = enrollEdgeClientCertificate,
-    ).toJson)
     val kind = applicationType match
       case Some("native") => "native"
-      case _              => if redirectUris.isEmpty then "service" else "web"
+      case _ => if redirectUris.isEmpty then "service" else "web"
+    // Each kind's endpoint is @jsonNoExtraFields: only send the fields that kind accepts.
+    val bodyJson = kind match
+      case "web" =>
+        OAuthClient.CreateWebClientBody(
+          tenantId = tenantId,
+          id = clientId,
+          clientName = Map("en" -> clientName),
+          redirectUris = redirectUris,
+          allowedScopes = allowedScopes,
+          accessTokenTtl = 3600,
+          refreshTokenTtl = refreshTokenTtl,
+          theme = "default",
+          authFlow = authFlow,
+          registrationFlow = registrationFlow,
+          consentFlow = consentFlow,
+          otpTemplateId = "default",
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = false,
+          backChannelLogoutUri = backChannelLogoutUri,
+          authMethod = authMethod,
+          mtlsAuth = mtlsAuth,
+          certificateBoundAccessTokens = certificateBoundAccessTokens,
+          dpopBoundAccessTokens = dpopBoundAccessTokens,
+          jwks = jwks,
+          generateJwks = generateJwks,
+          requireSignedRequestObject = requireSignedRequestObject,
+          requirePushedAuthorizationRequests = requirePushedAuthorizationRequests,
+          dpopSigningAlgs = dpopSigningAlgs,
+          dpopMinRsaKeySize = dpopMinRsaKeySize,
+          edgeSigningKey = edgeSigningKey,
+          edgeClientCertificate = edgeClientCertificate,
+          issueEdgeClientCertificate = issueEdgeClientCertificate,
+          enrollEdgeClientCertificate = enrollEdgeClientCertificate,
+        ).toJson
+      case "native" =>
+        OAuthClient.CreateNativeClientBody(
+          tenantId = tenantId,
+          id = clientId,
+          clientName = Map("en" -> clientName),
+          redirectUris = redirectUris,
+          allowedScopes = allowedScopes,
+          accessTokenTtl = 3600,
+          refreshTokenTtl = refreshTokenTtl,
+          theme = "default",
+          authFlow = authFlow,
+          registrationFlow = registrationFlow,
+          consentFlow = consentFlow,
+          otpTemplateId = "default",
+          frontChannelLogoutUri = None,
+          frontChannelLogoutSessionRequired = false,
+          backChannelLogoutUri = backChannelLogoutUri,
+          authMethod = authMethod,
+          mtlsAuth = mtlsAuth,
+          dpopBoundAccessTokens = if dpopBoundAccessTokens then Some(true) else None,
+          dpopSigningAlgs = dpopSigningAlgs,
+          dpopMinRsaKeySize = dpopMinRsaKeySize,
+          edgeClientCertificate = edgeClientCertificate,
+          issueEdgeClientCertificate = issueEdgeClientCertificate,
+          enrollEdgeClientCertificate = enrollEdgeClientCertificate,
+        ).toJson
+      case _ => // service
+        OAuthClient.CreateServiceClientBody(
+          tenantId = tenantId,
+          id = clientId,
+          clientName = Map("en" -> clientName),
+          allowedScopes = allowedScopes,
+          accessTokenTtl = 3600,
+          authMethod = authMethod,
+          mtlsAuth = mtlsAuth,
+          certificateBoundAccessTokens = certificateBoundAccessTokens,
+          dpopBoundAccessTokens = dpopBoundAccessTokens,
+          jwks = jwks,
+          generateJwks = generateJwks,
+          dpopSigningAlgs = dpopSigningAlgs,
+          dpopMinRsaKeySize = dpopMinRsaKeySize,
+        ).toJson
+    val body = Body.fromString(bodyJson)
     val req = Request.post(s"${config.centralUrl}/configuration/clients/$kind", body)
       .addHeader(centralAuthorization)
       .addHeader(Header.ContentType(MediaType.application.json))
@@ -1440,6 +1485,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       else
         resp.body.asString.flatMap: body =>
           ZIO.fail(RuntimeException(s"deleteJwksKey failed: status=${resp.status} body=$body"))
+
   /** GET /userinfo — fetches claims for a bearer token.
     *
     * @param certificate the client certificate the tenant's proxy would have forwarded. RFC
@@ -1584,7 +1630,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Some(
         caller.bodyWith(
           "currentPassword" -> Json.Str(currentPassword),
-          "newPassword"     -> Json.Str(newPassword),
+          "newPassword" -> Json.Str(newPassword),
         ),
       ),
       credentials,
@@ -1692,7 +1738,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
       Some(
         Json.Obj(
           "currentPassword" -> Json.Str(currentPassword),
-          "newPassword"     -> Json.Str(newPassword),
+          "newPassword" -> Json.Str(newPassword),
         ),
       ),
       accessToken,
@@ -1838,15 +1884,14 @@ object OAuthClient:
       claims: zio.json.ast.Json.Obj,
   ) derives JsonDecoder
 
-  /** Minimal mirror of `CreateClientRequest` for e2e JSON serialisation. */
-  private[support] case class RegisterClientBody(
+  /** Per-kind mirrors of the typed request bodies, each carrying only the fields that kind accepts.
+    * The server's `@jsonNoExtraFields` rejects anything extra, so one body type per kind. */
+  private[support] case class CreateWebClientBody(
       tenantId: String,
       id: String,
       clientName: Map[String, String],
       redirectUris: Set[String],
       allowedScopes: Set[String],
-      audience: List[String],
-      permissions: Set[String],
       accessTokenTtl: Int,
       refreshTokenTtl: Option[Int],
       theme: String,
@@ -1869,7 +1914,48 @@ object OAuthClient:
       dpopMinRsaKeySize: Option[Int],
       edgeSigningKey: Option[zio.json.ast.Json],
       edgeClientCertificate: Option[String],
-      applicationType: Option[String] = None,
       issueEdgeClientCertificate: Boolean,
       enrollEdgeClientCertificate: Boolean,
+  ) derives JsonEncoder
+
+  private[support] case class CreateNativeClientBody(
+      tenantId: String,
+      id: String,
+      clientName: Map[String, String],
+      redirectUris: Set[String],
+      allowedScopes: Set[String],
+      accessTokenTtl: Int,
+      refreshTokenTtl: Option[Int],
+      theme: String,
+      authFlow: Option[zio.json.ast.Json],
+      registrationFlow: Option[zio.json.ast.Json],
+      consentFlow: Option[zio.json.ast.Json],
+      otpTemplateId: String,
+      frontChannelLogoutUri: Option[String],
+      frontChannelLogoutSessionRequired: Boolean,
+      backChannelLogoutUri: Option[String],
+      authMethod: String,
+      mtlsAuth: Option[zio.json.ast.Json],
+      dpopBoundAccessTokens: Option[Boolean],
+      dpopSigningAlgs: Set[String],
+      dpopMinRsaKeySize: Option[Int],
+      edgeClientCertificate: Option[String],
+      issueEdgeClientCertificate: Boolean,
+      enrollEdgeClientCertificate: Boolean,
+  ) derives JsonEncoder
+
+  private[support] case class CreateServiceClientBody(
+      tenantId: String,
+      id: String,
+      clientName: Map[String, String],
+      allowedScopes: Set[String],
+      accessTokenTtl: Int,
+      authMethod: String,
+      mtlsAuth: Option[zio.json.ast.Json],
+      certificateBoundAccessTokens: Boolean,
+      dpopBoundAccessTokens: Boolean,
+      jwks: Option[zio.json.ast.Json],
+      generateJwks: Option[String],
+      dpopSigningAlgs: Set[String],
+      dpopMinRsaKeySize: Option[Int],
   ) derives JsonEncoder
