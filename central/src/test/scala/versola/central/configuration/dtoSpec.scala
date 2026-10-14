@@ -74,6 +74,8 @@ object dtoSpec extends ZIOSpecDefault:
         dto.toJson.contains("\"requiredScopes\":[\"phone\"]"),
         dto.toJson.fromJson[ConsentFlowDto] == Right(dto),
         legacy.fromJson[ConsentFlowDto].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
+        legacy.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(false),
+        dto.copy(offlineAccessOptional = true).toJson.fromJson[ConsentFlowDto].map(_.offlineAccessOptional) == Right(true),
         """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow].map(_.requiredScopes) == Right(Set.empty[ScopeToken]),
       )
     },

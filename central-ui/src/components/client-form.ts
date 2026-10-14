@@ -4690,7 +4690,7 @@ export class VersolaClientForm extends LitElement {
                           />
                           Let the user deselect optional scopes
                         </label>
-                        <div class="registration-hint"><code>openid</code> and <code>offline_access</code> can never be deselected.</div>
+                        <div class="registration-hint"><code>openid</code> can never be deselected; <code>offline_access</code> only if you allow it below.</div>
                       </div>
                     </div>
 
@@ -4721,6 +4721,28 @@ export class VersolaClientForm extends LitElement {
                           </div>
                           <div class="registration-hint">Highlighted scopes are always granted. The rest stay optional.</div>
                           `}
+                        </div>
+                      </div>
+                      <div class="registration-row">
+                        <div class="registration-label consent-property-label">
+                          <span>Long-lived access</span>
+                          ${this.renderOptionInfo(
+                            'consent-offline-access',
+                            'Long-lived access',
+                            html`<div class="option-tooltip-item">Shown to users as the <code>offline_access</code> scope. If the user turns it off, the client gets no refresh token and has to send them through sign-in again when the access token expires.</div>`,
+                            'Long-lived access consent info',
+                          )}
+                        </div>
+                        <div>
+                          <label class="plain-checkbox-label">
+                            <input
+                              type="checkbox"
+                              .checked=${this.consentFlow.offlineAccessOptional}
+                              @change=${(e: Event) => this.setConsentFlow({ offlineAccessOptional: (e.target as HTMLInputElement).checked })}
+                            />
+                            Let the user turn off long-lived access
+                          </label>
+                          <div class="registration-hint">Off by default: the user must grant it, or deny the request. Turn it on only for clients that can sign in again without a refresh token.</div>
                         </div>
                       </div>
                     ` : ''}

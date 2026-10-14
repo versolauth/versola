@@ -121,7 +121,7 @@ type BackendAuthFlow = {
   equivalents?: Record<string, string[]>;
   otpType: 'sms' | 'email';
 };
-type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null; requiredScopes?: string[] };
+type BackendConsentFlow = { allowPartial: boolean; rememberDuration?: number | null; requiredScopes?: string[]; offlineAccessOptional?: boolean };
 type ClientsResponse = {
   clients: Array<{
     id: string;
@@ -229,6 +229,7 @@ function consentFlowToBackend(flow: ConsentFlow | null | undefined): BackendCons
     allowPartial: flow.allowPartial,
     rememberDuration: flow.rememberDurationDays != null ? flow.rememberDurationDays * 86400 : null,
     requiredScopes: flow.requiredScopes,
+    offlineAccessOptional: flow.offlineAccessOptional,
   };
 }
 
@@ -238,6 +239,7 @@ function consentFlowFromBackend(flow: BackendConsentFlow | null | undefined): Co
     allowPartial: flow.allowPartial,
     rememberDurationDays: flow.rememberDuration != null ? Math.round(flow.rememberDuration / 86400) : null,
     requiredScopes: flow.requiredScopes ?? [],
+    offlineAccessOptional: flow.offlineAccessOptional ?? false,
   };
 }
 
@@ -258,7 +260,8 @@ function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | nul
   if (!a || !b) return !a && !b;
   return a.allowPartial === b.allowPartial
     && a.rememberDurationDays === b.rememberDurationDays
-    && sameStringSet(a.requiredScopes, b.requiredScopes);
+    && sameStringSet(a.requiredScopes, b.requiredScopes)
+    && a.offlineAccessOptional === b.offlineAccessOptional;
 }
 
 // Client names are displayed on the consent screen and are stored as locale-keyed objects.

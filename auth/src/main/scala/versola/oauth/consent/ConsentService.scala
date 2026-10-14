@@ -46,9 +46,10 @@ trait ConsentService:
   def revoke(userId: UserId, client: OAuthClientRecord): Task[Unit]
 
 object ConsentService:
-  /** Scopes the user may never deselect: dropping `openid` would silently turn an OIDC request
-    * into a plain OAuth one, and dropping `offline_access` would strip the refresh token the
-    * client asked for. Both must be granted as requested or the whole request denied.
+  /** Scopes the user may not deselect unless the client says otherwise: dropping `openid` would
+    * silently turn an OIDC request into a plain OAuth one, and dropping `offline_access` would
+    * strip the refresh token the client asked for. Both must be granted as requested or the
+    * whole request denied; `offlineAccessOptional` lets a client accept the second trade.
     */
   val NonDeselectable: Set[ScopeToken] = Set(ScopeToken.OpenId, ScopeToken.OfflineAccess)
 
@@ -56,7 +57,10 @@ object ConsentService:
     * whatever the client marked as required.
     */
   def mandatoryScopes(consentFlow: Option[ConsentFlow]): Set[ScopeToken] =
-    NonDeselectable ++ consentFlow.fold(Set.empty[ScopeToken])(_.requiredScopes)
+    val offlineOptional = consentFlow.exists(_.offlineAccessOptional)
+    // An explicitly required scope stays required even if it is `offline_access`.
+    (if offlineOptional then NonDeselectable - ScopeToken.OfflineAccess else NonDeselectable) ++
+      consentFlow.fold(Set.empty[ScopeToken])(_.requiredScopes)
 
   def live = ZLayer.fromFunction(Impl(_))
 

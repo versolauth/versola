@@ -59,7 +59,8 @@ object ConsentServiceSpec extends UnitSpecBase:
       allowPartial: Boolean = false,
       rememberDuration: Option[Duration] = None,
       requiredScopes: Set[ScopeToken] = Set.empty,
-  ) = baseClient.copy(consentFlow = Some(ConsentFlow(allowPartial, rememberDuration, requiredScopes)))
+      offlineAccessOptional: Boolean = false,
+  ) = baseClient.copy(consentFlow = Some(ConsentFlow(allowPartial, rememberDuration, requiredScopes, offlineAccessOptional)))
 
   private def grant(scope: Set[ScopeToken], expiresAt: Option[Instant] = None) =
     ConsentRecord(userId, clientId, scope, grantedAt = now, expiresAt = expiresAt)
@@ -245,6 +246,42 @@ object ConsentServiceSpec extends UnitSpecBase:
         )
         assertTrue(result.isLeft)
       },
+      test("accept dropping offline_access when the client lets the user turn it off") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, offlineAccessOptional = true),
+          Set(openid, offline, profile),
+          Set(openid, profile),
+        )
+        assertTrue(result == Right(Set(openid, profile)))
+      },
+      test("still reject dropping openid when offline_access is optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(offline),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("keep offline_access required when the client lists it as required, even if optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(allowPartial = true, requiredScopes = Set(offline), offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(openid),
+        )
+        assertTrue(result.isLeft)
+      },
+      test("reject dropping offline_access without partial grants even if marked optional") {
+        val env = Env()
+        val result = env.service.validateSubmission(
+          clientWith(offlineAccessOptional = true),
+          Set(openid, offline),
+          Set(openid),
+        )
+        assertTrue(result.isLeft)
+      },
       test("accept an empty submission when nothing mandatory was requested") {
         val env = Env()
         val result = env.service.validateSubmission(clientWith(allowPartial = true), Set(profile), Set.empty)
@@ -254,7 +291,10 @@ object ConsentServiceSpec extends UnitSpecBase:
     suite("ConsentFlow json")(
       test("a flow synced from a central that predates required scopes has none") {
         val decoded = """{"allowPartial":true,"rememberDuration":null}""".fromJson[ConsentFlow]
-        assertTrue(decoded == Right(ConsentFlow(allowPartial = true, rememberDuration = None)))
+        assertTrue(
+          decoded == Right(ConsentFlow(allowPartial = true, rememberDuration = None)),
+          decoded.map(_.offlineAccessOptional) == Right(false),
+        )
       },
     ),
     suite("grant")(

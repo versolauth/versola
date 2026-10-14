@@ -15,9 +15,13 @@ import zio.schema.*
   *                          means the grant is remembered until revoked
   * @param requiredScopes scopes the user cannot deselect when they are requested, in addition to
   *                       `openid`/`offline_access`; only meaningful with `allowPartial`
+  * @param offlineAccessOptional whether the user may deselect `offline_access` ("long-lived access"),
+  *                              which is otherwise always required; the client then receives no
+  *                              refresh token. Only meaningful with `allowPartial`
   */
 case class ConsentFlow(
     allowPartial: Boolean,
     rememberDuration: Option[Duration],
     requiredScopes: Set[ScopeToken] = Set.empty,
+    offlineAccessOptional: Boolean = false,
 ) derives Schema, JsonCodec, Equal

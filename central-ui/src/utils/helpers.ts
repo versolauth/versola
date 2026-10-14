@@ -39,6 +39,7 @@ export function createDefaultConsentFlow(): ConsentFlow {
     allowPartial: false,
     rememberDurationDays: 180,
     requiredScopes: [],
+    offlineAccessOptional: false,
   };
 }
 

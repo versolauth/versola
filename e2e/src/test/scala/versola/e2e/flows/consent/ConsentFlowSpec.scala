@@ -11,10 +11,12 @@ object ConsentFlowSpec extends E2ESpec:
   private def freshConsentSetup(
       partial: Boolean = false,
       requiredScope: Boolean = false,
+      optionalOffline: Boolean = false,
   ): ZIO[Flows.Setups, Throwable, (Flows.Setup, OAuthClient)] =
     ZIO.serviceWithZIO[Flows.Setups] { s =>
       val consentFlow =
         if requiredScope then Flows.requiredScopeConsentFlow
+        else if optionalOffline then Flows.optionalOfflineAccessConsentFlow
         else if partial then Flows.partialConsentFlow
         else Flows.rememberedConsentFlow
       Flows.setupConsent(consentFlow = consentFlow, allowedScopes = Set("openid", "email", "phone", "offline_access"))
@@ -243,6 +245,31 @@ object ConsentFlowSpec extends E2ESpec:
         .label("a submission without the required scope must re-render consent") &&
         assertTrue(token.scope.exists(_.contains("email")) && !token.scope.exists(_.contains("phone")))
           .label("the code is issued with the required scope and without the deselected optional one")
+    },
+    test("a client may let the user turn off long-lived access, and then gets no refresh token") {
+      for
+        (s, auth) <- freshConsentSetup(optionalOffline = true)
+        (authorize, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email offline_access"))
+        code <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
+          .assertRedirect(auth, cookie)
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+      yield assertTrue(token.refreshToken.isEmpty)
+        .label("a user who turned off long-lived access must not be issued a refresh token")
+    },
+    test("dropping offline_access is rejected by default") {
+      for
+        (s, auth) <- freshConsentSetup(partial = true)
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email offline_access"))
+        _ <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
+        step <- auth.getChallenge(cookie)
+      yield assertTrue(step.step.contains(ConversationStep.Consent))
+        .label("offline_access stays mandatory unless the client opts in")
     },
     test("a consent submission carrying a stale csrf token is rejected") {
       for

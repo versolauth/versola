@@ -2359,8 +2359,8 @@ components:
         allowPartial:
           type: boolean
           description: |
-            Whether the user may deselect optional scopes. `openid` and `offline_access` are
-            never deselectable.
+            Whether the user may deselect optional scopes. `openid` is never deselectable, and
+            neither is `offline_access` unless `offlineAccessOptional` is set.
         requiredScopes:
           type: array
           uniqueItems: true
@@ -2374,6 +2374,14 @@ components:
             still deny the whole request. A scope the client did not request is ignored.
             Meaningful only with `allowPartial`: without it the whole requested scope is
             granted or denied.
+        offlineAccessOptional:
+          type: boolean
+          default: false
+          description: |
+            Lets the user deselect `offline_access` ("long-lived access"). When they do, the
+            client receives no refresh token and must be able to sign the user in again. A
+            client that lists `offline_access` in `requiredScopes` keeps it required.
+            Meaningful only with `allowPartial`.
         rememberDuration:
           description: |
             Seconds a granted consent is reused without re-prompting. `null` remembers it

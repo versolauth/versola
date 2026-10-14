@@ -1106,7 +1106,7 @@ test('configures a consent flow and sends it when creating a client', async ({ p
     policyUri: 'https://consenting.example/privacy',
     tosUri: 'https://consenting.example/terms',
   });
-  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [] });
+  expect(body.consentFlow).toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
 });
 
 test('reads and updates a finite consent duration as seconds', async ({ page }) => {
@@ -1131,7 +1131,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
-    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [] });
+    .toEqual({ allowPartial: true, rememberDuration: 30 * 86400, requiredScopes: [], offlineAccessOptional: false });
 });
 
 test('marks required consent scopes and sends them with the flow', async ({ page }) => {
@@ -1162,7 +1162,31 @@ test('marks required consent scopes and sends them with the flow', async ({ page
   await saveEdit(page);
 
   expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
-    .toEqual({ allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['profile'] });
+    .toEqual({ allowPartial: true, rememberDuration: 14 * 86400, requiredScopes: ['profile'], offlineAccessOptional: false });
+});
+
+test('lets the administrator allow users to turn off long-lived access', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: {
+      clients: {
+        'tenant-alpha': [{
+          ...alphaClient,
+          consentFlow: { allowPartial: true, rememberDuration: null },
+        }],
+      },
+    },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Registration and consent');
+  const toggle = page.getByLabel('Let the user turn off long-lived access');
+  await expect(toggle).not.toBeChecked();
+  await toggle.check();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.consentFlow)
+    .toEqual({ allowPartial: true, rememberDuration: null, requiredScopes: [], offlineAccessOptional: true });
 });
 
 test('offers required scopes only while partial grants are allowed', async ({ page }) => {
