@@ -181,6 +181,20 @@ object ConsentFlowSpec extends E2ESpec:
       yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
         .label("a denied grant must not issue an authorization code")
     },
+    test("the access-denied screen is rendered in the language the user switched the consent screen to") {
+      for
+        (s, auth) <- setup(Flows.Id.Consent)
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s)
+        denied <- auth.denyConsent(cookie, consent.csrf, uiLocale = Some("ru"))
+        step <- auth.getChallenge(cookie)
+        setCookies = denied.response.headers.toList.filter(_.headerName.equalsIgnoreCase("set-cookie")).map(_.renderedValue)
+      yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
+        .label("a denied grant must still render access-denied") &&
+        assertTrue(step.html.contains("\"locale\":\"ru\""))
+          .label("access-denied must render in the language chosen on the consent screen") &&
+        assertTrue(setCookies.exists(_.startsWith("ui_locale=ru")))
+          .label("the chosen language must be remembered for pages that have no conversation to read it from")
+    },
     test("a partial grant narrows the scope carried by the issued token") {
       for
         (s, auth) <- freshConsentSetup(partial = true)

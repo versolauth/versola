@@ -425,6 +425,17 @@ test.describe('confirm-logout', () => {
     });
   });
 
+  test('sends the chosen language with the confirmation and remembers it', async ({ page }) => {
+    const { submitted, all } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
+
+    await page.getByLabel('Language').selectOption('ru');
+    await page.getByRole('button', { name: all.ru.confirm_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+    expect((await page.context().cookies()).find(c => c.name === 'ui_locale')?.value).toBe('ru');
+  });
+
   test('leaves out what it was not given', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
 
@@ -452,6 +463,19 @@ test.describe('terminal screens', () => {
 
     await expect(page.getByRole('link', { name: t.return_button })).toHaveAttribute('href', 'https://app.example/start');
   });
+
+  for (const id of ['access-denied', 'conversation-expired', 'service-unavailable']) {
+    test(`${id}: remembers the language the user switches to`, async ({ page }) => {
+      const { all } = await renderForm(page, id, { step: { type: id, redirectUri: 'https://app.example/start' } });
+
+      await page.locator('.locale-trigger').click();
+      await page.getByRole('button', { name: 'ru', exact: true }).click();
+
+      await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+      const cookies = await page.context().cookies();
+      expect(cookies.find(c => c.name === 'ui_locale')).toMatchObject({ value: 'ru', path: '/', sameSite: 'Lax' });
+    });
+  }
 
   test('signed-out: notifies every front-channel logout URI, then continues on its own', async ({ page }) => {
     await page.clock.install();

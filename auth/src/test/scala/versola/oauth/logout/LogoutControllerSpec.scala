@@ -6,7 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.ConversationRenderService
+import versola.oauth.conversation.{ConversationRenderService, UiLocales}
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
@@ -186,6 +186,15 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
+      description = "GET /logout renders the signed-out page in the locale remembered in the ui_locale cookie",
+      request = Request.get(URL.root / "logout")
+        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(UiLocales.cookieName, "ru")))),
+      expectedStatus = Status.Ok,
+      setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
+      verify = (_, _, renderService, _) =>
+        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru")))))),
+    ),
+    controllerTestCase(
       description = "GET /logout with a session cookie for an unknown session renders the generic logout page",
       request = Request.get(URL.root / "logout").addHeader(sessionCookieHeader()),
       expectedStatus = Status.Ok,
@@ -195,7 +204,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -291,7 +300,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -303,7 +312,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -315,7 +324,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -477,7 +486,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -499,7 +508,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None)),
         )),
     ),
   )

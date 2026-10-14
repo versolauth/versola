@@ -4,8 +4,8 @@ import versola.auth.model.{CredentialId, PasskeyName}
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.conversation.ConversationRenderService.StepView
+import versola.oauth.conversation.{ConversationRenderService, UiLocales}
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.PublicSessionId
 import versola.user.UserRepository
@@ -49,7 +49,7 @@ object AccountSettingsController extends Controller:
         sessionId <- request.queryZIO[PublicSessionId]("sessionId")
         view <- accountView(userId, sessionId)
         requestedLocales <- request.queryZIO[Option[String]]("ui_locales")
-        uiLocales = Some(requestedLocales.fold(acceptedLocales(request))(splitLocales)).filter(_.nonEmpty)
+        uiLocales = UiLocales.resolve(request, explicit = requestedLocales.fold(List.empty[String])(UiLocales.split))
         response <- ZIO.serviceWithZIO[ConversationRenderService](_.renderAccount(clientId, view, uiLocales))
       yield response
     }
@@ -202,16 +202,6 @@ object AccountSettingsController extends Controller:
     * enrollment step of the login flow resolves it. */
   private def displayNameOf(userId: UserId): ZIO[UserRepository, Throwable, String] =
     ZIO.serviceWithZIO[UserRepository](_.find(userId)).map(_.map(_.passkeyDisplayName).getOrElse(userId.toString))
-
-  private def acceptedLocales(request: Request): List[String] =
-    request.header(Header.AcceptLanguage).toList.flatMap(_.renderedValue.split(',').toList)
-      .map(_.takeWhile(_ != ';').trim)
-      .filter(_.nonEmpty)
-
-  /** Parses the OIDC `ui_locales` convention: a space-separated, most-preferred-first list
-    * (see [[versola.oauth.authorize.AuthorizeRequestParser]]). */
-  private def splitLocales(raw: String): List[String] =
-    raw.split(' ').toList.map(_.trim).filter(_.nonEmpty)
 
   /** `userId` is the edge-injected caller context (needed to scope the revocation to the
     * caller's own account). `targetSessionId` is the id of the session to invalidate,

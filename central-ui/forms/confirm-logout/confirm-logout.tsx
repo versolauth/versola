@@ -1,5 +1,6 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
+import { rememberLocale } from '../locale';
 
 interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string; state?: string }; t: Record<string, string>; locale?: string; locales?: string[]; allT?: Record<string, Record<string, string>>; logo?: string; }
 declare global { interface Window { __VERSOLA_FORM__?: FormConfig } }
@@ -10,12 +11,12 @@ function ConfirmLogout(props: { config: FormConfig }) {
   const t = () => ({ ...props.config.t, ...(allT[locale()] ?? {}) });
   return <div class="container">
     <Show when={(props.config.locales ?? []).length > 1}>
-      <select value={locale()} onChange={e => setLocale(e.currentTarget.value)} aria-label="Language">
+      <select value={locale()} onChange={e => { setLocale(e.currentTarget.value); rememberLocale(e.currentTarget.value); }} aria-label="Language">
         {(props.config.locales ?? []).map(l => <option value={l}>{l}</option>)}
       </select>
     </Show>
     <h1>{t().title}</h1><p class="logout-description">{t().description}</p>
-    <form method="post" action="/logout">
+    <form method="post" action={`/logout?ui_locale=${encodeURIComponent(locale())}`}>
       <input type="hidden" name="csrf_token" value={props.config.step.csrfToken} />
       <Show when={props.config.step.postLogoutRedirectUri}>
         {uri => <input type="hidden" name="post_logout_redirect_uri" value={uri()} />}

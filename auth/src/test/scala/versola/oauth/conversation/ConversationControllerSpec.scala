@@ -110,6 +110,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       request: Request,
       submission: (AuthId, Submission, Option[String], Option[String]),
       ipHeader: String = "X-Real-IP",
+      localeCookie: Option[String] = None,
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -150,10 +151,13 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(request)
 
         submitCalls = router.submit.calls
+        setCookies = response.headers.toList.filter(_.headerName.equalsIgnoreCase("set-cookie")).map(_.renderedValue)
+        localeCookies = setCookies.filter(_.startsWith(s"${UiLocales.cookieName}="))
       yield assertTrue(
         response.status == Status.SeeOther,
         response.header(Header.Location).exists(_.url.encode.contains("challenge")),
-      ) && assertTrue(submitCalls == List(submission))
+      ) && assertTrue(submitCalls == List(submission)) &&
+        assertTrue(localeCookies.map(_.takeWhile(_ != ';')) == localeCookie.map(locale => s"${UiLocales.cookieName}=$locale").toList)
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   def rejectedSubmitTestCase(
@@ -253,6 +257,17 @@ object ConversationControllerSpec extends UnitSpecBase:
         ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode, ""), Some("ru"), None),
+      localeCookie = Some("ru"),
+    ),
+    successfulSubmitTestCase(
+      description = "submit does not remember a malformed ui_locale",
+      request = Request.post(
+        url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru;Domain=evil.test"),
+        body = Body.fromURLEncodedForm(
+          Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
+        ),
+      ).addHeader(conversationCookie),
+      submission = (authId, OtpSubmission(otpCode, ""), Some("ru;Domain=evil.test"), None),
     ),
     successfulSubmitTestCase(
       description = "submit reads the tenant-configured header (X-Real-IP) as the throttle ip",
@@ -598,7 +613,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query, None)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders step") {
@@ -646,7 +661,38 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Expired</html>",
-        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
+        renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query, None)),
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("GET /challenge renders conversation expired in the remembered locale") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- router.getConversation.succeedsWith(None)
+        _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
+
+        response <- client.batched(
+          Request.get(URL.empty / "challenge")
+            .addHeader(Header.Cookie(NonEmptyChunk(
+              conversationCookie.value.head,
+              Cookie.Request(UiLocales.cookieName, "ru"),
+            )))
+            .addHeader(Header.AcceptLanguage.parse("de, fr;q=0.8").toOption.get),
+        )
+      yield assertTrue(
+        renderService.renderExpired.calls == List(
+          (clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query, Some(List("ru", "de", "fr"))),
+        ),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge renders service unavailable when conversation lookup fails") {
@@ -671,7 +717,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       yield assertTrue(
         response.status == Status.Ok,
         body == "<html>Unavailable</html>",
-        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query)),
+        renderService.renderServiceUnavailable.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query, None)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("GET /challenge/passkey/options returns options") {

@@ -717,9 +717,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       cookie,
     ).map(SubmitResult(_))
 
-  /** POST /challenge/consent/deny — refuses the grant. */
-  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+  /** POST /challenge/consent/deny — refuses the grant. `uiLocale` is the language the user
+    * switched the form to, which the form sends as the `ui_locale` query parameter.
+    */
+  def denyConsent(cookie: String, csrf: String, uiLocale: Option[String] = None): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /token — exchanges authorization code for tokens.
