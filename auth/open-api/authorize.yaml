@@ -15,7 +15,7 @@ info:
     parameters as the claims of a signed `request` object (RFC 9101), again alongside
     `client_id`; the object's claims replace every other parameter.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

@@ -15,7 +15,7 @@ info:
     member set reflects how the deployment is configured. The properties below are the ones a
     client should expect.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

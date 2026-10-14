@@ -14,7 +14,7 @@ info:
     longer usable — is satisfied either way, and distinguishing the cases would leak whether a
     token exists. Only a client authentication failure is reported as an error.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:
