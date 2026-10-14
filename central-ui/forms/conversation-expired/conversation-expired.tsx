@@ -1,6 +1,5 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { rememberLocale } from '../locale';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (locale: string) => void }) {
   const [open, setOpen] = createSignal(false);
@@ -45,7 +44,6 @@ function ConversationExpiredForm(props: { config: FormConfig }) {
   const [currentLocale, setCurrentLocale] = createSignal(props.config.locale ?? 'en');
   const changeLocale = (locale: string) => {
     setCurrentLocale(locale);
-    rememberLocale(locale);
     try { window.parent.postMessage({ type: 'versola:locale-change', locale, previewId: props.config.previewId }, '*'); } catch (_) {}
   };
   const t = () => ({ ...props.config.t, ...(allT[currentLocale()] ?? {}) });

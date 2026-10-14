@@ -30,7 +30,7 @@ object UiLocales:
       domain = None,
       path = Some(Path.root),
       isSecure = true,
-      isHttpOnly = false, // the forms set it too when the user changes language on a page without a request of its own
+      isHttpOnly = true,
       maxAge = Some(cookieTtl),
       sameSite = Some(Cookie.SameSite.Lax),
     )

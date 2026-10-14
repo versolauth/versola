@@ -63,11 +63,11 @@ object UiLocalesSpec extends UnitSpecBase:
         )
       },
     ),
-    test("cookie is not HttpOnly, is Secure and SameSite=Lax, and carries only the locale") {
+    test("cookie is HttpOnly, Secure and SameSite=Lax, and carries only the locale") {
       val cookie = UiLocales.cookie("ru")
       assertTrue(
         cookie.content == "ru",
-        !cookie.isHttpOnly,
+        cookie.isHttpOnly,
         cookie.isSecure,
         cookie.sameSite == Some(Cookie.SameSite.Lax),
         cookie.path.exists(_.encode == "/"),

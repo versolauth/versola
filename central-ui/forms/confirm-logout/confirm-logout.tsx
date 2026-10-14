@@ -1,6 +1,5 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { rememberLocale } from '../locale';
 
 interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string; state?: string }; t: Record<string, string>; locale?: string; locales?: string[]; allT?: Record<string, Record<string, string>>; logo?: string; }
 declare global { interface Window { __VERSOLA_FORM__?: FormConfig } }
@@ -11,7 +10,7 @@ function ConfirmLogout(props: { config: FormConfig }) {
   const t = () => ({ ...props.config.t, ...(allT[locale()] ?? {}) });
   return <div class="container">
     <Show when={(props.config.locales ?? []).length > 1}>
-      <select value={locale()} onChange={e => { setLocale(e.currentTarget.value); rememberLocale(e.currentTarget.value); }} aria-label="Language">
+      <select value={locale()} onChange={e => setLocale(e.currentTarget.value)} aria-label="Language">
         {(props.config.locales ?? []).map(l => <option value={l}>{l}</option>)}
       </select>
     </Show>
