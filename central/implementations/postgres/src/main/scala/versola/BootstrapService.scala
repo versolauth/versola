@@ -1049,7 +1049,7 @@ object BootstrapService:
         edgeClientCertificate = credential.edgeClientCertificate,
         template = None,
         applicationType = None,
-        issueEdgeClientCertificate = false,
+        issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
       )
       warnNonConformant *> clientService.registerClient(request, enforceSecurityProfile = credential.conformant).foldZIO(
