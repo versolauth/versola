@@ -6,7 +6,7 @@ import com.nimbusds.jwt.{JWTClaimsSet, SignedJWT}
 import org.scalamock.stubs.Stub
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ClientId
-import versola.oauth.conversation.{ConversationRenderService, UiLocales}
+import versola.oauth.conversation.ConversationRenderService
 import versola.oauth.model.SessionCookie
 import versola.oauth.session.SessionService
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
@@ -186,13 +186,13 @@ object LogoutControllerSpec extends UnitSpecBase:
         )),
     ),
     controllerTestCase(
-      description = "GET /logout renders the signed-out page in the locale remembered in the ui_locale cookie",
-      request = Request.get(URL.root / "logout")
-        .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request(UiLocales.cookieName, "ru")))),
+      description = "GET /logout renders the signed-out page in the requested ui_locales, then Accept-Language",
+      request = Request.get((URL.root / "logout").addQueryParam("ui_locales", "ru kk"))
+        .addHeader(Header.AcceptLanguage.parse("de, fr;q=0.8").toOption.get),
       expectedStatus = Status.Ok,
       setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, _, renderService, _) =>
-        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru")))))),
+        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru", "kk", "de", "fr")))))),
     ),
     controllerTestCase(
       description = "GET /logout with a session cookie for an unknown session renders the generic logout page",

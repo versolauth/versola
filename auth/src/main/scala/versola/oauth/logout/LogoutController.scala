@@ -40,7 +40,7 @@ object LogoutController extends Controller:
         state <- request.queryZIO[Option[State]]("state")
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
         requestedLocales <- request.queryZIO[Option[String]]("ui_locales")
-        uiLocales = UiLocales.resolve(request, explicit = requestedLocales.fold(List.empty[String])(UiLocales.split))
+        uiLocales = UiLocales.resolve(request, hints = requestedLocales.fold(List.empty[String])(UiLocales.split))
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
         _ <- Observability.setRouteLabel(
@@ -85,7 +85,7 @@ object LogoutController extends Controller:
         postLogoutRedirectUri <- request.queryZIO[Option[URL]]("post_logout_redirect_uri")
         state <- request.queryZIO[Option[State]]("state")
         idTokenHint <- request.queryZIO[Option[String]]("id_token_hint")
-        uiLocales = UiLocales.resolve(request, explicit = UiLocales.submitted(request).toList)
+        uiLocales = UiLocales.resolve(request)
         config <- ZIO.service[CoreConfig]
         sessionId = sessionIdFromCookie(request, config)
         _ <- Observability.setRouteLabel(
@@ -138,7 +138,7 @@ object LogoutController extends Controller:
             }
           case (None, Some(hintId)) => performLogout(Left(hintId), postLogoutRedirectUri, state, renderService, uiLocales)
           case (None, None) => renderService.renderLogout(List.empty, None, state, uiLocales)
-      yield UiLocales.remember(request)(response)
+      yield response
     }
 
   private def sessionIdFromCookie(request: Request, config: CoreConfig): Option[SessionId] =

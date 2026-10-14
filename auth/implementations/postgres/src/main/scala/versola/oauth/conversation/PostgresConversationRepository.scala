@@ -199,7 +199,6 @@ class PostgresConversationRepository(xa: TransactorZIO) extends ConversationRepo
               prior_session_id = ${record.priorSessionId},
               prior_session_user_id = ${record.priorSessionUserId},
               granted_scope = ${record.grantedScope}::text[],
-              ui_locales = ${record.uiLocales}::text[],
               version = version + 1
             where id = $authId and version = ${record.version}"""
         .update.run()

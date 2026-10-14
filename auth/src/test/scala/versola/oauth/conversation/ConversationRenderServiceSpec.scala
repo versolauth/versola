@@ -975,14 +975,21 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val env = Env()
         val step = ConversationStep.Password(0, None, 0, false)
         for
-          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
+      },
+      test("carries the language the form was submitted in to the next step") {
+        val env = Env()
+        val step = ConversationStep.Password(0, None, 0, false)
+        for
+          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord, Some("ru"))
+        yield assertTrue(response.header(Header.Location).map(_.url.encode).contains("/challenge?ui_locale=ru"))
       },
       test("redirects to /challenge on BadRequest") {
         val env = Env()
         for
-          response <- env.service.renderSubmit(ConversationResult.BadRequest, conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.BadRequest, conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
       },
@@ -996,7 +1003,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
-          response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service_unavailable"))
@@ -1018,7 +1025,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
@@ -1049,7 +1056,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
       },
       test("binds the id_token to the state with an s_hash") {
@@ -1072,7 +1079,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
           location = response.header(Header.Location).map(_.url).get
           idToken = location.queryParams.queryParam("id_token").get
           claims <- JWT.deserialize[Json.Obj](idToken, TestEnvConfig.publicKeys, JWT.Type.JWT)
@@ -1104,6 +1111,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderSubmit(
             result,
             conversationRecord.copy(responseMode = ResponseMode.QueryJwt),
+            None,
           )
           location = response.header(Header.Location).map(_.url).get
           claims <- JWT.deserialize[Json.Obj](location.queryParams.queryParam("response").get, TestEnvConfig.publicKeys, JWT.Type.JWT)

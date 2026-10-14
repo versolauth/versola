@@ -55,7 +55,7 @@ object ConversationController extends Controller:
             case Some(record) =>
               val ifNoneMatch = request.headers.get(Header.IfNoneMatch)
               formService.renderStep(
-                record.copy(uiLocales = UiLocales.resolve(request, fromRecord = record.uiLocales.getOrElse(Nil))),
+                record.copy(uiLocales = UiLocales.resolve(request, hints = record.uiLocales.getOrElse(Nil))),
                 ifNoneMatch.map(_.renderedValue),
               )
         yield response
@@ -151,10 +151,10 @@ object ConversationController extends Controller:
           .unlessZIO(validate(cookie.clientId, body))
           .tapError(msg => ZIO.logWarning(s"Request validation failed: $msg"))
 
-        uiLocale <- request.queryZIO[Option[String]]("ui_locale")
+        uiLocale = UiLocales.submitted(request)
         (result, record) <- router.submit(cookie.authId, body, uiLocale, ip)
-        response <- conversationRenderService.renderSubmit(result, record)
-      yield UiLocales.remember(request)(response))
+        response <- conversationRenderService.renderSubmit(result, record, uiLocale)
+      yield response)
         .catchAll {
           case Error.ConversationExpired => expiredResponse(request)
           case Error.ServiceUnavailable => serviceUnavailableResponse(request)
@@ -200,18 +200,26 @@ object ConversationController extends Controller:
           ZIO.fail(Error.BadRequest)
             .tapError(msg => ZIO.logWarning(s"Conversation cookie is missing"))
 
+  /** A submit that finds its conversation gone is sent on to `GET /challenge`, which renders the
+    * expired page, so that a reload of it keeps the language the user submitted in.
+    */
   private def expiredResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for
       formService <- ZIO.service[ConversationRenderService]
       cookie <- extractCookie(request)
-      response <- formService.renderExpired(
-        cookie.clientId,
-        cookie.redirectUri,
-        cookie.state,
-        cookie.effectiveResponseMode,
-        UiLocales.resolve(request, explicit = UiLocales.submitted(request).toList),
-      )
-    yield UiLocales.remember(request)(response)
+      submitted = UiLocales.submitted(request).filter(_ => request.method == Method.POST)
+      response <- submitted match
+        case Some(_) =>
+          ZIO.succeed(Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), submitted)))
+        case None =>
+          formService.renderExpired(
+            cookie.clientId,
+            cookie.redirectUri,
+            cookie.state,
+            cookie.effectiveResponseMode,
+            UiLocales.resolve(request),
+          )
+    yield response
 
   private def serviceUnavailableResponse(request: Request): ZIO[ConversationRenderService & CoreConfig, Throwable, Response] =
     for
@@ -222,9 +230,9 @@ object ConversationController extends Controller:
         cookie.redirectUri,
         cookie.state,
         cookie.effectiveResponseMode,
-        UiLocales.resolve(request, explicit = UiLocales.submitted(request).toList),
+        UiLocales.resolve(request),
       )
-    yield UiLocales.remember(request)(response)
+    yield response
 
   /** Extracts the client IP from the header configured in submission limits. Returns None when no
     * header is configured, causing IP-based throttling to be skipped entirely. For multi-value

@@ -186,15 +186,6 @@ trait ConversationRepositorySpec extends DatabaseSpecBase[ConversationRepository
           found2.contains(updatedRecord.copy(version = found1.get.version + 1)),
         )
       },
-      test("overwrite persists the locales the user picked") {
-        val updatedRecord = initial.copy(step = ConversationStep.AccessDenied, uiLocales = Some(List("ru", "en")))
-        for
-          _ <- env.repository.create(authId1, initial, ttl)
-          found1 <- env.repository.find(authId1)
-          _ <- env.repository.overwrite(authId1, updatedRecord.copy(version = found1.get.version))
-          found2 <- env.repository.find(authId1)
-        yield assertTrue(found2.flatMap(_.uiLocales).contains(List("ru", "en")))
-      },
       test("overwrite with stale version returns false (optimistic conflict)") {
         for
           _ <- env.repository.create(authId1, record1, ttl)

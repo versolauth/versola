@@ -43,9 +43,13 @@ trait ConversationRenderService:
       uiLocales: Option[List[String]],
   ): Task[Response]
 
+  /** `uiLocale` is the language the form was submitted in; the redirect to the next step carries it
+    * so that step renders in it, since nothing but the URL ties the two requests together.
+    */
   def renderSubmit(
       result: ConversationResult.Render,
       record: ConversationRecord,
+      uiLocale: Option[String],
   ): Task[Response]
 
   def renderLogout(
@@ -352,16 +356,18 @@ object ConversationRenderService:
     override def renderSubmit(
         result: ConversationResult.Render,
         record: ConversationRecord,
+        uiLocale: Option[String],
     ): Task[Response] =
+      val challenge = Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), uiLocale))
       result match
         case ConversationResult.RenderStep(step) =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.ServiceUnavailable =>
           renderStep(record, ifNoneMatch = None, errorKey = Some("service_unavailable"))
 
         case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = Base64Url.encode(code)

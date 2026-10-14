@@ -49,7 +49,7 @@ object AccountSettingsController extends Controller:
         sessionId <- request.queryZIO[PublicSessionId]("sessionId")
         view <- accountView(userId, sessionId)
         requestedLocales <- request.queryZIO[Option[String]]("ui_locales")
-        uiLocales = UiLocales.resolve(request, explicit = requestedLocales.fold(List.empty[String])(UiLocales.split))
+        uiLocales = UiLocales.resolve(request, hints = requestedLocales.fold(List.empty[String])(UiLocales.split))
         response <- ZIO.serviceWithZIO[ConversationRenderService](_.renderAccount(clientId, view, uiLocales))
       yield response
     }

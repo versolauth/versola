@@ -240,11 +240,10 @@ components:
         configured locales is used; when none is configured the default locale applies, and the
         request is not refused.
 
-        The language the user picks in a login form is remembered for the rest of the
-        conversation and in a `ui_locale` cookie (`SameSite=Lax`, holds only the language tag), so
-        the pages that follow without a conversation to read it from keep it. Precedence: what the
-        user picked, then these `ui_locales`, then the cookie, then `Accept-Language`, then the
-        default locale.
+        The language the user picks in a login form is sent with each submit as `ui_locale`, kept
+        for the rest of the conversation, and carried by the redirect to the next step. Precedence:
+        what the user picked, then these `ui_locales`, then `Accept-Language`, then the default
+        locale.
       schema:
         type: string
       example: ru en

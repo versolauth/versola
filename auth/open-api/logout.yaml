@@ -48,7 +48,6 @@ paths:
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/SessionCookie'
         - $ref: '#/components/parameters/UiLocales'
-        - $ref: '#/components/parameters/UiLocaleCookie'
       responses:
         '200':
           $ref: '#/components/responses/LogoutPage'
@@ -70,7 +69,6 @@ paths:
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/SessionCookie'
         - $ref: '#/components/parameters/UiLocale'
-        - $ref: '#/components/parameters/UiLocaleCookie'
       requestBody:
         required: false
         description: Sent by the confirmation page. Not used when `id_token_hint` is supplied.
@@ -124,8 +122,8 @@ components:
       required: false
       description: |
         Space-delimited BCP 47 language tags, in order of preference, for the page that is
-        rendered. They take precedence over the `ui_locale` cookie and `Accept-Language`; when
-        none of them is a configured locale the default locale applies.
+        rendered. They take precedence over `Accept-Language`; when none of them is a configured
+        locale the default locale applies.
       schema:
         type: string
       example: ru en
@@ -136,21 +134,10 @@ components:
       required: false
       description: |
         The language the user picked on the confirmation page. The signed-out page is rendered
-        in it, and it is remembered in the `ui_locale` cookie. A value that is not a language
-        tag is ignored.
+        in it. A value that is not a language tag is ignored.
       schema:
         type: string
       example: ru
-
-    UiLocaleCookie:
-      name: ui_locale
-      in: cookie
-      required: false
-      description: |
-        The language the user last picked in a login or logout form. Used when the request
-        names none, ahead of `Accept-Language`. Holds nothing but the language tag.
-      schema:
-        type: string
 
     SessionCookie:
       name: SSO_SESSION
@@ -187,9 +174,7 @@ components:
         no longer exists, or when `id_token_hint` does not match the cookie's session.
       headers:
         Set-Cookie:
-          description: |
-            `SSO_SESSION`, expired, when a session was actually terminated; and `ui_locale` on
-            `POST` when the request carried a valid `ui_locale`.
+          description: '`SSO_SESSION`, expired, when a session was actually terminated.'
           schema:
             type: string
         Cache-Control:

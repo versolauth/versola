@@ -110,7 +110,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       request: Request,
       submission: (AuthId, Submission, Option[String], Option[String]),
       ipHeader: String = "X-Real-IP",
-      localeCookie: Option[String] = None,
+      expectedLocation: String = "/challenge",
   )(using
       loc: SourceLocation,
       trace: Trace,
@@ -151,13 +151,10 @@ object ConversationControllerSpec extends UnitSpecBase:
         response <- client.batched(request)
 
         submitCalls = router.submit.calls
-        setCookies = response.headers.toList.filter(_.headerName.equalsIgnoreCase("set-cookie")).map(_.renderedValue)
-        localeCookies = setCookies.filter(_.startsWith(s"${UiLocales.cookieName}="))
       yield assertTrue(
         response.status == Status.SeeOther,
-        response.header(Header.Location).exists(_.url.encode.contains("challenge")),
-      ) && assertTrue(submitCalls == List(submission)) &&
-        assertTrue(localeCookies.map(_.takeWhile(_ != ';')) == localeCookie.map(locale => s"${UiLocales.cookieName}=$locale").toList)
+        response.header(Header.Location).map(_.url.encode).contains(expectedLocation),
+      ) && assertTrue(submitCalls == List(submission))
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging
 
   def rejectedSubmitTestCase(
@@ -249,7 +246,7 @@ object ConversationControllerSpec extends UnitSpecBase:
       submission = (authId, OtpResendSubmission(""), None, None),
     ),
     successfulSubmitTestCase(
-      description = "submit forwards ui_locale from query param",
+      description = "submit forwards ui_locale from query param, and the redirect to the next step carries it",
       request = Request.post(
         url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru"),
         body = Body.fromURLEncodedForm(
@@ -257,17 +254,17 @@ object ConversationControllerSpec extends UnitSpecBase:
         ),
       ).addHeader(conversationCookie),
       submission = (authId, OtpSubmission(otpCode, ""), Some("ru"), None),
-      localeCookie = Some("ru"),
+      expectedLocation = "/challenge?ui_locale=ru",
     ),
     successfulSubmitTestCase(
-      description = "submit does not remember a malformed ui_locale",
+      description = "submit ignores a malformed ui_locale",
       request = Request.post(
         url = (URL.empty / "challenge" / "otp").addQueryParam("ui_locale", "ru;Domain=evil.test"),
         body = Body.fromURLEncodedForm(
           Form.fromStrings("code" -> otpCode.toString, "csrf" -> ""),
         ),
       ).addHeader(conversationCookie),
-      submission = (authId, OtpSubmission(otpCode, ""), Some("ru;Domain=evil.test"), None),
+      submission = (authId, OtpSubmission(otpCode, ""), None, None),
     ),
     successfulSubmitTestCase(
       description = "submit reads the tenant-configured header (X-Real-IP) as the throttle ip",
@@ -499,6 +496,35 @@ object ConversationControllerSpec extends UnitSpecBase:
         body <- response.body.asString
       yield assertTrue(response.status == Status.Ok, body == "<html>Expired</html>")
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
+    test("POST /challenge sends an expired submit on to /challenge in the language it was submitted in") {
+      for
+        client <- ZIO.service[Client]
+        router = stub[ConversationRouter]
+        configuration = stub[OAuthConfigurationService]
+        renderService = stub[ConversationRenderService]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(
+          Observability.handleErrors(
+            ConversationController.routes.provideEnvironment(
+              ZEnvironment(router) ++ ZEnvironment(TestEnvConfig.coreConfig) ++ ZEnvironment(configuration) ++ ZEnvironment(renderService) ++ tracing,
+            ),
+          ),
+        )
+        _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
+        _ <- router.submit.failsWith(Error.ConversationExpired)
+
+        response <- client.batched(
+          Request.post(
+            url = (URL.empty / "challenge" / "email").addQueryParam("ui_locale", "ru"),
+            body = Body.fromURLEncodedForm(Form.fromStrings("email" -> email, "csrf" -> "")),
+          ).addHeader(conversationCookie),
+        )
+      yield assertTrue(
+        response.status == Status.SeeOther,
+        response.header(Header.Location).map(_.url.encode).contains("/challenge?ui_locale=ru"),
+        renderService.renderExpired.calls.isEmpty,
+      )
+    }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
     test("POST /challenge surfaces an unexpected submit failure as 500") {
       for
         client <- ZIO.service[Client]
@@ -664,7 +690,7 @@ object ConversationControllerSpec extends UnitSpecBase:
         renderService.renderExpired.calls == List((clientId, "https://example.com/callback", Some("test-state"), ResponseMode.Query, None)),
       )
     }.provideSomeLayer(TestClient.layer) @@ TestAspect.silentLogging,
-    test("GET /challenge renders conversation expired in the remembered locale") {
+    test("GET /challenge renders conversation expired in the language of the request") {
       for
         client <- ZIO.service[Client]
         router = stub[ConversationRouter]
@@ -682,11 +708,8 @@ object ConversationControllerSpec extends UnitSpecBase:
         _ <- renderService.renderExpired.succeedsWith(Response.text("<html>Expired</html>"))
 
         response <- client.batched(
-          Request.get(URL.empty / "challenge")
-            .addHeader(Header.Cookie(NonEmptyChunk(
-              conversationCookie.value.head,
-              Cookie.Request(UiLocales.cookieName, "ru"),
-            )))
+          Request.get((URL.empty / "challenge").addQueryParam("ui_locale", "ru"))
+            .addHeader(conversationCookie)
             .addHeader(Header.AcceptLanguage.parse("de, fr;q=0.8").toOption.get),
         )
       yield assertTrue(

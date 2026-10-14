@@ -2,6 +2,7 @@ package versola.e2e.flows.consent
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Header
 import zio.test.*
 
 /** Consent gate between a satisfied authentication and the authorization code. */
@@ -186,14 +187,14 @@ object ConsentFlowSpec extends E2ESpec:
         (s, auth) <- setup(Flows.Id.Consent)
         (_, cookie, _, consent) <- authenticateToConsent(auth, s)
         denied <- auth.denyConsent(cookie, consent.csrf, uiLocale = Some("ru"))
-        step <- auth.getChallenge(cookie)
-        setCookies = denied.response.headers.toList.filter(_.headerName.equalsIgnoreCase("set-cookie")).map(_.renderedValue)
+        next = denied.response.header(Header.Location).map(_.url.queryParams.getAll("ui_locale")).getOrElse(Nil)
+        step <- auth.getChallenge(cookie, uiLocale = next.headOption)
       yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
         .label("a denied grant must still render access-denied") &&
         assertTrue(step.html.contains("\"locale\":\"ru\""))
           .label("access-denied must render in the language chosen on the consent screen") &&
-        assertTrue(setCookies.exists(_.startsWith("ui_locale=ru")))
-          .label("the chosen language must be remembered for pages that have no conversation to read it from")
+        assertTrue(next == List("ru"))
+          .label("the redirect after the submit must carry the chosen language to the next page")
     },
     test("a partial grant narrows the scope carried by the issued token") {
       for
