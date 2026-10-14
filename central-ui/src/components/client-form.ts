@@ -3,8 +3,8 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PhoneRegion, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
-import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
+import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
 import './client-kind-step';
@@ -60,7 +60,7 @@ export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   signin: 'Sign-in',
   tokens: 'Tokens',
   keys: 'Keys',
-  registration: 'Registration and consent',
+  registration: 'Consent',
   branding: 'Branding and logout',
 };
 
@@ -87,12 +87,6 @@ export class VersolaClientForm extends LitElement {
    *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
   @property({ type: String }) mtlsCertificateHeader: string | null = null;
 
-  /** The tenant's phone regions from Challenges & Security; `null` until they are known. With
-   *  none, a phone sign-in takes a number from any country and shows a plain field, and nobody
-   *  can register by phone. With some but none allowing registration, nobody can either. The
-   *  sign-in step says so in both cases. */
-  @property({ attribute: false }) phoneRegions: PhoneRegion[] | null = null;
-
   @state() private formData: Partial<OAuthClient> = {
     id: '',
     clientName: { en: '' },
@@ -104,7 +98,6 @@ export class VersolaClientForm extends LitElement {
     theme: 'default',
     clientType: 'web',
     authFlow: createDefaultAuthFlow(),
-    registrationFlow: null,
     consentFlow: null,
     frontChannelLogoutSessionRequired: true,
     dpopBoundAccessTokens: false,
@@ -1700,14 +1693,6 @@ export class VersolaClientForm extends LitElement {
     const authFlowTheme = authFlow ? (this.formData.theme || 'default') : 'default';
     const authFlowRedirectUris = authFlow ? (this.formData.redirectUris || []) : [];
     const authFlowOtpTemplateId = authFlow ? this.selectedOtpTemplateId : 'default';
-    const registrationCredential = this.authFlow.primaryCredentials.find(
-      credential => credential === 'phone' || credential === 'email',
-    ) as RegistrationCredential | undefined;
-    // Who may register is the country's (phone) or nobody's to switch off (email), so a client
-    // that signs in by phone or email always carries the flow a registered account goes through.
-    const registrationFlow = this.registrationSupported && registrationCredential
-      ? { ...this.registrationFlow, credential: registrationCredential }
-      : null;
     const scope = this.formData.scope || [];
     const hasOfflineAccess = scope.includes('offline_access');
     const frontChannelLogoutUri = logoutEnabled && this.logoutMode === 'front'
@@ -1759,7 +1744,6 @@ export class VersolaClientForm extends LitElement {
       theme: authFlowTheme,
       otpTemplateId: authFlowOtpTemplateId,
       authFlow,
-      registrationFlow,
       frontChannelLogoutUri: frontChannelLogoutUri || null,
       frontChannelLogoutSessionRequired: frontChannelLogoutUri
         ? !!this.formData.frontChannelLogoutSessionRequired
@@ -2404,7 +2388,6 @@ export class VersolaClientForm extends LitElement {
     this.formData = {
       ...this.formData,
       authFlow: enablingAuthFlow ? createDefaultAuthFlow() : null,
-      registrationFlow: enablingAuthFlow ? this.formData.registrationFlow ?? null : null,
       scope: enablingAuthFlow
         ? (this.formData.scope || [])
         : (this.formData.scope || []).filter(scope => scope !== 'openid'),
@@ -2434,15 +2417,9 @@ export class VersolaClientForm extends LitElement {
 
   private setAuthFlow(patch: Partial<AuthFlow>) {
     const nextAuthFlow = { ...this.authFlow, ...patch };
-    const nextCredential = nextAuthFlow.primaryCredentials.find(
-      credential => credential === 'phone' || credential === 'email',
-    ) as RegistrationCredential | undefined;
     this.formData = {
       ...this.formData,
       authFlow: nextAuthFlow,
-      registrationFlow: this.formData.registrationFlow && nextCredential
-        ? { ...this.formData.registrationFlow, credential: nextCredential }
-        : this.formData.registrationFlow,
     };
     if (this.authFlowError) {
       this.authFlowError = '';
@@ -2460,43 +2437,6 @@ export class VersolaClientForm extends LitElement {
     }
 
     return '';
-  }
-
-  /** Registration needs a phone/email entry credential to prove ownership of. */
-  private get registrationSupported(): boolean {
-    return this.hasAuthFlow && this.credentialMode === 'phone-email' && !this.authFlow.inlinePassword;
-  }
-
-  private get registrationFlow(): RegistrationFlow {
-    return this.formData.registrationFlow ?? createDefaultRegistrationFlow();
-  }
-
-  private setRegistrationFlow(patch: Partial<RegistrationFlow>) {
-    this.formData = {
-      ...this.formData,
-      registrationFlow: { ...this.registrationFlow, ...patch },
-    };
-  }
-
-  /** The optional challenge that follows OTP; the admin picks at most one. */
-  private get registrationChallenge(): 'none' | 'setPassword' | 'passkeyEnroll' {
-    const challenge = this.registrationFlow.steps.find(step => step.type !== 'otp');
-    return (challenge?.type as 'setPassword' | 'passkeyEnroll') ?? 'none';
-  }
-
-  private setRegistrationChallenge(challenge: 'none' | 'setPassword' | 'passkeyEnroll') {
-    const steps: { type: RegistrationStepType }[] = [{ type: 'otp' }];
-    if (challenge !== 'none') steps.push({ type: challenge });
-    this.setRegistrationFlow({ steps });
-  }
-
-  private toggleRegistrationRole(roleId: string) {
-    const roleIds = this.registrationFlow.roleIds;
-    this.setRegistrationFlow({
-      roleIds: roleIds.includes(roleId)
-        ? roleIds.filter(id => id !== roleId)
-        : [...roleIds, roleId],
-    });
   }
 
   private get hasConsentFlow(): boolean {
@@ -2587,8 +2527,6 @@ export class VersolaClientForm extends LitElement {
       inlinePassword: true,
       factors: this.withPasskeyEnroll(otp ? [otp] : []),
     });
-    // Registration has no credential to verify in a login+password flow.
-    this.formData = { ...this.formData, registrationFlow: null };
   }
 
   private setOtpType(otpType: 'sms' | 'email') {
@@ -3338,39 +3276,6 @@ export class VersolaClientForm extends LitElement {
             <button type="button" aria-pressed=${primary === 'phone'} @click=${() => this.selectPhoneEmailMode('phone')}>Phone</button>
             <button type="button" aria-pressed=${primary === 'login'} @click=${() => this.selectLoginPasswordMode()}>Login + password</button>
           </div>
-          ${primary === 'phone' && this.phoneRegions !== null && this.phoneRegions.length === 0 ? html`
-            <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
-              <strong>No phone regions for this tenant.</strong> The sign-in form accepts a number from any
-              country and shows a plain field, with no country code to pick. Nobody can register by phone
-              until at least one region allows it: list the countries under Allowed Phones in
-              Challenges &amp; Security.
-            </div>
-          ` : ''}
-          ${primary === 'phone' && this.phoneRegions !== null && this.phoneRegions.length > 0 && !this.phoneRegions.some(r => r.registration) ? html`
-            <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
-              <strong>No region allows registration,</strong> so new users cannot sign up by phone. Tick
-              Registration on a country under Allowed Phones in Challenges &amp; Security.
-            </div>
-          ` : ''}
-          ${primary === 'login' ? html`
-            <div class="plan">
-              ${this.renderPlanLine(
-                'na',
-                'Users cannot sign themselves up',
-                'Sign-up verifies ownership of an email or a phone. A login has neither, so accounts are created in Central.',
-              )}
-            </div>
-          ` : html`
-            <div class="plan">
-              ${this.renderPlanLine(
-                'fixed',
-                primary === 'phone'
-                  ? 'Whether a number may register is set per country under Allowed Phones in Challenges & Security.'
-                  : 'Anyone with an email can register.',
-                '',
-              )}
-            </div>
-          `}
         </div>
 
         <div class="path alt">
@@ -3884,7 +3789,7 @@ export class VersolaClientForm extends LitElement {
       case 'keys':
         return html`<div class="form-group">${this.renderJwksField()}</div>`;
       case 'registration':
-        return html`${this.renderRegistrationSection()}${this.renderConsentSection()}`;
+        return this.renderConsentSection();
       case 'branding':
         return html`${this.renderThemeField()}${this.hasAuthFlow ? this.renderLogoutSettings() : ''}`;
     }
@@ -4570,93 +4475,6 @@ export class VersolaClientForm extends LitElement {
 
               ${this.authFlowError ? html`<div class="error-message" style="margin-top: 0.5rem;">${this.authFlowError}</div>` : ''}
             </div>
-    `;
-  }
-
-  /** Self-service sign-up, only offered when a phone or email credential can prove ownership. */
-  private renderRegistrationSection() {
-    return html`
-            ${this.registrationSupported ? html`
-              <div class="form-group">
-                <label style="margin: 0 0 var(--spacing-xs); line-height: 18px;">Registration</label>
-                <div class="registration-hint" style="margin-bottom: var(--spacing-sm);">
-                  ${this.authFlow.primaryCredentials[0] === 'phone'
-                    ? 'Whether a number may register is set per country under Allowed Phones in Challenges & Security.'
-                    : 'Anyone with an email can register.'}
-                </div>
-                ${this.phoneRegions !== null && this.authFlow.primaryCredentials[0] === 'phone' && this.phoneRegions.length > 0 && !this.phoneRegions.some(r => r.registration) ? html`
-                  <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
-                    <strong>No region allows registration,</strong> so new users cannot sign up by phone.
-                  </div>
-                ` : ''}
-                ${this.phoneRegions !== null && this.authFlow.primaryCredentials[0] === 'phone' && this.phoneRegions.length === 0 ? html`
-                  <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
-                    <strong>No phone regions for this tenant,</strong> so nobody can register by phone.
-                  </div>
-                ` : ''}
-
-                ${html`
-                  <div class="registration-settings">                    <div class="registration-row">
-                      <div class="registration-label">Credential</div>
-                      <div>
-                        <div class="registration-value" aria-label="Registration credential (locked)">
-                          <span>${this.authFlow.primaryCredentials[0]}</span>
-                          <span class="registration-lock" aria-hidden="true" title="Locked">🔒</span>
-                        </div>
-                        <div class="registration-hint">
-                          New users prove ownership of their ${this.authFlow.primaryCredentials[0]} with an OTP.
-                        </div>
-                      </div>
-                    </div>
-
-                    <div class="registration-row">
-                      <label class="registration-label" for="registration-challenge">Challenge</label>
-                      <select
-                        id="registration-challenge"
-                        class="compact-input"
-                        .value=${this.registrationChallenge}
-                        @change=${(e: Event) =>
-                          this.setRegistrationChallenge((e.target as HTMLSelectElement).value as 'none' | 'setPassword' | 'passkeyEnroll')}
-                      >
-                        <option value="none" ?selected=${this.registrationChallenge === 'none'}>none</option>
-                        <option value="setPassword" ?selected=${this.registrationChallenge === 'setPassword'}>set password</option>
-                        <option value="passkeyEnroll" ?selected=${this.registrationChallenge === 'passkeyEnroll'}>enroll passkey</option>
-                      </select>
-                    </div>
-
-                    <div class="registration-row">
-                      <div class="registration-label">Assigned roles *</div>
-                      <div>
-                        <div class="registration-role-list" role="group" aria-label="Assigned roles">
-                          ${this.availableRoles.length === 0
-                            ? this.registrationFlow.roleIds.map(roleId => html`
-                              <label class="plain-checkbox-label">
-                                <input type="checkbox" checked disabled />
-                                ${roleId}
-                              </label>
-                            `)
-                            : this.availableRoles.map(role => {
-                              const checked = this.registrationFlow.roleIds.includes(role.id);
-                              return html`
-                                <label class="plain-checkbox-label">
-                                  <input
-                                    type="checkbox"
-                                    .checked=${checked}
-                                    ?disabled=${checked && this.registrationFlow.roleIds.length === 1}
-                                    @change=${() => this.toggleRegistrationRole(role.id)}
-                                  />
-                                  ${role.id}
-                                </label>
-                              `;
-                            })}
-                        </div>
-                        <div class="registration-hint">Granted once, when the account is created.</div>
-                      </div>
-                    </div>
-                  </div>
-                `}
-              </div>
-            ` : ''}
     `;
   }
 

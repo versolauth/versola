@@ -68,7 +68,6 @@ object Fixtures:
       theme: String = "default",
       otpTemplateId: String = "default",
       authFlow: Option[Json] = None,
-      registrationFlow: Option[Json] = None,
       consentFlow: Option[Json] = None,
       frontChannelLogoutUri: Option[String] = None,
       frontChannelLogoutSessionRequired: Boolean = false,
@@ -115,7 +114,6 @@ object Fixtures:
         List(
           refreshTokenTtl.map(value => "refreshTokenTtl" -> Json.Num(value)),
           authFlow.map("authFlow" -> _),
-          registrationFlow.map("registrationFlow" -> _),
           consentFlow.map("consentFlow" -> _),
           frontChannelLogoutUri.map(value => "frontChannelLogoutUri" -> Json.Str(value)),
           backChannelLogoutUri.map(value => "backChannelLogoutUri" -> Json.Str(value)),

@@ -1,6 +1,10 @@
 package versola.oauth.client.model
 
+import versola.role.model.RoleId
+import versola.util.Email
 import zio.json.JsonCodec
+
+import java.util.Locale
 
 case class PasskeySettings(
     rpId: String,
@@ -63,9 +67,50 @@ object PhoneRegion:
   def allows(regions: List[PhoneRegion], e164: String): Boolean =
     regions.isEmpty || resolve(regions, e164).isDefined
 
+/** Mirrors central's `EmailRegistrationMode`. */
+enum EmailRegistrationMode derives JsonCodec:
+  case closed, open, allowlist
+
+/** Mirrors central's `EmailRegistration` -- see there for what the fields mean. The rules apply to
+  * a new account and to an existing user who changes their address.
+  */
+case class EmailRegistration(
+    mode: EmailRegistrationMode,
+    domains: List[String],
+    blockDisposable: Boolean,
+    blockSubaddress: Boolean,
+) derives JsonCodec:
+
+  /** Whether this address may be used to create an account (or to become a user's address). */
+  def allows(email: Email): Boolean =
+    val (local, domain) = EmailRegistration.split(email)
+    mode match
+      case EmailRegistrationMode.closed => false
+      case _ if blockSubaddress && EmailRegistration.isSubaddress(local) => false
+      case EmailRegistrationMode.allowlist => domains.exists(EmailRegistration.matches(_, domain))
+      case EmailRegistrationMode.open =>
+        !domains.exists(EmailRegistration.matches(_, domain)) &&
+        !(blockDisposable && DisposableEmailDomains.contains(domain))
+
+object EmailRegistration:
+  /** The setting a tenant has until an operator chooses a mode. */
+  val Closed: EmailRegistration = EmailRegistration(EmailRegistrationMode.closed, Nil, true, false)
+
+  private def split(email: Email): (String, String) =
+    val at = email.lastIndexOf('@')
+    (email.substring(0, at + 1).stripSuffix("@"), email.substring(at + 1).toLowerCase(Locale.ROOT))
+
+  private def isSubaddress(local: String): Boolean = local.exists(c => c == '+' || c == '=' || c == '#')
+
+  /** `example.com` is that domain; `*.example.com` is any subdomain of it (not `example.com`). */
+  private def matches(entry: String, domain: String): Boolean =
+    if entry.startsWith("*.") then domain.endsWith(entry.drop(1)) else domain == entry
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     phoneRegions: List[PhoneRegion],
+    emailRegistration: EmailRegistration,
+    defaultRoles: Set[RoleId],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

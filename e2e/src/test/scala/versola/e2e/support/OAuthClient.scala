@@ -1126,7 +1126,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       tenantId: String = Fixtures.suiteTenant,
       allowedScopes: Set[String] = Set("openid"),
       authFlow: Option[zio.json.ast.Json] = None,
-      registrationFlow: Option[zio.json.ast.Json] = None,
       consentFlow: Option[zio.json.ast.Json] = None,
       backChannelLogoutUri: Option[String] = None,
       authMethod: String = "client_secret",
@@ -1193,7 +1192,6 @@ final class OAuthClient(client: Client, config: E2EConfig):
       refreshTokenTtl = refreshTokenTtl,
       theme = "default",
       authFlow = authFlow,
-      registrationFlow = registrationFlow,
       consentFlow = consentFlow,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
@@ -1405,6 +1403,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
         * and lets none register. The default is the German mobiles the suite's users have, with
         * registration on, because registering a phone number is the country's say. */
       phoneRegions: String = OAuthClient.germanMobileRegion,
+      /** The tenant's email self-registration policy as a JSON object. The default is `open` with
+        * no blocked domain, so the suite's flows keep registering unknown addresses. */
+      emailRegistration: String = OAuthClient.openEmailRegistration,
+      /** The role ids a self-registered account gets, as a JSON array; central wants at least one. */
+      defaultRoles: String = """["user"]""",
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1416,6 +1419,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       s"""{
          |  "tenantId": "$tenantId",
          |  "phoneRegions": $phoneRegions,
+         |  "emailRegistration": $emailRegistration,
+         |  "defaultRoles": $defaultRoles,
          |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,
@@ -1791,6 +1796,18 @@ object OAuthClient:
   val germanMobileRegion: String =
     """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":true}]"""
 
+  /** Any email domain registers; nothing is blocked, not even disposable providers. */
+  val openEmailRegistration: String =
+    """{"mode":"open","domains":[],"blockDisposable":false,"blockSubaddress":false}"""
+
+  val openEmailRegistrationJson: zio.json.ast.Json =
+    zio.json.ast.Json.Obj(
+      "mode" -> zio.json.ast.Json.Str("open"),
+      "domains" -> zio.json.ast.Json.Arr(),
+      "blockDisposable" -> zio.json.ast.Json.Bool(false),
+      "blockSubaddress" -> zio.json.ast.Json.Bool(false),
+    )
+
   /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =
     ZLayer.fromZIO(
@@ -1838,7 +1855,6 @@ object OAuthClient:
       refreshTokenTtl: Option[Int],
       theme: String,
       authFlow: Option[zio.json.ast.Json],
-      registrationFlow: Option[zio.json.ast.Json],
       consentFlow: Option[zio.json.ast.Json],
       otpTemplateId: String,
       frontChannelLogoutUri: Option[String],

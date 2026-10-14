@@ -73,7 +73,6 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     refreshTokenTtl = zio.durationInt(7776000).seconds,
     theme = "default",
     authFlow = Some(otpFlow),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -148,6 +147,8 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
     val conversationRouter = stub[ConversationRouter]
     val acrResolver = stub[AcrResolutionService]
     val consentService = stub[ConsentService]
+    // Registration is a tenant decision; a test that is about it says so.
+    configurationService.registrationAvailable.returnsWith(ZIO.succeed(false))
     val service = AuthorizeEndpointService.Impl(
       conversationRepository,
       configurationService,
@@ -1558,18 +1559,12 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
       yield assertTrue(result == Error.UnmetAuthenticationRequirements(clientId, redirectUri, baseRequest.state, responseMode = ResponseMode.Query))
     },
     // ── createConversation field population branches ──────────────────────────
-    test("mark the credential step as offering registration when the client has a registration flow and no known user") {
+    test("mark the credential step as offering registration when the tenant lets the client's credentials register and no user is known") {
       val env = Env()
       val uuid = UUID.randomUUID()
-      val clientWithRegistration = clientWithOtpFlow.copy(
-        registrationFlow = Some(versola.oauth.client.model.RegistrationFlow(
-          credential = versola.oauth.client.model.RegistrationCredential.phone,
-          steps = List(versola.oauth.client.model.RegistrationStep.Otp()),
-          roleIds = Set.empty,
-        )),
-      )
       for
-        _ <- env.configurationService.find.succeedsWith(Some(clientWithRegistration))
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.registrationAvailable.succeedsWith(true)
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
@@ -1580,14 +1575,16 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         result == AuthorizeResponse.Initialize(versola.oauth.conversation.model.AuthId(uuid)),
         createCalls.nonEmpty,
         createCalls.head._2.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+        // The flow is built when an unknown credential is entered, from the tenant's policy.
+        createCalls.head._2.registrationFlow.isEmpty,
       )
     },
-    test("a client with no registration flow registers through the default one: the one-time code and the default role") {
+    test("does not offer registration when the tenant lets none of the client's credentials register") {
       val env = Env()
       val uuid = UUID.randomUUID()
-      val unconfigured = clientWithOtpFlow.copy(registrationFlow = None)
       for
-        _ <- env.configurationService.find.succeedsWith(Some(unconfigured))
+        _ <- env.configurationService.find.succeedsWith(Some(clientWithOtpFlow))
+        _ <- env.configurationService.registrationAvailable.succeedsWith(false)
         _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
         _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
         _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
@@ -1595,29 +1592,9 @@ object AuthorizeEndpointServiceSpec extends UnitSpecBase:
         _ <- env.service.authorize(baseRequest)
         created = env.conversationRepository.create.calls.head._2
       yield assertTrue(
-        created.registrationFlow.map(_.steps) == Some(List(versola.oauth.client.model.RegistrationStep.Otp())),
-        created.registrationFlow.map(_.roleIds) == Some(Set(versola.oauth.client.model.RegistrationFlow.DefaultRoleId)),
-        created.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+        !created.step.asInstanceOf[versola.oauth.conversation.model.ConversationStep.Credential].registration,
+        created.registrationFlow.isEmpty,
       )
-    },
-    test("a client that signs in by login alone has no registration") {
-      val env = Env()
-      val uuid = UUID.randomUUID()
-      val loginOnly = clientWithOtpFlow.copy(
-        registrationFlow = None,
-        authFlow = clientWithOtpFlow.authFlow.map(flow =>
-          flow.copy(primary = flow.primary.copy(credentials = List(versola.oauth.client.model.PrimaryCredential.login))),
-        ),
-      )
-      for
-        _ <- env.configurationService.find.succeedsWith(Some(loginOnly))
-        _ <- env.configurationService.getAuthConversationTtl.succeedsWith(zio.Duration.fromSeconds(900))
-        _ <- env.secureRandom.nextUUIDv7.succeedsWith(uuid)
-        _ <- env.secureRandom.nextAlphanumeric.succeedsWith("testcsrf1")
-        _ <- env.conversationRepository.create.succeedsWith(())
-        _ <- env.service.authorize(baseRequest)
-        created = env.conversationRepository.create.calls.head._2
-      yield assertTrue(created.registrationFlow.isEmpty)
     },
     test("sanitize non-printable characters from user agent when starting a new conversation") {
       val env = Env()

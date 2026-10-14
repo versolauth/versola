@@ -78,7 +78,6 @@ describe('clientPreset', () => {
       expect(patch.redirectUris).toEqual([]);
       expect(patch.scope).toEqual([]);
       expect(patch.authFlow).toBeNull();
-      expect(patch.registrationFlow).toBeNull();
       expect(patch.consentFlow).toBeNull();
       expect(patch.requirePushedAuthorizationRequests).toBe(false);
       expect(patch.requireSignedRequestObject).toBe(false);

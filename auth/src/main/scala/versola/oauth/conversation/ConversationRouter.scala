@@ -285,12 +285,6 @@ object ConversationRouter:
           withVerifiedRegistrationUser(authId, conversation): verified =>
             conversationService.finish(authId, verified)
 
-    /** An email may always register; a phone number only when the country it belongs to says so. */
-    private def registrationOpen(clientId: ClientId, credential: Either[Email, Phone]): UIO[Boolean] =
-      credential match
-        case Left(_) => ZIO.succeed(true)
-        case Right(phone) => configService.getPhoneRegions(clientId).map(PhoneRegion.allowsRegistration(_, phone))
-
     /** Determine the first factor step after the user submits their credential,
       * skipping any factor types already recorded in `conversation.amr`.
       */
@@ -299,35 +293,30 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
-      userRepository.findByCredential(credential).flatMap: user =>
-        (user, conversation.registrationFlow) match
-          case (Some(user), _) =>
-            val identified = conversation.copy(
-              userId = Some(user.id),
-              credential = Some(credential),
-              userEmail = user.email,
-              userPhone = user.phone,
-              userLogin = user.login,
-              userClaims = Some(user.claims),
-            )
-            afterAuthenticationCredential(authId, identified, credential)
+      userRepository.findByCredential(credential).flatMap:
+        case Some(user) =>
+          val identified = conversation.copy(
+            userId = Some(user.id),
+            credential = Some(credential),
+            userEmail = user.email,
+            userPhone = user.phone,
+            userLogin = user.login,
+            userClaims = Some(user.claims),
+          )
+          afterAuthenticationCredential(authId, identified, credential)
 
-          case (None, Some(flow)) if flow.credential == RegistrationCredential.from(credential) =>
-            registrationOpen(conversation.clientId, credential).flatMap:
-              case true =>
-                conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-                  case RegistrationEntry.Registering(updated) =>
-                    runRegistrationStep(authId, updated)
-                  case ConversationResult.WriteConflict =>
-                    ZIO.succeed(ConversationResult.WriteConflict)
-              case false =>
-                afterAuthenticationCredential(authId, conversation, credential)
-
-          case (None, Some(_)) =>
-            afterAuthenticationCredential(authId, conversation, credential)
-
-          case (None, None) =>
-            afterAuthenticationCredential(authId, conversation, credential)
+        // A new user: the tenant decides whether this address may create an account. When it may
+        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        case None =>
+          configService.registrationFor(conversation.clientId, credential).flatMap:
+            case Some(flow) =>
+              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+                case RegistrationEntry.Registering(updated) =>
+                  runRegistrationStep(authId, updated)
+                case ConversationResult.WriteConflict =>
+                  ZIO.succeed(ConversationResult.WriteConflict)
+            case None =>
+              afterAuthenticationCredential(authId, conversation, credential)
 
     private def afterAuthenticationCredential(
         authId: AuthId,

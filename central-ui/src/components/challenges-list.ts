@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, PhoneRegion, MtlsCertificateEncoding, JwksKeySummary } from '../types';
+import type { EmailRegistration, EmailRegistrationMode, OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, PhoneRegion, MtlsCertificateEncoding, JwksKeySummary } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -11,9 +11,10 @@ import {
   fetchChallengeSettings,
   upsertChallengeSettings,
   fetchJwksKeys,
+  getRoles,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { validateRedirectUri, validatePhoneRegions } from '../utils/validators';
+import { validateRedirectUri, validatePhoneRegions, validateRegistrationDomains } from '../utils/validators';
 import { PHONE_REGION_PRESETS, appendPresets } from '../utils/phone-region-presets';
 import './content-header';
 import './code-editor';
@@ -29,6 +30,11 @@ const PASSWORD_EXPIRY_PLACEHOLDER = '{{expiresHours}}';
 type TemplatePurpose = 'otp' | 'password';
 type TemplateChannel = 'sms' | 'email';
 type TemplateViewSelection = { purpose: TemplatePurpose; channel: TemplateChannel };
+
+const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false };
+const DEFAULT_ROLES = ['user'];
+
+const EMAIL_MODE_LABELS: Record<EmailRegistrationMode, string> = { closed: 'Closed', open: 'Open', allowlist: 'Allowlist' };
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
@@ -129,6 +135,18 @@ export class VersolaChallengesList extends LitElement {
   @state() private requireDpopNonce = false;
   @state() private editRequireDpopNonce = false;
   @state() private openInfoKey: string | null = null;
+
+  // Self-registration policy: who may create an account by email, and the roles they get.
+  @state() private emailRegistration: EmailRegistration = { ...DEFAULT_EMAIL_REGISTRATION };
+  @state() private defaultRoles: string[] = [...DEFAULT_ROLES];
+  @state() private availableRoleIds: string[] = [];
+  @state() private editEmailMode: EmailRegistrationMode = 'closed';
+  @state() private editEmailDomainsText = '';
+  @state() private editBlockDisposable = true;
+  @state() private editBlockSubaddress = false;
+  @state() private editDefaultRoles: string[] = [];
+  @state() private emailDomainsError = '';
+  @state() private defaultRolesError = '';
 
   static styles = [
     theme,
@@ -579,13 +597,23 @@ export class VersolaChallengesList extends LitElement {
     this.openInfoKey = null;
   };
 
+  private handleDocumentKeydown = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || this.openInfoKey === null) return;
+    const key = this.openInfoKey;
+    this.openInfoKey = null;
+    // Hand focus back to the button that opened the popover, so keyboard users keep their place.
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>(`[data-info-key="${key}"]`)?.focus());
+  };
+
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
+    document.addEventListener('keydown', this.handleDocumentKeydown);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
+    document.removeEventListener('keydown', this.handleDocumentKeydown);
     super.disconnectedCallback();
   }
 
@@ -600,7 +628,7 @@ export class VersolaChallengesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [templates, locales, challengeSettings, jwksKeys] = await Promise.all([
+      const [templates, locales, challengeSettings, jwksKeys, roles] = await Promise.all([
         fetchOtpTemplates(this.tenantId),
         fetchLocales(),
         fetchChallengeSettings(this.tenantId),
@@ -608,7 +636,10 @@ export class VersolaChallengesList extends LitElement {
         // published for verification and can sign nothing. RS256 keys are listed only for a
         // tenant that may sign under one (see below).
         fetchJwksKeys().catch(() => [] as JwksKeySummary[]),
+        // Only offers the checkboxes for default roles; a failed load leaves the current ones editable.
+        getRoles(this.tenantId).catch(() => []),
       ]);
+      this.availableRoleIds = roles.map(role => role.id);
       this.templates = templates;
       this.viewSelection = {};
       this.availableLocales = locales;
@@ -621,6 +652,10 @@ export class VersolaChallengesList extends LitElement {
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
         this.phoneRegions = challengeSettings.phoneRegions ?? [];
+        this.emailRegistration = challengeSettings.emailRegistration
+          ? { ...challengeSettings.emailRegistration, domains: [...challengeSettings.emailRegistration.domains] }
+          : { ...DEFAULT_EMAIL_REGISTRATION };
+        this.defaultRoles = challengeSettings.defaultRoles?.length ? [...challengeSettings.defaultRoles] : [...DEFAULT_ROLES];
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
@@ -639,6 +674,8 @@ export class VersolaChallengesList extends LitElement {
         this.clientAssertionMaxLifetimeSeconds = challengeSettings.clientAssertionMaxLifetimeSeconds ?? 300;
       } else {
         this.phoneRegions = [];
+        this.emailRegistration = { ...DEFAULT_EMAIL_REGISTRATION };
+        this.defaultRoles = [...DEFAULT_ROLES];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
@@ -838,6 +875,7 @@ export class VersolaChallengesList extends LitElement {
         <button
           type="button"
           class="option-info-button"
+          data-info-key=${key}
           aria-label=${ariaLabel}
           aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
           @click=${() => this.toggleInfo(key)}
@@ -864,6 +902,83 @@ export class VersolaChallengesList extends LitElement {
       `,
       'DPoP nonce requirement info',
     );
+  }
+
+  private renderEmailRegistrationEditor() {
+    const mode = this.editEmailMode;
+    const roleIds = [...new Set([...this.availableRoleIds, ...this.editDefaultRoles])];
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Registration</h3>
+
+      <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
+        <label for="email-registration-mode" style="margin: 0;">Email registration</label>
+        ${this.renderOptionInfo(
+          'email-registration',
+          'Email registration',
+          html`
+            <div class="option-tooltip-item"><strong>Closed.</strong> Nobody can create an account with an email address. Users who already have an account still sign in.</div>
+            <div class="option-tooltip-item"><strong>Open.</strong> Anyone can register with an email address, except from the domains you list and, if the option is on, from known disposable email providers.</div>
+            <div class="option-tooltip-item"><strong>Allowlist.</strong> Only addresses from the domains you list can register.</div>
+            <div class="option-tooltip-item">These rules are also applied when an existing user changes their email address.</div>
+          `,
+          'About email registration modes',
+        )}
+      </div>
+      <div class="hint">Who may create an account with an email address. Also applied when an address is changed.</div>
+      <select id="email-registration-mode" class="form-control compact-input" style="max-width: 16rem;" .value=${mode}
+        @change=${(e: Event) => { this.editEmailMode = (e.target as HTMLSelectElement).value as EmailRegistrationMode; this.emailDomainsError = ''; }}>
+        ${(['closed', 'open', 'allowlist'] as const).map(m => html`<option value=${m} ?selected=${mode === m}>${EMAIL_MODE_LABELS[m]}</option>`)}
+      </select>
+
+      ${mode === 'closed' ? nothing : html`
+        <label for="email-registration-domains" style="margin-top: var(--spacing-lg);">${mode === 'open' ? 'Blocked domains' : 'Allowed domains'}</label>
+        <div class="hint">
+          One per line, lower-case: <code>example.com</code> matches that domain only, <code>*.example.com</code> matches its subdomains, not <code>example.com</code> itself.
+          Internationalised names may be typed in Unicode.
+          ${mode === 'open' ? 'Anyone may register except from these domains.' : 'Only addresses from these domains may register; with none listed, nobody can.'}
+        </div>
+        <textarea id="email-registration-domains" class="form-control edit-loc-textarea" rows="5" spellcheck="false"
+          aria-invalid=${this.emailDomainsError ? 'true' : 'false'}
+          aria-describedby=${this.emailDomainsError ? 'email-domains-error' : nothing}
+          .value=${this.editEmailDomainsText}
+          @input=${(e: Event) => { this.editEmailDomainsText = (e.target as HTMLTextAreaElement).value; }}
+          placeholder=${mode === 'open' ? 'mailinator.com\n*.spam.example' : 'example.com\n*.corp.example'}></textarea>
+        ${this.emailDomainsError ? html`<div class="error-msg" id="email-domains-error" role="alert">${this.emailDomainsError}</div>` : nothing}
+      `}
+
+      <div style="margin-top: var(--spacing-lg);">
+        <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm);">
+          <input type="checkbox" .checked=${this.editBlockDisposable}
+            @change=${(e: Event) => { this.editBlockDisposable = (e.target as HTMLInputElement).checked; }} />
+          Block disposable email providers
+        </label>
+        <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm); margin-top: var(--spacing-sm);">
+          <input type="checkbox" .checked=${this.editBlockSubaddress}
+            @change=${(e: Event) => { this.editBlockSubaddress = (e.target as HTMLInputElement).checked; }} />
+          Block addresses with + = # (sub-addresses)
+        </label>
+      </div>
+
+      <label style="margin-top: var(--spacing-lg);" id="default-roles-label">Default roles *</label>
+      <div class="hint">Granted to every self-registered account. At least one.</div>
+      <div role="group" aria-labelledby="default-roles-label" data-testid="default-roles">
+        ${roleIds.map(id => html`
+          <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
+            <input type="checkbox" .checked=${this.editDefaultRoles.includes(id)}
+              @change=${(e: Event) => this.toggleDefaultRole(id, (e.target as HTMLInputElement).checked)} />
+            ${id}
+          </label>
+        `)}
+      </div>
+      ${this.defaultRolesError ? html`<div class="error-msg" role="alert">${this.defaultRolesError}</div>` : nothing}
+    `;
+  }
+
+  private toggleDefaultRole(id: string, checked: boolean) {
+    this.editDefaultRoles = checked
+      ? [...this.editDefaultRoles.filter(r => r !== id), id]
+      : this.editDefaultRoles.filter(r => r !== id);
+    if (this.editDefaultRoles.length > 0) this.defaultRolesError = '';
   }
 
   private formatDuration(seconds: number): string {
@@ -1084,6 +1199,13 @@ export class VersolaChallengesList extends LitElement {
     this.editingSettings = true;
     this.editRegions = this.phoneRegions.map(r => ({ ...r }));
     this.regionErrors = [];
+    this.editEmailMode = this.emailRegistration.mode;
+    this.editEmailDomainsText = this.emailRegistration.domains.join('\n');
+    this.editBlockDisposable = this.emailRegistration.blockDisposable;
+    this.editBlockSubaddress = this.emailRegistration.blockSubaddress;
+    this.editDefaultRoles = [...this.defaultRoles];
+    this.emailDomainsError = '';
+    this.defaultRolesError = '';
     this.closePresets();
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
@@ -1210,6 +1332,24 @@ export class VersolaChallengesList extends LitElement {
       this.settingsError = 'Fix the highlighted phone regions.';
       return;
     }
+    const parsedDomains = this.editEmailDomainsText.split('\n').map(d => d.trim()).filter(d => d.length > 0);
+    const domainsError = validateRegistrationDomains(parsedDomains);
+    // In closed mode the domains editor is hidden and the list is ignored by the server, so an
+    // invalid draft must not block the save: the stored list is sent back unchanged instead.
+    const closed = this.editEmailMode === 'closed';
+    this.emailDomainsError = closed ? '' : domainsError ?? '';
+    const defaultRoles = [...new Set(this.editDefaultRoles)];
+    this.defaultRolesError = defaultRoles.length === 0 ? 'Select at least one default role.' : '';
+    if (this.emailDomainsError || this.defaultRolesError) {
+      this.settingsError = 'Fix the highlighted registration settings.';
+      return;
+    }
+    const emailRegistration: EmailRegistration = {
+      mode: this.editEmailMode,
+      domains: closed && domainsError ? [...this.emailRegistration.domains] : parsedDomains,
+      blockDisposable: this.editBlockDisposable,
+      blockSubaddress: this.editBlockSubaddress,
+    };
     const rpId = this.editPasskeyRpId.trim();
     const rpName = this.editPasskeyRpName.trim();
     const origins = this.editPasskeyOrigins.map(o => o.value.trim()).filter(o => o.length > 0);
@@ -1282,8 +1422,12 @@ export class VersolaChallengesList extends LitElement {
         mtlsCertificateEncoding,
         this.editSigningKeyId,
         clientAssertionMaxLifetimeSeconds,
+        emailRegistration,
+        defaultRoles,
       );
       this.phoneRegions = regions;
+      this.emailRegistration = emailRegistration;
+      this.defaultRoles = defaultRoles;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
@@ -1592,6 +1736,30 @@ export class VersolaChallengesList extends LitElement {
             `}
         </div>
 
+        <div class="card" style="margin-bottom: var(--spacing-lg);" data-testid="email-registration-view">
+          <label>Email registration</label>
+          <div class="template-text">${EMAIL_MODE_LABELS[this.emailRegistration.mode]}</div>
+          ${this.emailRegistration.mode === 'closed'
+            ? html`<div class="hint">Nobody can create an account with an email address. Existing accounts still sign in.</div>`
+            : html`
+              <label style="margin-top: var(--spacing-lg);">${this.emailRegistration.mode === 'open' ? 'Blocked domains' : 'Allowed domains'}</label>
+              ${this.emailRegistration.domains.length === 0
+                ? html`<div class="hint">${this.emailRegistration.mode === 'open' ? 'No domains blocked.' : 'No domains listed, so no address can register.'}</div>`
+                : html`<div class="prefix-tags">${this.emailRegistration.domains.map(d => html`<span class="prefix-tag">${d}</span>`)}</div>`}
+              <div class="template-text" style="margin-top: var(--spacing-md);">
+                Disposable providers: ${this.emailRegistration.blockDisposable ? 'blocked' : 'allowed'}
+              </div>
+              <div class="template-text">
+                Sub-addresses (+ = #): ${this.emailRegistration.blockSubaddress ? 'blocked' : 'allowed'}
+              </div>
+            `}
+
+          <label style="margin-top: var(--spacing-lg);">Default roles</label>
+          <div class="prefix-tags">
+            ${this.defaultRoles.map(r => html`<span class="prefix-tag">${r}</span>`)}
+          </div>
+        </div>
+
         <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>Auth Conversation TTL</label>
           <div class="template-text">${this.formatDuration(this.authConversationTtlSeconds)}</div>
@@ -1823,6 +1991,8 @@ export class VersolaChallengesList extends LitElement {
           <button class="btn btn-secondary" aria-haspopup="dialog" aria-expanded=${this.presetsOpen ? 'true' : 'false'}
             @click=${() => (this.presetsOpen ? this.closePresets() : this.openPresets())}>Add from presets</button>
         </div>
+
+        ${this.renderEmailRegistrationEditor()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 

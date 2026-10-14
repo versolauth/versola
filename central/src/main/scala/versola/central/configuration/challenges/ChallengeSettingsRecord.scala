@@ -1,8 +1,14 @@
 package versola.central.configuration.challenges
 
+import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import zio.json.JsonCodec
 import zio.schema.{Schema, derived}
+
+import java.net.IDN
+import java.util.Locale
+import java.util.regex.Pattern
+import scala.util.Try
 
 case class PasskeySettings(
     rpId: String,
@@ -83,13 +89,76 @@ object PhoneRegion:
       Some(
         s"phoneRegions length of ${region.region} must be between $MinLength and $MaxLength, and with the dial code at most $MaxTotalDigits digits",
       )
-    else if scala.util.Try(java.util.regex.Pattern.compile(region.regex)).isFailure then
+    else if Try(Pattern.compile(region.regex)).isFailure then
       Some(s"phoneRegions regex of ${region.region} is not a valid regular expression")
     else None
+
+/** Who may create an account with an email address. Decided by the tenant, not by a client:
+  * every client of a tenant that signs in by email offers the same registration. The same rules
+  * apply when an existing user changes their address, so a tenant that only admits `example.com`
+  * cannot be sidestepped from the profile.
+  */
+enum EmailRegistrationMode derives Schema, JsonCodec:
+  /** Nobody registers with an email; existing accounts still sign in. */
+  case closed
+
+  /** Any domain registers, except the listed ones and (when asked) disposable providers. */
+  case open
+
+  /** Only the listed domains register. */
+  case allowlist
+
+case class EmailRegistration(
+    mode: EmailRegistrationMode,
+    /** Lower-case ASCII (punycode) domains: `example.com` matches that domain only,
+      * `*.example.com` its subdomains as well. A blocklist in [[EmailRegistrationMode.open]],
+      * an allowlist in [[EmailRegistrationMode.allowlist]], ignored when closed. */
+    domains: List[String],
+    /** Refuse addresses at known throwaway-mailbox providers. */
+    blockDisposable: Boolean,
+    /** Refuse a local part with `+`, `=` or `#` (`user+tag@`), the way to mint endless addresses
+      * for one mailbox. */
+    blockSubaddress: Boolean,
+) derives Schema, JsonCodec
+
+object EmailRegistration:
+  val MaxDomains = 500
+
+  /** What a tenant starts with: no email registers until the operator chooses a mode. */
+  val Closed: EmailRegistration =
+    EmailRegistration(EmailRegistrationMode.closed, Nil, blockDisposable = true, blockSubaddress = false)
+
+  private val DomainPattern = "(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+".r
+
+  /** One list entry as it is stored: trimmed, lower-case, IDN labels in punycode. `None` when it
+    * is not `example.com` or `*.example.com`. */
+  def normalizeDomain(entry: String): Option[String] =
+    val trimmed = entry.trim.toLowerCase(Locale.ROOT)
+    Try(IDN.toASCII(trimmed.stripPrefix("*."))).toOption
+      .map(ascii => (if trimmed.startsWith("*.") then "*." else "") + ascii.toLowerCase(Locale.ROOT))
+      .filter(domain => domain.length <= 253 && DomainPattern.matches(domain))
+
+  /** The setting with its domains normalized, or why it cannot be stored. */
+  def normalize(setting: EmailRegistration): Either[String, EmailRegistration] =
+    if setting.domains.sizeIs > MaxDomains then Left(s"emailRegistration lists more than $MaxDomains domains")
+    else
+      val entries = setting.domains.map(entry => entry -> normalizeDomain(entry))
+      entries.collectFirst { case (entry, None) => entry } match
+        case Some(bad) =>
+          Left(s"emailRegistration domain '$bad' must be a domain such as example.com, or *.example.com for its subdomains")
+        case None =>
+          val normalized = entries.flatMap(_._2)
+          normalized.groupBy(identity).collectFirst { case (domain, same) if same.size > 1 => domain } match
+            case Some(duplicate) => Left(s"emailRegistration lists domain '$duplicate' more than once")
+            case None => Right(setting.copy(domains = normalized))
 
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
     phoneRegions: List[PhoneRegion],
+    /** Whether an email address may create an account, see [[EmailRegistration]]. */
+    emailRegistration: EmailRegistration,
+    /** Roles every self-registered account is granted, whichever credential it registers with. */
+    defaultRoles: Set[RoleId],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,
@@ -134,6 +203,9 @@ case class ChallengeSettingsRecord(
 ) derives Schema, JsonCodec
 
 object ChallengeSettingsRecord:
+  /** Seeded by bootstrap with no permissions beyond access to the account itself. */
+  val DefaultRoleId: RoleId = RoleId("user")
+
   /** Five minutes: what client libraries mint by default, and short enough that the replay
     * guard's retention is measured in minutes rather than hours. */
   val DefaultClientAssertionMaxLifetimeSeconds = 300

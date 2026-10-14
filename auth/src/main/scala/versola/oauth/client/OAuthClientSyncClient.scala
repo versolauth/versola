@@ -8,7 +8,6 @@ import versola.oauth.client.model.{
   ConsentFlow,
   MutualTlsAuth,
   OAuthClientRecord,
-  RegistrationFlow,
   ScopeToken,
   TenantId,
 }
@@ -52,7 +51,6 @@ object OAuthClientSyncClient:
             refreshTokenTtl = client.refreshTokenTtl,
             theme = client.theme,
             authFlow = client.authFlow,
-            registrationFlow = client.registrationFlow,
             otpTemplateId = client.otpTemplateId,
             frontChannelLogoutUri = client.frontChannelLogoutUri.flatMap(URL.decode(_).toOption),
             frontChannelLogoutSessionRequired = client.frontChannelLogoutSessionRequired,
@@ -93,7 +91,6 @@ object OAuthClientSyncClient:
         refreshTokenTtl: Duration,
         theme: String,
         authFlow: Option[AuthFlow],
-        registrationFlow: Option[RegistrationFlow],
         otpTemplateId: String,
         frontChannelLogoutUri: Option[String],
         frontChannelLogoutSessionRequired: Boolean,

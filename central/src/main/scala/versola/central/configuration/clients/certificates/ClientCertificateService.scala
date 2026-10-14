@@ -303,7 +303,6 @@ object ClientCertificateService:
         refreshTokenTtl = None,
         theme = None,
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = None,
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = None,

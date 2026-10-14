@@ -553,3 +553,177 @@ test('adds countries from presets with registration on and skips ones already li
     { region: 'GE', dialCode: '+995', length: 9, regex: '5\\d{8}', registration: false },
   ]);
 });
+
+const registrationState: Partial<MockConfigState> = {
+  ...baseState,
+  roles: {
+    'tenant-alpha': [
+      { id: 'user', description: { en: 'User' }, permissions: [], active: true },
+      { id: 'member', description: { en: 'Member' }, permissions: [], active: true },
+    ],
+  },
+  challengeSettings: {
+    'tenant-alpha': {
+      ...settingsWithoutPasskey,
+      passkeySettings: { rpId: 'example.com', rpName: 'Example Inc.', origins: ['https://example.com'], userVerification: 'preferred' },
+    },
+  },
+};
+
+const challengeSettingsPath = '/configuration/challenges/challenge-settings';
+
+async function putBody(api: Awaited<ReturnType<typeof loadAdminApp>>) {
+  return (await findRequest(api.requests, 'PUT', challengeSettingsPath)).body as {
+    emailRegistration: { mode: string; domains: string[]; blockDisposable: boolean; blockSubaddress: boolean };
+    defaultRoles: string[];
+  };
+}
+
+test('shows email registration as closed with the user role when the tenant has not set it', async ({ page }) => {
+  await loadAdminApp(page, { path: challengesPath, state: registrationState });
+
+  const view = page.getByTestId('email-registration-view');
+  await expect(view).toContainText('Closed');
+  await expect(view).toContainText('Nobody can create an account with an email address');
+  await expect(view.locator('.prefix-tag')).toHaveText(['user']);
+});
+
+test('saving unchanged settings sends the closed default and the user role', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByLabel('Email registration', { exact: true })).toHaveValue('closed');
+  // Closed mode has no domain list to edit.
+  await expect(page.getByLabel('Blocked domains')).toHaveCount(0);
+  await expect(page.getByLabel('Allowed domains')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({ mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false });
+  expect(body.defaultRoles).toEqual(['user']);
+});
+
+test('explains the registration modes in an info popover that closes with Escape or a click outside', async ({ page }) => {
+  await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const info = page.getByRole('button', { name: 'About email registration modes', exact: true });
+  const tooltip = page.getByRole('tooltip').filter({ hasText: 'Allowlist.' });
+  await expect(info).toHaveAttribute('aria-expanded', 'false');
+  await expect(tooltip).toBeHidden();
+
+  await info.focus();
+  await page.keyboard.press('Enter');
+  await expect(info).toHaveAttribute('aria-expanded', 'true');
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText('Nobody can create an account with an email address. Users who already have an account still sign in.');
+  await expect(tooltip).toContainText('Anyone can register with an email address, except from the domains you list');
+  await expect(tooltip).toContainText('disposable email providers');
+  await expect(tooltip).toContainText('Only addresses from the domains you list can register.');
+  await expect(tooltip).toContainText('also applied when an existing user changes their email address');
+
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await expect(info).toHaveAttribute('aria-expanded', 'false');
+  await expect(info).toBeFocused();
+
+  await info.click();
+  await expect(tooltip).toBeVisible();
+  await page.getByRole('heading', { name: 'Registration', exact: true }).click();
+  await expect(tooltip).toBeHidden();
+});
+
+test('labels the domain list by mode and sends the registration policy in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const mode = page.getByLabel('Email registration', { exact: true });
+  await mode.selectOption('open');
+  await expect(page.getByLabel('Blocked domains')).toBeVisible();
+  await mode.selectOption('allowlist');
+  await expect(page.getByLabel('Allowed domains')).toBeVisible();
+  await expect(page.getByLabel('Blocked domains')).toHaveCount(0);
+
+  await page.getByLabel('Allowed domains').fill('Example.com\n\n  *.corp.example  \n');
+  await page.getByLabel('Block disposable email providers').uncheck();
+  await page.getByLabel('Block addresses with + = # (sub-addresses)').check();
+  const defaultRoles = page.getByRole('group', { name: 'Default roles' });
+  await defaultRoles.getByRole('checkbox', { name: 'member', exact: true }).check();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({
+    mode: 'allowlist',
+    domains: ['Example.com', '*.corp.example'],
+    blockDisposable: false,
+    blockSubaddress: true,
+  });
+  expect(body.defaultRoles).toEqual(['user', 'member']);
+
+  const view = page.getByTestId('email-registration-view');
+  await expect(view).toContainText('Allowlist');
+  await expect(view.locator('.prefix-tag')).toHaveText(['Example.com', '*.corp.example', 'user', 'member']);
+});
+
+test('refuses a malformed or repeated registration domain and sends nothing', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Email registration', { exact: true }).selectOption('open');
+
+  const domains = page.getByLabel('Blocked domains');
+  await domains.fill('example.com\nnodot');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'nodot' })).toBeVisible();
+
+  await domains.fill('Example.com\nexample.COM');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'more than once' })).toBeVisible();
+
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === challengeSettingsPath)).toBe(false);
+
+  await domains.fill('example.com\n*.example.org');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  expect((await putBody(api)).emailRegistration).toMatchObject({ mode: 'open', domains: ['example.com', '*.example.org'] });
+});
+
+test('requires at least one default role', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const defaultRoles = page.getByRole('group', { name: 'Default roles' });
+  await expect(defaultRoles.getByRole('checkbox', { name: 'user', exact: true })).toBeChecked();
+  await defaultRoles.getByRole('checkbox', { name: 'user', exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(page.getByRole('alert').filter({ hasText: 'Select at least one default role' })).toBeVisible();
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === challengeSettingsPath)).toBe(false);
+
+  await defaultRoles.getByRole('checkbox', { name: 'member', exact: true }).check();
+  await expect(page.getByRole('alert').filter({ hasText: 'Select at least one default role' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  expect((await putBody(api)).defaultRoles).toEqual(['member']);
+});
+
+test('keeps the stored domains when the mode is closed', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...registrationState,
+      challengeSettings: {
+        'tenant-alpha': {
+          ...registrationState.challengeSettings!['tenant-alpha'],
+          emailRegistration: { mode: 'closed', domains: ['example.com'], blockDisposable: true, blockSubaddress: false },
+          defaultRoles: ['member'],
+        },
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByLabel('Allowed domains')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({ mode: 'closed', domains: ['example.com'], blockDisposable: true, blockSubaddress: false });
+  expect(body.defaultRoles).toEqual(['member']);
+});

@@ -2,11 +2,13 @@ package versola.oauth.client
 
 import versola.oauth.client.model.{
   Acr,
+  AuthFactorType,
   AuthorizationDetailType,
   AuthorizationDetailTypeRecord,
   ChallengeSettingsRecord,
   ClientId,
   ClientSecret,
+  EmailRegistrationMode,
   FormRecord,
   Locales,
   MtlsCertificateSource,
@@ -20,6 +22,10 @@ import versola.oauth.client.model.{
   PasskeySettings,
   PasswordHistorySettings,
   PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationFlow,
+  RegistrationStep,
   ResourceId,
   ResourceRecord,
   ResourceUri,
@@ -39,7 +45,9 @@ import versola.util.{
   ClientAssertion,
   CoreConfig,
   Dpop,
+  Email,
   JsonSchemaValidator,
+  Phone,
   ReloadingCache,
   RequestObject,
   Secret,
@@ -77,6 +85,20 @@ trait OAuthConfigurationService:
   def getLocales: UIO[Locales]
 
   def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]]
+
+  /** Whether any email address or phone number could register through this client: it offers
+    * registration ([[OAuthClientRecord.offersRegistration]]) and its tenant's policy lets at least one of
+    * the credentials it signs in by create accounts. Decides whether the credential card mentions
+    * registration at all; the address itself is checked by [[registrationFor]].
+    */
+  def registrationAvailable(client: OAuthClientRecord): UIO[Boolean]
+
+  /** The registration a new user of this client goes through for the address they entered, or
+    * `None` when the tenant does not let that address register (a closed email policy, a domain it
+    * refuses, a phone number whose region has no registration). The user is then taken down the
+    * ordinary sign-in path, as for any unknown credential.
+    */
+  def registrationFor(id: ClientId, credential: Either[Email, Phone]): UIO[Option[RegistrationFlow]]
 
   def getPasswordRegex: UIO[String]
 
@@ -435,6 +457,37 @@ object OAuthConfigurationService:
             _.find(_.tenantId == client.tenantId)
               .fold(Nil)(_.phoneRegions),
           )
+
+    override def registrationAvailable(client: OAuthClientRecord): UIO[Boolean] =
+      if !client.offersRegistration then ZIO.succeed(false)
+      else
+        val credentials = client.authFlow.fold(Nil)(_.primary.credentials)
+        tenantChallengeSettings(client.tenantId).map: settings =>
+          settings.exists: settings =>
+            credentials.contains(PrimaryCredential.email) && settings.emailRegistration.mode != EmailRegistrationMode.closed ||
+              credentials.contains(PrimaryCredential.phone) && settings.phoneRegions.exists(_.registration)
+
+    override def registrationFor(id: ClientId, credential: Either[Email, Phone]): UIO[Option[RegistrationFlow]] =
+      find(id).flatMap:
+        case Some(client) if client.offersRegistration =>
+          tenantChallengeSettings(client.tenantId).map:
+            _.filter: settings =>
+              credential.fold(
+                email => settings.emailRegistration.allows(email),
+                phone => PhoneRegion.allowsRegistration(settings.phoneRegions, phone),
+              )
+            .map(settings => RegistrationFlow(RegistrationCredential.from(credential), registrationSteps(client), settings.defaultRoles))
+        case _ => ZIO.none
+
+    /** The one-time code that proves the address, then a password when the client's sign-in demands one:
+      * a user who registered without it could never pass that factor on the next sign-in.
+      */
+    private def registrationSteps(client: OAuthClientRecord): List[RegistrationStep] =
+      val passwordRequired = client.authFlow.exists(_.primary.factors.exists(factor => factor.`type` == AuthFactorType.password && factor.required))
+      RegistrationStep.Otp() :: Option.when(passwordRequired)(RegistrationStep.SetPassword()).toList
+
+    private def tenantChallengeSettings(tenantId: TenantId): UIO[Option[ChallengeSettingsRecord]] =
+      challengeSettingsCache.get.map(_.find(_.tenantId == tenantId))
 
     override def getPasswordRegex: UIO[String] =
       systemSettingsCache.get.map(_.passwordRegex)

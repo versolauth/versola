@@ -41,7 +41,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "custom-theme",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,

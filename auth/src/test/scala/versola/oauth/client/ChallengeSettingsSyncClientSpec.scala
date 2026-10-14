@@ -1,7 +1,9 @@
 package versola.oauth.client
 
 import versola.auth.TestEnvConfig
+import versola.oauth.client.model.EmailRegistration
 import versola.oauth.client.model.{ChallengeSettingsRecord, PasskeySettings, PhoneRegion, SecurityProfile, SubmissionLimits, TenantId}
+import versola.role.model.RoleId
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -17,6 +19,8 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
       val record = ChallengeSettingsRecord(
         tenantId = TenantId.default,
         phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}", true)),
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 30,

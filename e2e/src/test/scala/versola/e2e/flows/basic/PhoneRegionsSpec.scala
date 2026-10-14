@@ -81,15 +81,20 @@ object PhoneRegionsSpec extends E2ESpec:
           cookie = authorize.conversationCookie.get
           challenge <- auth.getChallenge(cookie)
           _ <- auth.submitPhone(cookie, phone, challenge.csrf)
-          otp <- auth.getChallenge(cookie)
+          otp <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
           _ <- auth.submitOtp(cookie, "123456", otp.csrf)
-          next <- auth.getChallenge(cookie)
-        yield next.step
+        yield ()
+      val closedNumber = newNumber
+      val openNumber = newNumber
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
-        closed <- withRegions(auth, deNoRegistration)(attempt(auth, s, newNumber))
-        open <- withRegions(auth, de)(attempt(auth, s, newNumber))
-      yield assertTrue(closed != Some(ConversationStep.SetPassword), open == Some(ConversationStep.SetPassword))
+        // Registration creates the account as soon as the one-time code passes; a number whose
+        // region does not register takes the ordinary sign-in path and creates nothing.
+        _ <- withRegions(auth, deNoRegistration)(attempt(auth, s, closedNumber))
+        closed <- auth.userExistsByPhone(closedNumber)
+        _ <- withRegions(auth, de)(attempt(auth, s, openNumber))
+        open <- auth.awaitUserByPhone(openNumber)
+      yield assertTrue(!closed, open)
     },
     test("central refuses a region whose regex does not compile") {
       for

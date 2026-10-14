@@ -511,3 +511,43 @@ export function validatePhoneRegions(
     return undefined;
   });
 }
+
+export const MAX_REGISTRATION_DOMAINS = 500;
+const MAX_DOMAIN_LENGTH = 253;
+const DOMAIN_LABEL = /^[\p{L}\p{N}]([\p{L}\p{N}-]*[\p{L}\p{N}])?$/u;
+
+/**
+ * Mirrors the server's check of an email-registration domain entry: `example.com` or
+ * `*.example.com` (its subdomains, not `example.com` itself), at least one dot in the domain, labels of letters, digits
+ * and hyphens (IDN is accepted in unicode and normalised to punycode by the server), at most 253
+ * characters. Case is not significant. Returns an error message, or undefined when the entry is fine.
+ */
+export function validateRegistrationDomain(entry: string): string | undefined {
+  if (entry.length > MAX_DOMAIN_LENGTH) return `"${entry.slice(0, 20)}..." is longer than ${MAX_DOMAIN_LENGTH} characters.`;
+  // The `*.` prefix does not count: `*.com` would cover a whole top-level domain.
+  const host = entry.startsWith('*.') ? entry.slice(2) : entry;
+  const labels = host.split('.');
+  const shape = 'must look like example.com or *.example.com';
+  if (!host.includes('.')) return `"${entry}" ${shape} (the domain needs at least one dot).`;
+  if (labels.some(label => label.length === 0 || label.length > 63 || !DOMAIN_LABEL.test(label))) {
+    return `"${entry}" ${shape}: labels use letters, digits and hyphens, and cannot start or end with a hyphen.`;
+  }
+  return undefined;
+}
+
+/**
+ * Validates the whole domain list (already trimmed, blanks removed). Returns the first error, or
+ * undefined: more than 500 entries, a malformed entry, or an entry repeated once lower-cased.
+ */
+export function validateRegistrationDomains(domains: string[]): string | undefined {
+  if (domains.length > MAX_REGISTRATION_DOMAINS) return `At most ${MAX_REGISTRATION_DOMAINS} domains are allowed.`;
+  const seen = new Set<string>();
+  for (const entry of domains) {
+    const error = validateRegistrationDomain(entry);
+    if (error) return error;
+    const key = entry.toLowerCase();
+    if (seen.has(key)) return `"${entry}" is listed more than once.`;
+    seen.add(key);
+  }
+  return undefined;
+}

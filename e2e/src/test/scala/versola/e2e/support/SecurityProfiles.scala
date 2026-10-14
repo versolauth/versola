@@ -49,22 +49,6 @@ object SecurityProfiles:
         s"Could not create the suite tenant '${Fixtures.suiteTenant}' on the standard profile: ${created.status} ${created.body}",
       )).unless(created.status.isSuccess)
       _ <- awaitProfile(api, Fixtures.suiteTenant, "standard")
-      // `default` is told where to read a client certificate from by bootstrap (central-admin's
-      // mutual TLS), which is what lets the specs register `tls_client_auth` clients; a new
-      // tenant is not, and refuses them (RFC 8705 §6.5).
-      current <- api.get("/configuration/challenges/challenge-settings", "tenantId" -> Fixtures.suiteTenant).flatMap(_.obj)
-      settings <- ZIO.fromOption(current.obj("settings"))
-        .orElseFail(RuntimeException(s"The suite tenant has no challenge settings: $current"))
-      header <- api.put(
-        "/configuration/challenges/challenge-settings",
-        Json.Obj(
-          settings.fields.filterNot(f => f._1 == "mtlsCertificateHeader" || f._1 == "mtlsCertificateEncoding") :+
-            ("mtlsCertificateHeader" -> Json.Str(OAuthClient.mtlsCertificateHeader)) :+
-            ("mtlsCertificateEncoding" -> Json.Str("urlEncodedPem")),
-        ),
-      )
-      _ <- ZIO.fail(RuntimeException(s"Could not set the suite tenant's certificate header: ${header.status} ${header.body}"))
-        .unless(header.status == Status.NoContent)
       // A tenant is created with its settings and nothing else. `user` is what the registration
       // flows grant -- a client naming a role that does not exist is refused -- and what the
       // account-settings specs sign in as, so it carries the same self-service permission
@@ -98,6 +82,29 @@ object SecurityProfiles:
           _ <- ZIO.fail(RuntimeException(s"Could not create role 'user' in the suite tenant: ${role.status} ${role.body}"))
             .unless(role.status.isSuccess)
         yield ()
+      // Last, because the role `defaultRoles` names has to exist by now. Written once for both
+      // reasons: a tenant is created with registration closed, and the suite's flows register
+      // new users (a phone number registers by its region, an email by this policy).
+      // `default` is told where to read a client certificate from by bootstrap (central-admin's
+      // mutual TLS), which is what lets the specs register `tls_client_auth` clients; a new
+      // tenant is not, and refuses them (RFC 8705 §6.5).
+      current <- api.get("/configuration/challenges/challenge-settings", "tenantId" -> Fixtures.suiteTenant).flatMap(_.obj)
+      settings <- ZIO.fromOption(current.obj("settings"))
+        .orElseFail(RuntimeException(s"The suite tenant has no challenge settings: $current"))
+      header <- api.put(
+        "/configuration/challenges/challenge-settings",
+        Json.Obj(
+          settings.fields.filterNot(f =>
+            Set("mtlsCertificateHeader", "mtlsCertificateEncoding", "emailRegistration", "defaultRoles").contains(f._1),
+          ) :+
+            ("mtlsCertificateHeader" -> Json.Str(OAuthClient.mtlsCertificateHeader)) :+
+            ("mtlsCertificateEncoding" -> Json.Str("urlEncodedPem")) :+
+            ("emailRegistration" -> OAuthClient.openEmailRegistrationJson) :+
+            ("defaultRoles" -> Json.Arr(Json.Str("user"))),
+        ),
+      )
+      _ <- ZIO.fail(RuntimeException(s"Could not set the suite tenant's certificate header and registration policy: ${header.status} ${header.body}"))
+        .unless(header.status == Status.NoContent)
     yield ()
 
   /** Runs `use` against a tenant of its own, created on `profile`, and deletes it afterwards.

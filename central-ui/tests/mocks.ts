@@ -27,7 +27,7 @@ type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | nu
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
 type ClientKindDto = 'web' | 'device' | 'service';
-type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; registrationFlow?: { credential: string; steps: Array<{ type: string }>; roleIds: string[] } | null; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
+type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -204,6 +204,8 @@ type ChallengeSettingsDto = {
   securityProfile?: SecurityProfileDto;
   phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>;
   passwordRegex?: string | null;
+  emailRegistration?: { mode: 'closed' | 'open' | 'allowlist'; domains: string[]; blockDisposable: boolean; blockSubaddress: boolean };
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimitsDto;
   otpLength: number;
   otpResendAfter: number;
@@ -232,6 +234,8 @@ const emptySubmissionLimits = (): SubmissionLimitsDto => ({
 const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   tenantId,
   phoneRegions: [],
+  emailRegistration: { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false },
+  defaultRoles: ['user'],
   passwordRegex: null,
   submissionLimits: emptySubmissionLimits(),
   otpLength: 6,
@@ -417,7 +421,7 @@ const KIND_BY_PATH: Record<string, ClientKindDto> = { web: 'web', native: 'devic
 const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
   web: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
-    'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
@@ -425,7 +429,7 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
   ],
   device: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
-    'authFlow', 'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
+    'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
   ],
@@ -438,14 +442,14 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
 const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
   web: [
     'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
-    'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
     'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
     'edgeClientCertificate',
   ],
   device: [
     'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
-    'registrationFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
+    'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
     'edgeClientCertificate',
   ],
@@ -1340,11 +1344,18 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       if (method === 'PUT') {
         const payload = body as ChallengeSettingsDto;
+        // Central requires both members on PUT, so a console that forgets them fails here.
+        if (!payload.emailRegistration || !Array.isArray(payload.defaultRoles) || payload.defaultRoles.length === 0) {
+          await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ message: 'emailRegistration and defaultRoles are required' }) });
+          return;
+        }
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
           securityProfile: profileOf(state, payload.tenantId),
           phoneRegions: payload.phoneRegions.map(r => ({ ...r })),
           passwordRegex: payload.passwordRegex ?? null,
+          emailRegistration: { ...payload.emailRegistration, domains: [...payload.emailRegistration.domains] },
+          defaultRoles: [...payload.defaultRoles],
           submissionLimits: payload.submissionLimits,
           otpLength: payload.otpLength,
           otpResendAfter: payload.otpResendAfter,

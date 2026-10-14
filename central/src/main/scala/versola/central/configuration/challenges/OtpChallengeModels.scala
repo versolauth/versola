@@ -1,5 +1,6 @@
 package versola.central.configuration.challenges
 
+import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.Patch
 import zio.json.JsonCodec
@@ -35,6 +36,8 @@ case class GetAllChallengeSettingsResponse(settings: Vector[ChallengeSettingsRec
 case class UpsertChallengeSettingsRequest(
     tenantId: TenantId,
     phoneRegions: List[PhoneRegion],
+    emailRegistration: EmailRegistration,
+    defaultRoles: Set[RoleId],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

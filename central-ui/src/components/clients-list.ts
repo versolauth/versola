@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
 import {accessSectionTitle} from '../utils/client-presets';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PhoneRegion, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -83,7 +83,6 @@ export class VersolaClientsList extends LitElement {
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
-  @state() private phoneRegions: PhoneRegion[] | null = null;
   @state() private securityProfile: SecurityProfile = 'fapi2';
   /** The client whose page is open, and the group of its settings being edited on it. */
   @state() private viewingClientId: string | null = null;
@@ -118,7 +117,6 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
       this.mtlsCertificateHeader = null;
-      this.phoneRegions = null;
       this.securityProfile = 'fapi2';
       this.createdSecret = null;
       this.copyFeedback = '';
@@ -1133,7 +1131,6 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.mtlsCertificateHeader = challengeSettings?.mtlsCertificateHeader ?? null;
-      this.phoneRegions = challengeSettings?.phoneRegions ?? [];
       this.securityProfile = challengeSettings?.securityProfile ?? 'fapi2';
       this.formOptionsTenantId = tenantId;
     }
@@ -1447,7 +1444,6 @@ export class VersolaClientsList extends LitElement {
           .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           .mtlsCertificateHeader=${this.mtlsCertificateHeader}
-          .phoneRegions=${this.phoneRegions}
           .securityProfile=${this.securityProfile}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
@@ -1810,10 +1806,7 @@ export class VersolaClientsList extends LitElement {
         </div>
       `, '') : ''}
 
-      ${signsUsersIn ? this.viewSection('Registration and consent', '', 'registration', client, html`
-        ${this.viewRow('Registered accounts', client.registrationFlow
-          ? `${client.registrationFlow.steps.map(step => step.type).join(' + ')}; roles ${client.registrationFlow.roleIds.join(', ') || 'none'}`
-          : 'Default: otp, role user')}
+      ${signsUsersIn ? this.viewSection('Consent', '', 'registration', client, html`
         ${this.viewRow('Consent screen', client.consentFlow ? 'On (partner, cannot be turned off)' : 'Off')}
       `) : ''}
 

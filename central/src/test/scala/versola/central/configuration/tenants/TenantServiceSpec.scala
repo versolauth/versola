@@ -5,6 +5,7 @@ import versola.central.TestCentralConfig
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsService,
+  EmailRegistration,
   PasskeySettings,
   SecurityProfile,
   SubmissionLimits,
@@ -36,6 +37,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
   private def settingsOf(profile: SecurityProfile) = ChallengeSettingsRecord(
     tenantId = tenant1,
     phoneRegions = Nil,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.recommended,
     otpLength = 6,
     otpResendAfter = 60,
@@ -86,6 +89,8 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
           List(ChallengeSettingsRecord(
             tenantId = tenant1,
             phoneRegions = Nil,
+            emailRegistration = EmailRegistration.Closed,
+            defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
             submissionLimits = SubmissionLimits.recommended,
             otpLength = 6,
             otpResendAfter = 60,

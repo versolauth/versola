@@ -1,5 +1,6 @@
 package versola.oauth.client
 
+import versola.oauth.client.model.EmailRegistration
 import versola.oauth.client.model.{
   Acr,
   AuthMethod,
@@ -31,6 +32,7 @@ import versola.oauth.client.model.{
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
+import versola.role.model.RoleId
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -59,7 +61,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -90,7 +91,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -121,7 +121,6 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -433,6 +432,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = limits,
         otpLength = 6,
         otpResendAfter = 60,
@@ -460,6 +461,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -488,6 +491,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -585,6 +590,8 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
         phoneRegions = Nil,
+        emailRegistration = EmailRegistration.Closed,
+        defaultRoles = Set(RoleId("user")),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,

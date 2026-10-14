@@ -21,9 +21,21 @@ export interface AuthorizationPreset {
   cookiePath?: string;
 }
 
+export type EmailRegistrationMode = 'closed' | 'open' | 'allowlist';
+
+/**
+ * `domains` is a blocklist in `open` mode and an allowlist in `allowlist` mode; `closed` stores
+ * it but ignores it.
+ */
+export interface EmailRegistration {
+  mode: EmailRegistrationMode;
+  domains: string[];
+  blockDisposable: boolean;
+  blockSubaddress: boolean;
+}
+
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
-export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -46,18 +58,6 @@ export interface AuthFlow {
 }
 
 // Registration flow (self-service account creation)
-export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
-
-export interface RegistrationStep {
-  type: RegistrationStepType;
-}
-
-export interface RegistrationFlow {
-  credential: RegistrationCredential;     // entry credential whose ownership is verified
-  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
-  roleIds: string[];          // roles granted to the account on creation
-}
-
 // Consent screen shown before an authorization code is issued. Absent for first-party
 // clients, which never prompt.
 export interface ConsentFlow {
@@ -115,7 +115,6 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
-  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
@@ -220,6 +219,10 @@ export interface ChallengeSettingsRecord {
   securityProfile?: SecurityProfile;
   /** Order is the order the login form lists the codes; empty accepts any E.164 number. */
   phoneRegions: PhoneRegion[];
+  /** Who may create an account by email; `closed` unless the tenant opted in. */
+  emailRegistration?: EmailRegistration;
+  /** Role ids granted to every self-registered account; at least one. */
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;

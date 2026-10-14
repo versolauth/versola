@@ -31,9 +31,9 @@ object RegistrationStep:
   @caseName("passkeyEnroll")
   case class PasskeyEnroll() extends RegistrationStep derives Schema, JsonCodec, Equal
 
-/** Self-service account creation for a client. Enabled only alongside an [[AuthFlow]]
-  * whose primary credentials are phone/email; the entry credential is the one the user
-  * already typed on the credential card, so it is not configured separately here.
+/** The account creation one conversation goes through. Not a client setting: it is built from the
+  * tenant's registration policy when an unknown email or phone number is entered on the
+  * credential card ([[OAuthConfigurationService.registrationFor]]), and kept on the conversation.
   *
   * @param credential entry credential whose ownership the user proves during registration
   * @param steps ordered verification and account-setup steps; OTP must come first, and the account
@@ -45,14 +45,3 @@ case class RegistrationFlow(
     steps: List[RegistrationStep],
     roleIds: Set[RoleId],
 ) derives Schema, JsonCodec, Equal
-
-object RegistrationFlow:
-  /** Mirrors central's `RegistrationFlow.defaultRoleId`. */
-  val DefaultRoleId: RoleId = RoleId("user")
-
-  /** What registration is when the client sets none: the entry credential's one-time code, and the
-    * default role. A client has no switch for registration -- whether a phone number may register
-    * is the country's say, and an email always may.
-    */
-  def default(credential: RegistrationCredential): RegistrationFlow =
-    RegistrationFlow(credential, List(RegistrationStep.Otp()), Set(DefaultRoleId))

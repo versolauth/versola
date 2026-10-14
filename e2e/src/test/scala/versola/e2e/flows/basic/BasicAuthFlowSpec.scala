@@ -223,7 +223,7 @@ object BasicAuthFlowSpec extends E2ESpec:
       yield assertTrue(challenge3.html.contains("Invalid verification code"))
         .label("an unknown number of a country that does not register must reject the fake OTP")
     },
-    test("an unknown email registers through the default flow when the client sets none") {
+    test("an unknown email registers when the tenant's email registration is open") {
       val unknownEmail = s"unknown-${UUID.randomUUID()}@example.test"
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -236,6 +236,6 @@ object BasicAuthFlowSpec extends E2ESpec:
         _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf).assertRedirect(auth, cookie)
         exists <- auth.userExistsByEmail(unknownEmail)
       yield assertTrue(exists)
-        .label("an email nobody has used registers: registration is not a per-client switch")
+        .label("an email nobody has used registers: registration is the tenant's policy, open for the suite")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

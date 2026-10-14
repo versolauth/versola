@@ -558,34 +558,52 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
-#### Breaking change: a tenant's phone sign-in lists countries, and countries decide registration
+#### Breaking change: self-registration is the tenant's decision, not the client's
 
-`allowedPrefixes` (a list of dial-code prefixes) is gone from `GET` and `PUT
-/configuration/challenges/challenge-settings`, from the sync feed to `auth` and from the
-`challenge_settings` table. It is replaced by `phoneRegions`: an ordered list of
-`{region, dialCode, length, regex, registration}` (`region` is an ISO 3166-1 alpha-2 code, `length` the digits after
-the dial code, `regex` a Java regular expression those digits must match in full, `registration` whether a number of that country may create an account). Regions may share a
-`dialCode`; a number is accepted when it fits the length and regex of any one of them. See
-`central/open-api/central.yaml`.
+Registration is no longer configured on a client. `registrationFlow` is gone from every client API (`POST`
+and `PUT /configuration/clients/{web,native,service}`, `GET`, the sync feed to `auth`) and from the
+`oauth_clients` table. The tenant's challenge settings (`GET` and `PUT
+/configuration/challenges/challenge-settings`) now say who may create an account, for every client of the tenant that
+signs in by that credential:
 
-Migration `V1021` drops the `allowed_prefixes` column and adds `phone_regions`; **stored prefixes are
-not converted**, because a prefix names neither a length nor a pattern. A tenant that had prefixes
-starts with no regions, which accepts any E.164 number for sign-in and shows the login form's plain phone field
--- the old behaviour of an empty list -- but, see below, registers no phone number.
+- `emailRegistration`: `{mode, domains, blockDisposable, blockSubaddress}`. `mode` is `closed` (no email registers;
+  existing accounts still sign in), `open` (any domain, except the listed `domains` and, when asked, disposable
+  providers) or `allowlist` (only the listed `domains`). A domain is `example.com` or `*.example.com` (its
+  subdomains, not the domain itself); entries are stored lower-case and in punycode. The same rules apply when a
+  user changes their address.
+- `phoneRegions` (replaces `allowedPrefixes`): an ordered list of `{region, dialCode, length, regex, registration}`
+  (`region` is an ISO 3166-1 alpha-2 code, `length` the digits after the dial code, `regex` a Java regular
+  expression those digits must match in full, `registration` whether a number of that country may create an
+  account). Regions may share a `dialCode`; a number is accepted when it fits the length and regex of any one of
+  them. An empty list accepts any E.164 number for sign-in and registers none.
+- `defaultRoles`: the roles every self-registered account gets, at least one. While any credential can register, each
+  must exist in the tenant, or the `PUT` is refused.
 
-Self-registration is no longer a per-client switch. An **email** always registers. A **phone number** registers
-only when its region has `registration: true`, whatever client the user came through; a tenant with no regions
-registers no phone number, though any number can still sign in. A client's `registrationFlow` keeps only what a
-registered account goes through (the extra challenge, the roles): a client without one uses the default (the
-one-time code and the `user` role), so **every client that signs in by email now lets anyone register, including
-those that had registration off** -- turn nothing off by removing the flow, there is no way to close email
-registration for a client. Nothing stored is rewritten.
+A registering user always proves the address with a one-time code first, and then chooses a password when the
+client's sign-in requires a password factor. A client's sign-in step decides which
+credential is offered; registration is available to a client that signs in by email or phone without a login
+credential or an inline password.
 
-What to do: before upgrading, note each tenant's `allowedPrefixes` and which phone clients had registration on; after `migrate`, set `phoneRegions`
-for those tenants in the admin console (Challenge settings; it offers ready-made countries) or through the API,
-with `registration` on for the countries whose numbers may sign up. Until then the tenant accepts numbers from
-every country to sign in and registers none. A `PUT` that still sends `allowedPrefixes` and no `phoneRegions` is
-rejected. Rolling back to the previous version needs the column back: restore the pre-`migrate` dump.
+Migration `V1021` does the following. It adds `phone_regions`, `email_registration` and `default_roles` to
+`challenge_settings` and drops `allowed_prefixes` and `oauth_clients.registration_flow`.
+- **Email registration keeps what each tenant had.** A tenant with a client whose registration flow
+  registered by email becomes `open` (no listed domains, disposable providers not blocked) and its `defaultRoles` are
+  the union of the roles those flows granted. Every other tenant is `closed` with `defaultRoles` of `["user"]`.
+- **Phone prefixes are not converted**, because a prefix names neither a length nor a pattern. A tenant starts with
+  no regions: any number can sign in, no phone number registers until regions are set.
+- **What a client had is not kept:** a registration flow's extra steps (set a password, enroll a passkey) are not
+  carried over; registration is the one-time code (and a password when the client's sign-in requires one), then the account is created with the default roles. A client that
+  had no flow, on a tenant where another client had an email flow, now registers email addresses too, since the
+  setting is per tenant. A deployment that must keep one of its clients closed has to put it in its own tenant.
+
+What to do: before upgrading, note each tenant's `allowedPrefixes` and which phone clients had registration on. After
+`migrate`, set `phoneRegions` for those tenants in the admin console (Challenge settings; it offers ready-made
+countries) or through the API, with `registration` on for the countries whose numbers may sign up, and review the new
+Email registration section. Upgrade `central` and `auth` together: the challenge settings in the sync feed changed shape, so an `auth` and a
+`central` on different versions cannot read each other's settings. A `PUT` of challenge settings that still sends
+`allowedPrefixes` and no `phoneRegions`, `emailRegistration` or `defaultRoles` is rejected, and so is a client request
+that still carries `registrationFlow` (the kind-specific client endpoints refuse unknown members). Rolling back to the previous version needs the
+columns back: restore the pre-`migrate` dump.
 
 #### Breaking change: clients are registered and updated per kind
 

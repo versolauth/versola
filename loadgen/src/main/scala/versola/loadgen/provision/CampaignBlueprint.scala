@@ -277,24 +277,16 @@ object CampaignBlueprint:
     val edgeBackChannelLogoutUri = s"${targets.edgeUrl}/logout/backchannel"
 
     val mobileClients = List(
-      (names.mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow, Some(flows.registrationFlow)),
-      // Registration flow kept: `phoneOtpPasswordAuthFlow`'s primary credential is phone, entered
-      // on its own -- OTP and password are both required *factors*, sequential steps after it, not
-      // an inline password on the primary step. `InvalidRegistrationConfiguration.validate` only
-      // rejects a registration flow paired with `primary.inlinePassword`, which this flow does not
-      // set; a client whose primary step itself asks for a password inline is a distinct, currently
-      // unsupported scenario this cohort deliberately does not model.
-      (
-        names.mobileOtpPasswordClientId,
-        "Loadgen mobile OTP + password",
-        flows.phoneOtpPasswordAuthFlow,
-        Some(flows.registrationFlow),
-      ),
-      // No registration flow: an account is registered from a credential card, and this client's
-      // primary credential is the passkey the new account does not have yet. The passkey cohort
-      // enrols from an already-registered session (§2.3's 0.5%/month enrolment).
-      (names.mobilePasskeyClientId, "Loadgen mobile passkey", flows.phonePasskeyAuthFlow, None),
-    ).map: (clientId, name, authFlow, registrationFlow) =>
+      (names.mobileOtpClientId, "Loadgen mobile OTP", flows.phoneOtpAuthFlow),
+      // `phoneOtpPasswordAuthFlow`'s primary credential is phone, entered on its own -- OTP and
+      // password are both required *factors*, sequential steps after it, not an inline password on
+      // the primary step.
+      (names.mobileOtpPasswordClientId, "Loadgen mobile OTP + password", flows.phoneOtpPasswordAuthFlow),
+      // Registration is the tenant's policy now, not the client's, so nothing here keeps this
+      // client from it; the passkey cohort is simply seeded and enrols from an already-registered
+      // session (§2.3's 0.5%/month enrolment) rather than registering through this client.
+      (names.mobilePasskeyClientId, "Loadgen mobile passkey", flows.phonePasskeyAuthFlow),
+    ).map: (clientId, name, authFlow) =>
       ClientSpec(
         clientId = clientId,
         clientName = name,
@@ -304,7 +296,6 @@ object CampaignBlueprint:
         refreshTokenTtlSeconds = Some(refreshTokenTtlSeconds),
         publicClient = true,
         authFlow = authFlow,
-        registrationFlow = registrationFlow,
         backChannelLogoutUri = None,
         fapi2 = provision.fapi2,
       )
@@ -321,7 +312,6 @@ object CampaignBlueprint:
       // both draw from the population's passkey cohort, not just mobile) -- primary stays
       // phone+otp, so a user without an enrolled credential logs in exactly as before.
       authFlow = flows.phonePasskeyAuthFlow,
-      registrationFlow = Some(flows.registrationFlow),
       // Design doc §3 #10 exercises the back-channel logout, which only reaches edge if the
       // client edge fronts declares where to send it.
       backChannelLogoutUri = Some(edgeBackChannelLogoutUri),
@@ -416,6 +406,12 @@ object CampaignBlueprint:
       // starting 15, 16 or 17. Registration is the country's say, so the scenarios that register a
       // new user need it to say yes; a population under another `phone-prefix` needs its own region.
       phoneRegions = List(PhoneRegionSpec("DE", "+49", 11, "1[5-7]\\d{9}", registration = true)),
+      // Self-registration is the tenant's policy: open to any email domain, as the scenarios that
+      // register a new user expect of a client that used to carry its own registration flow. The
+      // population is phone-only today, so this is the permissive default rather than a measured path.
+      emailRegistration = EmailRegistrationSpec("open", Nil, blockDisposable = false, blockSubaddress = false),
+      // The role the retired per-client registration flow granted.
+      defaultRoles = List(retailUserRoleId),
       otpLength = 6,
       otpResendAfterSeconds = 60,
       passkeyRpId = provision.passkey.rpId,
@@ -458,7 +454,7 @@ object CampaignBlueprint:
       challengeSettings = challengeSettings,
     )
 
-/** The `authFlow`/`registrationFlow` documents, read verbatim from the shared resource files of
+/** The `authFlow` documents, read verbatim from the shared resource files of
   * dev spec §3.4 rather than re-encoded here -- central's schema changes are exactly what this
   * indirection exists to keep from being discovered twice, once by e2e and once by the emulator.
   */
@@ -466,5 +462,4 @@ case class CampaignFlows(
     phoneOtpAuthFlow: Json,
     phoneOtpPasswordAuthFlow: Json,
     phonePasskeyAuthFlow: Json,
-    registrationFlow: Json,
 )

@@ -1,4 +1,4 @@
-import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, RegistrationFlow, Resource, ResourceEndpointId, SortConfig } from '../types';
+import { AuthFlow, ConsentFlow, PaginatedResponse, Permission, Resource, ResourceEndpointId, SortConfig } from '../types';
 
 /**
  * Default authentication flow: phone primary credential + required OTP.
@@ -21,18 +21,6 @@ export function createDefaultAuthFlow(): AuthFlow {
 
 /** Role granted to self-registered users; seeded without permissions by central's bootstrap. */
 export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
-
-/**
- * Default registration flow: prove ownership of the phone entry credential with an OTP, then
- * offer a passkey.
- */
-export function createDefaultRegistrationFlow(): RegistrationFlow {
-  return {
-    credential: 'phone',
-    steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }],
-    roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
-  };
-}
 
 /**
  * Default consent flow: ask once, remember the grant until it is revoked, and require the
