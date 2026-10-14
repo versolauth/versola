@@ -1237,6 +1237,11 @@ jobs:
       - name: Check the secret schema matches what gen-env generates
         run: bash .github/scripts/check-secret-schema.sh
 
+      # Static, needs nothing installed: without `exec` the shell stays PID 1, SIGTERM never
+      # reaches the JVM and `docker stop` ends in exit code 137 after the grace period.
+      - name: Check the service images start the JVM with exec
+        run: .github/scripts/check-entrypoint-exec.sh
+
   # Pod placement (nodeSelector / tolerations / affinity) in both charts: that
   # global values reach every pod, that a component's own value replaces them
   # rather than merging, and that the loadgen coordinator's standby spread
