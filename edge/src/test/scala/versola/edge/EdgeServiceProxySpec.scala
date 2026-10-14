@@ -99,9 +99,9 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
       override def requireNonce: UIO[Boolean] = ZIO.succeed(true)
       override def refreshNow: Task[Unit] = ZIO.unit
 
-  private def overheadCount(resource: ResourceId): UIO[Long] =
+  private def overheadCount(resource: ResourceId, authCall: ProxyMetrics.AuthCall = ProxyMetrics.AuthCall.None): UIO[Long] =
     Metric.histogram("edge_proxy_overhead_seconds", ProxyMetrics.boundaries)
-      .tagged(MetricLabel("resource", resource.toString)).value.map(_.count)
+      .tagged(Set(MetricLabel("resource", resource.toString), MetricLabel("auth_call", authCall.label))).value.map(_.count)
 
   class Env:
     val secureRandom = stub[SecureRandom]
@@ -824,6 +824,25 @@ object EdgeServiceProxySpec extends ZIOSpecDefault, ZIOStubs:
         response <- env.buildService(client, security).proxy(resource, Path.decode("/users"), request)
         after <- overheadCount(resource)
       yield assertTrue(response.status == Status.Ok, after - before == 1L)
+    },
+    test("labels the overhead of a request that asked auth for /userinfo, so the budget skips auth's latency") {
+      val env = new Env
+      val resource = ResourceId("users-api-overhead-userinfo")
+      for
+        _ <- env.setupDefaults()
+        _ <- env.ssoClient.userInfo.succeedsWith(Json.Obj())
+        _ <- captureUpstream()
+        client <- ZIO.service[Client]
+        security <- ZIO.service[SecurityService]
+        _ <- env.withResources(usersResourceNamed(resource, usersEndpoint(fetchUserInfo = true)))
+        token <- env.signToken()
+        request = Request.get(URL.empty / "users").addCookie(sessionCookie(token))
+        withUserInfo <- overheadCount(resource, ProxyMetrics.AuthCall.UserInfo)
+        withoutAuth <- overheadCount(resource)
+        response <- env.buildService(client, security).proxy(resource, Path.decode("/users"), request)
+        afterUserInfo <- overheadCount(resource, ProxyMetrics.AuthCall.UserInfo)
+        afterNone <- overheadCount(resource)
+      yield assertTrue(response.status == Status.Ok, afterUserInfo - withUserInfo == 1L, afterNone == withoutAuth)
     },
     test("records no overhead for a request refused before it reached the resource") {
       val env = new Env
