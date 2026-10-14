@@ -87,6 +87,11 @@ export class VersolaClientForm extends LitElement {
    *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
   @property({ type: String }) mtlsCertificateHeader: string | null = null;
 
+  /** Whether the tenant lists any phone regions in Challenges & Security. With none, a phone
+   *  sign-in takes a number from any country and shows a plain field, which is rarely meant;
+   *  the sign-in step says so. */
+  @property({ type: Boolean }) phoneRegionsConfigured = true;
+
   @state() private formData: Partial<OAuthClient> = {
     id: '',
     clientName: { en: '' },
@@ -3334,6 +3339,13 @@ export class VersolaClientForm extends LitElement {
             <button type="button" aria-pressed=${primary === 'phone'} @click=${() => this.selectPhoneEmailMode('phone')}>Phone</button>
             <button type="button" aria-pressed=${primary === 'login'} @click=${() => this.selectLoginPasswordMode()}>Login + password</button>
           </div>
+          ${primary === 'phone' && !this.phoneRegionsConfigured ? html`
+            <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+              <strong>No phone regions for this tenant.</strong> The sign-in form accepts a number from any
+              country and shows a plain field, with no country code to pick. List the countries under
+              Allowed Phones in Challenges &amp; Security.
+            </div>
+          ` : ''}
           ${primary === 'login' ? html`
             <div class="plan">
               ${this.renderPlanLine(

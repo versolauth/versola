@@ -2070,3 +2070,47 @@ test('registering a client that asks for consent picks the partner OTP template'
   expect(body.otpTemplateId).toBe('partner');
   expect(body.consentFlow).not.toBeNull();
 });
+
+test('warns on the sign-in step when a phone client is created on a tenant with no phone regions', async ({ page }) => {
+  const settings = {
+    tenantId: 'tenant-alpha',
+    phoneRegions: [] as unknown[],
+    submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+    otpLength: 6,
+    otpResendAfter: 60,
+  };
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] }, challengeSettings: { 'tenant-alpha': settings } } });
+  const warning = page.locator('versola-client-form .wizard-warn').filter({ hasText: 'No phone regions' });
+
+  await startCreate(page);
+  await fillBasics(page, 'phone-app', 'Phone App');
+  await addRedirectUri(page, 'https://phone.example/callback');
+  await continueToThirdStep(page);
+
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await expect(warning).toHaveCount(0);
+  await page.getByRole('button', { name: 'Login + password', exact: true }).click();
+  await expect(warning).toHaveCount(0);
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('Allowed Phones');
+});
+
+test('does not warn about phone regions when the tenant lists some', async ({ page }) => {
+  const settings = {
+    tenantId: 'tenant-alpha',
+    phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' }],
+    submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+    otpLength: 6,
+    otpResendAfter: 60,
+  };
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] }, challengeSettings: { 'tenant-alpha': settings } } });
+
+  await startCreate(page);
+  await fillBasics(page, 'phone-app', 'Phone App');
+  await addRedirectUri(page, 'https://phone.example/callback');
+  await continueToThirdStep(page);
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
+
+  await expect(page.locator('versola-client-form .wizard-warn').filter({ hasText: 'No phone regions' })).toHaveCount(0);
+});

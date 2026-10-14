@@ -83,6 +83,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availableLocales: Locale[] = [];
   @state() private availablePostLogoutRedirectUris: string[] = [];
   @state() private mtlsCertificateHeader: string | null = null;
+  @state() private phoneRegionsConfigured = true;
   @state() private securityProfile: SecurityProfile = 'fapi2';
   /** The client whose page is open, and the group of its settings being edited on it. */
   @state() private viewingClientId: string | null = null;
@@ -117,6 +118,7 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = [];
       this.availablePostLogoutRedirectUris = [];
       this.mtlsCertificateHeader = null;
+      this.phoneRegionsConfigured = true;
       this.securityProfile = 'fapi2';
       this.createdSecret = null;
       this.copyFeedback = '';
@@ -1131,6 +1133,7 @@ export class VersolaClientsList extends LitElement {
       this.availableLocales = locales;
       this.availablePostLogoutRedirectUris = challengeSettings?.postLogoutRedirectUris ?? [];
       this.mtlsCertificateHeader = challengeSettings?.mtlsCertificateHeader ?? null;
+      this.phoneRegionsConfigured = (challengeSettings?.phoneRegions?.length ?? 0) > 0;
       this.securityProfile = challengeSettings?.securityProfile ?? 'fapi2';
       this.formOptionsTenantId = tenantId;
     }
@@ -1444,6 +1447,7 @@ export class VersolaClientsList extends LitElement {
           .locales=${this.availableLocales}
           .canManageSecrets=${this.canManageSecrets}
           .mtlsCertificateHeader=${this.mtlsCertificateHeader}
+          .phoneRegionsConfigured=${this.phoneRegionsConfigured}
           .securityProfile=${this.securityProfile}
           @close=${this.handleFormClose}
           @delete-previous-secret=${this.handleDeletePreviousSecret}
