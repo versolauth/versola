@@ -1174,7 +1174,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
   ): Task[RegisterClientResult] =
     val kind = applicationType match
       case Some("native") => "native"
-      case _ => if redirectUris.isEmpty then "service" else "web"
+      case _ =>
+        if authMethod == "none" && redirectUris.nonEmpty then "native"
+        else if redirectUris.isEmpty then "service"
+        else "web"
     // Each kind's endpoint is @jsonNoExtraFields: only send the fields that kind accepts.
     val bodyJson = kind match
       case "web" =>

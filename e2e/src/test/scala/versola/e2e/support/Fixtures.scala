@@ -308,7 +308,6 @@ object Fixtures:
       "clientId" -> Json.Str(clientId),
       "redirectUris" -> patch(),
       "scope" -> patch(),
-      "permissions" -> patch(),
     )
     val overridden = changes.map(_._1).toSet
     Json.Obj(defaults.filterNot((name, _) => overridden.contains(name)) ++ Chunk.fromIterable(changes))
