@@ -265,6 +265,22 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           found.flatMap(_.backChannelLogoutUri) === Some(backLogoutUri),
         )
       },
+      test("create, find and update a client whose consent flow carries required scopes") {
+        val consenting = client.copy(
+          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))),
+        )
+        val widened = ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone"), ScopeToken("email")))
+
+        for
+          _ <- env.repository.createClient(consenting)
+          created <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(consentFlow = Some(Patch.Modified(widened))))
+          updated <- env.repository.find(clientId)
+        yield assertTrue(
+          created === Some(consenting),
+          updated.flatMap(_.consentFlow) === Some(widened),
+        )
+      },
       test("create and find a client with a DPoP proof key policy") {
         val narrowed = client.copy(
           dpopSigningAlgs = Set(Dpop.Algorithm.ES256, Dpop.Algorithm.PS256),

@@ -557,6 +557,10 @@ object BootstrapService:
       ),
     )
 
+  /** What the consent screen shows for each seeded scope, by token. */
+  private[versola] def scopeDescriptions: Map[ScopeToken, Map[String, String]] =
+    scopeCatalog.map(scope => scope.token -> scope.description).toMap
+
   /** Standard OpenID Connect scopes and their claims (OpenID Connect Core 1.0, §5.4). */
   private val scopeCatalog: List[ScopeSeed] = List(
     ScopeSeed(
@@ -607,7 +611,7 @@ object BootstrapService:
     ),
     ScopeSeed(
       ScopeToken("offline_access"),
-      localized("Offline access via refresh tokens", "Офлайн-доступ через refresh-токены"),
+      localized("Long-lived access", "Длительный доступ"),
       List.empty,
     ),
   )

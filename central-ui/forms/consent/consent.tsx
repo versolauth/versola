@@ -95,6 +95,13 @@ function ConsentForm(props: { config: FormConfig }) {
     if (next.has(scope)) next.delete(scope); else next.add(scope);
     setSelected(next);
   };
+  // The translated sentence keeps its `{client}` placeholder; splitting on it lets the name be
+  // rendered as an element while the surrounding words stay translatable. Odd indices are the name.
+  const descriptionParts = () => {
+    const name = step.clientName ?? t().unknown_client ?? 'An application';
+    const parts = (t().description ?? '{client} wants to access your account.').split('{client}');
+    return parts.flatMap((part, index) => index < parts.length - 1 ? [part, name] : [part]);
+  };
   const grantedScope = () => scopes.filter(s => selected().has(s.scope)).map(s => s.scope).join(' ');
   const scopeDescription = (scope: ConsentScope) =>
     scope.descriptionLocalizations?.[currentLocale()] || scope.description || scope.scope;
@@ -115,7 +122,7 @@ function ConsentForm(props: { config: FormConfig }) {
       </Show>
       <h1>{t().title}</h1>
       <p class="consent-description">
-        {(t().description ?? '{client} wants to access your account.').replace('{client}', step.clientName ?? t().unknown_client ?? 'An application')}
+        {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}
       </p>
       <Show when={props.config.error}>
         <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>

@@ -16,6 +16,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.{InjectRule, InjectTarget}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
 import zio.*
@@ -194,6 +195,12 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         !prod.exists((_, path) => path.startsWith("/service")),
         prod.forall(nonProd.contains),
         nonProd.size == prod.size + 2,
+      )
+    },
+    test("offline_access is described without the word refresh, which users do not know") {
+      val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
+      assertTrue(
+        description == Map("en" -> "Long-lived access", "ru" -> "Длительный доступ"),
       )
     },
     test("service:operate covers exactly the service endpoints") {

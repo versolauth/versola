@@ -1,5 +1,6 @@
 .consent-logo { display: block; width: 56px; height: 56px; object-fit: contain; margin: 0 auto 16px; border-radius: var(--radius); }
 .consent-description { color: var(--text-muted); line-height: 1.6; margin: -8px 0 20px; }
+.consent-client { color: var(--text); font-weight: 700; }
 .consent-scopes-container {
   max-height: min(40vh, 24rem);
   overflow-y: auto;
