@@ -248,7 +248,7 @@ export class VersolaRoleForm extends LitElement {
                   required
                   placeholder="e.g., admin"
                 />
-                <div class="hint">Lowercase letters, numbers, underscore, start with letter</div>
+                <div class="hint">Lowercase letters, numbers, hyphen, start with letter</div>
               </div>
             ` : ''}
 
