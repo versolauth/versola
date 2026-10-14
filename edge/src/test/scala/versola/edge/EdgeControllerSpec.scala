@@ -68,8 +68,12 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     val fields =
       Chunk(Some("client_id" -> Json.Str(clientId))) ++
         Chunk(tenantId.map(tid => "tenant_id" -> Json.Str(tid))) ++
-        Chunk(cnfJkt.map(jkt => "cnf" -> Json.Obj("jkt" -> Json.Str(jkt)))) ++
-        Chunk(cnfX5t.map(thumbprint => "cnf" -> Json.Obj("x5t#S256" -> Json.Str(thumbprint)))) ++
+        // One `cnf` claim carrying whichever bindings were asked for -- a token may be bound to both.
+        Chunk(Option.when(cnfJkt.isDefined || cnfX5t.isDefined)(
+          "cnf" -> Json.Obj(
+            Chunk(cnfJkt.map("jkt" -> Json.Str(_)), cnfX5t.map("x5t#S256" -> Json.Str(_))).flatten,
+          ),
+        )) ++
         Chunk(roles.map(rs => "roles" -> Json.Arr(rs.map(Json.Str(_))*))
           .orElse(Some("roles" -> Json.Arr())))
     JWT.serialize(
@@ -229,6 +233,25 @@ object EdgeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         response.status == Status.Unauthorized,
         response.rawHeader("DPoP-Nonce").contains("fresh-nonce"),
         response.rawHeader("WWW-Authenticate").contains("""DPoP error="use_dpop_nonce""""),
+        service.getMyPermissions.calls.isEmpty,
+      )
+    },
+    // #452 on this route: the proof only shows the key half of the binding, and the
+    // certificate half cannot be shown to edge, so a valid proof must not be enough.
+    test("returns 401 when a token bound to both a key and a certificate carries a valid proof") {
+      for
+        accessToken <- token(cnfJkt = Some("thumb-1"), cnfX5t = Some("certificate-thumbprint"))
+        (response, service, _) <- run(
+          Request.get(URL.decode("/permissions/me?resource=central").toOption.get)
+            .addHeader(Header.Custom("Authorization", s"DPoP $accessToken"))
+            .addHeader(Header.Custom("DPoP", "the-one-proof")),
+          (s, _) => s.getMyPermissions.succeedsWith(sampleResponse),
+          dpopSetup = _.verify.succeedsWith(
+            versola.util.Dpop.Proof(jkt = "thumb-1", jti = "jti-1", iat = Instant.EPOCH, nonce = None, ath = None),
+          ),
+        )
+      yield assertTrue(
+        response.status == Status.Unauthorized,
         service.getMyPermissions.calls.isEmpty,
       )
     },
