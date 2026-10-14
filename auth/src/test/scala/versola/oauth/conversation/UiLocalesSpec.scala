@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.util.UnitSpecBase
 import zio.NonEmptyChunk
-import zio.http.{Cookie, Header, Request, URL}
+import zio.http.{Cookie, Header, Request, Response, URL}
 import zio.test.*
 
 object UiLocalesSpec extends UnitSpecBase:
@@ -30,6 +30,22 @@ object UiLocalesSpec extends UnitSpecBase:
       },
       test("ignores a malformed cookie value") {
         assertTrue(UiLocales.resolve(request(cookie = Some("ru<script>"))) == None)
+      },
+    ),
+    suite("acceptLanguage")(
+      test("drops q=0 and orders by quality") {
+        val result = UiLocales.acceptLanguage(request(acceptLanguage = Some("en;q=0, de;q=0.5, ru")))
+        assertTrue(result == List("ru", "de"))
+      },
+    ),
+    suite("remember")(
+      test("sets the cookie on a successful response") {
+        val response = UiLocales.remember(request(query = Some("ru")))(Response.ok)
+        assertTrue(response.headers.get(Header.SetCookie).isDefined)
+      },
+      test("does not set the cookie on an error response") {
+        val response = UiLocales.remember(request(query = Some("ru")))(Response.forbidden)
+        assertTrue(response.headers.get(Header.SetCookie).isEmpty)
       },
     ),
     suite("submitted")(

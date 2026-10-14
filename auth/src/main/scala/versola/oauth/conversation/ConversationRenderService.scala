@@ -565,8 +565,10 @@ object ConversationRenderService:
         activeCodes: Set[String],
     ): (String, Map[String, String]) =
       val base = form.localizations.getOrElse(default, Map.empty)
+      // Language tags are case-insensitive (`pt-br` from a browser is `pt-BR` in the tenant's config).
       val chosenLocale = locale.getOrElse(Nil).iterator
-        .find(code => activeCodes.contains(code) && form.localizations.contains(code))
+        .flatMap(requested => activeCodes.find(_.equalsIgnoreCase(requested)))
+        .find(form.localizations.contains)
         .getOrElse(default)
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)

@@ -42,7 +42,8 @@ object UiLocales:
   /** Remembers the locale a form was submitted with, so pages that follow without a
     * conversation to read it from keep it. */
   def remember(request: Request)(response: Response): Response =
-    submitted(request).fold(response)(locale => response.addCookie(cookie(locale)))
+    if response.status.isError then response
+    else submitted(request).fold(response)(locale => response.addCookie(cookie(locale)))
 
   /** `explicit` and `fromRecord` are tried first, in that order, then the cookie, then
     * `Accept-Language`. `None` when the request names no locale at all. */
@@ -54,12 +55,21 @@ object UiLocales:
     val remembered = request.cookie(cookieName).map(_.content).filter(isValid).toList
     Some((explicit ++ fromRecord ++ remembered ++ acceptLanguage(request)).distinct).filter(_.nonEmpty)
 
-  /** The `Accept-Language` tags in the order the client listed them, quality values dropped. */
+  /** The `Accept-Language` tags, most preferred first: ordered by quality value (stably, so equal
+    * qualities keep the client's order), with `q=0` ("not acceptable") dropped. */
   def acceptLanguage(request: Request): List[String] =
     request.header(Header.AcceptLanguage).toList
       .flatMap(_.renderedValue.split(',').toList)
-      .map(_.takeWhile(_ != ';').trim)
-      .filter(isValid)
+      .map(_.trim.split(';').toList)
+      .flatMap:
+        case tag :: params if isValid(tag.trim) => Some(tag.trim -> quality(params))
+        case _ => None
+      .filter(_._2 > 0)
+      .sortBy(-_._2)
+      .map(_._1)
+
+  private def quality(params: List[String]): Double =
+    params.map(_.trim).collectFirst { case q if q.startsWith("q=") => q.drop(2).toDoubleOption.getOrElse(1.0) }.getOrElse(1.0)
 
   /** The OIDC `ui_locales` convention: space-separated, most preferred first. */
   def split(raw: String): List[String] =
