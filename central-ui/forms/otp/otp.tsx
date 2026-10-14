@@ -71,8 +71,14 @@ function OtpForm(props: { config: FormConfig }) {
   const locales = props.config.locales ?? [];
   const otpLength = props.config.step.length ?? 6;
   const description = () => {
-    const destination = props.config.step.destination;
-    return t().description.replace('{destination}', destination);
+    const [before, ...rest] = t().description.split('{destination}');
+    return (
+      <>
+        {before}
+        <span class="otp-destination">{props.config.step.destination}</span>
+        {rest.join('{destination}')}
+      </>
+    );
   };
   const [otp, setOtp] = createSignal('');
   let inputRef!: HTMLInputElement;
