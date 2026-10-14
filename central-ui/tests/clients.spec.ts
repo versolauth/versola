@@ -1741,7 +1741,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       equivalents: {},
       otpType: 'sms',
     },
-    registrationFlow: { credential: 'phone', steps: [{ type: 'otp' }], roleIds: ['user'] },
+    registrationFlow: { credential: 'phone', steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }], roleIds: ['user'] },
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
