@@ -56,6 +56,9 @@ QUANTILES = [(0.5, "p50"), (0.95, "p95"), (0.99, "p99")]
 # Drawn only while the Tail quantile selector is at or beyond them: p99.99 selected draws p99.9 and p99.99.
 TAIL_QUANTILES = [(0.999, "p99.9"), (0.9999, "p99.99"), (0.99999, "p99.999")]
 TAIL_OPTIONS = (("p99", "0.99"), ("p99.9", "0.999"), ("p99.99", "0.9999"), ("p99.999", "0.99999"))
+# Edge's own overhead: not the requests that waited on auth. A missing label (an edge build before it was added)
+# matches too, so the tile keeps working across an upgrade.
+OWN = ', auth_call!~"userinfo|refresh"'
 TAIL_NOTE = " p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge."
 
 
@@ -580,9 +583,9 @@ def add_edge(b: Board, phase: str) -> None:
     web = ', route=~"/login.*|/complete|/logout.*|/permissions.*"'
     mobile = ', route=~"/native/.*"'
     overview(b, [
-        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http()}[$__rate_interval])))", dict(
+        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http(OWN)}[$__rate_interval])))", dict(
             unit="s", thresholds=steps((None, GREEN), (0.015, RED)),
-            desc="What edge adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, the lookup at auth), at the quantile chosen in the Tail quantile selector. The wait for the resource itself is not included. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
+            desc="What edge itself adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, rules), at the quantile chosen in the Tail quantile selector. Requests that waited on auth (a /userinfo call, or a refresh of an expired token) are left out: that wait is auth's latency, shown on the graph below. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
         ("Proxied/s", f"sum({b.req_rate(proxied)})", dict(unit="reqps", desc="Requests edge forwards to protected resources -- the traffic edge exists to carry.")),
     ])
     if phase == "overview":
@@ -606,9 +609,11 @@ def add_edge(b: Board, phase: str) -> None:
         (f"{whole} - {in_backend} - {in_auth}", "edge itself"),
     ], unit="s", stack=True, minimum=0,
          desc="Average time per proxied request, split into the resource's own answer, the token lookup at auth, and what edge adds on top. The three add up to the proxy latency.")
-    b.ts("Edge overhead (measured)", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))"),
+    b.ts("Edge overhead (measured)", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}{OWN}}}[$__rate_interval])))"),
 unit="s", line=steps((None, GREEN), (0.015, RED)),
-         desc="Time edge spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules, the token lookup at auth. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so p99 here is the real p99. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
+         desc="Time edge itself spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules. Requests that waited on auth (a /userinfo call, a refresh of an expired token) are left out and shown on the next graph. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so the quantiles here are real. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
+    b.ts("Edge overhead by what it waited on (${tail:text})", [(f"histogram_quantile($tail, sum by (le, auth_call) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "{{auth_call}}")], unit="s", minimum=0,
+         desc="The same overhead split by whether the request waited on auth: none (edge's own work), userinfo (the /userinfo call an endpoint asks for), refresh (an expired token refreshed at auth). The last two are mostly auth's latency, so a high line there is read as auth being slow, not edge. No label on an edge build before it was added.")
 
     traffic(b, title="Web apps (browser sign-in and sign-out)", extra=web,
             what="/login and /complete finish a sign-in; /complete includes a code exchange with auth, so it carries auth's latency")
