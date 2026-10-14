@@ -13,7 +13,7 @@ info:
     calling client is reported as `{"active": false}` rather than as an error — the caller is
     never told why a token is not active.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

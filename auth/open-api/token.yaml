@@ -9,7 +9,7 @@ info:
     `client_credentials`. The grant is selected by the `grant_type` field, which determines
     which of the remaining fields are read.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

@@ -26,7 +26,7 @@
     "lit"
   ],
   "author": "Versola",
-  "license": "MIT",
+  "license": "SEE LICENSE IN ../LICENCE.md",
   "dependencies": {
     "@marcbachmann/cel-js": "^8.0.0",
     "@types/prismjs": "^1.26.6",
