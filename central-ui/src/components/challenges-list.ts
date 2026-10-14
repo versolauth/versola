@@ -1738,9 +1738,7 @@ export class VersolaChallengesList extends LitElement {
               ${this.emailRegistration.domains.length === 0
                 ? html`<div class="hint">${this.emailRegistration.mode === 'open' ? 'No domains blocked.' : 'No domains listed, so no address can register.'}</div>`
                 : html`<div class="prefix-tags">${this.emailRegistration.domains.map(d => html`<span class="prefix-tag">${d}</span>`)}</div>`}
-              <div class="template-text" style="margin-top: var(--spacing-md);">
-                Sub-addresses (+ = #): ${this.emailRegistration.blockSubaddress ? 'blocked' : 'allowed'}
-              </div>
+              <div class="template-text" style="margin-top: var(--spacing-md);">Sub-addresses (+ = #): ${this.emailRegistration.blockSubaddress ? 'blocked' : 'allowed'}</div>
             `}
 
           <label style="margin-top: var(--spacing-lg);">Default roles</label>
