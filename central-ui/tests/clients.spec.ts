@@ -1054,7 +1054,7 @@ test('configures a registration flow and sends it when creating a client', async
   expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
     registrationFlow: {
       credential: 'phone',
-      steps: [{ type: 'otp' }],
+      steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }],
       roleIds: ['user'],
     },
   });
@@ -1661,9 +1661,9 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       primary: {
         credentials: ['phone'],
         inlinePassword: false,
-        factors: [{ type: 'otp', required: true }],
+        factors: [{ type: 'otp', required: true }, { type: 'passkeyEnroll', required: false }],
       },
-      passkey: null,
+      passkey: { factors: [] },
       equivalents: {},
       otpType: 'sms',
     },
