@@ -91,7 +91,7 @@ const tenantsOn = (profile: Profile) => (profile === 'standard' ? standardTenant
 
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: [],
+  phoneRegions: [],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,

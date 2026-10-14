@@ -22,7 +22,10 @@ const authorizationDetailType = {
 
 const settingsWithoutPasskey = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: ['+77'],
+  phoneRegions: [
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}' },
+  ],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
@@ -48,7 +51,10 @@ test('renders OTP templates and challenge settings sections', async ({ page }) =
   await expect(page.locator('.template-id').filter({ hasText: 'login-otp' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible();
   await expect(page.locator('.template-text').filter({ hasText: '6 digits' })).toBeVisible();
-  await expect(page.locator('.prefix-tag').filter({ hasText: '+77' })).toBeVisible();
+  const chips = page.locator('.region-chip');
+  await expect(chips).toHaveCount(2);
+  await expect(chips.nth(0)).toHaveText('KZ +7 · 10 digits · 7\\d{9}');
+  await expect(chips.nth(1)).toHaveText('RU +7 · 10 digits · 9\\d{9}');
 
   const headerButtonSizes = await page.locator('.section-header .btn').evaluateAll(buttons =>
     buttons.map(button => {
@@ -421,4 +427,55 @@ test('deletes an OTP template through the shared confirm dialog', async ({ page 
 
   (await findRequest(api.requests, 'DELETE', '/configuration/challenges/otp-templates'));
   await expect(page.locator('.template-id').filter({ hasText: 'login-otp' })).toHaveCount(0);
+});
+
+test('edits phone regions: add, reorder, validate, and sends phoneRegions in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows).toHaveCount(2);
+
+  await page.getByRole('button', { name: '+ Add Region', exact: true }).click();
+  await expect(rows).toHaveCount(3);
+  await rows.nth(2).getByLabel('Region').fill('us');
+  await rows.nth(2).getByLabel('Dial code').fill('+1');
+  await rows.nth(2).getByLabel('Length').fill('3');
+  await rows.nth(2).getByLabel('Regex').fill('\\d{10}');
+
+  // Invalid length is refused client-side with an inline error, and nothing is sent.
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(rows.nth(2).locator('.region-error')).toContainText('between 4 and 14');
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === '/configuration/challenges/challenge-settings')).toBe(false);
+
+  // A duplicate region is refused too.
+  await rows.nth(2).getByLabel('Length').fill('10');
+  await rows.nth(2).getByLabel('Region').fill('KZ');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(rows.nth(2).locator('.region-error')).toContainText('more than once');
+  await rows.nth(2).getByLabel('Region').fill('US');
+
+  // Move US to the top.
+  await rows.nth(2).getByRole('button', { name: 'Move up' }).click();
+  await rows.nth(1).getByRole('button', { name: 'Move up' }).click();
+  await expect(rows.nth(0).getByLabel('Region')).toHaveValue('US');
+
+  // Passkeys are required by the form regardless of phone regions.
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: unknown[];
+  };
+  expect(body.phoneRegions).toEqual([
+    { region: 'US', dialCode: '+1', length: 10, regex: '\\d{10}' },
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}' },
+  ]);
+  expect(body).not.toHaveProperty('allowedPrefixes');
 });

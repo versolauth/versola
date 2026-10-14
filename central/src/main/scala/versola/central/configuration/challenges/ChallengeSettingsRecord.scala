@@ -39,9 +39,52 @@ enum SecurityProfile derives Schema, JsonCodec:
   case standard
   case fapi2
 
+/** One country a tenant's phone sign-in accepts. Regions may share a [[dialCode]] (`KZ` and `RU`
+  * both use `+7`); a number is accepted when it fits the [[length]] and [[regex]] of at least one
+  * of them, so the pair is the unit, not the two taken separately.
+  */
+case class PhoneRegion(
+    /** ISO 3166-1 alpha-2, unique within a tenant's list. */
+    region: String,
+    /** `+` and 1-4 digits. */
+    dialCode: String,
+    /** Digits after the dial code. */
+    length: Int,
+    /** Matched in full against those digits. */
+    regex: String,
+) derives Schema, JsonCodec
+
+object PhoneRegion:
+  val MinLength = 4
+  val MaxLength = 14
+
+  /** E.164: the dial code and the number together are at most 15 digits. */
+  val MaxTotalDigits = 15
+
+  private val RegionPattern = "[A-Z]{2}".r
+  private val DialCodePattern = "\\+[1-9][0-9]{0,3}".r
+
+  /** Why this list cannot be stored, if it cannot. */
+  def validate(regions: List[PhoneRegion]): Option[String] =
+    regions.iterator.map(validate).collectFirst { case Some(error) => error }
+      .orElse:
+        regions.groupBy(_.region).collectFirst { case (region, same) if same.size > 1 => s"phoneRegions lists region '$region' more than once" }
+
+  private def validate(region: PhoneRegion): Option[String] =
+    if !RegionPattern.matches(region.region) then Some(s"phoneRegions region '${region.region}' must be an ISO 3166-1 alpha-2 code")
+    else if !DialCodePattern.matches(region.dialCode) then
+      Some(s"phoneRegions dialCode '${region.dialCode}' of ${region.region} must be + and 1-4 digits")
+    else if region.length < MinLength || region.length > MaxLength || region.dialCode.length - 1 + region.length > MaxTotalDigits then
+      Some(
+        s"phoneRegions length of ${region.region} must be between $MinLength and $MaxLength, and with the dial code at most $MaxTotalDigits digits",
+      )
+    else if scala.util.Try(java.util.regex.Pattern.compile(region.regex)).isFailure then
+      Some(s"phoneRegions regex of ${region.region} is not a valid regular expression")
+    else None
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
-    allowedPrefixes: List[String],
+    phoneRegions: List[PhoneRegion],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

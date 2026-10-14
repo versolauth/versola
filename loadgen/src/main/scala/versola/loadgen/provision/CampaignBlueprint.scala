@@ -412,7 +412,7 @@ object CampaignBlueprint:
     val profile = if provision.fapi2 then "fapi2" else "standard"
 
     val challengeSettings = ChallengeSettingsSpec(
-      allowedPrefixes = Nil,
+      phoneRegions = Nil,
       otpLength = 6,
       otpResendAfterSeconds = 60,
       passkeyRpId = provision.passkey.rpId,

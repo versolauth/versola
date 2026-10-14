@@ -19,6 +19,7 @@ import versola.oauth.client.model.{
   PassedAuthFactor,
   PasskeySettings,
   PasswordHistorySettings,
+  PhoneRegion,
   ResourceId,
   ResourceRecord,
   ResourceUri,
@@ -75,7 +76,7 @@ trait OAuthConfigurationService:
 
   def getLocales: UIO[Locales]
 
-  def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]]
+  def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]]
 
   def getPasswordRegex: UIO[String]
 
@@ -426,13 +427,13 @@ object OAuthConfigurationService:
           .orElseFail(RuntimeException("Password template has no localizations"))
       yield OtpTemplate(body)
 
-    override def getAllowedPhonePrefixes(id: ClientId): UIO[List[String]] =
+    override def getPhoneRegions(id: ClientId): UIO[List[PhoneRegion]] =
       find(id).flatMap:
         case None => ZIO.succeed(Nil)
         case Some(client) =>
           challengeSettingsCache.get.map(
             _.find(_.tenantId == client.tenantId)
-              .fold(Nil)(_.allowedPrefixes),
+              .fold(Nil)(_.phoneRegions),
           )
 
     override def getPasswordRegex: UIO[String] =

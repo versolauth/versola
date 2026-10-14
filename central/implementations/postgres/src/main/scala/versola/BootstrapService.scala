@@ -740,7 +740,7 @@ object BootstrapService:
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      allowedPrefixes = List.empty,
+      phoneRegions = List.empty,
       submissionLimits = SubmissionLimits.recommended,
       otpLength = 6,
       otpResendAfter = 60,

@@ -104,7 +104,7 @@ object TenantService:
     ): ChallengeSettingsRecord =
       ChallengeSettingsRecord(
         tenantId = tenantId,
-        allowedPrefixes = List.empty,
+        phoneRegions = List.empty,
         submissionLimits = submissionLimits,
         otpLength = 6,
         otpResendAfter = 60,

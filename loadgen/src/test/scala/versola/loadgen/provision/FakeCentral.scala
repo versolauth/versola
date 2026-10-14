@@ -559,7 +559,7 @@ object FakeCentral:
     (Method.POST, "/configuration/auth-request-presets") -> Set("clientId", "presets"),
     (Method.PUT, "/configuration/challenges/challenge-settings") -> Set(
       "tenantId",
-      "allowedPrefixes",
+      "phoneRegions",
       "submissionLimits",
       "submissionLimits.otpRequest",
       "submissionLimits.otpSubmit",

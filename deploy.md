@@ -558,6 +558,26 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
+#### Breaking change: a tenant's phone sign-in lists countries, not prefixes
+
+`allowedPrefixes` (a list of dial-code prefixes) is gone from `GET` and `PUT
+/configuration/challenges/challenge-settings`, from the sync feed to `auth` and from the
+`challenge_settings` table. It is replaced by `phoneRegions`: an ordered list of
+`{region, dialCode, length, regex}` (`region` is an ISO 3166-1 alpha-2 code, `length` the digits after
+the dial code, `regex` a Java regular expression those digits must match in full). Regions may share a
+`dialCode`; a number is accepted when it fits the length and regex of any one of them. See
+`central/open-api/central.yaml`.
+
+Migration `V1021` drops the `allowed_prefixes` column and adds `phone_regions`; **stored prefixes are
+not converted**, because a prefix names neither a length nor a pattern. A tenant that had prefixes
+starts with no regions, which accepts any E.164 number and shows the login form's plain phone field
+-- that is the old behaviour of an empty list, so a tenant with no prefixes changes nothing.
+
+What to do: before upgrading, note each tenant's `allowedPrefixes`; after `migrate`, set `phoneRegions`
+for those tenants in the admin console (Challenge settings) or through the API. Until then the tenant
+accepts numbers from every country. A `PUT` that still sends `allowedPrefixes` and no `phoneRegions` is
+a `400`. Rolling back to the previous version needs the column back: restore the pre-`migrate` dump.
+
 #### Breaking change: clients are registered and updated per kind
 
 `POST` and `PUT /configuration/clients` are removed. A client is registered at

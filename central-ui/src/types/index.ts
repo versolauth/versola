@@ -199,11 +199,23 @@ export interface PasskeySettings {
 // headers again), so `auth` has to be told which shape to expect.
 export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
+export interface PhoneRegion {
+  /** ISO 3166-1 alpha-2, unique within the list. */
+  region: string;
+  /** '+' and 1-4 digits; several regions may share one. */
+  dialCode: string;
+  /** Digits after the dial code, 4..14; dial code digits + length <= 15. */
+  length: number;
+  /** Java regex matched in full against those digits. */
+  regex: string;
+}
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   /** The profile the tenant's clients are held to; fixed when the tenant is created. */
   securityProfile?: SecurityProfile;
-  allowedPrefixes: string[];
+  /** Order is the order the login form lists the codes; empty accepts any E.164 number. */
+  phoneRegions: PhoneRegion[];
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;

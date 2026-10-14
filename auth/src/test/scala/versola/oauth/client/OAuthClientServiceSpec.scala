@@ -432,7 +432,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val limits = SubmissionLimits(otpRequest = List(RateLimit(5, 60)))
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
         submissionLimits = limits,
         otpLength = 6,
         otpResendAfter = 60,
@@ -459,7 +459,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     test("getIpHeader returns header from challenge settings") {
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -487,7 +487,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val passkey = PasskeySettings("rp.com", "RP", List("https://rp.com"), "preferred")
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,
@@ -584,7 +584,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
       val vocabulary = Map("factor1" -> List(PassedAuthFactor.password))
       val settings = ChallengeSettingsRecord(
         tenantId = TenantId("default"),
-        allowedPrefixes = Nil,
+        phoneRegions = Nil,
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 60,

@@ -338,7 +338,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     * 8705 §6.5 makes a precondition of registering `mtlsAuth` at all. */
   private val mtlsTerminatingSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List.empty,
+    phoneRegions = List.empty,
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,

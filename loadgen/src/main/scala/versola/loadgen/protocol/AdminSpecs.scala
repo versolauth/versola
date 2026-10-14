@@ -135,8 +135,13 @@ case class AuthRequestPresetsSpec(
   *                        with `client_secret` (see [[ClientSpec]]), which `fapi2` refuses, so
   *                        this must stay `standard` unless the client shapes above change too.
   */
+/** One entry of the tenant's `phoneRegions` (ISO alpha-2 region, dial code, digit count after the dial
+  * code, full-match regex over those digits). An empty list means any E.164 number.
+  */
+case class PhoneRegionSpec(region: String, dialCode: String, length: Int, regex: String)
+
 case class ChallengeSettingsSpec(
-    allowedPrefixes: List[String],
+    phoneRegions: List[PhoneRegionSpec],
     otpLength: Int,
     otpResendAfterSeconds: Int,
     passkeyRpId: String,

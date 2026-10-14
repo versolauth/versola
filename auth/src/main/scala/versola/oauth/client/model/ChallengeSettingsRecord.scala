@@ -26,9 +26,37 @@ enum SecurityProfile derives JsonCodec:
   case standard
   case fapi2
 
+/** Mirrors central's `PhoneRegion` -- see there for what the fields mean. */
+case class PhoneRegion(
+    region: String,
+    dialCode: String,
+    length: Int,
+    regex: String,
+) derives JsonCodec:
+  private lazy val pattern = java.util.regex.Pattern.compile(regex)
+
+  /** Whether `national` -- the digits after this region's dial code -- is a number of this region. */
+  def accepts(national: String): Boolean =
+    national.length == length && national.forall(_.isDigit) && pattern.matcher(national).matches()
+
+object PhoneRegion:
+  /** The region an E.164 number belongs to. Several regions can share a dial code, and one dial
+    * code can start another (`+1` and `+1242`), so the longest dial code that fits wins and
+    * regions that share one are tried in the order the tenant listed them.
+    */
+  def resolve(regions: List[PhoneRegion], e164: String): Option[PhoneRegion] =
+    regions
+      .filter(region => e164.startsWith(region.dialCode))
+      .sortBy(region => -region.dialCode.length)
+      .find(region => region.accepts(e164.drop(region.dialCode.length)))
+
+  /** An empty list restricts nothing: the tenant has not chosen the countries it takes. */
+  def allows(regions: List[PhoneRegion], e164: String): Boolean =
+    regions.isEmpty || resolve(regions, e164).isDefined
+
 case class ChallengeSettingsRecord(
     tenantId: TenantId,
-    allowedPrefixes: List[String],
+    phoneRegions: List[PhoneRegion],
     submissionLimits: SubmissionLimits,
     otpLength: Int,
     otpResendAfter: Int,

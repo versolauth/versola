@@ -16,6 +16,7 @@ import type {
   MutualTlsAuth,
   SystemSettingsRecord,
   PasskeySettings,
+  PhoneRegion,
   SubmissionLimits,
   InjectRule,
   OAuthClaim,
@@ -1554,7 +1555,7 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
 
 export async function upsertChallengeSettings(
   tenantId: string,
-  allowedPrefixes: string[],
+  phoneRegions: PhoneRegion[],
   submissionLimits: SubmissionLimits,
   otpLength: number,
   otpResendAfter: number,
@@ -1576,7 +1577,7 @@ export async function upsertChallengeSettings(
     method: 'PUT',
     body: {
       tenantId,
-      allowedPrefixes,
+      phoneRegions,
       submissionLimits,
       otpLength,
       otpResendAfter,

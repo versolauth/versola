@@ -5,7 +5,7 @@ import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{ClientId, FormRecord, PhoneRegion, PrimaryCredential, ScopeToken}
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
@@ -70,7 +70,7 @@ object ConversationRenderService:
         primaryCredentials: List[PrimaryCredential],
         inlinePassword: Boolean,
         passkey: Boolean,
-        allowedPhonePrefixes: Option[List[String]],
+        phoneRegions: Option[List[PhoneRegion]],
         passwordRegex: Option[String],
         registration: Boolean,
     ) extends StepView
@@ -581,9 +581,9 @@ object ConversationRenderService:
       step match
         case ConversationStep.Credential(primaryCredentials, inlinePassword, passkey, registration, _, _, _) =>
           for
-            allowedPhonePrefixes <-
+            phoneRegions <-
               if primaryCredentials.contains(PrimaryCredential.phone) then
-                configuration.getAllowedPhonePrefixes(clientId).map(Some(_))
+                configuration.getPhoneRegions(clientId).map(Some(_))
               else
                 ZIO.none
             passwordRegex <-
@@ -593,7 +593,7 @@ object ConversationRenderService:
             primaryCredentials,
             inlinePassword,
             passkey,
-            allowedPhonePrefixes,
+            phoneRegions,
             passwordRegex,
             registration,
           )

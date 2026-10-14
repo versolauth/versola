@@ -1401,6 +1401,8 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The JWKS key this tenant's tokens are signed with. `None` clears the selection,
         * which puts the tenant back on auth's own configured private key. */
       signingKeyId: Option[String] = None,
+      /** The tenant's accepted phone regions as a JSON array; `[]` accepts any E.164 number. */
+      phoneRegions: String = "[]",
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1411,7 +1413,7 @@ final class OAuthClient(client: Client, config: E2EConfig):
     val bodyStr =
       s"""{
          |  "tenantId": "$tenantId",
-         |  "allowedPrefixes": [],
+         |  "phoneRegions": $phoneRegions,
          |  "submissionLimits": {"otpRequest":[],"otpSubmit":[],"passwordSubmit":[],"passkeyAssertion":[],"banDurationSeconds":0},
          |  "otpLength": 6,
          |  "otpResendAfter": 60,

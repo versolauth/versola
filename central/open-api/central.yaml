@@ -4215,6 +4215,36 @@ components:
         - passwordSubmit
         - passkeyAssertion
         - banDurationSeconds
+    PhoneRegion:
+      type: object
+      description: |
+        One country a tenant's phone sign-in accepts. Several regions may share a `dialCode` (`KZ` and `RU`
+        both use `+7`); a number is accepted when it fits the `length` and `regex` of at least one of them.
+      properties:
+        region:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: ISO 3166-1 alpha-2 code. Unique within the list.
+        dialCode:
+          type: string
+          pattern: '^\+[1-9][0-9]{0,3}$'
+        length:
+          type: integer
+          minimum: 4
+          maximum: 14
+          description: Number of digits after the dial code. `dialCode` plus `length` digits is at most 15 (E.164).
+        regex:
+          type: string
+          description: Java regular expression the digits after the dial code must match in full.
+      required: [region, dialCode, length, regex]
+    PhoneRegions:
+      type: array
+      description: |
+        Phone regions the login form offers, in the order the form lists them. Empty means any number in
+        E.164 is accepted and the form shows a single free-form field. When every region shares one
+        `dialCode` the form locks it; otherwise it offers a selector of the distinct dial codes.
+      items:
+        $ref: '#/components/schemas/PhoneRegion'
     PasskeySettings:
       type: object
       properties:
@@ -4236,11 +4266,8 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
-          type: array
-          description: Phone country prefixes accepted on the login form, matched against the number in canonical E.164.
-          items:
-            type: string
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -4304,7 +4331,7 @@ components:
           $ref: '#/components/schemas/SecurityProfile'
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
         - submissionLimits
         - otpLength
         - otpResendAfter
@@ -4332,10 +4359,8 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
-          type: array
-          items:
-            type: string
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -4402,7 +4427,7 @@ components:
             the assertion carrying it.
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
         - submissionLimits
         - otpLength
         - otpResendAfter

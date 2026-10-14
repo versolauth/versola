@@ -35,7 +35,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def settingsOf(profile: SecurityProfile) = ChallengeSettingsRecord(
     tenantId = tenant1,
-    allowedPrefixes = Nil,
+    phoneRegions = Nil,
     submissionLimits = SubmissionLimits.recommended,
     otpLength = 6,
     otpResendAfter = 60,
@@ -85,7 +85,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         env.challengeSettingsService.upsertSettings.calls ==
           List(ChallengeSettingsRecord(
             tenantId = tenant1,
-            allowedPrefixes = Nil,
+            phoneRegions = Nil,
             submissionLimits = SubmissionLimits.recommended,
             otpLength = 6,
             otpResendAfter = 60,

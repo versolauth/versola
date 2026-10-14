@@ -105,7 +105,7 @@ object AuthorizationPresetServiceSpec extends ZIOSpecDefault, ZIOStubs:
 
   private val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = Nil,
+    phoneRegions = Nil,
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,

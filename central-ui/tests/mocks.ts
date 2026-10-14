@@ -202,7 +202,7 @@ type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<stri
 type ChallengeSettingsDto = {
   tenantId: string;
   securityProfile?: SecurityProfileDto;
-  allowedPrefixes: string[];
+  phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string }>;
   passwordRegex?: string | null;
   submissionLimits: SubmissionLimitsDto;
   otpLength: number;
@@ -231,7 +231,7 @@ const emptySubmissionLimits = (): SubmissionLimitsDto => ({
 
 const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   tenantId,
-  allowedPrefixes: [],
+  phoneRegions: [],
   passwordRegex: null,
   submissionLimits: emptySubmissionLimits(),
   otpLength: 6,
@@ -1343,7 +1343,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         state.challengeSettings[payload.tenantId] = {
           tenantId: payload.tenantId,
           securityProfile: profileOf(state, payload.tenantId),
-          allowedPrefixes: [...payload.allowedPrefixes],
+          phoneRegions: payload.phoneRegions.map(r => ({ ...r })),
           passwordRegex: payload.passwordRegex ?? null,
           submissionLimits: payload.submissionLimits,
           otpLength: payload.otpLength,

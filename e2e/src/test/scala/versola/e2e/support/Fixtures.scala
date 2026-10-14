@@ -619,7 +619,7 @@ object Fixtures:
 
   def challengeSettings(
       tenantId: String,
-      allowedPrefixes: Set[String] = Set.empty,
+      phoneRegions: List[Json] = Nil,
       submissionLimits: Json = submissionLimits(),
       otpLength: Int = 6,
       otpResendAfter: Int = 60,
@@ -630,7 +630,7 @@ object Fixtures:
     Json.Obj(
       Chunk[(String, Json)](
         "tenantId" -> Json.Str(tenantId),
-        "allowedPrefixes" -> strings(allowedPrefixes),
+        "phoneRegions" -> Json.Arr(Chunk.fromIterable(phoneRegions)),
         "submissionLimits" -> submissionLimits,
         "otpLength" -> Json.Num(otpLength),
         "otpResendAfter" -> Json.Num(otpResendAfter),

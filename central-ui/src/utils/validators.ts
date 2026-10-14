@@ -490,3 +490,24 @@ export function getValidationError(type: string): string {
   return errors[type] || 'Invalid format';
 }
 
+
+/**
+ * Mirrors PhoneRegion.validate in central. The regex is only checked for being non-empty: it is a
+ * Java regex, which JavaScript cannot compile faithfully, so central has the final say.
+ * Returns one error per row index (undefined when the row is fine).
+ */
+export function validatePhoneRegions(
+  regions: Array<{ region: string; dialCode: string; length: number; regex: string }>,
+): Array<string | undefined> {
+  const seen = new Map<string, number>();
+  return regions.map(r => {
+    if (!/^[A-Z]{2}$/.test(r.region)) return 'Region must be an ISO 3166-1 alpha-2 code (two capital letters, e.g. KZ).';
+    if (seen.has(r.region)) return `Region ${r.region} is listed more than once.`;
+    seen.set(r.region, 1);
+    if (!/^\+[1-9][0-9]{0,3}$/.test(r.dialCode)) return 'Dial code must be + followed by 1-4 digits (e.g. +7).';
+    if (!Number.isInteger(r.length) || r.length < 4 || r.length > 14) return 'Length must be a whole number between 4 and 14.';
+    if (r.dialCode.length - 1 + r.length > 15) return 'Dial code and length together must be at most 15 digits.';
+    if (r.regex.length === 0) return 'Regex is required.';
+    return undefined;
+  });
+}

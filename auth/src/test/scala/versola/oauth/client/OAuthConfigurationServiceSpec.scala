@@ -87,7 +87,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
   val testLocales = Locales(Vector(LocaleRecord("en", "English")), "en")
   val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List("+1"),
+    phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}")),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -258,16 +258,16 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getClientTemplate(clientId1, OtpType.sms, None)
       yield assertTrue(result == OtpTemplate("Default {{code}}"))
     },
-    test("getAllowedPhonePrefixes returns prefixes for known client") {
+    test("getPhoneRegions returns regions for known client") {
       for
         env <- makeEnv()
-        result <- env.getAllowedPhonePrefixes(clientId1)
-      yield assertTrue(result == List("+1"))
+        result <- env.getPhoneRegions(clientId1)
+      yield assertTrue(result == List(PhoneRegion("US", "+1", 10, "\\d{10}")))
     },
-    test("getAllowedPhonePrefixes returns Nil for unknown client") {
+    test("getPhoneRegions returns Nil for unknown client") {
       for
         env <- makeEnv()
-        result <- env.getAllowedPhonePrefixes(ClientId("missing"))
+        result <- env.getPhoneRegions(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
     test("getPasswordRegex returns from system settings") {

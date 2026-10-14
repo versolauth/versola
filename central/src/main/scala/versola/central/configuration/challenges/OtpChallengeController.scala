@@ -117,10 +117,11 @@ object OtpChallengeController extends Controller:
           clientAssertionMaxLifetimeSeconds < ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds ||
             clientAssertionMaxLifetimeSeconds > ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds,
         )
+        _ <- ZIO.fail(BadRequest(PhoneRegion.validate(body.phoneRegions).get)).when(PhoneRegion.validate(body.phoneRegions).isDefined)
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
-            body.allowedPrefixes,
+            body.phoneRegions,
             body.submissionLimits,
             body.otpLength,
             body.otpResendAfter,

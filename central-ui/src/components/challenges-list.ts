@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, MtlsCertificateEncoding, JwksKeySummary } from '../types';
+import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, PhoneRegion, MtlsCertificateEncoding, JwksKeySummary } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -13,7 +13,7 @@ import {
   fetchJwksKeys,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { validateRedirectUri } from '../utils/validators';
+import { validateRedirectUri, validatePhoneRegions } from '../utils/validators';
 import './content-header';
 import './code-editor';
 import './authorization-detail-types-list';
@@ -56,10 +56,11 @@ export class VersolaChallengesList extends LitElement {
   @state() private saving = false;
   @state() private editError = '';
 
-  @state() private phonePrefixes: string[] = [];
+  @state() private phoneRegions: PhoneRegion[] = [];
   @state() private hasChallengeSettings = false;
   @state() private editingSettings = false;
-  @state() private editPrefixes: Array<{ value: string }> = [];
+  @state() private editRegions: PhoneRegion[] = [];
+  @state() private regionErrors: Array<string | undefined> = [];
   @state() private isSavingSettings = false;
   @state() private settingsError = '';
 
@@ -398,6 +399,22 @@ export class VersolaChallengesList extends LitElement {
         min-width: 0;
         overflow-wrap: anywhere;
       }
+      .region-editor { display: flex; flex-direction: column; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
+      .region-row {
+        display: grid;
+        grid-template-columns: 5rem 6rem 5rem minmax(8rem, 1fr) auto;
+        gap: var(--spacing-sm);
+        align-items: center;
+      }
+      .region-head { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; }
+      .region-row .compact-input { width: 100%; min-width: 0; }
+      .region-actions { display: flex; gap: var(--spacing-xs); }
+      .region-error { grid-column: 1 / -1; margin-top: 0; }
+      .region-chip { white-space: normal; }
+      @media (max-width: 720px) {
+        .region-row { grid-template-columns: 1fr 1fr; }
+        .region-head { display: none; }
+      }
       .limit-row {
         display: flex;
         gap: var(--spacing-md);
@@ -562,7 +579,7 @@ export class VersolaChallengesList extends LitElement {
       this.signingKeysIncludeRs256 = allowsRs256;
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
-        this.phonePrefixes = challengeSettings.allowedPrefixes;
+        this.phoneRegions = challengeSettings.phoneRegions ?? [];
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
@@ -580,7 +597,7 @@ export class VersolaChallengesList extends LitElement {
         this.signingKeyId = challengeSettings.signingKeyId ?? null;
         this.clientAssertionMaxLifetimeSeconds = challengeSettings.clientAssertionMaxLifetimeSeconds ?? 300;
       } else {
-        this.phonePrefixes = [];
+        this.phoneRegions = [];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
@@ -988,7 +1005,8 @@ export class VersolaChallengesList extends LitElement {
 
   private startEditSettings() {
     this.editingSettings = true;
-    this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
+    this.editRegions = this.phoneRegions.map(r => ({ ...r }));
+    this.regionErrors = [];
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
@@ -1018,12 +1036,27 @@ export class VersolaChallengesList extends LitElement {
     this.settingsError = '';
   }
 
-  private addPrefix() {
-    this.editPrefixes = [...this.editPrefixes, { value: '' }];
+  private addRegion() {
+    this.editRegions = [...this.editRegions, { region: '', dialCode: '', length: 10, regex: '' }];
+    this.regionErrors = [];
   }
 
-  private removePrefix(index: number) {
-    this.editPrefixes = this.editPrefixes.filter((_, i) => i !== index);
+  private removeRegion(index: number) {
+    this.editRegions = this.editRegions.filter((_, i) => i !== index);
+    this.regionErrors = [];
+  }
+
+  private moveRegion(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= this.editRegions.length) return;
+    const next = [...this.editRegions];
+    [next[index], next[target]] = [next[target], next[index]];
+    this.editRegions = next;
+    this.regionErrors = [];
+  }
+
+  private updateRegion(index: number, patch: Partial<PhoneRegion>) {
+    this.editRegions = this.editRegions.map((r, i) => (i === index ? { ...r, ...patch } : r));
   }
 
   private addPasskeyOrigin() {
@@ -1062,9 +1095,16 @@ export class VersolaChallengesList extends LitElement {
 
   private async saveSettings() {
     if (!this.tenantId) return;
-    const prefixes = this.editPrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
-    if (prefixes.some(p => !/^\+\d+$/.test(p))) {
-      this.settingsError = 'Each prefix must start with + followed by digits (e.g. +77).';
+    const regions = this.editRegions.map(r => ({
+      region: r.region.trim().toUpperCase(),
+      dialCode: r.dialCode.trim(),
+      length: Number(r.length),
+      regex: r.regex.trim(),
+    }));
+    const regionErrors = validatePhoneRegions(regions);
+    this.regionErrors = regionErrors;
+    if (regionErrors.some(e => e !== undefined)) {
+      this.settingsError = 'Fix the highlighted phone regions.';
       return;
     }
     const rpId = this.editPasskeyRpId.trim();
@@ -1122,7 +1162,7 @@ export class VersolaChallengesList extends LitElement {
     try {
       await upsertChallengeSettings(
         this.tenantId,
-        prefixes,
+        regions,
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
@@ -1140,7 +1180,7 @@ export class VersolaChallengesList extends LitElement {
         this.editSigningKeyId,
         clientAssertionMaxLifetimeSeconds,
       );
-      this.phonePrefixes = prefixes;
+      this.phoneRegions = regions;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
@@ -1440,11 +1480,11 @@ export class VersolaChallengesList extends LitElement {
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>Allowed Phones</label>
-          ${this.phonePrefixes.length === 0
-            ? html`<div class="hint">No prefixes configured. Any phone number is accepted.</div>`
+          ${this.phoneRegions.length === 0
+            ? html`<div class="hint">No regions configured. Any E.164 phone number is accepted.</div>`
             : html`
               <div class="prefix-tags">
-                ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
+                ${this.phoneRegions.map(r => html`<span class="prefix-tag region-chip">${r.region} ${r.dialCode} · ${r.length} digits · ${r.regex}</span>`)}
               </div>
             `}
         </div>
@@ -1635,20 +1675,40 @@ export class VersolaChallengesList extends LitElement {
         </div>
 
         <label style="margin-top: var(--spacing-lg);">Allowed Phones</label>
-        <div class="hint">Each prefix must start with + followed by digits (e.g. +77). Leave empty to accept any phone number.</div>
+        <div class="hint">
+          Regions in the order the login form lists them. Region is an ISO 3166-1 alpha-2 code; length is the digits after the dial code;
+          the regex is matched in full against those digits. Several regions may share a dial code. Leave empty to accept any E.164 number.
+        </div>
 
-        ${this.editPrefixes.length === 0
-          ? html`<div class="hint">No prefixes configured.</div>`
-          : this.editPrefixes.map((entry, i) => html`
-            <div class="locale-bar settings-input-row">
-              <input type="text" class="form-control settings-list-input settings-prefix-input" .value=${entry.value}
-                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
-                placeholder="+77" />
-              <button class="icon-action danger" @click=${() => this.removePrefix(i)} title="Remove">✕</button>
+        ${this.editRegions.length === 0
+          ? html`<div class="hint">No regions configured.</div>`
+          : html`
+            <div class="region-editor">
+              <div class="region-row region-head">
+                <span>Region</span><span>Dial code</span><span>Length</span><span>Regex</span><span></span>
+              </div>
+              ${this.editRegions.map((r, i) => html`
+                <div class="region-row" data-testid="region-row">
+                  <input type="text" class="form-control compact-input" aria-label="Region" .value=${r.region} placeholder="KZ" maxlength="2"
+                    @input=${(e: Event) => this.updateRegion(i, { region: (e.target as HTMLInputElement).value })} />
+                  <input type="text" class="form-control compact-input" aria-label="Dial code" .value=${r.dialCode} placeholder="+7"
+                    @input=${(e: Event) => this.updateRegion(i, { dialCode: (e.target as HTMLInputElement).value })} />
+                  <input type="number" class="form-control compact-input" aria-label="Length" .value=${String(r.length)} min="4" max="14"
+                    @input=${(e: Event) => this.updateRegion(i, { length: parseInt((e.target as HTMLInputElement).value) })} />
+                  <input type="text" class="form-control compact-input" aria-label="Regex" .value=${r.regex} placeholder="7\\d{9}"
+                    @input=${(e: Event) => this.updateRegion(i, { regex: (e.target as HTMLInputElement).value })} />
+                  <span class="region-actions">
+                    <button class="icon-action" ?disabled=${i === 0} @click=${() => this.moveRegion(i, -1)} title="Move up" aria-label="Move up">↑</button>
+                    <button class="icon-action" ?disabled=${i === this.editRegions.length - 1} @click=${() => this.moveRegion(i, 1)} title="Move down" aria-label="Move down">↓</button>
+                    <button class="icon-action danger" @click=${() => this.removeRegion(i)} title="Remove" aria-label="Remove row">✕</button>
+                  </span>
+                  ${this.regionErrors[i] ? html`<div class="error-msg region-error">${this.regionErrors[i]}</div>` : nothing}
+                </div>
+              `)}
             </div>
-          `)}
+          `}
 
-        <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
+        <button class="btn btn-secondary" @click=${() => this.addRegion()}>+ Add Region</button>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 

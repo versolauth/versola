@@ -434,7 +434,7 @@ final class HttpAdminClient(
   override def upsertChallengeSettings(spec: ChallengeSettingsSpec): Task[Unit] =
     val body = UpsertChallengeSettingsBody(
       tenantId = tenantId,
-      allowedPrefixes = spec.allowedPrefixes,
+      phoneRegions = spec.phoneRegions.map(r => PhoneRegionBody(r.region, r.dialCode, r.length, r.regex)),
       submissionLimits = SubmissionLimitsBody(
         otpRequest = Nil,
         otpSubmit = Nil,
@@ -987,9 +987,12 @@ object HttpAdminClient:
       userVerification: String,
   ) derives JsonEncoder
 
+  private case class PhoneRegionBody(region: String, dialCode: String, length: Int, regex: String)
+    derives JsonEncoder
+
   private case class UpsertChallengeSettingsBody(
       tenantId: String,
-      allowedPrefixes: List[String],
+      phoneRegions: List[PhoneRegionBody],
       submissionLimits: SubmissionLimitsBody,
       otpLength: Int,
       otpResendAfter: Int,
