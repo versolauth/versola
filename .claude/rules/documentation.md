@@ -12,8 +12,13 @@ that contains the change goes out. Read `.claude/docs-style-guide.md` in that re
 write a page.
 
 A change is not done until its docs impact is handled or explicitly ruled out. The PR description
-carries a **Docs** line with one of: a link to the `versola-website` PR, `none: <reason>` (for example
-"internal refactor, no behaviour change"), or `follow-up: <issue link>`. A bare "none" is not accepted.
+carries a **Docs** line with one of: a link to the `versola-website` PR, or `none: <reason>` (for
+example "internal refactor, no behaviour change"). A bare "none" is not accepted.
+
+Do not open a follow-up issue for documentation, and do not leave the docs for later: the docs PR is
+opened in the same session as the code PR, as a draft if it has to wait for the release, and its link
+is the Docs line. If the website repository cannot be reached, say so and stop; an issue is not a
+substitute for the PR.
 
 ## What triggers a docs change
 
