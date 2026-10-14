@@ -660,9 +660,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     Client.batched(req).provide(ZLayer.succeed(client))
 
   /** GET /challenge — fetches the current challenge form HTML and parses the step meta tag. */
-  def getChallenge(cookie: String): Task[ChallengeResult] =
+  /** GET /challenge. `uiLocale` is the `ui_locale` the redirect from the previous submit carried. */
+  def getChallenge(cookie: String, uiLocale: Option[String] = None): Task[ChallengeResult] =
     Client.batched(
-      Request.get(s"${config.authUrl}/challenge")
+      Request.get(s"${config.authUrl}/challenge${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}")
         .addHeader(Header.Cookie(NonEmptyChunk(Cookie.Request("SSO_CONVERSATION", cookie)))),
     ).provide(ZLayer.succeed(client))
       .flatMap(resp => resp.body.asString.map(ChallengeResult(resp, _)))
@@ -717,9 +718,11 @@ final class OAuthClient(client: Client, config: E2EConfig):
       cookie,
     ).map(SubmitResult(_))
 
-  /** POST /challenge/consent/deny — refuses the grant. */
-  def denyConsent(cookie: String, csrf: String): Task[SubmitResult] =
-    formPost(s"${config.authUrl}/challenge/consent/deny", Map("csrf" -> csrf), cookie)
+  /** POST /challenge/consent/deny — refuses the grant. `uiLocale` is the language the user
+    * switched the form to, which the form sends as the `ui_locale` query parameter.
+    */
+  def denyConsent(cookie: String, csrf: String, uiLocale: Option[String] = None): Task[SubmitResult] =
+    formPost(s"${config.authUrl}/challenge/consent/deny${uiLocale.fold("")(l => s"?ui_locale=${encode(l)}")}", Map("csrf" -> csrf), cookie)
       .map(SubmitResult(_))
 
   /** POST /token — exchanges authorization code for tokens.

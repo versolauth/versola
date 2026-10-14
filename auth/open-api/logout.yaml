@@ -47,6 +47,7 @@ paths:
         - $ref: '#/components/parameters/State'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/SessionCookie'
+        - $ref: '#/components/parameters/UiLocales'
       responses:
         '200':
           $ref: '#/components/responses/LogoutPage'
@@ -58,7 +59,8 @@ paths:
         Submission target of the confirmation page. When the session comes from the cookie
         alone, the logout parameters are read from the signed form body and the query string
         is ignored; `id_token_hint` is still read from the query string for clients that POST
-        their logout request directly.
+        their logout request directly, and `ui_locale` carries the language the user picked on
+        the confirmation page.
       tags: [Logout]
       security: []
       parameters:
@@ -66,6 +68,7 @@ paths:
         - $ref: '#/components/parameters/State'
         - $ref: '#/components/parameters/IdTokenHint'
         - $ref: '#/components/parameters/SessionCookie'
+        - $ref: '#/components/parameters/UiLocale'
       requestBody:
         required: false
         description: Sent by the confirmation page. Not used when `id_token_hint` is supplied.
@@ -112,6 +115,29 @@ components:
         audience. Supplying it skips the confirmation page.
       schema:
         type: string
+
+    UiLocales:
+      name: ui_locales
+      in: query
+      required: false
+      description: |
+        Space-delimited BCP 47 language tags, in order of preference, for the page that is
+        rendered. They take precedence over `Accept-Language`; when none of them is a configured
+        locale the default locale applies.
+      schema:
+        type: string
+      example: ru en
+
+    UiLocale:
+      name: ui_locale
+      in: query
+      required: false
+      description: |
+        The language the user picked on the confirmation page. The signed-out page is rendered
+        in it. A value that is not a language tag is ignored.
+      schema:
+        type: string
+      example: ru
 
     SessionCookie:
       name: SSO_SESSION

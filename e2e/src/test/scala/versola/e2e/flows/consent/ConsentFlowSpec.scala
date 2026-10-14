@@ -2,6 +2,7 @@ package versola.e2e.flows.consent
 
 import versola.e2e.support.{*, given}
 import zio.*
+import zio.http.Header
 import zio.test.*
 
 /** Consent gate between a satisfied authentication and the authorization code. */
@@ -10,10 +11,16 @@ object ConsentFlowSpec extends E2ESpec:
   /** Consent tests mutate a persisted grant, so each test needs an isolated client and user. */
   private def freshConsentSetup(
       partial: Boolean = false,
+      requiredScope: Boolean = false,
+      optionalOffline: Boolean = false,
   ): ZIO[Flows.Setups, Throwable, (Flows.Setup, OAuthClient)] =
     ZIO.serviceWithZIO[Flows.Setups] { s =>
-      val consentFlow = if partial then Flows.partialConsentFlow else Flows.rememberedConsentFlow
-      Flows.setupConsent(consentFlow = consentFlow)
+      val consentFlow =
+        if requiredScope then Flows.requiredScopeConsentFlow
+        else if optionalOffline then Flows.optionalOfflineAccessConsentFlow
+        else if partial then Flows.partialConsentFlow
+        else Flows.rememberedConsentFlow
+      Flows.setupConsent(consentFlow = consentFlow, allowedScopes = Set("openid", "email", "phone", "offline_access"))
         .provideEnvironment(ZEnvironment(s.client))
         .tap(_ => s.client.syncConfiguration())
         .map(_ -> s.client)
@@ -175,6 +182,20 @@ object ConsentFlowSpec extends E2ESpec:
       yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
         .label("a denied grant must not issue an authorization code")
     },
+    test("the access-denied screen is rendered in the language the user switched the consent screen to") {
+      for
+        (s, auth) <- setup(Flows.Id.Consent)
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s)
+        denied <- auth.denyConsent(cookie, consent.csrf, uiLocale = Some("ru"))
+        next = denied.response.header(Header.Location).map(_.url.queryParams.getAll("ui_locale")).getOrElse(Nil)
+        step <- auth.getChallenge(cookie, uiLocale = next.headOption)
+      yield assertTrue(step.step.contains(ConversationStep.AccessDenied))
+        .label("a denied grant must still render access-denied") &&
+        assertTrue(step.html.contains("\"locale\":\"ru\""))
+          .label("access-denied must render in the language chosen on the consent screen") &&
+        assertTrue(next == List("ru"))
+          .label("the redirect after the submit must carry the chosen language to the next page")
+    },
     test("a partial grant narrows the scope carried by the issued token") {
       for
         (s, auth) <- freshConsentSetup(partial = true)
@@ -208,6 +229,62 @@ object ConsentFlowSpec extends E2ESpec:
         step <- auth.getChallenge(cookie)
       yield assertTrue(step.step.contains(ConversationStep.Consent))
         .label("openid is mandatory and cannot be deselected")
+    },
+    test("the consent screen locks a scope the client marked required") {
+      for
+        (s, auth) <- freshConsentSetup(requiredScope = true)
+        (_, _, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email phone"))
+        deselectable = (scope: String) =>
+          s""""scope":"$scope".*?"deselectable":(true|false)""".r.findFirstMatchIn(consent.html).map(_.group(1).toBoolean)
+      yield assertTrue(deselectable("email").contains(false))
+        .label("a required scope must be rendered as not deselectable") &&
+        assertTrue(deselectable("phone").contains(true))
+          .label("an optional scope must stay deselectable")
+    },
+    test("dropping a required scope is rejected, dropping an optional one is not") {
+      for
+        (s, auth) <- freshConsentSetup(requiredScope = true)
+        (authorize, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email phone"))
+        _ <- auth.submitConsent(cookie, Set("openid", "phone"), consent.csrf)
+        step <- auth.getChallenge(cookie)
+        code <- auth.submitConsent(cookie, Set("openid", "email"), step.csrf)
+          .assertRedirect(auth, cookie)
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+      yield assertTrue(step.step.contains(ConversationStep.Consent))
+        .label("a submission without the required scope must re-render consent") &&
+        assertTrue(token.scope.exists(_.contains("email")) && !token.scope.exists(_.contains("phone")))
+          .label("the code is issued with the required scope and without the deselected optional one")
+    },
+    test("a client may let the user turn off long-lived access, and then gets no refresh token") {
+      for
+        (s, auth) <- freshConsentSetup(optionalOffline = true)
+        (authorize, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email offline_access"))
+        code <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
+          .assertRedirect(auth, cookie)
+        token <- auth.token(
+          code,
+          authorize.verifier,
+          clientId = Some(s.clientId),
+          clientSecret = Some(s.clientSecret),
+          redirectUri = Some(s.redirectUri),
+        ).success
+      yield assertTrue(token.refreshToken.isEmpty)
+        .label("a user who turned off long-lived access must not be issued a refresh token")
+    },
+    test("dropping offline_access is rejected by default") {
+      for
+        (s, auth) <- freshConsentSetup(partial = true)
+        (_, cookie, _, consent) <- authenticateToConsent(auth, s, scope = Some("openid email offline_access"))
+        _ <- auth.submitConsent(cookie, Set("openid", "email"), consent.csrf)
+        step <- auth.getChallenge(cookie)
+      yield assertTrue(step.step.contains(ConversationStep.Consent))
+        .label("offline_access stays mandatory unless the client opts in")
     },
     test("a consent submission carrying a stale csrf token is rejected") {
       for

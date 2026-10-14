@@ -131,8 +131,9 @@ object CentralConfig:
       authAdditionalUrl: URL,
       /** Base64Url-encoded secret shared with auth's additional listener, used to
         * authenticate the seeded "auth" resource record. Always required — unlike
-        * the central resource secret, this is not auto-generated, since auth also
-        * needs to be configured with the same value out of band.
+        * the central resource secret, this is not auto-generated. Auth is not
+        * configured with it: it receives the value through the configuration sync
+        * from central (`accountResourceSecrets`).
         */
       authResourceSecret: Secret,
       /** Optional confidential client for tooling such as `loadgen provision`, seeded with the

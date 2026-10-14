@@ -23,7 +23,7 @@ accepted/rejected panels, Argon2 admission (queue, permits, wait) in auth, and c
 ## Selectors and percentiles
 
 - **Env** is the namespace; **Tail quantile** is p99, p99.9, p99.99 or p99.999; the database board adds **Service**.
-- A graph that answers "how is latency?" for a whole service, the ingress or the database draws every quantile (p50 to p99.999). A tile, or a graph with a series per endpoint, query, peer or grant, follows Tail quantile. p99.99 needs roughly 10 000 requests in the rate window and p99.999 roughly 100 000, and both are rounded up to the histogram's bucket edge.
+- A graph that answers "how is latency?" for a whole service, the ingress or the database draws p50, p95 and p99, plus the tail quantiles up to the selected one (p99: none extra; p99.99: p99.9 and p99.99). A tile, or a graph with a series per endpoint, query, peer or grant, follows Tail quantile alone. p99.99 needs roughly 10 000 requests in the rate window and p99.999 roughly 100 000, and both are rounded up to the histogram's bucket edge.
 - Host metrics of the database (CPU, disk, replication) are not on these boards; they come from the database platform.
 
 ## Loading it

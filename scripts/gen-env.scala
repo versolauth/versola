@@ -1620,9 +1620,9 @@ def defaultServerMetadata(authUrl: String): String =
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
-       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for auth's 512m
-       |# mem_limit. Raise it only together with the container's memory limit, or logins
-       |# will OOM the pod. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
+       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for the 512m heap
+       |# (-Xmx512m) of the image's JAVA_OPTS; no compose or chart memory limit is derived
+       |# from it here. Raise it only together with the heap, or logins will OOM the JVM. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
        |argon2 {
        |  max-concurrent = 12
        |  max-concurrent = $${?ARGON2_MAX_CONCURRENCY}
@@ -2083,10 +2083,14 @@ def defaultServerMetadata(authUrl: String): String =
     // whether or not secrets are placeholdered: an interactive prod run registers the public half
     // in central.conf as a literal, and nothing else keeps the private half.
     writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-    java.nio.file.Files.setPosixFilePermissions(
-      File(dir, "utils.private-key.jwk").toPath,
-      java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
-    )
+    // Windows has no POSIX file attributes: the call throws there, and the file is left to the
+    // user's profile ACLs.
+    val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
+    if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
+      java.nio.file.Files.setPosixFilePermissions(
+        utilsKeyPath,
+        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+      )
     println(
       "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
     )

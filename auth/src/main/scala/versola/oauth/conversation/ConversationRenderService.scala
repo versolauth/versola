@@ -27,19 +27,36 @@ import java.time.Instant
 trait ConversationRenderService:
   def renderStep(record: ConversationRecord, ifNoneMatch: Option[String], errorKey: Option[String] = None): Task[Response]
 
-  def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
+  def renderExpired(
+      clientId: ClientId,
+      redirectUri: String,
+      state: Option[String],
+      responseMode: ResponseMode,
+      uiLocales: Option[List[String]],
+  ): Task[Response]
 
-  def renderServiceUnavailable(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response]
+  def renderServiceUnavailable(
+      clientId: ClientId,
+      redirectUri: String,
+      state: Option[String],
+      responseMode: ResponseMode,
+      uiLocales: Option[List[String]],
+  ): Task[Response]
 
+  /** `uiLocale` is the language the form was submitted in; the redirect to the next step carries it
+    * so that step renders in it, since nothing but the URL ties the two requests together.
+    */
   def renderSubmit(
       result: ConversationResult.Render,
       record: ConversationRecord,
+      uiLocale: Option[String],
   ): Task[Response]
 
   def renderLogout(
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
+      uiLocales: Option[List[String]],
   ): Task[Response]
 
   def renderLogoutConfirm(
@@ -221,12 +238,19 @@ object ConversationRenderService:
               )
       yield response
 
-    override def renderExpired(clientId: ClientId, redirectUri: String, state: Option[String], responseMode: ResponseMode): Task[Response] =
+    override def renderExpired(
+        clientId: ClientId,
+        redirectUri: String,
+        state: Option[String],
+        responseMode: ResponseMode,
+        uiLocales: Option[List[String]],
+    ): Task[Response] =
       returnUri(clientId, redirectUri, state, "login_required", responseMode).flatMap: uri =>
         renderTerminal(
           clientId,
           "conversation-expired",
           StepView.ConversationExpired(uri),
+          uiLocales,
         )
 
     override def renderServiceUnavailable(
@@ -234,12 +258,14 @@ object ConversationRenderService:
         redirectUri: String,
         state: Option[String],
         responseMode: ResponseMode,
+        uiLocales: Option[List[String]],
     ): Task[Response] =
       returnUri(clientId, redirectUri, state, "temporarily_unavailable", responseMode).flatMap: uri =>
         renderTerminal(
           clientId,
           "service-unavailable",
           StepView.ServiceUnavailable(uri),
+          uiLocales,
         )
 
     /** The link back to the client for an error the user is shown a page about first. It is
@@ -259,7 +285,7 @@ object ConversationRenderService:
           val params = List("error" -> error, "iss" -> config.jwt.issuer) ++ state.map("state" -> _)
           responseService.redirect(clientId, url, responseMode, params).map(uri => Some(uri.encode))
 
-    private def renderTerminal(clientId: ClientId, formId: String, step: StepView): Task[Response] =
+    private def renderTerminal(clientId: ClientId, formId: String, step: StepView, uiLocales: Option[List[String]]): Task[Response] =
       for
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
@@ -271,7 +297,7 @@ object ConversationRenderService:
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
         case Some(form) =>
           val activeCodes = locales.locales.map(_.code).toSet + locales.default
-          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val (chosenLocale, translations) = pickTranslations(form, uiLocales, locales.default, activeCodes)
           val info = FormRenderInfo(
             title = pageTitle(translations),
             style = form.style,
@@ -333,16 +359,18 @@ object ConversationRenderService:
     override def renderSubmit(
         result: ConversationResult.Render,
         record: ConversationRecord,
+        uiLocale: Option[String],
     ): Task[Response] =
+      val challenge = Response.seeOther(UiLocales.withLocale(URL.root.copy(path = Path.root / "challenge"), uiLocale))
       result match
         case ConversationResult.RenderStep(step) =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.ServiceUnavailable =>
           renderStep(record, ifNoneMatch = None, errorKey = Some("service_unavailable"))
 
         case ConversationResult.BadRequest | ConversationResult.WriteConflict =>
-          ZIO.succeed(Response.seeOther(URL.root.copy(path = Path.root / "challenge")))
+          ZIO.succeed(challenge)
 
         case ConversationResult.Complete(redirectUri, state, code, sessionId, idTokenData, userAgentId, userAgentData) =>
           val encodedCode = Base64Url.encode(code)
@@ -390,6 +418,7 @@ object ConversationRenderService:
         logoutUris: List[URL],
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
+        uiLocales: Option[List[String]],
     ): Task[Response] =
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
@@ -402,7 +431,7 @@ object ConversationRenderService:
         case None => htmlResponse(notFoundPage(css), Status.NotFound)
         case Some(form) =>
           val activeCodes = locales.locales.map(_.code).toSet + locales.default
-          val (chosenLocale, translations) = pickTranslations(form, None, locales.default, activeCodes)
+          val (chosenLocale, translations) = pickTranslations(form, uiLocales, locales.default, activeCodes)
           val info = FormRenderInfo(
             title = pageTitle(translations),
             style = form.style,
@@ -545,8 +574,10 @@ object ConversationRenderService:
         activeCodes: Set[String],
     ): (String, Map[String, String]) =
       val base = form.localizations.getOrElse(default, Map.empty)
+      // Language tags are case-insensitive (`pt-br` from a browser is `pt-BR` in the tenant's config).
       val chosenLocale = locale.getOrElse(Nil).iterator
-        .find(code => activeCodes.contains(code) && form.localizations.contains(code))
+        .flatMap(requested => activeCodes.find(_.equalsIgnoreCase(requested)))
+        .find(form.localizations.contains)
         .getOrElse(default)
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
@@ -631,6 +662,7 @@ object ConversationRenderService:
             locales <- configuration.getLocales
             denyUri <- returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             byToken = scopes.map(record => record.scope -> record).toMap
+            mandatory = ConsentService.mandatoryScopes(client.flatMap(_.consentFlow))
             rows = s.requestedScope.toList.sortBy: token =>
               (if token.toString == "openid" then 0 else 1, token.toString)
             .map: token =>
@@ -648,7 +680,7 @@ object ConversationRenderService:
                 descriptionLocalizations = scopeDescriptionLocalizations,
                 claims = claims.map(_._1),
                 claimLocalizations = claims.map(_._2),
-                deselectable = s.allowPartial && !ConsentService.NonDeselectable.contains(token),
+                deselectable = s.allowPartial && !mandatory.contains(token),
               )
           yield StepView.Consent(
             clientName = client.flatMap(c => pickLocalized(c.clientName, uiLocales, locales.default)),

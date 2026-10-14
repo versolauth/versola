@@ -644,7 +644,11 @@ object EdgeService:
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
         dispatched <- Clock.nanoTime
-        _ <- ProxyMetrics.beforeUpstream(resourceId, dispatched - started)
+        authCall =
+          if session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
+          else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
+          else ProxyMetrics.AuthCall.None
+        _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
