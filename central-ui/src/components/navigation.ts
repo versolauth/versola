@@ -452,7 +452,7 @@ export class VersolaNavigation extends LitElement {
               >🌙</button>
             </span>
           </div>
-          <a class="nav-item" href=${this.accountSettingsUrl}>My Security</a>
+          <a class="nav-item" href=${this.accountSettingsUrl + '?theme=' + this.currentTheme}>My Security</a>
           <a class="nav-item" href=${this.logoutUrl}>Log out</a>
         </div>
       </div>

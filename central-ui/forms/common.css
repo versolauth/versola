@@ -101,7 +101,7 @@ form {
 .input-field:focus {
   background: var(--card-bg);
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(21, 94, 117, 0.14);
+  box-shadow: 0 0 0 3px rgba(21, 94, 117, 0.14); /* overridden in dark by btn-primary shadow */
 }
 .input-field:invalid:not(:placeholder-shown) {
   border-color: var(--danger);
@@ -142,7 +142,7 @@ form {
 .btn-primary:hover {
   background: var(--accent-hover);
   transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(21, 94, 117, 0.28);
+  box-shadow: 0 6px 16px rgba(21, 94, 117, 0.28); /* darkened by theme in dark mode */
 }
 .btn-secondary {
   color: var(--text);
@@ -281,6 +281,8 @@ form {
     --border-hover: rgba(255, 255, 255, 0.16);
     --text: #e8eaf0;
     --text-muted: #8b92a5;
+    --accent: #58a6ff;
+    --accent-hover: #79b8ff;
     color-scheme: dark;
   }
 }
@@ -294,5 +296,7 @@ form {
   --border-hover: rgba(255, 255, 255, 0.16);
   --text: #e8eaf0;
   --text-muted: #8b92a5;
+  --accent: #58a6ff;
+  --accent-hover: #79b8ff;
   color-scheme: dark;
 }

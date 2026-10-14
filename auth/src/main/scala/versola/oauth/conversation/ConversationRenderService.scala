@@ -744,7 +744,7 @@ object ConversationRenderService:
          |    <title>${escapeHtml(info.title)}</title>
          |    ${faviconLink(logo)}
          |    <script>
-         |      (function(){try{var t=localStorage.getItem('versola-theme');document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light')}catch(e){document.documentElement.setAttribute('data-theme','light')}})();
+         |      (function(){try{var p=new URLSearchParams(location.search).get('theme');var t=p||localStorage.getItem('versola-theme');document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light')}catch(e){document.documentElement.setAttribute('data-theme','light')}})();
          |    </script>
          |    <style>
          |      ${escapeCssForStyle(themeCss)}

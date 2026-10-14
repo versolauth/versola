@@ -218,10 +218,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield
-          // The page owns exactly one <style> and two <script> blocks; any extra closing tag
+          // The page owns exactly one <style> and three <script> blocks (theme detection,
+          // __VERSOLA_FORM__ config, and the compiled form JS); any extra closing tag
           // means injected text ended one of them early.
           assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1) &&
-            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
+            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 3) &&
             assertTrue(body.contains("\\3c /style>")) &&
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
