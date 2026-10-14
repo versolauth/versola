@@ -7,6 +7,7 @@ import versola.oauth.challenge.passkey.{AssertionOutcome, PasskeyCeremony, Passk
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{
+  Acr,
   AuthFlow,
   AuthMethodRef,
   ClientId,
@@ -26,7 +27,7 @@ import versola.oauth.token.AuthorizationCodeRepository
 import versola.oauth.userinfo.UserInfoService
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
-import versola.util.{AuthPropertyGenerator, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, MAC, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.test.*
 
@@ -166,6 +167,50 @@ object PasskeyConversationServiceSpec extends UnitSpecBase:
       },
     ),
     suite("finishPasskeyAssertion")(
+      test("throttle a failed step-up assertion under StepUpPasskeyAssertion, for both subjects") {
+        val env = Env()
+        val stepUpRecord = baseRecord.copy(
+          step = credentialStep.copy(passkeyRequest = Some("req-state")),
+          priorSessionId = Some(MAC(Array.fill(32)(2.toByte))),
+          targetAcr = Some(Acr("mfa")),
+        )
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.failsWith(versola.oauth.challenge.passkey.WebAuthnError.CeremonyFailed("fail"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyAssertion(authId, stepUpRecord, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(
+          env.submissionLimiter.statusForSubjects.calls.map(_._3) == List(ChallengeType.StepUpPasskeyAssertion),
+          env.submissionLimiter.recordLimit.calls.map(_._3).toSet == Set(ChallengeType.StepUpPasskeyAssertion),
+          env.submissionLimiter.recordLimit.calls.length == 2,
+        )
+      },
+      test("reset a successful step-up assertion's counters under StepUpPasskeyAssertion only") {
+        val env = Env()
+        val stepUpRecord = baseRecord.copy(
+          step = credentialStep.copy(passkeyRequest = Some("req-state")),
+          priorSessionId = Some(MAC(Array.fill(32)(2.toByte))),
+          targetAcr = Some(Acr("mfa")),
+        )
+        val outcome = AssertionOutcome(userId, CredentialId.fromString("id"), 1L)
+        for
+          _ <- env.webAuthnService.credentialIdFromResponse.succeedsWith(Some("cred-123"))
+          _ <- env.submissionLimiter.statusForSubjects.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.reset.succeedsWith(())
+          _ <- env.configService.getPasskeySettings.succeedsWith(Some(passkeySettings))
+          _ <- env.webAuthnService.finishAssertion.succeedsWith(outcome)
+          _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId)))
+          _ <- env.passkeyRepository.findByCredentialIdAndUser.succeedsWith(None)
+          _ <- env.passkeyRepository.listByUser.succeedsWith(Vector.empty)
+          _ <- env.webAuthnService.startRegistration.succeedsWith(PasskeyCeremony("reg-req", "{}"))
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.finishPasskeyAssertion(authId, stepUpRecord, assertionResponse, Some("1.2.3.4"))
+        yield assertTrue(env.submissionLimiter.reset.calls.map(_._3).toSet == Set(ChallengeType.StepUpPasskeyAssertion))
+      },
       test("succeed and move to enrollment check, resetting the throttle counter") {
         val env = Env()
         val recordWithRequest = baseRecord.copy(step = credentialStep.copy(passkeyRequest = Some("req-state")))

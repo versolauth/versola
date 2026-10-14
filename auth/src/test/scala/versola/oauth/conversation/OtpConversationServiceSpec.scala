@@ -6,8 +6,8 @@ import versola.oauth.authorize.AcrResolutionService
 import versola.oauth.challenge.passkey.{PasskeyRepository, WebAuthnService}
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.client.OAuthConfigurationService
+import versola.oauth.client.model.{Acr, AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.client.model.{AuthFlow, AuthMethodRef, ClientId, PassedAuthFactor, PassedFactorRecord, PrimaryCredential, ScopeToken}
-import versola.oauth.client.model.{AuthFlow, ClientId, PrimaryCredential, ScopeToken}
 import versola.oauth.conversation.limit.{ChallengeType, LimitStatus, SubmissionLimiter}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep}
 import versola.oauth.conversation.otp.OtpService
@@ -20,7 +20,7 @@ import versola.oauth.userinfo.UserInfoService
 import versola.oauth.userinfo.model.UserInfoResponse
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserRepository, UserService}
-import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, Secret, SecureRandom, SecurityService, UnitSpecBase}
+import versola.util.{AuthPropertyGenerator, CoreConfig, Email, EnvName, MAC, Secret, SecureRandom, SecurityService, UnitSpecBase}
 import zio.http.URL
 import zio.json.ast
 import zio.test.*
@@ -137,6 +137,9 @@ object OtpConversationServiceSpec extends UnitSpecBase:
     userEmail = Some(email),
   )
   val submittedOtp = realOtp.copy(timesRequested = 1)
+
+  private def stepUp(record: ConversationRecord) =
+    record.copy(priorSessionId = Some(MAC(Array.fill(32)(2.toByte))), targetAcr = Some(Acr("mfa")))
 
   val spec = suite("OtpConversationService")(
     suite("prepareInitialOtp")(
@@ -264,6 +267,34 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield assertTrue(
           result == ConversationResult.RenderStep(ConversationStep.AccessDenied),
           env.otpService.sendOtp.calls.isEmpty,
+        )
+      },
+      test("throttle a step-up OTP request and its submit ban under the StepUp challenge types") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, stepUp(initialConversation), Left(email), factorIndex = 0)
+        yield assertTrue(
+          env.submissionLimiter.statusFor.calls.map(_._3) == List(List(ChallengeType.StepUpOtpSubmit)),
+          env.submissionLimiter.tryAcquire.calls.map(_._3) == List(ChallengeType.StepUpOtpRequest),
+        )
+      },
+      test("a regular sign-in OTP stays on the OtpRequest and OtpSubmit challenge types") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.statusFor.succeedsWith(LimitStatus.Allowed)
+          _ <- env.submissionLimiter.tryAcquire.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.prepareOtp.succeedsWith(realOtp)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.otpService.sendOtp.succeedsWith(())
+          _ <- env.service.prepareInitialOtp(authId, initialConversation, Left(email), factorIndex = 0)
+        yield assertTrue(
+          env.submissionLimiter.statusFor.calls.map(_._3) == List(List(ChallengeType.OtpSubmit)),
+          env.submissionLimiter.tryAcquire.calls.map(_._3) == List(ChallengeType.OtpRequest),
         )
       },
       test("return AccessDenied when banned on OTP submit (ban earned via wrong codes)") {
@@ -400,6 +431,19 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(submittedOtp.copy(rateLimitExceeded = true, lockedSeconds = 30)))
+      },
+      test("throttle a wrong step-up code under StepUpOtpSubmit") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(stepUp(otpRecord), submittedOtp, otpCode, authId)
+        yield assertTrue(
+          env.submissionLimiter.isBanned.calls.map(_._3) == List(ChallengeType.StepUpOtpSubmit),
+          env.submissionLimiter.recordLimit.calls.map(_._3) == List(ChallengeType.StepUpOtpSubmit),
+        )
       },
       test("re-render incremented step on wrong code when still allowed") {
         val env = Env()

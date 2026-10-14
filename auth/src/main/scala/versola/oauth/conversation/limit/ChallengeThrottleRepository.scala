@@ -7,6 +7,27 @@ import java.time.Instant
 
 enum ChallengeType:
   case OtpRequest, OtpSubmit, PasswordSubmit, PasskeyAssertion
+  // Step-up counts attempts in its own throttle records, so failures there neither spend nor are
+  // spent by the budget of a regular sign-in, and are configured by `SubmissionLimits.stepUp`.
+  case StepUpOtpRequest, StepUpOtpSubmit, StepUpPasswordSubmit, StepUpPasskeyAssertion
+
+  def isStepUp: Boolean = this match
+    case StepUpOtpRequest | StepUpOtpSubmit | StepUpPasswordSubmit | StepUpPasskeyAssertion => true
+    case _ => false
+
+object ChallengeType:
+  /** The challenge type to throttle under: the step-up variant when the conversation re-verifies an
+    * existing session toward a target ACR, otherwise `base` itself.
+    */
+  def forConversation(stepUp: Boolean, base: ChallengeType): ChallengeType =
+    if !stepUp then base
+    else
+      base match
+        case OtpRequest => StepUpOtpRequest
+        case OtpSubmit => StepUpOtpSubmit
+        case PasswordSubmit => StepUpPasswordSubmit
+        case PasskeyAssertion => StepUpPasskeyAssertion
+        case stepUpType => stepUpType
 
 case class ChallengeThrottleRecord(
     tenantId: TenantId,

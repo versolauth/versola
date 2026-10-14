@@ -5,7 +5,18 @@ import zio.schema.{Schema, derived}
 
 case class RateLimit(maxAttempts: Int, windowSeconds: Int) derives Schema, JsonCodec
 
-/** No member defaults: a category left out of the request would decode to `Nil`, which is
+/** Limits for step-up, separate from sign-in: same shape. Like [[SubmissionLimits]] it has no
+  * member defaults -- a category left out would be an unthrottled one.
+  */
+case class StepUpLimits(
+    otpRequest: List[RateLimit],
+    otpSubmit: List[RateLimit],
+    passwordSubmit: List[RateLimit],
+    passkeyAssertion: List[RateLimit],
+    banDurationSeconds: Int,
+) derives Schema, JsonCodec
+
+/** No member defaults, except `stepUp`: a category left out of the request would decode to `Nil`, which is
   * this tenant running that submission type unthrottled -- the caller has to say so rather
   * than arrive at it by omission.
   */
@@ -15,6 +26,11 @@ case class SubmissionLimits(
     passwordSubmit: List[RateLimit],
     passkeyAssertion: List[RateLimit],
     banDurationSeconds: Int,
+    /** Absent means step-ups follow the sign-in limits above (each with its own counters); present
+      * replaces them for step-up entirely. Optional so tenants and clients written before it
+      * existed keep working unchanged.
+      */
+    stepUp: Option[StepUpLimits] = None,
 ) derives Schema, JsonCodec
 
 object SubmissionLimits:
@@ -51,8 +67,16 @@ object SubmissionLimits:
     def tiersConfigured(tiers: List[RateLimit]): Boolean =
       tiers.nonEmpty && tiers.forall(tier => tier.maxAttempts > 0 && tier.windowSeconds > 0)
 
+    def stepUpConfigured(stepUp: StepUpLimits): Boolean =
+      tiersConfigured(stepUp.otpRequest) &&
+        tiersConfigured(stepUp.otpSubmit) &&
+        tiersConfigured(stepUp.passwordSubmit) &&
+        tiersConfigured(stepUp.passkeyAssertion) &&
+        stepUp.banDurationSeconds > 0
+
     tiersConfigured(limits.otpRequest) &&
     tiersConfigured(limits.otpSubmit) &&
     tiersConfigured(limits.passwordSubmit) &&
     tiersConfigured(limits.passkeyAssertion) &&
-    limits.banDurationSeconds > 0
+    limits.banDurationSeconds > 0 &&
+    limits.stepUp.forall(stepUpConfigured)
