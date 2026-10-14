@@ -1,5 +1,7 @@
 package versola.oauth.client.model
 
+import scala.annotation.tailrec
+
 /** Throwaway-mailbox providers, for a tenant that asks to refuse them (`blockDisposable`). A short
   * seed of the most used ones, not a complete or current list: new providers appear faster than
   * a list in code can follow, so this lowers the noise and is no substitute for verifying the
@@ -46,7 +48,6 @@ object DisposableEmailDomains:
     "mintemail.com",
     "mailcatch.com",
     "mailnull.com",
-    "spamgourmet.com",
     "spam4.me",
     "getairmail.com",
     "dropmail.me",
@@ -58,7 +59,6 @@ object DisposableEmailDomains:
     "discard.email",
     "mailsac.com",
     "harakirimail.com",
-    "33mail.com",
     "anonbox.net",
     "jetable.org",
     "spambox.us",
@@ -78,8 +78,9 @@ object DisposableEmailDomains:
     "teleworm.us",
   )
 
+  @tailrec
   def contains(domain: String): Boolean =
-    LazyList.iterate(Option(domain))(_.flatMap(parent)).takeWhile(_.isDefined).flatten.exists(domains.contains)
-
-  private def parent(domain: String): Option[String] =
-    Some(domain.indexOf('.')).filter(_ >= 0).map(dot => domain.substring(dot + 1)).filter(_.contains('.'))
+    domains.contains(domain) || {
+      val dot = domain.indexOf('.')
+      dot >= 0 && domain.indexOf('.', dot + 1) >= 0 && contains(domain.substring(dot + 1))
+    }

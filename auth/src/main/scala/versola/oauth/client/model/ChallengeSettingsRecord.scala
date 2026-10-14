@@ -39,7 +39,8 @@ case class PhoneRegion(
     /** Whether a number of this region may create an account on its own. */
     registration: Boolean,
 ) derives JsonCodec:
-  private lazy val pattern = java.util.regex.Pattern.compile(regex)
+  // Compiled when the settings are decoded by the sync client, not on a request.
+  private val pattern = java.util.regex.Pattern.compile(regex)
 
   /** Whether `national` -- the digits after this region's dial code -- is a number of this region. */
   def accepts(national: String): Boolean =
@@ -104,7 +105,8 @@ object EmailRegistration:
 
   /** `example.com` is that domain; `*.example.com` is any subdomain of it (not `example.com`). */
   private def matches(entry: String, domain: String): Boolean =
-    if entry.startsWith("*.") then domain.endsWith(entry.drop(1)) else domain == entry
+    val normalized = entry.toLowerCase(Locale.ROOT)
+    if normalized.startsWith("*.") then domain.endsWith(normalized.drop(1)) else domain == normalized
 
 case class ChallengeSettingsRecord(
     tenantId: TenantId,

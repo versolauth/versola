@@ -46,10 +46,12 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
-    /** Snapshot of the client's registration flow, absent when the client has none. */
-    registrationFlow: Option[RegistrationFlow],
+    /** The registration this conversation went through, built from the tenant's policy when an unknown
+      * address was entered ([[versola.oauth.client.OAuthConfigurationService.registrationFor]]); absent
+      * until then. */
+    registrationFlow: Option[RegistrationFlow] = None,
     /** Index into `registrationFlow.steps` while the user is registering; `None` while logging in. */
-    registrationStep: Option[Int],
+    registrationStep: Option[Int] = None,
     userAgent: Option[String],
     /** Full signed user-agent cookie payload persisted as one JSONB value. */
     userAgentCookie: Option[UserAgentCookiePayload],
