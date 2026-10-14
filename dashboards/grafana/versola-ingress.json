@@ -840,7 +840,7 @@
     {
       "type": "timeseries",
       "title": "Request latency",
-      "description": "Whole request as the ingress sees it, p50, p95, p99 and the selected Tail quantile. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge.",
+      "description": "Whole request as the ingress sees it, p50, p95, p99 and the tail quantiles up to the selected one. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -903,8 +903,26 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(histogram_quantile($tail, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
-          "legendFormat": "${tail:text}"
+          "expr": "(histogram_quantile(0.999, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9989999)",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(histogram_quantile(0.9999, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9998999)",
+          "legendFormat": "p99.99"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(histogram_quantile(0.99999, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9999899)",
+          "legendFormat": "p99.999"
         }
       ],
       "id": 16,
@@ -918,7 +936,7 @@
     {
       "type": "timeseries",
       "title": "Upstream (service) latency",
-      "description": "Time the backend took to answer, p50, p95, p99 and the selected Tail quantile. Compare with the request latency above: the gap is the network and the client. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge.",
+      "description": "Time the backend took to answer, p50, p95, p99 and the tail quantiles up to the selected one. Compare with the request latency above: the gap is the network and the client. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -981,8 +999,26 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "(histogram_quantile($tail, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
-          "legendFormat": "${tail:text}"
+          "expr": "(histogram_quantile(0.999, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9989999)",
+          "legendFormat": "p99.9"
+        },
+        {
+          "refId": "E",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(histogram_quantile(0.9999, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9998999)",
+          "legendFormat": "p99.99"
+        },
+        {
+          "refId": "F",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(histogram_quantile(0.99999, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{exported_namespace=\"$namespace\"}[$__rate_interval])))) and on() (vector($tail) > 0.9999899)",
+          "legendFormat": "p99.999"
         }
       ],
       "id": 17,
