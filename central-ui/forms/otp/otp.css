@@ -4,6 +4,9 @@
   margin: -12px 0 22px;
   line-height: 1.5;
 }
+.otp-destination {
+  white-space: nowrap;
+}
 .otp-wrapper {
   position: relative;
   cursor: text;
