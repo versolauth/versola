@@ -425,6 +425,16 @@ test.describe('confirm-logout', () => {
     });
   });
 
+  test('sends the chosen language with the confirmation', async ({ page }) => {
+    const { submitted, all } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
+
+    await page.getByLabel('Language').selectOption('ru');
+    await page.getByRole('button', { name: all.ru.confirm_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+  });
+
   test('leaves out what it was not given', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
 
