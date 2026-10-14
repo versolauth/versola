@@ -743,6 +743,9 @@ object ConversationRenderService:
          |    <meta name="versola-step" content="${stepName(info.config.step)}">
          |    <title>${escapeHtml(info.title)}</title>
          |    ${faviconLink(logo)}
+         |    <script>
+         |      (function(){try{var t=localStorage.getItem('versola-theme');document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light')}catch(e){document.documentElement.setAttribute('data-theme','light')}})();
+         |    </script>
          |    <style>
          |      ${escapeCssForStyle(themeCss)}
          |      ${escapeCssForStyle(info.style)}
