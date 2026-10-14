@@ -45,3 +45,14 @@ case class RegistrationFlow(
     steps: List[RegistrationStep],
     roleIds: Set[RoleId],
 ) derives Schema, JsonCodec, Equal
+
+object RegistrationFlow:
+  /** Mirrors central's `RegistrationFlow.defaultRoleId`. */
+  val DefaultRoleId: RoleId = RoleId("user")
+
+  /** What registration is when the client sets none: the entry credential's one-time code, and the
+    * default role. A client has no switch for registration -- whether a phone number may register
+    * is the country's say, and an email always may.
+    */
+  def default(credential: RegistrationCredential): RegistrationFlow =
+    RegistrationFlow(credential, List(RegistrationStep.Otp()), Set(DefaultRoleId))

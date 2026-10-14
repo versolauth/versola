@@ -23,8 +23,8 @@ const authorizationDetailType = {
 const settingsWithoutPasskey = {
   tenantId: 'tenant-alpha',
   phoneRegions: [
-    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' },
-    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}' },
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
   ],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
@@ -53,8 +53,10 @@ test('renders OTP templates and challenge settings sections', async ({ page }) =
   await expect(page.locator('.template-text').filter({ hasText: '6 digits' })).toBeVisible();
   const chips = page.locator('.region-chip');
   await expect(chips).toHaveCount(2);
-  await expect(chips.nth(0)).toHaveText('KZ +7 · 10 digits · 7\\d{9}');
+  await expect(chips.nth(0)).toHaveText('KZ +7 · 10 digits · 7\\d{9}sign-up');
   await expect(chips.nth(1)).toHaveText('RU +7 · 10 digits · 9\\d{9}');
+  await expect(chips.nth(0).locator('.signup-mark')).toHaveCount(1);
+  await expect(chips.nth(1).locator('.signup-mark')).toHaveCount(0);
 
   const headerButtonSizes = await page.locator('.section-header .btn').evaluateAll(buttons =>
     buttons.map(button => {
@@ -473,9 +475,81 @@ test('edits phone regions: add, reorder, validate, and sends phoneRegions in the
     phoneRegions: unknown[];
   };
   expect(body.phoneRegions).toEqual([
-    { region: 'US', dialCode: '+1', length: 10, regex: '\\d{10}' },
-    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' },
-    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}' },
+    { region: 'US', dialCode: '+1', length: 10, regex: '\\d{10}', registration: false },
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
   ]);
   expect(body).not.toHaveProperty('allowedPrefixes');
+});
+
+test('ticks Registration per region and sends it in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows.nth(0).getByLabel('Registration')).toBeChecked();
+  await expect(rows.nth(1).getByLabel('Registration')).not.toBeChecked();
+
+  await rows.nth(0).getByLabel('Registration').uncheck();
+  await rows.nth(1).getByLabel('Registration').check();
+
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: Array<{ region: string; registration: boolean }>;
+  };
+  expect(body.phoneRegions.map(r => [r.region, r.registration])).toEqual([['KZ', false], ['RU', true]]);
+});
+
+test('adds countries from presets with registration on and skips ones already listed', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Add from presets', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Add from presets' });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Add selected' })).toBeDisabled();
+
+  // KZ is already in the list, so it cannot be picked again.
+  await expect(picker.getByRole('checkbox', { name: 'Kazakhstan' })).toBeDisabled();
+
+  await picker.getByRole('searchbox', { name: 'Search presets' }).fill('uz');
+  await picker.getByRole('checkbox', { name: 'Uzbekistan' }).check();
+  await picker.getByRole('searchbox', { name: 'Search presets' }).fill('');
+  await picker.getByRole('checkbox', { name: 'Georgia' }).check();
+  await picker.getByRole('button', { name: 'Add 2 selected' }).click();
+
+  await expect(picker).toHaveCount(0);
+  await expect(rows).toHaveCount(4);
+  await expect(rows.nth(2).getByLabel('Region')).toHaveValue('UZ');
+  await expect(rows.nth(3).getByLabel('Region')).toHaveValue('GE');
+  await expect(rows.nth(2).getByLabel('Registration')).toBeChecked();
+
+  // Registration can still be unticked per row.
+  await rows.nth(3).getByLabel('Registration').uncheck();
+
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: unknown[];
+  };
+  expect(body.phoneRegions).toEqual([
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
+    { region: 'UZ', dialCode: '+998', length: 9, regex: '\\d{9}', registration: true },
+    { region: 'GE', dialCode: '+995', length: 9, regex: '5\\d{8}', registration: false },
+  ]);
 });

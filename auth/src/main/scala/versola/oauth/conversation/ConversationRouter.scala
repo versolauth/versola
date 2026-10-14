@@ -2,7 +2,17 @@ package versola.oauth.conversation
 
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, PrimaryCredential, RegistrationCredential, RegistrationStep}
+import versola.oauth.client.model.{
+  AuthFactor,
+  AuthFactorType,
+  ClientId,
+  OtpType,
+  PassedAuthFactor,
+  PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationStep,
+}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.user.UserRepository
 import versola.util.http.Observability
@@ -275,6 +285,12 @@ object ConversationRouter:
           withVerifiedRegistrationUser(authId, conversation): verified =>
             conversationService.finish(authId, verified)
 
+    /** An email may always register; a phone number only when the country it belongs to says so. */
+    private def registrationOpen(clientId: ClientId, credential: Either[Email, Phone]): UIO[Boolean] =
+      credential match
+        case Left(_) => ZIO.succeed(true)
+        case Right(phone) => configService.getPhoneRegions(clientId).map(PhoneRegion.allowsRegistration(_, phone))
+
     /** Determine the first factor step after the user submits their credential,
       * skipping any factor types already recorded in `conversation.amr`.
       */
@@ -297,11 +313,15 @@ object ConversationRouter:
             afterAuthenticationCredential(authId, identified, credential)
 
           case (None, Some(flow)) if flow.credential == RegistrationCredential.from(credential) =>
-            conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-              case RegistrationEntry.Registering(updated) =>
-                runRegistrationStep(authId, updated)
-              case ConversationResult.WriteConflict =>
-                ZIO.succeed(ConversationResult.WriteConflict)
+            registrationOpen(conversation.clientId, credential).flatMap:
+              case true =>
+                conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+                  case RegistrationEntry.Registering(updated) =>
+                    runRegistrationStep(authId, updated)
+                  case ConversationResult.WriteConflict =>
+                    ZIO.succeed(ConversationResult.WriteConflict)
+              case false =>
+                afterAuthenticationCredential(authId, conversation, credential)
 
           case (None, Some(_)) =>
             afterAuthenticationCredential(authId, conversation, credential)

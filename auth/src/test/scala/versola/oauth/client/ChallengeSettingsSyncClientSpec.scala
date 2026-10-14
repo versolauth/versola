@@ -16,7 +16,7 @@ object ChallengeSettingsSyncClientSpec extends ZIOSpecDefault:
     test("fetches challenge settings from central") {
       val record = ChallengeSettingsRecord(
         tenantId = TenantId.default,
-        phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}")),
+        phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}", true)),
         submissionLimits = SubmissionLimits.empty,
         otpLength = 6,
         otpResendAfter = 30,

@@ -1019,7 +1019,7 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
 });
 
-test('configures a registration flow and sends it when creating a client', async ({ page }) => {
+test('always sends a registration flow for a phone client and refines it on the edit page', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: {
@@ -1039,16 +1039,18 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  // Creation asks only whether users may sign themselves up; the credential they verify follows
-  // from the first screen, and the steps and roles are refined on the edit page.
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveAttribute('aria-pressed', 'false');
-  await checkRow(page, 'Let users sign themselves up').click();
-  await expect(checkRow(page, 'Let users sign themselves up'))
-    .toContainText('The phone is the credential whose ownership is verified');
+  // There is no sign-up switch: whether a number may register is the country's call, and the
+  // steps and roles are refined on the edit page.
+  await expect(page.getByText('Let users sign themselves up')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .plan-line').filter({ hasText: 'Whether a number may register' }))
+    .toContainText('Whether a number may register is set per country under Allowed Phones in Challenges & Security.');
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await expect(page.locator('versola-client-form .plan-line').filter({ hasText: 'Anyone with an email' })).toHaveCount(1);
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
 
   await continueToReview(page);
   await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Self-service sign-up' }))
-    .toContainText('on');
+    .toHaveCount(0);
   await submitCreate(page);
 
   expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
@@ -1230,8 +1232,7 @@ test('hides registration settings when inline password is enabled', async ({ pag
   await openClientPage(page, 'alpha-web');
   await openEditSection(page, 'Registration and consent');
 
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
+  await expect(page.getByText('Whether a number may register is set per country')).toBeVisible();
   await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
 
@@ -1267,12 +1268,9 @@ test('hides registration settings for a login+password flow', async ({ page }) =
   await addRedirectUri(page, 'https://login-password.example/callback');
   await continueToThirdStep(page);
 
-  await checkRow(page, 'Let users sign themselves up').click();
-
   // A login is not a delivery address, so there is nothing for sign-up to prove ownership of.
   await page.getByRole('button', { name: 'Login + password', exact: true }).click();
   await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toBeVisible();
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveCount(0);
 
   await continueToReview(page);
   await submitCreate(page);
@@ -1667,7 +1665,7 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       equivalents: {},
       otpType: 'sms',
     },
-    registrationFlow: null,
+    registrationFlow: { credential: 'phone', steps: [{ type: 'otp' }], roleIds: ['user'] },
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
@@ -2093,13 +2091,15 @@ test('warns on the sign-in step when a phone client is created on a tenant with 
   await expect(warning).toHaveCount(0);
   await page.getByRole('button', { name: 'Phone', exact: true }).click();
   await expect(warning).toBeVisible();
+  await expect(warning).toContainText('accepts a number from any');
+  await expect(warning).toContainText('Nobody can register by phone');
   await expect(warning).toContainText('Allowed Phones');
 });
 
-test('does not warn about phone regions when the tenant lists some', async ({ page }) => {
+test('does not warn about phone regions when a listed region allows registration', async ({ page }) => {
   const settings = {
     tenantId: 'tenant-alpha',
-    phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' }],
+    phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
     submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
     otpLength: 6,
     otpResendAfter: 60,
@@ -2112,5 +2112,27 @@ test('does not warn about phone regions when the tenant lists some', async ({ pa
   await continueToThirdStep(page);
   await page.getByRole('button', { name: 'Phone', exact: true }).click();
 
-  await expect(page.locator('versola-client-form .wizard-warn').filter({ hasText: 'No phone regions' })).toHaveCount(0);
+  await expect(page.locator('versola-client-form .wizard-warn')).toHaveCount(0);
+});
+
+test('warns on the sign-in step when no phone region allows registration', async ({ page }) => {
+  const settings = {
+    tenantId: 'tenant-alpha',
+    phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: false }],
+    submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+    otpLength: 6,
+    otpResendAfter: 60,
+  };
+  await loadAdminApp(page, { path: clientsPath, state: { clients: { 'tenant-alpha': [] }, challengeSettings: { 'tenant-alpha': settings } } });
+  const warning = page.locator('versola-client-form .wizard-warn').filter({ hasText: 'No region allows registration' });
+
+  await startCreate(page);
+  await fillBasics(page, 'phone-app', 'Phone App');
+  await addRedirectUri(page, 'https://phone.example/callback');
+  await continueToThirdStep(page);
+
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText('new users cannot sign up by phone');
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await expect(warning).toHaveCount(0);
 });

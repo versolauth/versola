@@ -52,6 +52,11 @@ case class PhoneRegion(
     length: Int,
     /** Matched in full against those digits. */
     regex: String,
+    /** Whether a number of this region may create an account on its own. Self-registration is
+      * decided by the country, not by the client: a client that signs in by phone registers a
+      * new user only when the number's region allows it.
+      */
+    registration: Boolean,
 ) derives Schema, JsonCodec
 
 object PhoneRegion:

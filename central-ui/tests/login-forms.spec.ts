@@ -577,6 +577,8 @@ for (const [id, config] of accessibilityCases) {
 }
 
 test('credential phone selector has no axe violations, closed or open', async ({ page }) => {
+  // axe reads the colours as painted, so a transition still running would be scanned half way.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
   const { t } = await renderForm(page, 'credential', {
     step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: ['AM:+374', 'GE:+995', 'UZ:+998', 'KG:+996', 'TJ:+992', 'AZ:+994'].map(e => region(...(e.split(':') as [string, string]))) },

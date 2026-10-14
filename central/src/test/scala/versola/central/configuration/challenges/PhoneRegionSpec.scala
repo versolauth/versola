@@ -4,8 +4,8 @@ import versola.util.UnitSpecBase
 import zio.test.*
 
 object PhoneRegionSpec extends UnitSpecBase:
-  private val kz = PhoneRegion("KZ", "+7", 10, "7\\d{9}")
-  private val ru = PhoneRegion("RU", "+7", 10, "9\\d{9}")
+  private val kz = PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)
+  private val ru = PhoneRegion("RU", "+7", 10, "9\\d{9}", true)
 
   def spec = suite("PhoneRegion.validate")(
     test("accepts an empty list and regions that share a dial code") {

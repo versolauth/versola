@@ -3,7 +3,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, PhoneRegion, RegistrationCredential, RegistrationFlow, RegistrationStepType, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, createDefaultRegistrationFlow, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
@@ -87,10 +87,11 @@ export class VersolaClientForm extends LitElement {
    *  `InvalidRegistrationConfiguration.validateMtlsTermination`. */
   @property({ type: String }) mtlsCertificateHeader: string | null = null;
 
-  /** Whether the tenant lists any phone regions in Challenges & Security. With none, a phone
-   *  sign-in takes a number from any country and shows a plain field, which is rarely meant;
-   *  the sign-in step says so. */
-  @property({ type: Boolean }) phoneRegionsConfigured = true;
+  /** The tenant's phone regions from Challenges & Security; `null` until they are known. With
+   *  none, a phone sign-in takes a number from any country and shows a plain field, and nobody
+   *  can register by phone. With some but none allowing registration, nobody can either. The
+   *  sign-in step says so in both cases. */
+  @property({ attribute: false }) phoneRegions: PhoneRegion[] | null = null;
 
   @state() private formData: Partial<OAuthClient> = {
     id: '',
@@ -1702,8 +1703,10 @@ export class VersolaClientForm extends LitElement {
     const registrationCredential = this.authFlow.primaryCredentials.find(
       credential => credential === 'phone' || credential === 'email',
     ) as RegistrationCredential | undefined;
-    const registrationFlow = this.registrationSupported && this.formData.registrationFlow && registrationCredential
-      ? { ...this.formData.registrationFlow, credential: registrationCredential }
+    // Who may register is the country's (phone) or nobody's to switch off (email), so a client
+    // that signs in by phone or email always carries the flow a registered account goes through.
+    const registrationFlow = this.registrationSupported && registrationCredential
+      ? { ...this.registrationFlow, credential: registrationCredential }
       : null;
     const scope = this.formData.scope || [];
     const hasOfflineAccess = scope.includes('offline_access');
@@ -2464,10 +2467,6 @@ export class VersolaClientForm extends LitElement {
     return this.hasAuthFlow && this.credentialMode === 'phone-email' && !this.authFlow.inlinePassword;
   }
 
-  private get hasRegistrationFlow(): boolean {
-    return this.formData.registrationFlow != null;
-  }
-
   private get registrationFlow(): RegistrationFlow {
     return this.formData.registrationFlow ?? createDefaultRegistrationFlow();
   }
@@ -2489,13 +2488,6 @@ export class VersolaClientForm extends LitElement {
     const steps: { type: RegistrationStepType }[] = [{ type: 'otp' }];
     if (challenge !== 'none') steps.push({ type: challenge });
     this.setRegistrationFlow({ steps });
-  }
-
-  private toggleRegistrationEnabled() {
-    this.formData = {
-      ...this.formData,
-      registrationFlow: this.hasRegistrationFlow ? null : createDefaultRegistrationFlow(),
-    };
   }
 
   private toggleRegistrationRole(roleId: string) {
@@ -3339,11 +3331,18 @@ export class VersolaClientForm extends LitElement {
             <button type="button" aria-pressed=${primary === 'phone'} @click=${() => this.selectPhoneEmailMode('phone')}>Phone</button>
             <button type="button" aria-pressed=${primary === 'login'} @click=${() => this.selectLoginPasswordMode()}>Login + password</button>
           </div>
-          ${primary === 'phone' && !this.phoneRegionsConfigured ? html`
+          ${primary === 'phone' && this.phoneRegions !== null && this.phoneRegions.length === 0 ? html`
             <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
               <strong>No phone regions for this tenant.</strong> The sign-in form accepts a number from any
-              country and shows a plain field, with no country code to pick. List the countries under
-              Allowed Phones in Challenges &amp; Security.
+              country and shows a plain field, with no country code to pick. Nobody can register by phone
+              until at least one region allows it: list the countries under Allowed Phones in
+              Challenges &amp; Security.
+            </div>
+          ` : ''}
+          ${primary === 'phone' && this.phoneRegions !== null && this.phoneRegions.length > 0 && !this.phoneRegions.some(r => r.registration) ? html`
+            <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+              <strong>No region allows registration,</strong> so new users cannot sign up by phone. Tick
+              Registration on a country under Allowed Phones in Challenges &amp; Security.
             </div>
           ` : ''}
           ${primary === 'login' ? html`
@@ -3354,12 +3353,17 @@ export class VersolaClientForm extends LitElement {
                 'Sign-up verifies ownership of an email or a phone. A login has neither, so accounts are created in Central.',
               )}
             </div>
-          ` : this.renderCheckRow(
-            this.hasRegistrationFlow,
-            'Let users sign themselves up',
-            `The ${primary} is the credential whose ownership is verified. Off means accounts are created in Central.`,
-            () => this.toggleRegistrationEnabled(),
-          )}
+          ` : html`
+            <div class="plan">
+              ${this.renderPlanLine(
+                'fixed',
+                primary === 'phone'
+                  ? 'Whether a number may register is set per country under Allowed Phones in Challenges & Security.'
+                  : 'Anyone with an email can register.',
+                '',
+              )}
+            </div>
+          `}
         </div>
 
         <div class="path alt">
@@ -3750,7 +3754,6 @@ export class VersolaClientForm extends LitElement {
             ${this.renderReviewGroup('Sign-in', 3, [
               ['First screen', this.hasAuthFlow ? this.firstScreenSummary : 'no sign-in flow', !this.hasAuthFlow],
               ['Passkey', this.authFlow.passkey ? 'offered as an alternative' : 'not offered', !this.authFlow.passkey],
-              ['Self-service sign-up', this.hasRegistrationFlow ? 'on' : 'off - accounts come from Central', !this.hasRegistrationFlow],
             ])}
             ${this.renderReviewGroup('Scopes', 3, [
               ['Scopes', scopes.length ? scopes.join(', ') : 'none', scopes.length === 0],
@@ -4568,20 +4571,25 @@ export class VersolaClientForm extends LitElement {
     return html`
             ${this.registrationSupported ? html`
               <div class="form-group">
-                <div class="flow-toggle-row">
-                  <label style="margin: 0; line-height: 18px;">Registration</label>
-                  <label class="toggle">
-                    <input
-                      type="checkbox"
-                      .checked=${this.hasRegistrationFlow}
-                      @change=${() => this.toggleRegistrationEnabled()}
-                    />
-                  </label>
+                <label style="margin: 0 0 var(--spacing-xs); line-height: 18px;">Registration</label>
+                <div class="registration-hint" style="margin-bottom: var(--spacing-sm);">
+                  ${this.authFlow.primaryCredentials[0] === 'phone'
+                    ? 'Whether a number may register is set per country under Allowed Phones in Challenges & Security.'
+                    : 'Anyone with an email can register.'}
                 </div>
+                ${this.phoneRegions !== null && this.authFlow.primaryCredentials[0] === 'phone' && this.phoneRegions.length > 0 && !this.phoneRegions.some(r => r.registration) ? html`
+                  <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+                    <strong>No region allows registration,</strong> so new users cannot sign up by phone.
+                  </div>
+                ` : ''}
+                ${this.phoneRegions !== null && this.authFlow.primaryCredentials[0] === 'phone' && this.phoneRegions.length === 0 ? html`
+                  <div class="wizard-warn" role="note" style="margin-top:0;margin-bottom:var(--spacing-md)">
+                    <strong>No phone regions for this tenant,</strong> so nobody can register by phone.
+                  </div>
+                ` : ''}
 
-                ${this.hasRegistrationFlow ? html`
-                  <div class="registration-settings">
-                    <div class="registration-row">
+                ${html`
+                  <div class="registration-settings">                    <div class="registration-row">
                       <div class="registration-label">Credential</div>
                       <div>
                         <div class="registration-value" aria-label="Registration credential (locked)">
@@ -4639,7 +4647,7 @@ export class VersolaClientForm extends LitElement {
                       </div>
                     </div>
                   </div>
-                ` : ''}
+                `}
               </div>
             ` : ''}
     `;

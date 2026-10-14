@@ -202,7 +202,7 @@ type OtpTemplateDto = { id: string; tenantId: string; localizations: Record<stri
 type ChallengeSettingsDto = {
   tenantId: string;
   securityProfile?: SecurityProfileDto;
-  phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string }>;
+  phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>;
   passwordRegex?: string | null;
   submissionLimits: SubmissionLimitsDto;
   otpLength: number;

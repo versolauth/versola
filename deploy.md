@@ -558,25 +558,34 @@ The image tag is the git tag verbatim (`version=${{ github.event.release.tag_nam
 the `<version>` `versola configure` takes. `versola-cli` uses the same format since `0.2.6` (its
 older releases, up to `v0.2.5`, had the prefix).
 
-#### Breaking change: a tenant's phone sign-in lists countries, not prefixes
+#### Breaking change: a tenant's phone sign-in lists countries, and countries decide registration
 
 `allowedPrefixes` (a list of dial-code prefixes) is gone from `GET` and `PUT
 /configuration/challenges/challenge-settings`, from the sync feed to `auth` and from the
 `challenge_settings` table. It is replaced by `phoneRegions`: an ordered list of
-`{region, dialCode, length, regex}` (`region` is an ISO 3166-1 alpha-2 code, `length` the digits after
-the dial code, `regex` a Java regular expression those digits must match in full). Regions may share a
+`{region, dialCode, length, regex, registration}` (`region` is an ISO 3166-1 alpha-2 code, `length` the digits after
+the dial code, `regex` a Java regular expression those digits must match in full, `registration` whether a number of that country may create an account). Regions may share a
 `dialCode`; a number is accepted when it fits the length and regex of any one of them. See
 `central/open-api/central.yaml`.
 
 Migration `V1021` drops the `allowed_prefixes` column and adds `phone_regions`; **stored prefixes are
 not converted**, because a prefix names neither a length nor a pattern. A tenant that had prefixes
-starts with no regions, which accepts any E.164 number and shows the login form's plain phone field
--- that is the old behaviour of an empty list, so a tenant with no prefixes changes nothing.
+starts with no regions, which accepts any E.164 number for sign-in and shows the login form's plain phone field
+-- the old behaviour of an empty list -- but, see below, registers no phone number.
 
-What to do: before upgrading, note each tenant's `allowedPrefixes`; after `migrate`, set `phoneRegions`
-for those tenants in the admin console (Challenge settings) or through the API. Until then the tenant
-accepts numbers from every country. A `PUT` that still sends `allowedPrefixes` and no `phoneRegions` is
-a `400`. Rolling back to the previous version needs the column back: restore the pre-`migrate` dump.
+Self-registration is no longer a per-client switch. An **email** always registers. A **phone number** registers
+only when its region has `registration: true`, whatever client the user came through; a tenant with no regions
+registers no phone number, though any number can still sign in. A client's `registrationFlow` keeps only what a
+registered account goes through (the extra challenge, the roles): a client without one uses the default (the
+one-time code and the `user` role), so **every client that signs in by email now lets anyone register, including
+those that had registration off** -- turn nothing off by removing the flow, there is no way to close email
+registration for a client. Nothing stored is rewritten.
+
+What to do: before upgrading, note each tenant's `allowedPrefixes` and which phone clients had registration on; after `migrate`, set `phoneRegions`
+for those tenants in the admin console (Challenge settings; it offers ready-made countries) or through the API,
+with `registration` on for the countries whose numbers may sign up. Until then the tenant accepts numbers from
+every country to sign in and registers none. A `PUT` that still sends `allowedPrefixes` and no `phoneRegions` is
+rejected. Rolling back to the previous version needs the column back: restore the pre-`migrate` dump.
 
 #### Breaking change: clients are registered and updated per kind
 

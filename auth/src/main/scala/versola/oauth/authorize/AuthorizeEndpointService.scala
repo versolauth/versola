@@ -75,7 +75,7 @@ object AuthorizeEndpointService:
         _ <- ZIO.foreachDiscard(request.userAgentCookie)(cookie => Observability.setUserAgentId(cookie.id.toString))
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
-        registrationFlow = client.flatMap(_.registrationFlow)
+        registrationFlow = client.flatMap(_.effectiveRegistrationFlow)
         flow <- ZIO
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))

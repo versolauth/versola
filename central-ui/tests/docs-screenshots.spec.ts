@@ -201,8 +201,9 @@ test('client create form', async ({ page }) => {
 });
 
 test('client registration flow form', async ({ page }) => {
-  // Registration challenge and role assignment are edit-page refinements now - creation only
-  // asks whether sign-up is on at all - so this shot comes from editing an existing client.
+  // Registration challenge and role assignment are edit-page refinements: there is no sign-up
+  // switch on the client (a phone number registers when its country allows it), so this shot
+  // comes from editing an existing client.
   await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: 'Open client storefront-web', exact: true }).click();
@@ -210,8 +211,6 @@ test('client registration flow form', async ({ page }) => {
   // Each group of settings has its own Edit button on the client's page.
   await page.getByRole('button', { name: 'Edit registration and consent', exact: true }).click();
 
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
   await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
 
   await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');

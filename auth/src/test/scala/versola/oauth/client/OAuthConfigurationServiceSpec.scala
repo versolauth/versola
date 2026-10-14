@@ -87,7 +87,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
   val testLocales = Locales(Vector(LocaleRecord("en", "English")), "en")
   val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}")),
+    phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}", true)),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -262,7 +262,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       for
         env <- makeEnv()
         result <- env.getPhoneRegions(clientId1)
-      yield assertTrue(result == List(PhoneRegion("US", "+1", 10, "\\d{10}")))
+      yield assertTrue(result == List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
     },
     test("getPhoneRegions returns Nil for unknown client") {
       for

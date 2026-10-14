@@ -17,11 +17,12 @@ import zio.test.*
   */
 object PhoneRegionsSpec extends E2ESpec:
 
-  private def region(code: String, dialCode: String, length: Int, regex: String): String =
-    s"""{"region":"$code","dialCode":"$dialCode","length":$length,"regex":"${regex.replace("\\", "\\\\")}"}"""
+  private def region(code: String, dialCode: String, length: Int, regex: String, registration: Boolean = true): String =
+    s"""{"region":"$code","dialCode":"$dialCode","length":$length,"regex":"${regex.replace("\\", "\\\\")}","registration":$registration}"""
 
   // Flows.setupPhoneOtp registers a German mobile number: +49 151 and eight more digits.
   private val de = region("DE", "+49", 11, "15\\d{9}")
+  private val deNoRegistration = region("DE", "+49", 11, "15\\d{9}", registration = false)
   private val kz = region("KZ", "+7", 10, "7\\d{9}")
 
   private def withRegions[A](auth: OAuthClient, regions: String*)(use: => Task[A]): Task[A] =
@@ -71,6 +72,24 @@ object PhoneRegionsSpec extends E2ESpec:
           yield (submit.response.status, next.step)
         }
       yield assertTrue(status._1 == Status.BadRequest, status._2 == Some(ConversationStep.Credential))
+    },
+    test("a new number registers only when its region allows registration") {
+      def newNumber = f"+49151${java.util.UUID.randomUUID().getLeastSignificantBits.abs % 100_000_000L}%08d"
+      def attempt(auth: OAuthClient, s: Flows.Setup, phone: String) =
+        for
+          authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+          cookie = authorize.conversationCookie.get
+          challenge <- auth.getChallenge(cookie)
+          _ <- auth.submitPhone(cookie, phone, challenge.csrf)
+          otp <- auth.getChallenge(cookie)
+          _ <- auth.submitOtp(cookie, "123456", otp.csrf)
+          next <- auth.getChallenge(cookie)
+        yield next.step
+      for
+        (s, auth) <- setup(Flows.Id.PhoneRegistration)
+        closed <- withRegions(auth, deNoRegistration)(attempt(auth, s, newNumber))
+        open <- withRegions(auth, de)(attempt(auth, s, newNumber))
+      yield assertTrue(closed != Some(ConversationStep.SetPassword), open == Some(ConversationStep.SetPassword))
     },
     test("central refuses a region whose regex does not compile") {
       for

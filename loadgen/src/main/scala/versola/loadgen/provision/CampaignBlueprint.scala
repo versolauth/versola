@@ -412,7 +412,10 @@ object CampaignBlueprint:
     val profile = if provision.fapi2 then "fapi2" else "standard"
 
     val challengeSettings = ChallengeSettingsSpec(
-      phoneRegions = Nil,
+      // The population's phones are German mobiles (`PopulationPlan.phoneOf`): `+49` and eleven digits
+      // starting 15, 16 or 17. Registration is the country's say, so the scenarios that register a
+      // new user need it to say yes; a population under another `phone-prefix` needs its own region.
+      phoneRegions = List(PhoneRegionSpec("DE", "+49", 11, "1[5-7]\\d{9}", registration = true)),
       otpLength = 6,
       otpResendAfterSeconds = 60,
       passkeyRpId = provision.passkey.rpId,

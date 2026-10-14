@@ -136,9 +136,10 @@ case class AuthRequestPresetsSpec(
   *                        this must stay `standard` unless the client shapes above change too.
   */
 /** One entry of the tenant's `phoneRegions` (ISO alpha-2 region, dial code, digit count after the dial
-  * code, full-match regex over those digits). An empty list means any E.164 number.
+  * code, full-match regex over those digits, whether a number of it may register). An empty list means
+  * any E.164 number may sign in and none may register.
   */
-case class PhoneRegionSpec(region: String, dialCode: String, length: Int, regex: String)
+case class PhoneRegionSpec(region: String, dialCode: String, length: Int, regex: String, registration: Boolean)
 
 case class ChallengeSettingsSpec(
     phoneRegions: List[PhoneRegionSpec],

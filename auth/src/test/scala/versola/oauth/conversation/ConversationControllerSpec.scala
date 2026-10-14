@@ -781,7 +781,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
-        _ <- configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("GB", "+44", 10, "7\\d{9}")))
+        _ <- configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("GB", "+44", 10, "7\\d{9}", true)))
 
         response <- client.batched(
           Request.post(

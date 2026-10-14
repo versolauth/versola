@@ -4,10 +4,10 @@ import versola.util.UnitSpecBase
 import zio.test.*
 
 object PhoneRegionSpec extends UnitSpecBase:
-  private val kz = PhoneRegion("KZ", "+7", 10, "7\\d{9}")
-  private val ru = PhoneRegion("RU", "+7", 10, "9\\d{9}")
-  private val us = PhoneRegion("US", "+1", 10, "\\d{10}")
-  private val bs = PhoneRegion("BS", "+1242", 7, "\\d{7}")
+  private val kz = PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)
+  private val ru = PhoneRegion("RU", "+7", 10, "9\\d{9}", true)
+  private val us = PhoneRegion("US", "+1", 10, "\\d{10}", true)
+  private val bs = PhoneRegion("BS", "+1242", 7, "\\d{7}", true)
 
   def spec = suite("PhoneRegion")(
     suite("allows")(
@@ -36,6 +36,21 @@ object PhoneRegionSpec extends UnitSpecBase:
       },
       test("refuses a number whose national part is not all digits") {
         assertTrue(!PhoneRegion.allows(List(kz), "+7701123456a"))
+      },
+    ),
+    suite("allowsRegistration")(
+      test("follows the region the number belongs to, not the dial code") {
+        val closedRu = ru.copy(registration = false)
+        assertTrue(
+          PhoneRegion.allowsRegistration(List(kz, closedRu), "+77011234567"),
+          !PhoneRegion.allowsRegistration(List(kz, closedRu), "+79011234567"),
+        )
+      },
+      test("opens nothing when the tenant lists no regions or none fits the number") {
+        assertTrue(
+          !PhoneRegion.allowsRegistration(Nil, "+77011234567"),
+          !PhoneRegion.allowsRegistration(List(kz), "+79011234567"),
+        )
       },
     ),
     suite("resolve")(

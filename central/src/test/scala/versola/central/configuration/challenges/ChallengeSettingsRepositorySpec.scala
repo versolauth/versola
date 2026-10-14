@@ -24,7 +24,7 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
 
   private def settingsFor(tenantId: TenantId) = ChallengeSettingsRecord(
     tenantId = tenantId,
-    phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}"), PhoneRegion("GB", "+44", 10, "7\\d{9}")),
+    phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true), PhoneRegion("GB", "+44", 10, "7\\d{9}", true)),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 30,

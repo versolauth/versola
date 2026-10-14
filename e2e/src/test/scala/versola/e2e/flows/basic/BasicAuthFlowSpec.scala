@@ -203,7 +203,27 @@ object BasicAuthFlowSpec extends E2ESpec:
         assertTrue(userinfo.email.contains(s.email.get))
           .label(s"userinfo 'email' must be ${s.email.get}")
     },
-    test("unknown credential without registration rejects the fake OTP") {
+    test("an unknown phone number whose region does not allow registration rejects the fake OTP") {
+      val unknownPhone = f"+49151${UUID.randomUUID().getLeastSignificantBits.abs % 100_000_000L}%08d"
+      val closed = """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":false}]"""
+      for
+        (s, auth) <- setup(Flows.Id.PhoneOtp)
+        challenge3 <- ZIO.acquireReleaseWith(
+          auth.upsertChallengeSettings(phoneRegions = closed) *> auth.syncConfiguration(),
+        )(_ => (auth.upsertChallengeSettings() *> auth.syncConfiguration()).orDie): _ =>
+          for
+            authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri)).assertChallengeRedirect
+            cookie = authorize.conversationCookie.get
+            challenge1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+            _ <- auth.submitPhone(cookie, unknownPhone, challenge1.csrf)
+            challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+            _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf)
+            challenge3 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+          yield challenge3
+      yield assertTrue(challenge3.html.contains("Invalid verification code"))
+        .label("an unknown number of a country that does not register must reject the fake OTP")
+    },
+    test("an unknown email registers through the default flow when the client sets none") {
       val unknownEmail = s"unknown-${UUID.randomUUID()}@example.test"
       for
         (s, auth) <- setup(Flows.Id.EmailOtp)
@@ -213,9 +233,9 @@ object BasicAuthFlowSpec extends E2ESpec:
         challenge1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitEmail(cookie, unknownEmail, challenge1.csrf)
         challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf)
-        challenge3 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-      yield assertTrue(challenge3.html.contains("Invalid verification code"))
-        .label("an unknown credential must reject the fake OTP")
+        _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf).assertRedirect(auth, cookie)
+        exists <- auth.userExistsByEmail(unknownEmail)
+      yield assertTrue(exists)
+        .label("an email nobody has used registers: registration is not a per-client switch")
     },
   ) @@ TestAspect.sequential @@ TestAspect.timeout(60.seconds)

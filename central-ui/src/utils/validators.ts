@@ -497,7 +497,7 @@ export function getValidationError(type: string): string {
  * Returns one error per row index (undefined when the row is fine).
  */
 export function validatePhoneRegions(
-  regions: Array<{ region: string; dialCode: string; length: number; regex: string }>,
+  regions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>,
 ): Array<string | undefined> {
   const seen = new Map<string, number>();
   return regions.map(r => {

@@ -42,7 +42,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+      phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
       submissionLimits = SubmissionLimits.empty,
       otpLength = 6,
       otpResendAfter = 30,
@@ -123,7 +123,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
 
   private def upsertWithProfile(
       profile: Option[SecurityProfile],
-      regions: List[PhoneRegion] = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+      regions: List[PhoneRegion] = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
   ): Request =
     Request(
       method = Method.PUT,
@@ -156,7 +156,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
   def spec = suite("OtpChallengeController")(
     controllerTestCase(
       description = "PUT challenge-settings refuses a phone region whose regex does not compile",
-      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "[7"))),
+      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "[7", true))),
       expectedStatus = Status.BadRequest,
       settingsSetup = service =>
         service.getSettings.succeedsWith(None) *>
@@ -169,7 +169,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "PUT challenge-settings accepts regions that share a dial code",
-      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "7\\d{9}"), PhoneRegion("RU", "+7", 10, "9\\d{9}"))),
+      request = upsertWithProfile(None, List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true), PhoneRegion("RU", "+7", 10, "9\\d{9}", true))),
       expectedStatus = Status.NoContent,
       settingsSetup = service =>
         service.getSettings.succeedsWith(None) *>
@@ -336,7 +336,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -385,7 +385,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -426,7 +426,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -463,7 +463,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -499,7 +499,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -537,7 +537,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -576,7 +576,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -616,7 +616,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -652,7 +652,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -689,7 +689,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,
@@ -727,7 +727,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         body = Body.fromString(
           UpsertChallengeSettingsRequest(
             tenantId = tenantId,
-            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}")),
+            phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true)),
             submissionLimits = SubmissionLimits.empty,
             otpLength = 6,
             otpResendAfter = 30,

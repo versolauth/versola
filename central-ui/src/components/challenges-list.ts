@@ -14,6 +14,7 @@ import {
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
 import { validateRedirectUri, validatePhoneRegions } from '../utils/validators';
+import { PHONE_REGION_PRESETS, appendPresets } from '../utils/phone-region-presets';
 import './content-header';
 import './code-editor';
 import './authorization-detail-types-list';
@@ -61,6 +62,9 @@ export class VersolaChallengesList extends LitElement {
   @state() private editingSettings = false;
   @state() private editRegions: PhoneRegion[] = [];
   @state() private regionErrors: Array<string | undefined> = [];
+  @state() private presetsOpen = false;
+  @state() private presetSearch = '';
+  @state() private presetChosen = new Set<string>();
   @state() private isSavingSettings = false;
   @state() private settingsError = '';
 
@@ -402,7 +406,7 @@ export class VersolaChallengesList extends LitElement {
       .region-editor { display: flex; flex-direction: column; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
       .region-row {
         display: grid;
-        grid-template-columns: 5rem 6rem 5rem minmax(8rem, 1fr) auto;
+        grid-template-columns: 5rem 6rem 5rem minmax(8rem, 1fr) auto auto;
         gap: var(--spacing-sm);
         align-items: center;
       }
@@ -411,6 +415,43 @@ export class VersolaChallengesList extends LitElement {
       .region-actions { display: flex; gap: var(--spacing-xs); }
       .region-error { grid-column: 1 / -1; margin-top: 0; }
       .region-chip { white-space: normal; }
+      .region-chip .signup-mark {
+        margin-left: var(--spacing-xs);
+        font-family: var(--font-family);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        color: var(--success);
+        border: 1px solid var(--success);
+        border-radius: 999px;
+        padding: 0 0.4rem;
+        white-space: nowrap;
+      }
+      .region-reg { display: inline-flex; align-items: center; justify-content: center; margin: 0; text-transform: none; letter-spacing: normal; font-size: 0.8125rem; color: var(--text-secondary); white-space: nowrap; }
+      .region-reg input { width: 1rem; height: 1rem; accent-color: var(--accent); }
+      .preset-picker {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
+        padding: var(--spacing-md);
+        margin-bottom: var(--spacing-md);
+      }
+      .preset-title { font-size: 0.875rem; font-weight: 600; color: var(--text-primary); margin-bottom: var(--spacing-xs); }
+      .preset-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+        gap: var(--spacing-xs) var(--spacing-md);
+        max-height: 16rem;
+        overflow-y: auto;
+        margin: var(--spacing-sm) 0 var(--spacing-md);
+      }
+      .preset-item { text-transform: none; letter-spacing: normal; margin: 0; display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) 0; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer; min-height: 1.5rem; }
+      .preset-item input { width: 1rem; height: 1rem; accent-color: var(--accent); flex: none; }
+      .preset-item .iso { font-family: var(--font-mono); font-weight: 600; color: var(--accent); }
+      .preset-item .meta { white-space: nowrap; color: var(--text-secondary); font-size: 0.75rem; }
+      .preset-item.present { opacity: 0.55; cursor: default; }
+      .preset-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; }
+      .region-actions-bar { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); }
       @media (max-width: 720px) {
         .region-row { grid-template-columns: 1fr 1fr; }
         .region-head { display: none; }
@@ -1003,10 +1044,47 @@ export class VersolaChallengesList extends LitElement {
     }
   }
 
+  private renderPresetPicker() {
+    const q = this.presetSearch.trim().toLowerCase();
+    const present = new Set(this.editRegions.map(r => r.region.trim().toUpperCase()));
+    const shown = PHONE_REGION_PRESETS.filter(p =>
+      q === '' || p.region.toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.dialCode.includes(q));
+    const count = this.presetChosen.size;
+    return html`
+      <div class="preset-picker" role="dialog" aria-label="Add from presets" data-testid="preset-picker"
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this.closePresets(); } }}>
+        <div class="preset-title">Add countries</div>
+        <div class="hint" style="margin-bottom: var(--spacing-sm);">
+          Each is added with registration on; untick it per row afterwards. Patterns are loose on purpose: the real number is also checked against libphonenumber.
+        </div>
+        ${PHONE_REGION_PRESETS.length > 8 ? html`
+          <input type="search" class="form-control compact-input" aria-label="Search presets" placeholder="Search country, code or dial code"
+            .value=${this.presetSearch} @input=${(e: Event) => { this.presetSearch = (e.target as HTMLInputElement).value; }} />` : nothing}
+        <div class="preset-list">
+          ${shown.length === 0 ? html`<div class="hint">No country matches.</div>` : shown.map(p => html`
+            <label class="preset-item ${present.has(p.region) ? 'present' : ''}">
+              <input type="checkbox" aria-label="${p.name}" ?disabled=${present.has(p.region)}
+                .checked=${present.has(p.region) || this.presetChosen.has(p.region)}
+                @change=${(e: Event) => this.togglePreset(p.region, (e.target as HTMLInputElement).checked)} />
+              <span class="iso">${p.region}</span>
+              <span>${p.name}</span>
+              <span class="meta">${p.dialCode} · ${p.length} digits${present.has(p.region) ? ' · already listed' : ''}</span>
+            </label>`)}
+        </div>
+        <div class="preset-actions">
+          <button class="btn btn-secondary" @click=${() => this.closePresets()}>Cancel</button>
+          <button class="btn btn-secondary" ?disabled=${count === 0} @click=${() => this.confirmPresets()}>
+            ${count === 0 ? 'Add selected' : `Add ${count} selected`}
+          </button>
+        </div>
+      </div>`;
+  }
+
   private startEditSettings() {
     this.editingSettings = true;
     this.editRegions = this.phoneRegions.map(r => ({ ...r }));
     this.regionErrors = [];
+    this.closePresets();
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
@@ -1036,8 +1114,32 @@ export class VersolaChallengesList extends LitElement {
     this.settingsError = '';
   }
 
+  private openPresets() {
+    this.presetChosen = new Set();
+    this.presetSearch = '';
+    this.presetsOpen = true;
+  }
+
+  private closePresets() {
+    this.presetsOpen = false;
+    this.presetSearch = '';
+    this.presetChosen = new Set();
+  }
+
+  private togglePreset(region: string, on: boolean) {
+    const next = new Set(this.presetChosen);
+    if (on) next.add(region); else next.delete(region);
+    this.presetChosen = next;
+  }
+
+  private confirmPresets() {
+    this.editRegions = appendPresets(this.editRegions, this.presetChosen);
+    this.regionErrors = [];
+    this.closePresets();
+  }
+
   private addRegion() {
-    this.editRegions = [...this.editRegions, { region: '', dialCode: '', length: 10, regex: '' }];
+    this.editRegions = [...this.editRegions, { region: '', dialCode: '', length: 10, regex: '', registration: false }];
     this.regionErrors = [];
   }
 
@@ -1100,6 +1202,7 @@ export class VersolaChallengesList extends LitElement {
       dialCode: r.dialCode.trim(),
       length: Number(r.length),
       regex: r.regex.trim(),
+      registration: r.registration === true,
     }));
     const regionErrors = validatePhoneRegions(regions);
     this.regionErrors = regionErrors;
@@ -1484,7 +1587,7 @@ export class VersolaChallengesList extends LitElement {
             ? html`<div class="hint">No regions configured. Any E.164 phone number is accepted.</div>`
             : html`
               <div class="prefix-tags">
-                ${this.phoneRegions.map(r => html`<span class="prefix-tag region-chip">${r.region} ${r.dialCode} · ${r.length} digits · ${r.regex}</span>`)}
+                ${this.phoneRegions.map(r => html`<span class="prefix-tag region-chip">${r.region} ${r.dialCode} · ${r.length} digits · ${r.regex}${r.registration ? html`<span class="signup-mark" title="Numbers from this region can register">sign-up</span>` : nothing}</span>`)}
               </div>
             `}
         </div>
@@ -1678,6 +1781,7 @@ export class VersolaChallengesList extends LitElement {
         <div class="hint">
           Regions in the order the login form lists them. Region is an ISO 3166-1 alpha-2 code; length is the digits after the dial code;
           the regex is matched in full against those digits. Several regions may share a dial code. Leave empty to accept any E.164 number.
+          Registration decides whether a number from that region may create an account; with no region ticked, nobody can register by phone.
         </div>
 
         ${this.editRegions.length === 0
@@ -1685,7 +1789,7 @@ export class VersolaChallengesList extends LitElement {
           : html`
             <div class="region-editor">
               <div class="region-row region-head">
-                <span>Region</span><span>Dial code</span><span>Length</span><span>Regex</span><span></span>
+                <span>Region</span><span>Dial code</span><span>Length</span><span>Regex</span><span>Registration</span><span></span>
               </div>
               ${this.editRegions.map((r, i) => html`
                 <div class="region-row" data-testid="region-row">
@@ -1697,6 +1801,10 @@ export class VersolaChallengesList extends LitElement {
                     @input=${(e: Event) => this.updateRegion(i, { length: parseInt((e.target as HTMLInputElement).value) })} />
                   <input type="text" class="form-control compact-input" aria-label="Regex" .value=${r.regex} placeholder="7\\d{9}"
                     @input=${(e: Event) => this.updateRegion(i, { regex: (e.target as HTMLInputElement).value })} />
+                  <label class="region-reg">
+                    <input type="checkbox" aria-label="Registration" .checked=${r.registration === true}
+                      @change=${(e: Event) => this.updateRegion(i, { registration: (e.target as HTMLInputElement).checked })} />
+                  </label>
                   <span class="region-actions">
                     <button class="icon-action" ?disabled=${i === 0} @click=${() => this.moveRegion(i, -1)} title="Move up" aria-label="Move up">↑</button>
                     <button class="icon-action" ?disabled=${i === this.editRegions.length - 1} @click=${() => this.moveRegion(i, 1)} title="Move down" aria-label="Move down">↓</button>
@@ -1708,7 +1816,13 @@ export class VersolaChallengesList extends LitElement {
             </div>
           `}
 
-        <button class="btn btn-secondary" @click=${() => this.addRegion()}>+ Add Region</button>
+        ${this.presetsOpen ? this.renderPresetPicker() : nothing}
+
+        <div class="region-actions-bar">
+          <button class="btn btn-secondary" @click=${() => this.addRegion()}>+ Add Region</button>
+          <button class="btn btn-secondary" aria-haspopup="dialog" aria-expanded=${this.presetsOpen ? 'true' : 'false'}
+            @click=${() => (this.presetsOpen ? this.closePresets() : this.openPresets())}>Add from presets</button>
+        </div>
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 

@@ -1401,8 +1401,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
       /** The JWKS key this tenant's tokens are signed with. `None` clears the selection,
         * which puts the tenant back on auth's own configured private key. */
       signingKeyId: Option[String] = None,
-      /** The tenant's accepted phone regions as a JSON array; `[]` accepts any E.164 number. */
-      phoneRegions: String = "[]",
+      /** The tenant's accepted phone regions as a JSON array; `[]` accepts any E.164 number for sign-in
+        * and lets none register. The default is the German mobiles the suite's users have, with
+        * registration on, because registering a phone number is the country's say. */
+      phoneRegions: String = OAuthClient.germanMobileRegion,
   ): Task[Unit] =
     val vocabJson =
       if acrVocabulary.isEmpty then "null"
@@ -1784,6 +1786,10 @@ final class OAuthClient(client: Client, config: E2EConfig):
     java.net.URLEncoder.encode(s, "UTF-8")
 
 object OAuthClient:
+
+  /** `+49` and eleven digits starting 15, 16 or 17: the numbers the suite's users are given. */
+  val germanMobileRegion: String =
+    """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":true}]"""
 
   /** Creates the suite's `standard` tenant first -- see [[SecurityProfiles]]. */
   val live: ZLayer[Client & E2EConfig, Nothing, OAuthClient] =

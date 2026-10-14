@@ -32,6 +32,8 @@ case class PhoneRegion(
     dialCode: String,
     length: Int,
     regex: String,
+    /** Whether a number of this region may create an account on its own. */
+    registration: Boolean,
 ) derives JsonCodec:
   private lazy val pattern = java.util.regex.Pattern.compile(regex)
 
@@ -49,6 +51,13 @@ object PhoneRegion:
       .filter(region => e164.startsWith(region.dialCode))
       .sortBy(region => -region.dialCode.length)
       .find(region => region.accepts(e164.drop(region.dialCode.length)))
+
+  /** Whether a new account may be created from this number. A list that names no region for it
+    * opens nothing: self-registration is granted by a country, so no countries means no
+    * registration (signing in is unaffected).
+    */
+  def allowsRegistration(regions: List[PhoneRegion], e164: String): Boolean =
+    resolve(regions, e164).exists(_.registration)
 
   /** An empty list restricts nothing: the tenant has not chosen the countries it takes. */
   def allows(regions: List[PhoneRegion], e164: String): Boolean =

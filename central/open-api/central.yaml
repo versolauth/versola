@@ -2335,9 +2335,12 @@ components:
     RegistrationFlow:
       type: object
       description: |
-        Self-service account creation. Allowed only alongside an `authFlow` whose primary
-        credentials are phone or email. OTP must be the first step; the account is created
-        once OTP succeeds, before any password or passkey step.
+        What a self-registered account goes through, and the roles it gets. Allowed only alongside an
+        `authFlow` whose primary credentials are phone or email. OTP must be the first step; the account
+        is created once OTP succeeds, before any password or passkey step. There is no switch: an email
+        always registers, and whether a phone number may is the `registration` flag of its region in the
+        tenant's challenge settings (`phoneRegions`). A client without a `registrationFlow` registers
+        through the default one: the OTP step and the `user` role.
       properties:
         credential:
           $ref: '#/components/schemas/RegistrationCredential'
@@ -4236,7 +4239,13 @@ components:
         regex:
           type: string
           description: Java regular expression the digits after the dial code must match in full.
-      required: [region, dialCode, length, regex]
+        registration:
+          type: boolean
+          description: |
+            Whether a number of this region may create an account on its own. Self-registration by phone is
+            decided by the country, not by the client: a client that signs in by phone registers a new user
+            only when the number's region says `true`. A tenant that lists no regions registers no phone number.
+      required: [region, dialCode, length, regex, registration]
     PhoneRegions:
       type: array
       description: |

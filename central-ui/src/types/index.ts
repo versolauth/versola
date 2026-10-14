@@ -208,6 +208,8 @@ export interface PhoneRegion {
   length: number;
   /** Java regex matched in full against those digits. */
   regex: string;
+  /** A number from this region may create an account by phone; no region listed means nobody can. */
+  registration: boolean;
 }
 
 export interface ChallengeSettingsRecord {
