@@ -41,7 +41,7 @@
       },
       {
         "name": "namespace",
-        "label": "Environment",
+        "label": "Namespace",
         "type": "query",
         "datasource": {
           "type": "prometheus",

@@ -16,7 +16,7 @@ info:
     The response is cacheable for 24 hours. On encountering an unknown `kid`, refetch rather
     than waiting for the cache to expire.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

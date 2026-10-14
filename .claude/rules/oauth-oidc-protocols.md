@@ -22,6 +22,7 @@ the product promises.
 | `rfc6749` | OAuth 2.0 |
 | `rfc7009` | Token Revocation |
 | `rfc7517`, `rfc7519` | JWK, JWT |
+| `rfc7523` | JWT client authentication |
 | `rfc7636` | PKCE |
 | `rfc7662` | Token Introspection |
 | `rfc8176` | Authentication Method Reference values |
@@ -31,10 +32,12 @@ the product promises.
 | `rfc9101` | JWT-Secured Authorization Request (JAR) |
 | `rfc9126` | Pushed Authorization Requests (PAR) |
 | `rfc9396` | Rich Authorization Requests |
+| `rfc9207` | Authorization response `iss` parameter |
 | `rfc9449` | DPoP |
 | `rfc9470` | Step-up authentication |
 | `oidc-core` | OpenID Connect Core |
 | `jarm` | JWT Secured Authorization Response Mode |
+| `oidc-logout` | OpenID Connect logout specifications |
 | `fapi2` | FAPI 2.0 Security Profile |
 | `oauth21-draft` | OAuth 2.1 (draft) |
 
@@ -104,5 +107,5 @@ Established by the current code; the checklists above have the rest.
 
 Spec citation in a comment, unit test (both profiles where relevant), e2e test across
 `auth`/`edge`/`central` (CLAUDE.md "Test Coverage Rules"), `open-api` YAML and discovery metadata
-updated (`openapi-specs.md`), the standard's checklist page in `versola-website` updated if a
-requirement or its test changed, and the PR says which standard section the change follows.
+updated (`openapi-specs.md`), the standard's checklist page in `versola-website` updated or created if a
+requirement or its test changed (`documentation.md`), and the PR says which standard section the change follows.

@@ -12,10 +12,14 @@ info:
     traffic — only to the admin console (`central-ui`).
 
     This reference covers the admin console surface. Central also exposes internal
-    replication endpoints (`/sync`, `/registry`) that auth and edge use to pull configuration;
-    those are not part of this document. The same goes for the endpoints auth calls with its own
-    service credentials (`POST /users/registrations`, `PUT /users/email`, `PUT /users/phone`): they
-    are not reachable with the admin credentials below and are deliberately left out.
+    endpoints that auth and edge call, authenticated with a bearer token those services sign
+    rather than with the HTTP Basic credentials below; they are not part of this document:
+    the replication endpoints (`/sync`, `/registry`, including `/configuration/jwks/sync` and
+    `/configuration/jwks/signing-keys/sync`), `POST /users/registrations` (auth reports a user
+    who registered themselves so that central can index them), `PUT /users/email` and
+    `PUT /users/phone` (auth sets a user's email or phone once the user has proven they own the new
+    one) and `POST /configuration/clients/edge-certificate/sign` (an edge asks for a certificate
+    for a client whose key it generated).
 
     ## Authentication
 
@@ -35,7 +39,7 @@ info:
     * Secrets and private keys are returned exactly once, at creation or rotation time.
       Central stores only encrypted copies and cannot show them again.
   license:
-    name: Apache-2.0
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 externalDocs:
@@ -414,6 +418,39 @@ paths:
           description: Previous secret removed.
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /configuration/clients/edge-certificate/renew:
+    post:
+      tags: [Clients]
+      summary: Renew a managed edge client certificate
+      description: |
+        Issues a new certificate now for a client whose certificate central manages (one
+        registered with `issueEdgeClientCertificate`), instead of waiting for the scheduled
+        renewal -- after a change of certificate authority, say.
+
+        Answers `404 Not Found` for a client whose certificate central does not manage: one
+        registered with a certificate the operator supplied, one enrolled with
+        `enrollEdgeClientCertificate`, or one that does not exist.
+      operationId: renewEdgeClientCertificate
+      parameters:
+        - $ref: '#/components/parameters/ClientIdQuery'
+      responses:
+        '204':
+          description: Certificate renewed.
+        '400':
+          description: The client's registration cannot be issued a certificate (for example no certificate authority is configured).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Central does not manage the certificate of this client.
+          content:
+            text/plain:
+              schema:
+                type: string
 
   /configuration/auth-request-presets:
     get:
@@ -1534,6 +1571,61 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /configuration/jwks/keys:
+    get:
+      tags: [JWKS]
+      summary: List the keys with their algorithms
+      description: |
+        Each stored key with the algorithm it is published under and whether central can sign
+        with it, for choosing a tenant's signing key. Carries no key material: `canSign` only
+        says whether a private half exists.
+      operationId: listJwksKeys
+      responses:
+        '200':
+          description: The keys.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JwksKeys'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/jwks/generate:
+    post:
+      tags: [JWKS]
+      summary: Generate a signing key
+      description: |
+        Generates a keypair for `alg`, publishes its public half to the key set and keeps the
+        private half, encrypted. Publishing does not put the key into use: a tenant has to
+        select it as its signing key, which is what makes a rotation safe -- every verifier
+        learns the key before anything signs with it.
+      operationId: generateJwk
+      parameters:
+        - name: alg
+          in: query
+          required: true
+          description: |
+            The algorithm the key is generated for and published under. `HS256` is refused: a
+            shared secret is not a JWKS key.
+          schema:
+            type: string
+            enum: [RS256, PS256, ES256]
+      responses:
+        '201':
+          description: Key generated and published.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneratedJwk'
+        '400':
+          description: The algorithm cannot be generated as a key (`HS256`).
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /configuration/server-metadata:
     get:
       tags: [Server metadata]
@@ -1968,6 +2060,41 @@ components:
           items:
             $ref: '#/components/schemas/Jwk'
       required: [keys]
+
+    JwksKeys:
+      type: object
+      properties:
+        keys:
+          type: array
+          items:
+            $ref: '#/components/schemas/JwkSummary'
+      required: [keys]
+    JwkSummary:
+      type: object
+      properties:
+        kid:
+          type: string
+        algorithm:
+          type: string
+          description: The `alg` the key is published under. Absent when it has no recognised one.
+        keyType:
+          type: string
+          description: The JWK `kty`, when present.
+        curve:
+          type: string
+          description: The JWK `crv`, for an EC key. Absent otherwise.
+        canSign:
+          type: boolean
+          description: Whether central holds the private half, so a tenant can sign with this key.
+      required: [kid, canSign]
+    GeneratedJwk:
+      type: object
+      properties:
+        kid:
+          type: string
+        alg:
+          type: string
+      required: [kid, alg]
 
     # ───────────────────────────── Patches ─────────────────────────────
     PatchDescription:

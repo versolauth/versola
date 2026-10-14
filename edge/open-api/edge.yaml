@@ -51,7 +51,7 @@ info:
     with a proof that includes that nonce. A proof that fails any other check is answered
     `401` with `WWW-Authenticate: DPoP error="invalid_dpop_proof"`.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 externalDocs:
