@@ -109,10 +109,14 @@ object AccountSettingsEdgeSpec extends E2ESpec:
           .label("the deleted passkey must be gone from the page")
     },
     test("changes the caller's password with correct current password") {
+      val newPassword = "NewSecurePass1!"
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
-        caller <- login(s, auth)
-        result <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, "NewSecurePass1!")
+        caller    <- login(s, auth)
+        result    <- auth.edgeChangeAccountPassword(Some(caller.accessToken), s.password, newPassword)
+        // Restore the shared user's password so subsequent tests in this suite can still log in.
+        newCaller <- login(s.copy(password = newPassword), auth)
+        _         <- auth.edgeChangeAccountPassword(Some(newCaller.accessToken), newPassword, s.password)
       yield assertTrue(result.status == Status.NoContent)
     },
     test("rejects a password change when current password is wrong") {

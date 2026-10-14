@@ -3,7 +3,8 @@
  * instead of centered. */
 .account-container {
   width: min(560px, calc(100vw - 40px));
-  max-height: min(720px, calc(100dvh - 40px));
+  max-height: min(800px, calc(100dvh - 40px));
+  padding: 32px 40px 28px;
   text-align: left;
   overflow-y: auto;
 }
@@ -11,7 +12,7 @@
   text-align: center;
 }
 .account-section + .account-section {
-  margin-top: 32px;
+  margin-top: 20px;
 }
 .account-section h2 {
   font-size: 1rem;
@@ -93,8 +94,17 @@
 .account-enroll-error {
   font-size: 0.85rem;
 }
+.account-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.account-password-form .input-field {
+  padding: 9px 14px;
+  font-size: 0.9rem;
+}
 .account-go-back {
-  margin-top: 28px;
+  margin-top: 20px;
 }
 
 .confirmation-backdrop {
@@ -135,4 +145,18 @@
   width: auto;
   padding: 10px 16px;
   font-size: 0.9rem;
+}
+
+.account-password-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* On short viewports the card must not be vertically centred — anchor it
+   near the top so the bottom edge stays in view. */
+body:has(.account-container) {
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 40px;
 }

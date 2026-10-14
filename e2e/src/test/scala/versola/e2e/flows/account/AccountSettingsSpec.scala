@@ -151,10 +151,14 @@ object AccountSettingsSpec extends E2ESpec:
       yield assertTrue(result.status == Status.BadRequest)
     },
     test("changes the caller's password with correct current password") {
+      val newPassword = "NewSecurePass1!"
       for
         (s, auth) <- setup(Flows.Id.LoginPassword)
         caller    <- login(s, auth)
-        result    <- auth.changeAccountPassword(caller, s.password, "NewSecurePass1!")
+        result    <- auth.changeAccountPassword(caller, s.password, newPassword)
+        // Restore the shared user's password so subsequent tests in this suite can still log in.
+        newCaller <- login(s.copy(password = newPassword), auth)
+        _         <- auth.changeAccountPassword(newCaller, newPassword, s.password)
       yield assertTrue(result.status == Status.NoContent)
     },
     test("rejects a password change when current password is wrong") {
