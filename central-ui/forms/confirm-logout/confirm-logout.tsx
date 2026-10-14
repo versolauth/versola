@@ -15,7 +15,7 @@ function ConfirmLogout(props: { config: FormConfig }) {
       </select>
     </Show>
     <h1>{t().title}</h1><p class="logout-description">{t().description}</p>
-    <form method="post" action="/logout">
+    <form method="post" action={`/logout?ui_locale=${encodeURIComponent(locale())}`}>
       <input type="hidden" name="csrf_token" value={props.config.step.csrfToken} />
       <Show when={props.config.step.postLogoutRedirectUri}>
         {uri => <input type="hidden" name="post_logout_redirect_uri" value={uri()} />}

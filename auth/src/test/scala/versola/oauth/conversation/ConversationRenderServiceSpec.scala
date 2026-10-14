@@ -778,7 +778,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg"))
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("conversation-expired")) &&
@@ -786,6 +786,50 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("state=test-state")) &&
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
           assertTrue(!body.contains("\"logo\""))
+      },
+      test("renders the expired page in the locale the user chose, not the tenant default") {
+        val env = Env()
+        val expiredForm = formRecord.copy(
+          id = "conversation-expired",
+          localizations = Map(
+            "en" -> Map("page_title" -> "Conversation expired"),
+            "fr" -> Map("page_title" -> "Conversation expiree"),
+          ),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
+          _ <- env.configuration.getLocales.succeedsWith(consentLocales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderExpired(
+            clientId,
+            redirectUri.encode,
+            Some("test-state"),
+            ResponseMode.Query,
+            Some(List("ru", "fr")),
+          )
+          body <- response.body.asString
+        yield assertTrue(body.contains("<title>Conversation expiree</title>"))
+      },
+      test("renders the expired page in the tenant default when no requested locale is configured") {
+        val env = Env()
+        val expiredForm = formRecord.copy(
+          id = "conversation-expired",
+          localizations = Map(
+            "en" -> Map("page_title" -> "Conversation expired"),
+            "fr" -> Map("page_title" -> "Conversation expiree"),
+          ),
+        )
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
+          _ <- env.configuration.getLocales.succeedsWith(consentLocales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, None, ResponseMode.Query, Some(List("ru")))
+          body <- response.body.asString
+        yield assertTrue(body.contains("<title>Conversation expired</title>"))
       },
       test("renders the expired page with a signed return URI under a JARM response mode") {
         val env = Env()
@@ -801,7 +845,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.QueryJwt)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.QueryJwt, None)
           body <- response.body.asString
         yield assertTrue(
           response.status == Status.Ok,
@@ -821,7 +865,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(expiredForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Fragment)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Fragment, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("#error=login_required")) &&
@@ -835,7 +879,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
+          response <- env.service.renderExpired(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
@@ -917,7 +961,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(unavailableForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query)
+          response <- env.service.renderServiceUnavailable(clientId, redirectUri.encode, Some("test-state"), ResponseMode.Query, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service-unavailable")) &&
@@ -930,14 +974,21 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         val env = Env()
         val step = ConversationStep.Password(0, None, 0, false)
         for
-          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
+      },
+      test("carries the language the form was submitted in to the next step") {
+        val env = Env()
+        val step = ConversationStep.Password(0, None, 0, false)
+        for
+          response <- env.service.renderSubmit(ConversationResult.RenderStep(step), conversationRecord, Some("ru"))
+        yield assertTrue(response.header(Header.Location).map(_.url.encode).contains("/challenge?ui_locale=ru"))
       },
       test("redirects to /challenge on BadRequest") {
         val env = Env()
         for
-          response <- env.service.renderSubmit(ConversationResult.BadRequest, conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.BadRequest, conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.path.encode == "/challenge"))
       },
@@ -951,7 +1002,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
-          response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord)
+          response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service_unavailable"))
@@ -973,7 +1024,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         for
           _ <- env.configuration.getSessionTtl.succeedsWith(1.hour)
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.status == Status.SeeOther) &&
           assertTrue(response.header(Header.Location).exists(_.url.encode.contains("code=" + versola.util.Base64Url.encode(code)))) &&
           assertTrue(response.headers.getAll(Header.SetCookie).exists(c =>
@@ -1004,7 +1055,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
         yield assertTrue(response.header(Header.Location).exists(_.url.encode.contains("id_token=")))
       },
       test("binds the id_token to the state with an s_hash") {
@@ -1027,7 +1078,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getUserAgentTtl.succeedsWith(180.days)
           _ <- env.configuration.get.succeedsWith(clientRecord)
           _ <- env.jwksService.signingKey.succeedsWith(TestEnvConfig.signingKey)
-          response <- env.service.renderSubmit(result, conversationRecord)
+          response <- env.service.renderSubmit(result, conversationRecord, None)
           location = response.header(Header.Location).map(_.url).get
           idToken = location.queryParams.queryParam("id_token").get
           claims <- JWT.deserialize[Json.Obj](idToken, TestEnvConfig.publicKeys, JWT.Type.JWT)
@@ -1059,6 +1110,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderSubmit(
             result,
             conversationRecord.copy(responseMode = ResponseMode.QueryJwt),
+            None,
           )
           location = response.header(Header.Location).map(_.url).get
           claims <- JWT.deserialize[Json.Obj](location.queryParams.queryParam("response").get, TestEnvConfig.publicKeys, JWT.Type.JWT)
@@ -1080,7 +1132,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"))
+          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
@@ -1092,6 +1144,17 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains(redirectUri.addQueryParam("state", "st-1").encode)) &&
           assertTrue(body.contains(".body { color: black; }"))
       },
+      test("renders the signed-out page in the locale the user chose") {
+        val env = Env()
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
+          _ <- env.configuration.getLocales.succeedsWith(consentLocales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderLogout(Nil, None, None, Some(List("fr")))
+          body <- response.body.asString
+        yield assertTrue(body.contains("<title>Connexion</title>"))
+      },
       test("omits redirectUri when postLogoutRedirectUri is absent") {
         val env = Env()
         for
@@ -1099,7 +1162,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, None, None)
+          response <- env.service.renderLogout(Nil, None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(!body.contains("\"redirectUri\"")) &&
@@ -1112,7 +1175,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, Some(redirectUri), None)
+          response <- env.service.renderLogout(Nil, Some(redirectUri), None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))
