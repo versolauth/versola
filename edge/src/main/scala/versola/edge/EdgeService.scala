@@ -589,7 +589,11 @@ object EdgeService:
         // closed. Left streaming, whatever the body had not yet delivered by then dies with the
         // upstream connection, and the caller sees its own connection close mid-body.
         dispatched <- Clock.nanoTime
-        _ <- ProxyMetrics.beforeUpstream(resourceId, dispatched - started)
+        authCall =
+          if session.rotatedCookie.isDefined then ProxyMetrics.AuthCall.Refresh
+          else if endpoint.fetchUserInfo then ProxyMetrics.AuthCall.UserInfo
+          else ProxyMetrics.AuthCall.None
+        _ <- ProxyMetrics.beforeUpstream(resourceId, authCall, dispatched - started)
         response <- ZIO.scoped(httpClient.request(upstream).flatMap(_.collect))
         stripped = response.removeHeader(Header.SetCookie)
       yield session.rotatedCookie.fold(stripped)(stripped.addCookie)
@@ -657,16 +661,16 @@ object EdgeService:
         claims: AccessTokenClaims,
         authSource: AuthSource,
     ): IO[Outcome, Unit] =
-      val boundKey = claims.confirmation.flatMap(_.jkt)
-      val boundCertificate = claims.confirmation.flatMap(_.certificateThumbprint)
-      (boundKey, boundCertificate, authSource) match
-        // Bound to both: the key is only half of what the client proved at issuance, and the
-        // certificate half cannot be shown here, so a valid proof must not be enough.
-        case (Some(_), Some(_), AuthSource.Header(AuthScheme.Dpop)) =>
+      val presentation = authSource match
+        case AuthSource.Cookie(_) => Presentation.Cookie
+        case AuthSource.Header(AuthScheme.Bearer) => Presentation.Bearer
+        case AuthSource.Header(AuthScheme.Dpop) => Presentation.Dpop
+      TokenBinding.check(claims.confirmation, presentation) match
+        case BindingCheck.CertificateOutsideSession =>
           Observability.setError("certificate_bound_token_outside_session") *>
             ZIO.fail(Outcome.Unauthorized)
 
-        case (Some(jkt), _, AuthSource.Header(AuthScheme.Dpop)) =>
+        case BindingCheck.VerifyProof(jkt) =>
           val verified =
             for
               proof <- DpopVerifier.proofHeader(request)
@@ -692,24 +696,16 @@ object EdgeService:
               Observability.setError(s"dpop_${error.productPrefix.toLowerCase}") *>
                 ZIO.fail(Outcome.InvalidDpopProof)
 
-        case (Some(_), _, _) =>
+        case BindingCheck.Downgrade =>
           Observability.setError("dpop_downgrade") *> ZIO.fail(Outcome.InvalidDpopProof)
-
-        // The session cookie is edge's own copy of the token, and the certificate it is bound
-        // to is one edge still holds -- and presents on every call it makes with this token.
-        case (None, Some(_), AuthSource.Cookie(_)) => ZIO.unit
-
-        case (None, Some(_), _) =>
-          Observability.setError("certificate_bound_token_outside_session") *>
-            ZIO.fail(Outcome.Unauthorized)
 
         // A proof signed with some key says nothing about a token that was never bound to
         // one: anyone holding the token could have produced it. §7.1 has the resource server
         // treat the token as invalid rather than fall back to bearer semantics.
-        case (None, None, AuthSource.Header(AuthScheme.Dpop)) =>
+        case BindingCheck.UnboundDpop =>
           Observability.setError("dpop_unbound_token") *> ZIO.fail(Outcome.Unauthorized)
 
-        case (None, None, _) => ZIO.unit
+        case BindingCheck.Accept => ZIO.unit
 
     /** Auth enforces a token's binding on `/userinfo` as strictly as the proxy enforces it
       * here, so the call has to carry whatever that binding names -- and the two are carried

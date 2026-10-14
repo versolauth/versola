@@ -3,7 +3,21 @@ package versola
 import org.scalamock.stubs.ZIOStubs
 import versola.central.CentralConfig
 import versola.central.configuration.challenges.ChallengeSettingsService
+<<<<<<< HEAD
 import versola.central.configuration.clients.{AuthFactor, AuthFactorType, AuthMethod, ClientId, MutualTlsAuth, MutualTlsSubjectType, OAuthClientRecord, OAuthClientService}
+=======
+import versola.central.configuration.clients.{
+  AuthFactor,
+  AuthFactorType,
+  AuthMethod,
+  ClientId,
+  MutualTlsAuth,
+  MutualTlsSubjectType,
+  OAuthClientRecord,
+  OAuthClientService,
+}
+import versola.central.configuration.scopes.ScopeToken
+>>>>>>> origin/main
 import versola.central.configuration.{InjectRule, InjectTarget}
 import com.nimbusds.jose.JWSAlgorithm
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator
@@ -185,6 +199,12 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         !prod.exists((_, path) => path.startsWith("/service")),
         prod.forall(nonProd.contains),
         nonProd.size == prod.size + 2,
+      )
+    },
+    test("offline_access is described without the word refresh, which users do not know") {
+      val description = BootstrapService.scopeDescriptions(ScopeToken("offline_access"))
+      assertTrue(
+        description == Map("en" -> "Long-lived access", "ru" -> "Длительный доступ"),
       )
     },
     test("service:operate covers exactly the service endpoints") {

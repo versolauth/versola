@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createDefaultConsentFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
+import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
 
 const WITH_PARTNER = ['default', 'partner'];
 
@@ -29,5 +29,21 @@ describe('otpTemplateForConsent', () => {
   it('does not pick a partner template for email or when none exists', () => {
     expect(otpTemplateForConsent('default', true, 'email', WITH_PARTNER)).toBe('default');
     expect(otpTemplateForConsent('default', true, 'sms', ['default'])).toBe('default');
+  });
+});
+
+describe('default sign-in flows', () => {
+  it('offers passkey sign-in and a skippable enrollment after the OTP', () => {
+    const flow = createDefaultAuthFlow();
+    expect(flow.primaryCredentials).toEqual(['phone']);
+    expect(flow.passkey).toBe(true);
+    expect(flow.factors).toEqual([
+      { type: 'otp', required: true },
+      { type: 'passkeyEnroll', required: false },
+    ]);
+  });
+
+  it('offers a passkey after the OTP when registering', () => {
+    expect(createDefaultRegistrationFlow().steps).toEqual([{ type: 'otp' }, { type: 'passkeyEnroll' }]);
   });
 });

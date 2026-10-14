@@ -885,6 +885,39 @@ object SecretSchema:
       "",
     ).mkString("\n")
 
+// The authorization-server metadata central is seeded with. Top level so a spec can read it.
+// subject_types_supported is ["public"] only: `sub` is always the user id, and nothing
+// implements pairwise identifiers (OIDC Core §8.1), so advertising it would be wrong.
+def defaultServerMetadata(authUrl: String): String =
+  s"""{
+     |  "issuer": "$authUrl",
+     |  "authorization_endpoint": "$authUrl/authorize",
+     |  "token_endpoint": "$authUrl/token",
+     |  "userinfo_endpoint": "$authUrl/userinfo",
+     |  "jwks_uri": "$authUrl/.well-known/jwks.json",
+     |  "introspection_endpoint": "$authUrl/introspect",
+     |  "revocation_endpoint": "$authUrl/revoke",
+     |  "pushed_authorization_request_endpoint": "$authUrl/par",
+     |  "end_session_endpoint": "$authUrl/logout",
+     |  "scopes_supported": ["openid", "profile", "email", "address", "phone", "offline_access"],
+     |  "response_types_supported": ["code", "code id_token"],
+     |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
+     |  "code_challenge_methods_supported": ["S256"],
+     |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
+     |  "subject_types_supported": ["public"],
+     |  "id_token_signing_alg_values_supported": ["PS256"],
+     |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
+     |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "request_object_signing_alg_values_supported": ["ES256", "PS256"],
+     |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
+     |  "frontchannel_logout_supported": true,
+     |  "frontchannel_logout_session_supported": true,
+     |  "backchannel_logout_supported": true,
+     |  "backchannel_logout_session_supported": true,
+     |  "authorization_response_iss_parameter_supported": true
+     |}""".stripMargin
+
 @main def genEnv(args: String*): Unit =
   cliArgs = parseCliArgs(args)
   val rng = SecureRandom()
@@ -1449,35 +1482,7 @@ object SecretSchema:
   // and then silently replaced -- never served, never even wrong on its own terms. What a
   // JARM response is signed with is a fact about the tenant's own signing key, not something
   // this document could state independently of the JWKS without risking the two disagreeing.
-  val metadata =
-    s"""{
-       |  "issuer": "$authUrl",
-       |  "authorization_endpoint": "$authUrl/authorize",
-       |  "token_endpoint": "$authUrl/token",
-       |  "userinfo_endpoint": "$authUrl/userinfo",
-       |  "jwks_uri": "$authUrl/.well-known/jwks.json",
-       |  "introspection_endpoint": "$authUrl/introspect",
-       |  "revocation_endpoint": "$authUrl/revoke",
-       |  "pushed_authorization_request_endpoint": "$authUrl/par",
-       |  "end_session_endpoint": "$authUrl/logout",
-       |  "scopes_supported": ["openid", "profile", "email", "address", "phone", "offline_access"],
-       |  "response_types_supported": ["code", "code id_token"],
-       |  "response_modes_supported": ["query", "fragment", "jwt", "query.jwt", "fragment.jwt"],
-       |  "code_challenge_methods_supported": ["S256"],
-       |  "grant_types_supported": ["authorization_code", "client_credentials", "refresh_token"],
-       |  "subject_types_supported": ["public", "pairwise"],
-       |  "id_token_signing_alg_values_supported": ["PS256"],
-       |  "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "private_key_jwt"],
-       |  "token_endpoint_auth_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "dpop_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "request_object_signing_alg_values_supported": ["ES256", "PS256"],
-       |  "claims_supported": ["sub", "iss", "aud", "exp", "iat", "jti", "nonce", "auth_time", "acr", "amr", "sid"],
-       |  "frontchannel_logout_supported": true,
-       |  "frontchannel_logout_session_supported": true,
-       |  "backchannel_logout_supported": true,
-       |  "backchannel_logout_session_supported": true,
-       |  "authorization_response_iss_parameter_supported": true
-       |}""".stripMargin
+  val metadata = defaultServerMetadata(authUrl)
 
   section("\n── Edge service ──────────────────────────────────────────────────────")
   val edgePgUrlDefault = if isDockerLocal then pgUrl("postgres:5432", Some("edge"))
@@ -1615,9 +1620,9 @@ object SecretSchema:
        |# Admission control for Argon2id password hashing, which runs on ZIO's unbounded
        |# blocking pool (see Argon2Config). max-concurrent bounds concurrent password hashes:
        |# each holds ~19 MiB of heap for its duration, so worst-case hashing heap is roughly
-       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for auth's 512m
-       |# mem_limit. Raise it only together with the container's memory limit, or logins
-       |# will OOM the pod. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
+       |# max-concurrent * 19 MiB -- the default of 12 (~228 MiB) is sized for the 512m heap
+       |# (-Xmx512m) of the image's JAVA_OPTS; no compose or chart memory limit is derived
+       |# from it here. Raise it only together with the heap, or logins will OOM the JVM. Overridable via ARGON2_MAX_CONCURRENCY without editing this file.
        |argon2 {
        |  max-concurrent = 12
        |  max-concurrent = $${?ARGON2_MAX_CONCURRENCY}
@@ -2072,10 +2077,14 @@ object SecretSchema:
     // whether or not secrets are placeholdered: an interactive prod run registers the public half
     // in central.conf as a literal, and nothing else keeps the private half.
     writeFile(dir, "utils.private-key.jwk", utilityPrivateJwk + "\n")
-    java.nio.file.Files.setPosixFilePermissions(
-      File(dir, "utils.private-key.jwk").toPath,
-      java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
-    )
+    // Windows has no POSIX file attributes: the call throws there, and the file is left to the
+    // user's profile ACLs.
+    val utilsKeyPath = File(dir, "utils.private-key.jwk").toPath
+    if java.nio.file.FileSystems.getDefault.supportedFileAttributeViews.contains("posix") then
+      java.nio.file.Files.setPosixFilePermissions(
+        utilsKeyPath,
+        java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"),
+      )
     println(
       "  Keep utils.private-key.jwk: it is the private key of the `utils` client (loadgen's provision.provisioner-private-key), and is in no generated-secrets file.",
     )

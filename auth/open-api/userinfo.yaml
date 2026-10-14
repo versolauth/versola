@@ -15,7 +15,7 @@ info:
     `GET` and `POST` behave identically; `POST` exists for clients that would otherwise have to
     put the token in a URL.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:

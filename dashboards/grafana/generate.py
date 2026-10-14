@@ -18,7 +18,7 @@ The board is generated, not hand-edited: edit this script, re-run it, commit the
 
 Selectors: Env (the deployment's name, `global.environment` in the chart: prod, stage, qa), Namespace, Tail quantile (p99, p99.9, p99.99, p99.999: the quantile of the tiles and of the graphs
 that split by a dimension), and Service on the database board. Graphs that answer "how is latency?" for a whole service,
-the ingress or the database draw every quantile at once; see QUANTILES.
+the ingress or the database draw p50, p95 and p99 plus the tail quantiles up to the selected one; see QUANTILES.
 
 versola-db.json holds everything about the database: pool, queries, WAL, table sizes, expired-row cleanup. The system board keeps
 only the pool tile of each service. The ingress's key tiles (rate, 5xx, latency, upstream latency) sit at the top of the system
@@ -46,18 +46,28 @@ DS = {"type": "prometheus", "uid": "${datasource}"}
 GREEN, YELLOW, RED = "green", "#EAB839", "red"
 
 # Percentile policy. A graph that is the answer to "how is latency?" for a whole service (or ingress, or the
-# database) fans out every quantile below, so the shape of the tail is visible at once. A tile, or a graph split
-# by a dimension (endpoint, query, peer, grant) with a series per value, follows the Tail quantile selector:
-# a fan per value would be unreadable. p99.99 and p99.999 need ~10^4 / ~10^5 requests in the rate window to
-# mean anything and are limited by the histogram's bucket edges.
-QUANTILES = [(0.5, "p50"), (0.95, "p95"), (0.99, "p99"), (0.999, "p99.9"), (0.9999, "p99.99"), (0.99999, "p99.999")]
+# database) draws p50, p95 and p99, plus the tail quantiles up to the one selected at the top (nothing extra
+# while the selector is on p99, p99.9 on p99.9, p99.9 and p99.99 on p99.99): the far tail is opt-in, because it is
+# noise on a quiet service and makes the graph hard to read. A tile, or a graph split by a dimension (endpoint, query, peer, grant) with a
+# series per value, follows the Tail quantile selector alone: a fan per value would be unreadable. p99.99 and
+# p99.999 need ~10^4 / ~10^5 requests in the rate window to mean anything and are limited by the histogram's
+# bucket edges.
+QUANTILES = [(0.5, "p50"), (0.95, "p95"), (0.99, "p99")]
+# Drawn only while the Tail quantile selector is at or beyond them: p99.99 selected draws p99.9 and p99.99.
+TAIL_QUANTILES = [(0.999, "p99.9"), (0.9999, "p99.99"), (0.99999, "p99.999")]
 TAIL_OPTIONS = (("p99", "0.99"), ("p99.9", "0.999"), ("p99.99", "0.9999"), ("p99.999", "0.99999"))
+# Edge's own overhead: not the requests that waited on auth. A missing label (an edge build before it was added)
+# matches too, so the tile keeps working across an upgrade.
+OWN = ', auth_call!~"userinfo|refresh"'
 TAIL_NOTE = " p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge."
 
 
 def fan(expr_for) -> list[tuple[str, str]]:
-    """One series per quantile; `expr_for(q)` builds the query for quantile q."""
-    return [(expr_for(q), name) for q, name in QUANTILES]
+    """p50, p95, p99 and every tail quantile up to the selected one; `expr_for(q)` builds the query for quantile q.
+
+    A tail series is empty while the selector is below it (the epsilon keeps the float comparison exact)."""
+    tails = [(f"({expr_for(q)}) and on() (vector($tail) > {q - 1e-7:.7f})", name) for q, name in TAIL_QUANTILES]
+    return [(expr_for(q), name) for q, name in QUANTILES] + tails
 
 
 def steps(*pairs: tuple[float | None, str]) -> dict:
@@ -279,7 +289,7 @@ def traffic(b: Board, latency_line: dict | None = None, title: str = "Traffic, e
     b.ts("Server errors (5xx) / s by endpoint", [(f'sum by (method, route) ({b.req_rate(extra + ", status_class=\"5xx\"")})', "{{method}} {{route}}")], unit="reqps", stack=True,
          desc="Empty is healthy. Every series here is a bug or an outage of a dependency; the endpoint says where to start.")
     b.ts("Latency", fan(lambda q: b.quantile(q, extra)), unit="s", line=latency_line,
-         desc="Typical (p50), slow (p95) and worst-case (p99 to p99.999) request." + TAIL_NOTE + " Watch the tail -- averages hide the users who are suffering.")
+         desc="Typical (p50), slow (p95) and slow-tail (p99, and the tail quantiles up to the selected one) request." + TAIL_NOTE + " Watch the tail -- averages hide the users who are suffering.")
     b.ts("Slowest endpoints (${tail:text})", [(f"topk(5, {b.quantile('$tail', extra, by='method, route')})", "{{method}} {{route}}")], unit="s",
          desc="The five endpoints with the highest p99. If overall latency rose, this says which endpoint to blame.")
     b.ts("Client errors (4xx) / s by endpoint", [(f'sum by (method, route, status) ({b.req_rate(extra + ", status_class=\"4xx\"")})', "{{method}} {{route}} {{status}}")], unit="reqps", stack=True,
@@ -458,7 +468,7 @@ def db_queries(b: Board) -> None:
     b.row(f"{b.component} — Queries")
     sel = b.sel
     b.ts("Query latency", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval])))"), unit="s",
-         desc="How long database operations take, every repository and method together: p50 to p99.999." + TAIL_NOTE + " Client side: it includes the network and, for a pooler, the pooler's wait.")
+         desc="How long database operations take, every repository and method together: p50, p95, p99 and the tail quantiles up to the selected one." + TAIL_NOTE + " Client side: it includes the network and, for a pooler, the pooler's wait.")
     b.ts("Queries / s by operation", [(f"topk(8, sum by (repository, operation) (rate(db_client_operation_duration_seconds_count{{{sel}}}[$__rate_interval])))", "{{repository}}.{{operation}}")], unit="ops", minimum=0,
          desc="The eight busiest database operations. Pair with the slowest-queries panel: a slow query that runs rarely matters less than a medium one that runs constantly.")
     b.ts("Slowest queries (${tail:text})", [(f"topk(5, histogram_quantile($tail, sum by (le, repository, operation) (rate(db_client_operation_duration_seconds_bucket{{{sel}}}[$__rate_interval]))))", "{{repository}}.{{operation}}")], unit="s",
@@ -573,9 +583,9 @@ def add_edge(b: Board, phase: str) -> None:
     web = ', route=~"/login.*|/complete|/logout.*|/permissions.*"'
     mobile = ', route=~"/native/.*"'
     overview(b, [
-        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http()}[$__rate_interval])))", dict(
+        ("Edge overhead ${tail:text}", f"histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{b.http(OWN)}[$__rate_interval])))", dict(
             unit="s", thresholds=steps((None, GREEN), (0.015, RED)),
-            desc="What edge adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, the lookup at auth), at the quantile chosen in the Tail quantile selector. The wait for the resource itself is not included. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
+            desc="What edge itself adds to a proxied request before it reaches the resource (token and DPoP checks, revocation, permissions, rules), at the quantile chosen in the Tail quantile selector. Requests that waited on auth (a /userinfo call, or a refresh of an expired token) are left out: that wait is auth's latency, shown on the graph below. Red from the 15 ms budget. Proxied traffic is in the graphs below.")),
         ("Proxied/s", f"sum({b.req_rate(proxied)})", dict(unit="reqps", desc="Requests edge forwards to protected resources -- the traffic edge exists to carry.")),
     ])
     if phase == "overview":
@@ -599,9 +609,11 @@ def add_edge(b: Board, phase: str) -> None:
         (f"{whole} - {in_backend} - {in_auth}", "edge itself"),
     ], unit="s", stack=True, minimum=0,
          desc="Average time per proxied request, split into the resource's own answer, the token lookup at auth, and what edge adds on top. The three add up to the proxy latency.")
-    b.ts("Edge overhead (measured)", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))"),
+    b.ts("Edge overhead (measured)", fan(lambda q: f"histogram_quantile({q}, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{{{s}{OWN}}}[$__rate_interval])))"),
 unit="s", line=steps((None, GREEN), (0.015, RED)),
-         desc="Time edge spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules, the token lookup at auth. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so p99 here is the real p99. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
+         desc="Time edge itself spends on a request before it reaches the resource: token and DPoP checks, revocation, permissions, rules. Requests that waited on auth (a /userinfo call, a refresh of an expired token) are left out and shown on the next graph. The wait for the resource is not included. Measured per request in edge (edge_proxy_overhead_seconds), so the quantiles here are real. Dashed line: 15 ms budget. Empty until edge runs a build that includes the metric.")
+    b.ts("Edge overhead by what it waited on (${tail:text})", [(f"histogram_quantile($tail, sum by (le, auth_call) (rate(edge_proxy_overhead_seconds_bucket{{{s}}}[$__rate_interval])))", "{{auth_call}}")], unit="s", minimum=0,
+         desc="The same overhead split by whether the request waited on auth: none (edge's own work), userinfo (the /userinfo call an endpoint asks for), refresh (an expired token refreshed at auth). The last two are mostly auth's latency, so a high line there is read as auth being slow, not edge. No label on an edge build before it was added.")
 
     traffic(b, title="Web apps (browser sign-in and sign-out)", extra=web,
             what="/login and /complete finish a sign-in; /complete includes a code exchange with auth, so it carries auth's latency")
@@ -806,9 +818,9 @@ def build_ingress() -> Board:
          unit="percentunit", minimum=0, line=steps((None, GREEN), (0.01, RED)), desc="Per service, the share of its requests answered 5xx at the ingress.")
     b.row("Latency")
     b.ts("Request latency", fan(lambda q: ing_quantile(q, "nginx_ingress_controller_request_duration_seconds")), unit="s",
-         desc="Whole request as the ingress sees it, p50 to p99.999." + TAIL_NOTE)
+         desc="Whole request as the ingress sees it, p50, p95, p99 and the tail quantiles up to the selected one." + TAIL_NOTE)
     b.ts("Upstream (service) latency", fan(lambda q: ing_quantile(q, "nginx_ingress_controller_response_duration_seconds")), unit="s",
-         desc="Time the backend took to answer, p50 to p99.999. Compare with the request latency above: the gap is the network and the client." + TAIL_NOTE)
+         desc="Time the backend took to answer, p50, p95, p99 and the tail quantiles up to the selected one. Compare with the request latency above: the gap is the network and the client." + TAIL_NOTE)
     b.ts("Slowest services (${tail:text})", [(f"topk(5, {ing_quantile('$tail', 'nginx_ingress_controller_request_duration_seconds', by='service')})", "{{service}}")], unit="s",
          desc="The five services with the highest request latency at the chosen quantile.")
     b.ts("Slowest ingress hosts and paths (${tail:text})", [(f"topk(5, {ing_quantile('$tail', 'nginx_ingress_controller_request_duration_seconds', by='host, path')})", "{{host}}{{path}}")], unit="s",

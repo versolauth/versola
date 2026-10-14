@@ -14,7 +14,7 @@ info:
     longer usable — is satisfied either way, and distinguishing the cases would leak whether a
     token exists. Only a client authentication failure is reported as an error.
   license:
-    name: Business Source License 1.1
+    name: Versola Community License v1.0
     url: https://github.com/versolauth/versola/blob/main/LICENCE.md
 
 servers:
@@ -33,6 +33,31 @@ paths:
         of the two credentialed methods may be used per request. The empty security
         requirement below stands for the form-field cases, which OpenAPI cannot express as a
         security scheme.
+
+        A client authenticates with the one method it registered (`authMethod`), and only with
+        that one: a credential of another kind sent alongside is not consulted, and a secret
+        sent for a client that registered `private_key_jwt` or a mutual-TLS method is refused.
+        Two further methods are therefore available, each failing with `invalid_client`:
+
+        - **`private_key_jwt`** (RFC 7523 §2.2) -- `client_assertion_type`
+          `urn:ietf:params:oauth:client-assertion-type:jwt-bearer` and `client_assertion`, a JWT
+          signed with a key from the client's registered JWK Set, as form fields. `client_id`
+          is optional; when sent it must be the assertion's `sub`. An assertion beside a
+          `client_secret` or an `Authorization` header is two methods and is refused, as is
+          half the pair or another assertion type. The assertion's `aud` is the issuer
+          identifier on a `fapi2` tenant; a `standard` tenant also accepts the issuer with
+          `/revoke` appended. Its `jti` is single-use. The signing algorithms are those
+          the metadata document advertises as `token_endpoint_auth_signing_alg_values_supported`.
+        - **`tls_client_auth` and `self_signed_tls_client_auth`** (RFC 8705 §2) -- the client
+          sends `client_id` with no secret and authenticates with its TLS client certificate:
+          for `tls_client_auth` the registered subject value must appear in the certificate, for
+          `self_signed_tls_client_auth` the certificate's public key must be one of the client's
+          registered JWKs. The certificate reaches the server either on the TLS handshake of the
+          mutual-TLS listener (`MPORT`), which serves this endpoint a second time at the origin
+          the metadata document publishes under `mtls_endpoint_aliases`, or, behind a reverse
+          proxy, in the header the client's tenant configured for forwarding it. The listener
+          exists only when the deployment is configured with a `mutual-tls` block. A header that
+          is present but cannot be read fails the request rather than being treated as absent.
       tags: [Token]
       security:
         - clientSecretBasic: []
@@ -74,6 +99,15 @@ components:
         client_secret:
           type: string
           description: Confidential clients using `client_secret_post`.
+        client_assertion_type:
+          type: string
+          const: urn:ietf:params:oauth:client-assertion-type:jwt-bearer
+          description: Sent with `client_assertion` by clients using `private_key_jwt`.
+        client_assertion:
+          type: string
+          description: |
+            RFC 7523 client assertion JWT, for clients using `private_key_jwt`. Sent together
+            with `client_assertion_type` and without any other credential.
 
     ErrorResponse:
       type: object

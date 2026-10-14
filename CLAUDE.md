@@ -41,7 +41,11 @@ reporting the change as finished.
 1. `sbt compile` and `sbt test` pass. `sbt test` is run before every commit.
 2. Tests exist at the right level (see Test Coverage Rules below).
 3. Specs, docs and config that describe the changed behaviour are updated in the same change
-   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change).
+   (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change). The
+   product documentation lives in `versolauth/versola-website`: a change to an admin console
+   screen needs retaken screenshots, a change to behaviour a standard defines needs its `rfc/`
+   page updated or created. The PR has a **Docs** line (a link, `none: <reason>` or
+   `follow-up: <issue>`); see `.claude/rules/documentation.md`.
 4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
    say so.
 

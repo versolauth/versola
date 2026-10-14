@@ -1022,7 +1022,8 @@ database's from `POSTGRES_PASSWORD` in the bundle's `auth.secrets.env`
 
 ## 10. Known gaps
 
-- **No `mem_limit` on any service** in the generated compose file. With `network_mode: host`,
+- **No `mem_limit` on any service** in the generated compose file (a decision, versolauth/versola#613: limits
+  are not added until a replica test shows how they interact with the heap settings). With `network_mode: host`,
   `-XX:MaxRAMPercentage=75.0` is computed from the host's memory for each of three JVMs.
   `versola doctor`/`configure` check available memory first, which lowers the risk but doesn't
   remove it.

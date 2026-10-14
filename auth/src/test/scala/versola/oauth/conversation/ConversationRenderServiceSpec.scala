@@ -416,6 +416,64 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(openidIndex < emailIndex) &&
           assertTrue(openidIndex < offlineIndex)
       },
+      test("marks a scope the client requires, and openid and offline_access, as not deselectable") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize")),
+        )
+        val tokens = List("openid", "offline_access", "phone", "email").map(ScopeToken(_))
+        val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
+        val client = clientRecord.copy(
+          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, requiredScopes = Set(ScopeToken("phone")))),
+        )
+        val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
+        // `deselectable` follows `scope` within each serialized row.
+        def deselectable(body: String, scope: String): Boolean =
+          s""""scope":"$scope".*?"deselectable":(true|false)""".r.findFirstMatchIn(body).get.group(1).toBoolean
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(client))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield assertTrue(
+          !deselectable(body, "openid"),
+          !deselectable(body, "offline_access"),
+          !deselectable(body, "phone"),
+          deselectable(body, "email"),
+        )
+      },
+      test("makes offline_access deselectable when the client lets the user turn it off") {
+        val env = Env()
+        val consentForm = formRecord.copy(
+          id = "consent",
+          localizations = Map("en" -> Map("page_title" -> "Authorize")),
+        )
+        val tokens = List("openid", "offline_access").map(ScopeToken(_))
+        val scopeRecords = tokens.map(token => ScopeRecord(token, Map("en" -> token.toString), Vector.empty)).toVector
+        val client = clientRecord.copy(
+          consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None, offlineAccessOptional = true)),
+        )
+        val record = consentRecord.copy(step = ConversationStep.Consent(tokens.toSet, allowPartial = true))
+        def deselectable(body: String, scope: String): Boolean =
+          s""""scope":"$scope".*?"deselectable":(true|false)""".r.findFirstMatchIn(body).get.group(1).toBoolean
+
+        for
+          _ <- env.configuration.find.succeedsWith(Some(client))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(consentForm))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          _ <- env.configuration.getScopes.succeedsWith(scopeRecords)
+          response <- env.service.renderStep(record, None)
+          body <- response.body.asString
+        yield assertTrue(!deselectable(body, "openid"), deselectable(body, "offline_access"))
+      },
       test("includes only claims that are available for the authenticated user") {
         val env = Env()
         val consentForm = formRecord.copy(
