@@ -192,7 +192,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     )
     def tenantWith(email: EmailRegistration, regions: List[PhoneRegion] = challengeSettings.phoneRegions) =
       Vector(challengeSettings.copy(emailRegistration = email, phoneRegions = regions, defaultRoles = Set(RoleId("member"))))
-    val open = EmailRegistration(EmailRegistrationMode.open, Nil, blockDisposable = false, blockSubaddress = false)
+    val open = EmailRegistration(EmailRegistrationMode.open, Nil, blockSubaddress = false)
     val someone = Email("someone@example.com")
     val number = Phone("+12025551234")
 
@@ -238,7 +238,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         )
       },
       test("an email outside the allowlist does not register, one inside does") {
-        val allowlist = EmailRegistration(EmailRegistrationMode.allowlist, List("example.com"), true, false)
+        val allowlist = EmailRegistration(EmailRegistrationMode.allowlist, List("example.com"), false)
         for
           env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(allowlist))
           inside <- env.registrationFor(emailClientId, Left(someone))

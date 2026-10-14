@@ -22,9 +22,9 @@ object EmailRegistrationSpec extends E2ESpec:
 
   private val fixedOtp = "123456"
 
-  private def policy(mode: String, domains: List[String] = Nil, blockDisposable: Boolean = false, blockSubaddress: Boolean = false): String =
+  private def policy(mode: String, domains: List[String] = Nil, blockSubaddress: Boolean = false): String =
     val list = domains.map(d => s""""$d"""").mkString("[", ",", "]")
-    s"""{"mode":"$mode","domains":$list,"blockDisposable":$blockDisposable,"blockSubaddress":$blockSubaddress}"""
+    s"""{"mode":"$mode","domains":$list,"blockSubaddress":$blockSubaddress}"""
 
   private def withPolicy[A](auth: OAuthClient, emailRegistration: String)(use: => Task[A]): Task[A] =
     ZIO.acquireReleaseWith(

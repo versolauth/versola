@@ -78,7 +78,6 @@ enum EmailRegistrationMode derives JsonCodec:
 case class EmailRegistration(
     mode: EmailRegistrationMode,
     domains: List[String],
-    blockDisposable: Boolean,
     blockSubaddress: Boolean,
 ) derives JsonCodec:
 
@@ -90,12 +89,11 @@ case class EmailRegistration(
       case _ if blockSubaddress && EmailRegistration.isSubaddress(local) => false
       case EmailRegistrationMode.allowlist => domains.exists(EmailRegistration.matches(_, domain))
       case EmailRegistrationMode.open =>
-        !domains.exists(EmailRegistration.matches(_, domain)) &&
-        !(blockDisposable && DisposableEmailDomains.contains(domain))
+        !domains.exists(EmailRegistration.matches(_, domain))
 
 object EmailRegistration:
   /** The setting a tenant has until an operator chooses a mode. */
-  val Closed: EmailRegistration = EmailRegistration(EmailRegistrationMode.closed, Nil, true, false)
+  val Closed: EmailRegistration = EmailRegistration(EmailRegistrationMode.closed, Nil, false)
 
   private def split(email: Email): (String, String) =
     val at = email.lastIndexOf('@')

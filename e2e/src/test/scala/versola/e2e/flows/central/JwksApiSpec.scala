@@ -46,7 +46,6 @@ object JwksApiSpec extends CentralApiSpec:
       "emailRegistration" -> Json.Obj(
         "mode" -> Json.Str("closed"),
         "domains" -> Json.Arr(),
-        "blockDisposable" -> Json.Bool(true),
         "blockSubaddress" -> Json.Bool(false),
       ),
       "defaultRoles" -> Json.Arr(Json.Str("user")),

@@ -1523,7 +1523,7 @@ export async function fetchChallengeSettings(tenantId: string): Promise<Challeng
   return response.settings ?? null;
 }
 
-const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false };
+const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
 const DEFAULT_ROLES = ['user'];
 
 export async function upsertChallengeSettings(

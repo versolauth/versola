@@ -4192,7 +4192,7 @@ components:
       description: |
         Who may create an account with an email address.
         - `closed`: nobody. Existing accounts still sign in with their email.
-        - `open`: any domain, except the ones listed in `domains` and, when asked, disposable providers.
+        - `open`: any domain, except the ones listed in `domains`.
         - `allowlist`: only the domains listed in `domains`.
     EmailRegistration:
       type: object
@@ -4214,13 +4214,10 @@ components:
             `*.example.com`, which matches its subdomains and not `example.com` itself. Entries are
             lower-cased and internationalized labels converted to punycode when stored; an entry that
             is not a domain, or that appears twice, is refused with `400`.
-        blockDisposable:
-          type: boolean
-          description: Refuse addresses at known throwaway-mailbox providers (a short built-in list, subdomains included).
         blockSubaddress:
           type: boolean
           description: Refuse a local part containing `+`, `=` or `#` (`user+tag@example.com`).
-      required: [mode, domains, blockDisposable, blockSubaddress]
+      required: [mode, domains, blockSubaddress]
     PhoneRegions:
       type: array
       description: |

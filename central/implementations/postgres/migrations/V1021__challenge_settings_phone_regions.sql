@@ -12,14 +12,14 @@ ALTER TABLE challenge_settings ADD COLUMN phone_regions JSONB NOT NULL DEFAULT '
 ALTER TABLE challenge_settings ALTER COLUMN phone_regions DROP DEFAULT;
 
 ALTER TABLE challenge_settings ADD COLUMN email_registration JSONB NOT NULL
-    DEFAULT '{"mode":"closed","domains":[],"blockDisposable":true,"blockSubaddress":false}'::jsonb;
+    DEFAULT '{"mode":"closed","domains":[],"blockSubaddress":false}'::jsonb;
 ALTER TABLE challenge_settings ADD COLUMN default_roles JSONB NOT NULL DEFAULT '["user"]'::jsonb;
 
 -- Keep what each tenant has today: email registration stays open (as it was for a client with an
 -- email registration flow) and the roles stay those the flows granted. A tenant none of whose
 -- clients registered by email starts closed.
 UPDATE challenge_settings cs
-SET email_registration = '{"mode":"open","domains":[],"blockDisposable":false,"blockSubaddress":false}'::jsonb
+SET email_registration = '{"mode":"open","domains":[],"blockSubaddress":false}'::jsonb
 WHERE EXISTS (
     SELECT 1 FROM oauth_clients c
     WHERE c.tenant_id = cs.tenant_id AND c.registration_flow ->> 'credential' = 'email'

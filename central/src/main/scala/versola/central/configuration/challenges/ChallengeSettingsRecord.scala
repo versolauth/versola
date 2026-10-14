@@ -102,7 +102,7 @@ enum EmailRegistrationMode derives Schema, JsonCodec:
   /** Nobody registers with an email; existing accounts still sign in. */
   case closed
 
-  /** Any domain registers, except the listed ones and (when asked) disposable providers. */
+  /** Any domain registers, except the listed ones. */
   case open
 
   /** Only the listed domains register. */
@@ -115,7 +115,6 @@ case class EmailRegistration(
       * an allowlist in [[EmailRegistrationMode.allowlist]], ignored when closed. */
     domains: List[String],
     /** Refuse addresses at known throwaway-mailbox providers. */
-    blockDisposable: Boolean,
     /** Refuse a local part with `+`, `=` or `#` (`user+tag@`), the way to mint endless addresses
       * for one mailbox. */
     blockSubaddress: Boolean,
@@ -126,7 +125,7 @@ object EmailRegistration:
 
   /** What a tenant starts with: no email registers until the operator chooses a mode. */
   val Closed: EmailRegistration =
-    EmailRegistration(EmailRegistrationMode.closed, Nil, blockDisposable = true, blockSubaddress = false)
+    EmailRegistration(EmailRegistrationMode.closed, Nil, blockSubaddress = false)
 
   private val DomainPattern = "(\\*\\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+".r
 

@@ -31,7 +31,7 @@ type TemplatePurpose = 'otp' | 'password';
 type TemplateChannel = 'sms' | 'email';
 type TemplateViewSelection = { purpose: TemplatePurpose; channel: TemplateChannel };
 
-const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false };
+const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
 const DEFAULT_ROLES = ['user'];
 
 const EMAIL_MODE_LABELS: Record<EmailRegistrationMode, string> = { closed: 'Closed', open: 'Open', allowlist: 'Allowlist' };
@@ -142,7 +142,6 @@ export class VersolaChallengesList extends LitElement {
   @state() private availableRoleIds: string[] = [];
   @state() private editEmailMode: EmailRegistrationMode = 'closed';
   @state() private editEmailDomainsText = '';
-  @state() private editBlockDisposable = true;
   @state() private editBlockSubaddress = false;
   @state() private editDefaultRoles: string[] = [];
   @state() private emailDomainsError = '';
@@ -917,7 +916,7 @@ export class VersolaChallengesList extends LitElement {
           'Email registration',
           html`
             <div class="option-tooltip-item"><strong>Closed.</strong> Nobody can create an account with an email address. Users who already have an account still sign in.</div>
-            <div class="option-tooltip-item"><strong>Open.</strong> Anyone can register with an email address, except from the domains you list and, if the option is on, from known disposable email providers.</div>
+            <div class="option-tooltip-item"><strong>Open.</strong> Anyone can register with an email address, except from the domains you list and .</div>
             <div class="option-tooltip-item"><strong>Allowlist.</strong> Only addresses from the domains you list can register.</div>
             <div class="option-tooltip-item">These rules are also applied when an existing user changes their email address.</div>
           `,
@@ -942,16 +941,11 @@ export class VersolaChallengesList extends LitElement {
           aria-describedby=${this.emailDomainsError ? 'email-domains-error' : nothing}
           .value=${this.editEmailDomainsText}
           @input=${(e: Event) => { this.editEmailDomainsText = (e.target as HTMLTextAreaElement).value; }}
-          placeholder=${mode === 'open' ? 'mailinator.com\n*.spam.example' : 'example.com\n*.corp.example'}></textarea>
+          placeholder=${'example.com\n*.corp.example'}></textarea>
         ${this.emailDomainsError ? html`<div class="error-msg" id="email-domains-error" role="alert">${this.emailDomainsError}</div>` : nothing}
       `}
 
       <div style="margin-top: var(--spacing-lg);">
-        <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm);">
-          <input type="checkbox" .checked=${this.editBlockDisposable}
-            @change=${(e: Event) => { this.editBlockDisposable = (e.target as HTMLInputElement).checked; }} />
-          Block disposable email providers
-        </label>
         <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm); margin-top: var(--spacing-sm);">
           <input type="checkbox" .checked=${this.editBlockSubaddress}
             @change=${(e: Event) => { this.editBlockSubaddress = (e.target as HTMLInputElement).checked; }} />
@@ -1201,7 +1195,6 @@ export class VersolaChallengesList extends LitElement {
     this.regionErrors = [];
     this.editEmailMode = this.emailRegistration.mode;
     this.editEmailDomainsText = this.emailRegistration.domains.join('\n');
-    this.editBlockDisposable = this.emailRegistration.blockDisposable;
     this.editBlockSubaddress = this.emailRegistration.blockSubaddress;
     this.editDefaultRoles = [...this.defaultRoles];
     this.emailDomainsError = '';
@@ -1347,7 +1340,6 @@ export class VersolaChallengesList extends LitElement {
     const emailRegistration: EmailRegistration = {
       mode: this.editEmailMode,
       domains: closed && domainsError ? [...this.emailRegistration.domains] : parsedDomains,
-      blockDisposable: this.editBlockDisposable,
       blockSubaddress: this.editBlockSubaddress,
     };
     const rpId = this.editPasskeyRpId.trim();
@@ -1747,9 +1739,6 @@ export class VersolaChallengesList extends LitElement {
                 ? html`<div class="hint">${this.emailRegistration.mode === 'open' ? 'No domains blocked.' : 'No domains listed, so no address can register.'}</div>`
                 : html`<div class="prefix-tags">${this.emailRegistration.domains.map(d => html`<span class="prefix-tag">${d}</span>`)}</div>`}
               <div class="template-text" style="margin-top: var(--spacing-md);">
-                Disposable providers: ${this.emailRegistration.blockDisposable ? 'blocked' : 'allowed'}
-              </div>
-              <div class="template-text">
                 Sub-addresses (+ = #): ${this.emailRegistration.blockSubaddress ? 'blocked' : 'allowed'}
               </div>
             `}

@@ -1799,15 +1799,14 @@ object OAuthClient:
   val germanMobileRegion: String =
     """[{"region":"DE","dialCode":"+49","length":11,"regex":"1[5-7]\\d{9}","registration":true}]"""
 
-  /** Any email domain registers; nothing is blocked, not even disposable providers. */
+  /** Any email domain registers; nothing is blocked. */
   val openEmailRegistration: String =
-    """{"mode":"open","domains":[],"blockDisposable":false,"blockSubaddress":false}"""
+    """{"mode":"open","domains":[],"blockSubaddress":false}"""
 
   val openEmailRegistrationJson: zio.json.ast.Json =
     zio.json.ast.Json.Obj(
       "mode" -> zio.json.ast.Json.Str("open"),
       "domains" -> zio.json.ast.Json.Arr(),
-      "blockDisposable" -> zio.json.ast.Json.Bool(false),
       "blockSubaddress" -> zio.json.ast.Json.Bool(false),
     )
 

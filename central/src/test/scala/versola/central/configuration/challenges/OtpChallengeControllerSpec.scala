@@ -196,7 +196,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
       description = "PUT challenge-settings stores email domains lower-cased and in punycode",
       request = upsertWithProfile(
         None,
-        emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List(" Example.COM ", "*.Пример.рф"), true, false),
+        emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List(" Example.COM ", "*.Пример.рф"), false),
       ),
       expectedStatus = Status.NoContent,
       settingsSetup = service =>
@@ -210,7 +210,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "PUT challenge-settings refuses an email domain that is not a domain",
-      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List("not a domain"), true, false)),
+      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.allowlist, List("not a domain"), false)),
       expectedStatus = Status.BadRequest,
       settingsSetup = service =>
         service.getSettings.succeedsWith(None) *>
@@ -235,7 +235,7 @@ object OtpChallengeControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "PUT challenge-settings refuses a default role the tenant does not have while a credential can register",
-      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.open, Nil, true, false)),
+      request = upsertWithProfile(None, emailRegistration = EmailRegistration(EmailRegistrationMode.open, Nil, false)),
       expectedStatus = Status.BadRequest,
       settingsSetup = service =>
         service.getSettings.succeedsWith(None) *>

@@ -566,9 +566,8 @@ and `PUT /configuration/clients/{web,native,service}`, `GET`, the sync feed to `
 /configuration/challenges/challenge-settings`) now say who may create an account, for every client of the tenant that
 signs in by that credential:
 
-- `emailRegistration`: `{mode, domains, blockDisposable, blockSubaddress}`. `mode` is `closed` (no email registers;
-  existing accounts still sign in), `open` (any domain, except the listed `domains` and, when asked, disposable
-  providers) or `allowlist` (only the listed `domains`). A domain is `example.com` or `*.example.com` (its
+- `emailRegistration`: `{mode, domains, blockSubaddress}`. `mode` is `closed` (no email registers;
+  existing accounts still sign in), `open` (any domain, except the listed `domains`) or `allowlist` (only the listed `domains`). A domain is `example.com` or `*.example.com` (its
   subdomains, not the domain itself); entries are stored lower-case and in punycode. The same rules apply when a
   user changes their address.
 - `phoneRegions` (replaces `allowedPrefixes`): an ordered list of `{region, dialCode, length, regex, registration}`
@@ -587,7 +586,7 @@ credential or an inline password.
 Migration `V1021` does the following. It adds `phone_regions`, `email_registration` and `default_roles` to
 `challenge_settings` and drops `allowed_prefixes` and `oauth_clients.registration_flow`.
 - **Email registration keeps what each tenant had.** A tenant with a client whose registration flow
-  registered by email becomes `open` (no listed domains, disposable providers not blocked) and its `defaultRoles` are
+  registered by email becomes `open` (no listed domains) and its `defaultRoles` are
   the union of the roles those flows granted. Every other tenant is `closed` with `defaultRoles` of `["user"]`.
 - **Phone prefixes are not converted**, because a prefix names neither a length nor a pattern. A tenant starts with
   no regions: any number can sign in, no phone number registers until regions are set.

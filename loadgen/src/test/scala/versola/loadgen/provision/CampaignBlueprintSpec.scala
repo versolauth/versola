@@ -77,7 +77,7 @@ object CampaignBlueprintSpec extends ZIOSpecDefault:
         val settings = blueprint.challengeSettings
         assertTrue(
           settings.phoneRegions.exists(r => r.region == "DE" && r.registration),
-          settings.emailRegistration == EmailRegistrationSpec("open", Nil, blockDisposable = false, blockSubaddress = false),
+          settings.emailRegistration == EmailRegistrationSpec("open", Nil, blockSubaddress = false),
           settings.defaultRoles == List(CampaignBlueprint.retailUserRoleId),
         )
       },

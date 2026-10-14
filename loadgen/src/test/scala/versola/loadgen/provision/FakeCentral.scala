@@ -512,7 +512,6 @@ object FakeCentral:
       "emailRegistration",
       "emailRegistration.mode",
       "emailRegistration.domains",
-      "emailRegistration.blockDisposable",
       "emailRegistration.blockSubaddress",
       "defaultRoles",
       "submissionLimits",

@@ -7,7 +7,7 @@ object EmailRegistrationSpec extends UnitSpecBase:
   private def setting(
       mode: EmailRegistrationMode,
       domains: String*,
-  ) = EmailRegistration(mode, domains.toList, blockDisposable = false, blockSubaddress = false)
+  ) = EmailRegistration(mode, domains.toList, blockSubaddress = false)
 
   def spec = suite("EmailRegistration.allows")(
     test("a closed policy admits nobody, whatever the list says") {
@@ -25,16 +25,6 @@ object EmailRegistrationSpec extends UnitSpecBase:
           policy.allows(Email("a@sub.blocked.com")),
           !policy.allows(Email("a@mail.spam.org")),
           policy.allows(Email("a@spam.org")),
-        )
-      },
-      test("refuses disposable providers and their subdomains only when asked") {
-        val asked = setting(EmailRegistrationMode.open).copy(blockDisposable = true)
-        val notAsked = setting(EmailRegistrationMode.open)
-        assertTrue(
-          !asked.allows(Email("a@mailinator.com")),
-          !asked.allows(Email("a@box.mailinator.com")),
-          asked.allows(Email("a@example.com")),
-          notAsked.allows(Email("a@mailinator.com")),
         )
       },
     ),

@@ -30,7 +30,6 @@ export type EmailRegistrationMode = 'closed' | 'open' | 'allowlist';
 export interface EmailRegistration {
   mode: EmailRegistrationMode;
   domains: string[];
-  blockDisposable: boolean;
   blockSubaddress: boolean;
 }
 

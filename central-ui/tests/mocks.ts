@@ -204,7 +204,7 @@ type ChallengeSettingsDto = {
   securityProfile?: SecurityProfileDto;
   phoneRegions: Array<{ region: string; dialCode: string; length: number; regex: string; registration: boolean }>;
   passwordRegex?: string | null;
-  emailRegistration?: { mode: 'closed' | 'open' | 'allowlist'; domains: string[]; blockDisposable: boolean; blockSubaddress: boolean };
+  emailRegistration?: { mode: 'closed' | 'open' | 'allowlist'; domains: string[]; blockSubaddress: boolean };
   defaultRoles?: string[];
   submissionLimits: SubmissionLimitsDto;
   otpLength: number;
@@ -234,7 +234,7 @@ const emptySubmissionLimits = (): SubmissionLimitsDto => ({
 export const defaultChallengeSettings = (tenantId: string): ChallengeSettingsDto => ({
   tenantId,
   phoneRegions: [],
-  emailRegistration: { mode: 'closed', domains: [], blockDisposable: true, blockSubaddress: false },
+  emailRegistration: { mode: 'closed', domains: [], blockSubaddress: false },
   defaultRoles: ['user'],
   passwordRegex: null,
   submissionLimits: emptySubmissionLimits(),

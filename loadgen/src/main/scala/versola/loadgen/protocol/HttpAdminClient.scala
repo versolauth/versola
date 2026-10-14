@@ -433,7 +433,6 @@ final class HttpAdminClient(
       emailRegistration = EmailRegistrationBody(
         mode = spec.emailRegistration.mode,
         domains = spec.emailRegistration.domains,
-        blockDisposable = spec.emailRegistration.blockDisposable,
         blockSubaddress = spec.emailRegistration.blockSubaddress,
       ),
       defaultRoles = spec.defaultRoles,
@@ -988,7 +987,7 @@ object HttpAdminClient:
   private case class PhoneRegionBody(region: String, dialCode: String, length: Int, regex: String, registration: Boolean)
     derives JsonEncoder
 
-  private case class EmailRegistrationBody(mode: String, domains: List[String], blockDisposable: Boolean, blockSubaddress: Boolean)
+  private case class EmailRegistrationBody(mode: String, domains: List[String], blockSubaddress: Boolean)
     derives JsonEncoder
 
   private case class UpsertChallengeSettingsBody(

@@ -143,7 +143,7 @@ case class PhoneRegionSpec(region: String, dialCode: String, length: Int, regex:
 /** The tenant's self-registration policy by email: `mode` is `closed`, `open` or `allowlist`; `domains`
   * is the blocklist under `open` and the allowlist under `allowlist`.
   */
-case class EmailRegistrationSpec(mode: String, domains: List[String], blockDisposable: Boolean, blockSubaddress: Boolean)
+case class EmailRegistrationSpec(mode: String, domains: List[String], blockSubaddress: Boolean)
 
 case class ChallengeSettingsSpec(
     phoneRegions: List[PhoneRegionSpec],

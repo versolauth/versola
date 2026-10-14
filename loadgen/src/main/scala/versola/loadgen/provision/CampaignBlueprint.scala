@@ -409,7 +409,7 @@ object CampaignBlueprint:
       // Self-registration is the tenant's policy: open to any email domain, as the scenarios that
       // register a new user expect of a client that used to carry its own registration flow. The
       // population is phone-only today, so this is the permissive default rather than a measured path.
-      emailRegistration = EmailRegistrationSpec("open", Nil, blockDisposable = false, blockSubaddress = false),
+      emailRegistration = EmailRegistrationSpec("open", Nil, blockSubaddress = false),
       // The role the retired per-client registration flow granted.
       defaultRoles = List(retailUserRoleId),
       otpLength = 6,

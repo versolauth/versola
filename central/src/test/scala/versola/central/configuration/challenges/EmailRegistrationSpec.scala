@@ -5,7 +5,7 @@ import zio.test.*
 
 object EmailRegistrationSpec extends UnitSpecBase:
   private def settingWith(domains: String*) =
-    EmailRegistration(EmailRegistrationMode.allowlist, domains.toList, blockDisposable = true, blockSubaddress = false)
+    EmailRegistration(EmailRegistrationMode.allowlist, domains.toList, blockSubaddress = false)
 
   def spec = suite("EmailRegistration")(
     suite("normalizeDomain")(

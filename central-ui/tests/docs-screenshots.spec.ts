@@ -214,7 +214,7 @@ test('challenge settings registration form', async ({ page }) => {
         [tenant]: {
           tenantId: tenant,
           phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
-          emailRegistration: { mode: 'allowlist', domains: ['example.com', '*.corp.example'], blockDisposable: true, blockSubaddress: false },
+          emailRegistration: { mode: 'allowlist', domains: ['example.com', '*.corp.example'], blockSubaddress: false },
           defaultRoles: ['user'],
           submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
           otpLength: 6,

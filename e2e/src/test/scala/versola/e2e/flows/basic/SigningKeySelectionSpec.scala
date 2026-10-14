@@ -137,7 +137,7 @@ object SigningKeySelectionSpec extends E2ESpec:
               tenantId = tenantId,
               signingKeyId = Some(kid),
               phoneRegions = "[]",
-              emailRegistration = """{"mode":"closed","domains":[],"blockDisposable":true,"blockSubaddress":false}""",
+              emailRegistration = """{"mode":"closed","domains":[],"blockSubaddress":false}""",
             ).either
       yield assertTrue(result.isLeft)
         .label("central must refuse an RS256 signing key for a tenant on the fapi2 profile") &&
