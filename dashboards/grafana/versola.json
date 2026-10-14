@@ -1913,7 +1913,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99 to p99.999) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and slow-tail (p99, and the selected Tail quantile) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -1992,26 +1992,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 36,
@@ -2329,26 +2311,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\", route=~\"/token.grant_type=refresh_token\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 42,
@@ -3927,7 +3891,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99 to p99.999) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and slow-tail (p99, and the selected Tail quantile) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -3990,26 +3954,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"central\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 75,
@@ -5267,7 +5213,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99 to p99.999) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and slow-tail (p99, and the selected Tail quantile) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -5330,26 +5276,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/resources/.*\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 103,
@@ -5677,26 +5605,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(edge_proxy_overhead_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 108,
@@ -5833,7 +5743,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99 to p99.999) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and slow-tail (p99, and the selected Tail quantile) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -5896,26 +5806,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/login.*|/complete|/logout.*|/permissions.*\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 112,
@@ -6209,7 +6101,7 @@
     {
       "type": "timeseries",
       "title": "Latency",
-      "description": "Typical (p50), slow (p95) and worst-case (p99 to p99.999) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
+      "description": "Typical (p50), slow (p95) and slow-tail (p99, and the selected Tail quantile) request. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Watch the tail -- averages hide the users who are suffering.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -6272,26 +6164,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(http_server_request_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\", route=~\"/native/.*\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 119,

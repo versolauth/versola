@@ -599,7 +599,7 @@
     {
       "type": "timeseries",
       "title": "Query latency",
-      "description": "How long database operations take, every repository and method together: p50 to p99.999. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Client side: it includes the network and, for a pooler, the pooler's wait.",
+      "description": "How long database operations take, every repository and method together: p50, p95, p99 and the selected Tail quantile. p99.99 needs roughly 10 000 requests in the rate window to mean anything and p99.999 roughly 100 000; both are rounded up to the histogram bucket edge. Client side: it includes the network and, for a pooler, the pooler's wait.",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -662,26 +662,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.999, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"$service\"}[$__rate_interval])))",
-          "legendFormat": "p99.9"
-        },
-        {
-          "refId": "E",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.9999, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"$service\"}[$__rate_interval])))",
-          "legendFormat": "p99.99"
-        },
-        {
-          "refId": "F",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "histogram_quantile(0.99999, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"$service\"}[$__rate_interval])))",
-          "legendFormat": "p99.999"
+          "expr": "(histogram_quantile($tail, sum by (le) (rate(db_client_operation_duration_seconds_bucket{namespace=\"$namespace\", app_kubernetes_io_component=\"$service\"}[$__rate_interval])))) and on() (vector($tail) > 0.99)",
+          "legendFormat": "${tail:text}"
         }
       ],
       "id": 11,
