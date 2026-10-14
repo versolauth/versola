@@ -410,6 +410,15 @@ test.describe('consent', () => {
     await expect(page.getByText('Your name')).toBeVisible();
   });
 
+  test('renders the application name in bold inside the translated sentence', async ({ page }) => {
+    await renderForm(page, 'consent', { step });
+
+    const name = page.locator('.consent-description strong');
+    await expect(name).toHaveText('Acme');
+    await expect(page.locator('.consent-description')).toHaveText('Acme wants to access your account.');
+    expect(await name.evaluate(el => Number(getComputedStyle(el).fontWeight))).toBeGreaterThanOrEqual(600);
+  });
+
   test('sends exactly the scopes the user left selected', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'consent', { step });
 
@@ -427,6 +436,19 @@ test.describe('consent', () => {
 
     await expect(page.getByLabel('Know who you are')).toBeDisabled();
     await expect(page.getByLabel('Read your profile')).toBeEnabled();
+  });
+
+  test('keeps a scope the client marked required ticked and submitted', async ({ page }) => {
+    const required = scopes.map(s => s.scope === 'email' ? { ...s, deselectable: false } : s);
+    const { submitted, t } = await renderForm(page, 'consent', { step: { ...step, scopes: required } });
+
+    await expect(page.getByLabel('Read your email address')).toBeDisabled();
+    await expect(page.getByLabel('Read your email address')).toBeChecked();
+    await page.getByLabel('Read your profile').uncheck();
+    await page.getByRole('button', { name: t.allow_button }).click();
+
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('scope')).toBe('openid email');
   });
 
   test('is all-or-nothing when the client does not allow a partial grant', async ({ page }) => {

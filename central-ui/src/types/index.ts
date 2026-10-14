@@ -63,6 +63,8 @@ export interface RegistrationFlow {
 export interface ConsentFlow {
   allowPartial: boolean;  // let the user deselect optional scopes and grant a subset
   rememberDurationDays: number | null;  // how long a grant is reused; null = until revoked
+  offlineAccessOptional: boolean;  // let the user deselect offline_access (no refresh token then)
+  requiredScopes: string[];  // scopes the user cannot deselect (besides openid and offline_access)
 }
 
 // Whether a client can hold a secret. Chosen once, at creation: a web client is

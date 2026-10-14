@@ -628,6 +628,7 @@ object ConversationRenderService:
             locales <- configuration.getLocales
             denyUri <- returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             byToken = scopes.map(record => record.scope -> record).toMap
+            mandatory = ConsentService.mandatoryScopes(client.flatMap(_.consentFlow))
             rows = s.requestedScope.toList.sortBy: token =>
               (if token.toString == "openid" then 0 else 1, token.toString)
             .map: token =>
@@ -645,7 +646,7 @@ object ConversationRenderService:
                 descriptionLocalizations = scopeDescriptionLocalizations,
                 claims = claims.map(_._1),
                 claimLocalizations = claims.map(_._2),
-                deselectable = s.allowPartial && !ConsentService.NonDeselectable.contains(token),
+                deselectable = s.allowPartial && !mandatory.contains(token),
               )
           yield StepView.Consent(
             clientName = client.flatMap(c => pickLocalized(c.clientName, uiLocales, locales.default)),

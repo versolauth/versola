@@ -2519,6 +2519,13 @@ export class VersolaClientForm extends LitElement {
     return this.client?.consentFlow != null;
   }
 
+  private toggleRequiredScope(scope: string) {
+    const required = this.consentFlow.requiredScopes;
+    this.setConsentFlow({
+      requiredScopes: required.includes(scope) ? required.filter(s => s !== scope) : [...required, scope],
+    });
+  }
+
   private toggleConsentEnabled() {
     if (this.consentLocked) return;
     const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
@@ -4703,9 +4710,62 @@ export class VersolaClientForm extends LitElement {
                           />
                           Let the user deselect optional scopes
                         </label>
-                        <div class="registration-hint"><code>openid</code> and <code>offline_access</code> can never be deselected.</div>
+                        <div class="registration-hint"><code>openid</code> can never be deselected; <code>offline_access</code> only if you allow it below.</div>
                       </div>
                     </div>
+
+                    ${this.consentFlow.allowPartial ? html`
+                      <div class="registration-row">
+                        <div class="registration-label consent-property-label">
+                          <span>Required scopes</span>
+                          ${this.renderOptionInfo(
+                            'consent-required-scopes',
+                            'Required scopes',
+                            html`<div class="option-tooltip-item">Scopes the user cannot untick. If the client requests one, the consent screen keeps it ticked and the server refuses a grant that drops it. The user can still deny everything.</div>`,
+                            'Required scopes consent info',
+                          )}
+                        </div>
+                        <div>
+                          ${(this.formData.scope || []).every(s => s === 'openid' || s === 'offline_access') ? html`
+                            <div class="registration-hint">Add scopes to the client to make some of them required.</div>
+                          ` : html`
+                          <div class="chips" role="group" aria-label="Required scopes">
+                            ${(this.formData.scope || []).filter(s => s !== 'openid' && s !== 'offline_access').map(scope => html`
+                              <button
+                                type="button"
+                                class="chip"
+                                aria-pressed=${this.consentFlow.requiredScopes.includes(scope)}
+                                @click=${() => this.toggleRequiredScope(scope)}
+                              >${scope}</button>
+                            `)}
+                          </div>
+                          <div class="registration-hint">Highlighted scopes are always granted. The rest stay optional.</div>
+                          `}
+                        </div>
+                      </div>
+                      <div class="registration-row">
+                        <div class="registration-label consent-property-label">
+                          <span>Long-lived access</span>
+                          ${this.renderOptionInfo(
+                            'consent-offline-access',
+                            'Long-lived access',
+                            html`<div class="option-tooltip-item">Shown to users as the <code>offline_access</code> scope. If the user turns it off, the client gets no refresh token and has to send them through sign-in again when the access token expires.</div>`,
+                            'Long-lived access consent info',
+                          )}
+                        </div>
+                        <div>
+                          <label class="plain-checkbox-label">
+                            <input
+                              type="checkbox"
+                              .checked=${this.consentFlow.offlineAccessOptional}
+                              @change=${(e: Event) => this.setConsentFlow({ offlineAccessOptional: (e.target as HTMLInputElement).checked })}
+                            />
+                            Let the user turn off long-lived access
+                          </label>
+                          <div class="registration-hint">Off by default: the user must grant it, or deny the request. Turn it on only for clients that can sign in again without a refresh token.</div>
+                        </div>
+                      </div>
+                    ` : ''}
 
                     <div class="registration-row">
                       <div class="registration-label consent-property-label">

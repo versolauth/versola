@@ -9,8 +9,11 @@ export function createDefaultAuthFlow(): AuthFlow {
     primaryCredentials: ['phone'],
     otpType: 'sms',
     inlinePassword: false,
-    passkey: false,
-    factors: [{ type: 'otp', required: true }],
+    passkey: true,
+    factors: [
+      { type: 'otp', required: true },
+      { type: 'passkeyEnroll', required: false },
+    ],
     passkeyFactors: [],
     equivalents: {},
   };
@@ -20,12 +23,13 @@ export function createDefaultAuthFlow(): AuthFlow {
 export const DEFAULT_REGISTRATION_ROLE_ID = 'user';
 
 /**
- * Default registration flow: prove ownership of the phone entry credential with an OTP.
+ * Default registration flow: prove ownership of the phone entry credential with an OTP, then
+ * offer a passkey.
  */
 export function createDefaultRegistrationFlow(): RegistrationFlow {
   return {
     credential: 'phone',
-    steps: [{ type: 'otp' }],
+    steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }],
     roleIds: [DEFAULT_REGISTRATION_ROLE_ID],
   };
 }
@@ -38,6 +42,8 @@ export function createDefaultConsentFlow(): ConsentFlow {
   return {
     allowPartial: false,
     rememberDurationDays: 180,
+    requiredScopes: [],
+    offlineAccessOptional: false,
   };
 }
 

@@ -96,6 +96,20 @@ object Flows:
     "rememberDuration" -> Json.Null,
   )
 
+  /** Partial grants allowed, but `email` cannot be deselected. */
+  val requiredScopeConsentFlow: Json = Json.Obj(
+    "allowPartial" -> Json.Bool(true),
+    "rememberDuration" -> Json.Null,
+    "requiredScopes" -> Json.Arr(Json.Str("email")),
+  )
+
+  /** Partial grants allowed, and the user may turn `offline_access` off. */
+  val optionalOfflineAccessConsentFlow: Json = Json.Obj(
+    "allowPartial" -> Json.Bool(true),
+    "rememberDuration" -> Json.Null,
+    "offlineAccessOptional" -> Json.Bool(true),
+  )
+
   // ── Setup result ────────────────────────────────────────────────────────
 
   /** Everything a test needs to run a flow against a freshly-created client and user. */
