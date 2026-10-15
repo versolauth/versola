@@ -155,6 +155,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       body <- response.body.asString
     yield body
 
+  // Every <style> the page opens is closed once and by the page itself: injected text that closed one early would add a closer.
+  private def styleBlocksAreBalanced(body: String): Boolean =
+    def count(tag: String) = body.sliding(tag.length).count(_ == tag)
+    count("<style") > 0 && count("<style") == count("</style>")
+
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
       test("renders HTML with theme and form") {
@@ -235,7 +240,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield
           // The page owns exactly one <style> and two <script> blocks; any extra closing tag
           // means injected text ended one of them early.
-          assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1) &&
+          assertTrue(styleBlocksAreBalanced(body)) &&
             assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
             assertTrue(body.contains("\\3c /style>")) &&
             assertTrue(body.contains("&lt;/script&gt;")) &&
@@ -274,7 +279,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         test("has its own CSS escaped like any other, so it cannot end the style element") {
           val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
           rendered(tokenTheme).map: body =>
-            assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1, body.contains("\\3c /style>"))
+            assertTrue(styleBlocksAreBalanced(body), body.contains("\\3c /style>"))
         },
       ),
       test("returns 304 if ETag matches") {

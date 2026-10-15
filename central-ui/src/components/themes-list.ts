@@ -151,7 +151,7 @@ export class VersolaThemesList extends LitElement {
     return html`
       <content-header title="Themes" description="How sign-in, verification and consent screens look.">
         ${this.canManage ? html`
-          <button slot="actions" class="btn btn-primary" @click=${() => { this.editingTheme = { id: '', css: '', tenantId: null }; }}>
+          <button slot="actions" class="btn btn-primary" ?disabled=${this.isLoading} @click=${() => { this.editingTheme = { id: '', css: '', tenantId: null }; }}>
             + New Theme
           </button>
         ` : nothing}

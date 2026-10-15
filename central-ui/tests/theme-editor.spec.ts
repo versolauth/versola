@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
-import type { MockConfigState } from './mocks';
+import { setupConfigApiMocks, type MockConfigState } from './mocks';
 
 const themesPath = '/?view=themes&tenant=tenant-alpha';
 const formsPath = () => '/?view=forms&tenant=tenant-alpha';
@@ -282,4 +282,86 @@ test('the dialog says Stylesheet for a theme written as CSS and Extra CSS for th
   await expect(page.getByRole('group', { name: 'Built as' }).getByRole('button', { name: 'Stylesheet' })).toBeVisible();
   await expect(page.getByText('Extra CSS (optional)')).toBeVisible();
   await expect(page.getByText('Custom CSS')).toHaveCount(0);
+});
+
+test('an answer to an earlier edit is not applied once a newer edit is waiting to render', async ({ page }) => {
+  await newTheme(page);
+  await expect.poll(() => srcdoc(page)).toContain('--brand:#155e75');
+
+  // Hold the render of the first edit until the second one has been made.
+  let release: () => void = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  let arrived: () => void = () => {};
+  const requested = new Promise<void>(resolve => { arrived = resolve; });
+  await page.route('**/configuration/themes/css', async route => {
+    if (!route.request().postData()?.includes('#5b5bd6')) return route.fallback();
+    arrived();
+    await held;
+    return route.fallback();
+  });
+
+  await page.getByRole('button', { name: '#5b5bd6' }).click();
+  await requested;
+  await page.getByRole('button', { name: '#e5484d' }).click();
+  release();
+  // The second edit is still inside its debounce: the first answer must not show.
+  await page.waitForTimeout(100);
+  expect(await srcdoc(page)).not.toContain('--brand:#5b5bd6');
+  await expect.poll(() => srcdoc(page)).toContain('--brand:#e5484d');
+  await expect(page.locator('.preview-stage')).toHaveAttribute('aria-busy', 'false');
+});
+
+test('a preview that cannot be rendered says so and is marked as out of date', async ({ page }) => {
+  await newTheme(page);
+  await expect.poll(() => srcdoc(page)).toContain('--brand:#155e75');
+  await page.route('**/configuration/themes/css', route => route.fulfill({ status: 400, contentType: 'application/json', body: '{"message":"Refused"}' }));
+
+  await page.getByRole('button', { name: '#5b5bd6' }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Refused' })).toContainText('last version that rendered');
+  await expect(page.locator('.preview-stage')).toHaveCSS('opacity', '0.55');
+  expect(await srcdoc(page)).toContain('--brand:#155e75');
+});
+
+test('New Theme waits for the built-in themes, then opens as a visual theme on the default base', async ({ page }) => {
+  await setupConfigApiMocks(page, state);
+  let release: () => void = () => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/configuration/themes/presets', async route => {
+    await held;
+    return route.fallback();
+  });
+  await page.goto(themesPath);
+
+  const create = page.getByRole('button', { name: '+ New Theme', exact: true });
+  await expect(create).toBeDisabled();
+  release();
+  await expect(create).toBeEnabled();
+  await create.click();
+  await expect(page.getByRole('group', { name: 'Built as' }).getByRole('button', { name: 'Visual' })).toHaveClass(/seg-active/);
+  await expect(page.getByRole('button', { name: 'Versola' })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('switching the base drops an override that equals the new base\'s value', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+  // Fintech is neutral on the page and soft in shape; Studio is round.
+  await page.getByRole('button', { name: 'Neutral' }).click();
+  await page.getByRole('button', { name: 'Sharp' }).click();
+  await expect(page.getByText('2 overrides on Versola')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Fintech' }).click();
+  // Neutral is Fintech's own surface now, so only the shape stays an override.
+  await expect(page.getByText('1 override on Fintech')).toBeVisible();
+  expect(await save(page, api)).toMatchObject({ tokens: { base: 'fintech', overrides: { shape: 'sharp' } } });
+});
+
+test('the dark preview is switched off again when the theme fixes its scheme', async ({ page }) => {
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+  await scheme.getByRole('button', { name: 'Dark' }).click();
+  await page.getByRole('group', { name: 'Colour scheme' }).getByRole('button', { name: 'Light' }).click();
+  await page.getByRole('group', { name: 'Colour scheme' }).getByRole('button', { name: 'Auto' }).click();
+
+  await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
+  await expect.poll(() => srcdoc(page)).not.toContain('color-scheme:dark');
 });

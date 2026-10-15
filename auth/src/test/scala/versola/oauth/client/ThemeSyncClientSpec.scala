@@ -48,4 +48,17 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
         withoutTokens <- sync(oldCentral)
       yield assertTrue(withTokens == Vector(tokenTheme), withoutTokens == Vector(ThemeRecord("default", "body {}", None, None)))
     },
+    test("skips a theme that cannot be read and keeps the others") {
+      val good = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))))
+      val other = ThemeRecord("default", "body {}", None)
+      val badMode = """{"id":"bad-mode","css":"","tokens":{"base":"studio","overrides":{"mode":"sepia"}}}"""
+      val badColour = """{"id":"bad-colour","css":"","tokens":{"base":"studio","overrides":{"brand":"red"}}}"""
+      val noId = """{"css":"x"}"""
+      val body = s"""{"themes":[${good.toJson},$badMode,${other.toJson},$badColour,$noId]}"""
+      for
+        _ <- TestClient.addRoutes(Handler.fromFunction[Request](_ => Response.json(body)).toRoutes)
+        client <- ZIO.service[Client]
+        themes <- ThemeSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client)).getAll
+      yield assertTrue(themes == Vector(good, other))
+    },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging
