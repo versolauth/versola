@@ -1091,10 +1091,12 @@ database's from `POSTGRES_PASSWORD` in the bundle's `auth.secrets.env`
 - **Single zone, and the VM is a single point of failure.** `kz1-a` is the only zone in the region,
   so the cluster's two hosts share it; the VM, its Docker volumes (OpenBao's data, the internal CA's
   keys) are not backed up by anything but your own copies of `vps-admin.json` and the dumps above.
-- **`rollout`'s Postgres check ignores `--postgres-ca`.** Before a temporary extra replica starts,
-  `rollout` counts the free Postgres connections with `psql`, which trusts only the system's CAs —
-  against a database with a private CA (as in production) it can't connect, only warns, and the
-  rollout goes on without the count.
+- **`rollout`'s Postgres check in `versola-cli` 0.2.10 ignores `--postgres-ca`.** Before a temporary
+  extra replica starts, `rollout` counts the free Postgres connections with `psql`; 0.2.10 trusts
+  only the system's CAs there, so against a database with a private CA it can't connect, only warns,
+  and the rollout goes on without the count. Fixed on `versola-cli`'s `main` (the check now uses the
+  same CA as the services); it ships with the first release after 0.2.10. Even then a CA file with
+  only an intermediate certificate (no root) is not accepted by the check and only warns.
 - **`configure` prints the OpenBao AppRole `role-id` and `secret-id`** on every run unless
   `--setup-openbao` is used (by design, same UX as `local`) — and so does every `rollout` / `rollout --abort` step that prepares a version
   — so they end up in terminal scrollback and in the logs of an SSH session or CI job. On the first
