@@ -166,7 +166,8 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
     for
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
-      sso = SSOClient.Impl(httpClient, edgeConfig(port, trust), files)
+      config = edgeConfig(port, trust)
+      sso = SSOClient.Impl(httpClient, config, files, EdgeIdentity.Registered(config))
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
@@ -201,7 +202,8 @@ object SSOClientMutualTlsHandshakeSpec extends ZIOSpecDefault:
     for
       httpClient <- ZIO.service[Client]
       files <- ZIO.service[ClientCertificateFiles]
-      sso = SSOClient.Impl(httpClient, chartEdgeConfig(port, listenerTrust, internalTrust), files)
+      config = chartEdgeConfig(port, listenerTrust, internalTrust)
+      sso = SSOClient.Impl(httpClient, config, files, EdgeIdentity.Registered(config))
       _ <- sso.exchangeAuthorizationCode(
         Code("c-1"),
         CodeVerifier("v-1"),
