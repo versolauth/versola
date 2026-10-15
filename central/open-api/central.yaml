@@ -2574,6 +2574,13 @@ components:
           description: |
             When the registration was accepted. Set once, by the service that accepted it, and
             never patched - an update states what the client is now, not when it appeared.
+        themeOverrides:
+          oneOf:
+            - $ref: '#/components/schemas/ThemeOverrides'
+            - type: 'null'
+          description: |
+            What this client changes in the theme it uses, laid over it on its sign-in pages.
+            `null` (or absent) when it changes nothing.
       required:
         - id
         - clientName
@@ -2767,6 +2774,15 @@ components:
             native client fronted by edge. Required, never defaulted: `false` otherwise.
             Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
             certificate.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            What this client changes in the theme it uses (`theme`), laid over it on the client's
+            sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
+            Each value left out is the theme's own. An empty object, or leaving it out, changes
+            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateNativeClientRequest:
       type: object
@@ -2883,6 +2899,15 @@ components:
             native client fronted by edge. Required, never defaulted: `false` otherwise.
             Mutually exclusive with `issueEdgeClientCertificate` and with supplying a
             certificate.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            What this client changes in the theme it uses (`theme`), laid over it on the client's
+            sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
+            Each value left out is the theme's own. An empty object, or leaving it out, changes
+            nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateServiceClientRequest:
       type: object
@@ -3099,6 +3124,14 @@ components:
           description: |
             Merge-patch: absent leaves the stored key unchanged, `null` clears it, a value
             replaces it. Checked against the resulting `jwks` exactly as a registration is.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            Replaces the client's theme overrides: absent leaves them unchanged, an empty object
+            `{}` clears them, any other value replaces them as a whole (a value left out of it is
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
       required: [clientId]
     UpdateNativeClientRequest:
       type: object
@@ -3182,6 +3215,14 @@ components:
             The modulus length, in bits, an RSA DPoP proof key from this client must reach.
             `null` leaves the RFC 7518 §3.3 floor of 2048 bits, which applies to every client
             regardless; a value below it is refused at registration.
+        themeOverrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+          description: |
+            Replaces the client's theme overrides: absent leaves them unchanged, an empty object
+            `{}` clears them, any other value replaces them as a whole (a value left out of it is
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
       required: [clientId]
     UpdateServiceClientRequest:
       type: object

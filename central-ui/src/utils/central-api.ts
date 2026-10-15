@@ -33,6 +33,7 @@ import type {
   ServiceKey,
   SecurityProfile,
   Tenant,
+  ThemeOverrides,
   ThemePreset,
   ThemeRecord,
   ThemeTokens,
@@ -157,6 +158,7 @@ type ClientsResponse = {
     requirePushedAuthorizationRequests?: boolean;
     template?: ClientTemplate | null;
     createdAt?: string;
+    themeOverrides?: ThemeOverrides | null;
   }>;
 };
 type RolesResponse = { roles: Array<{ id: string; description: LocalizedDescription; permissions: string[]; active: boolean }> };
@@ -237,6 +239,11 @@ function sameStringSet(a: string[] | null | undefined, b: string[] | null | unde
 // stringify comparison is exact - unlike sameStringSet, there's no set to normalise first.
 function sameJsonValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+}
+
+/** The overrides, or null when there are none: absent, null and `{}` all mean the client changes nothing. */
+function nonEmptyOverrides(overrides: ThemeOverrides | null | undefined): ThemeOverrides | null {
+  return overrides && Object.keys(overrides).length > 0 ? overrides : null;
 }
 
 function sameConsentFlow(a: ConsentFlow | null | undefined, b: ConsentFlow | null | undefined): boolean {
@@ -748,6 +755,7 @@ export async function fetchClients(tenantId: string, offset = 0, limit = DEFAULT
         requirePushedAuthorizationRequests: client.requirePushedAuthorizationRequests ?? false,
         template: client.template ?? null,
         createdAt: client.createdAt ?? null,
+        themeOverrides: nonEmptyOverrides(client.themeOverrides),
         tenantId,
       };
     }),
@@ -1107,7 +1115,7 @@ const COMMON_CREATE_FIELDS = [
 const SIGN_IN_FIELDS = [
   'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
   'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
-  'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+  'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
 ] as const;
 
 const CREATE_FIELDS: Record<ClientKind, readonly string[]> = {
@@ -1127,6 +1135,7 @@ const COMMON_UPDATE_FIELDS = [
 const SIGN_IN_UPDATE_FIELDS = [
   'redirectUris', 'refreshTokenTtl', 'theme', 'authFlow', 'otpTemplateId', 'frontChannelLogoutUri',
   'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow',
+  'themeOverrides',
 ] as const;
 
 const UPDATE_FIELDS: Record<ClientKind, readonly string[]> = {
@@ -1175,6 +1184,7 @@ export async function createClient(tenantId: string, client: OAuthClient): Promi
       jwks: client.jwks ?? null,
       requireSignedRequestObject: !!client.requireSignedRequestObject,
       requirePushedAuthorizationRequests: !!client.requirePushedAuthorizationRequests,
+      themeOverrides: nonEmptyOverrides(client.themeOverrides) ?? undefined,
       issueEdgeClientCertificate: !!client.edgeFronted && kind !== 'device',
       enrollEdgeClientCertificate: !!client.edgeFronted && kind === 'device',
     }, CREATE_FIELDS[kind]),
@@ -1268,6 +1278,10 @@ export async function updateClient(tenantId: string, existing: OAuthClient, clie
       requirePushedAuthorizationRequests: existing.requirePushedAuthorizationRequests !== client.requirePushedAuthorizationRequests
         ? client.requirePushedAuthorizationRequests
         : undefined,
+      // Patch semantics: omitted leaves the stored overrides alone, an empty object clears them.
+      themeOverrides: sameJsonValue(nonEmptyOverrides(existing.themeOverrides), nonEmptyOverrides(client.themeOverrides))
+        ? undefined
+        : (nonEmptyOverrides(client.themeOverrides) ?? {}),
     }, UPDATE_FIELDS[kind]),
   });
 
@@ -1383,8 +1397,8 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
-// The states of the built-in forms that central previews. A central without this endpoint answers
-// with an error; the console then previews every form from its backend properties, as before.
+// The states of the built-in forms that central previews. A failure here fails the screen's load
+// and is shown as its error; there is no fallback that guesses the states.
 export async function fetchFormPreviews(): Promise<FormPreview[]> {
   const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
   return response.previews;
@@ -1451,8 +1465,8 @@ export async function updateTheme(theme: ThemeRecord): Promise<void> {
   });
 }
 
-// The built-in themes a theme can be based on. A central that has none answers with an error; the
-// console then offers only themes written as CSS, as before.
+// The built-in themes a theme can be based on; a failure fails the screen's load and is shown
+// as its error; there is no reduced editor.
 export async function fetchThemePresets(): Promise<ThemePreset[]> {
   const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
   return response.presets;

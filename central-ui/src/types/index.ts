@@ -158,6 +158,9 @@ export interface OAuthClient {
   /** When the registration was accepted, as an ISO-8601 instant; absent for a client the
    *  backend did not report one for. */
   createdAt?: string | null;
+  /** What this client changes in the theme it uses (a partner app with its own brand); absent or
+   *  null when it changes nothing. */
+  themeOverrides?: ThemeOverrides | null;
   tenantId?: string;  // Tenant scope (clients inherit edge from their tenant)
   authorizationPresets?: AuthorizationPreset[];
 }

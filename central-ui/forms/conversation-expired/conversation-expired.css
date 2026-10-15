@@ -2,12 +2,12 @@
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: var(--field-bg);
+  background: var(--field);
   display: flex;
   align-items: center;
   justify-content: center;
   margin: 0 0 24px;
-  color: var(--text);
+  color: var(--ink);
 }
 
 .conversation-expired-icon svg {
@@ -20,7 +20,7 @@
   color: var(--text-muted);
   margin: -14px 0 0;
   line-height: 1.6;
-  }
+}
 
 .conversation-expired-return {
   margin-top: 28px;

@@ -12,7 +12,7 @@ import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMetho
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
-import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{BrandColor, Mode, Surface, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -142,10 +142,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService)
 
   // The page rendered with the client's theme set to the given one and the default theme as the base.
-  private def rendered(tokenTheme: ThemeRecord) =
+  private def rendered(tokenTheme: ThemeRecord, client: OAuthClientRecord = clientRecord) =
     val env = Env()
     for
-      _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+      _ <- env.configuration.find.succeedsWith(Some(client))
       _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(tokenTheme)))
       _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
       _ <- env.configuration.getLocales.succeedsWith(locales)
@@ -155,6 +155,118 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       response <- env.service.renderStep(conversationRecord, None)
       body <- response.body.asString
     yield body
+
+  // The page for a step, rendered with the given client record, locales and conversation record.
+  private def page(
+      record: ConversationRecord,
+      client: Option[OAuthClientRecord] = Some(clientRecord),
+      locales: Locales = locales,
+      formId: String = "credential",
+      form: FormRecord = formRecord,
+  ) =
+    val env = Env()
+    for
+      _ <- env.configuration.find.succeedsWith(client)
+      _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+      _ <- env.configuration.getForm.succeedsWith(Some(form.copy(id = formId)))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+      _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
+      _ <- env.configuration.getScopes.succeedsWith(Vector.empty)
+      response <- env.service.renderStep(record, None)
+      body <- response.body.asString
+    yield body
+
+  private val ownOverrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold))
+  private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
+  private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech")))
+
+  // The same rule on each caller of the theme: the client the page is for, when it is known, brings its overrides;
+  // when it is not (removed since, or never named) the page is the theme's own and nothing fails.
+  private val pages: List[(String, String, (ConversationRenderService, Option[ClientId]) => Task[Response])] = List(
+    ("renderStep", "credential", (service, _) => service.renderStep(conversationRecord, None)),
+    (
+      "renderExpired",
+      "conversation-expired",
+      (service, id) =>
+        service.renderExpired(id.getOrElse(clientId), redirectUri.encode, None, ResponseMode.Query, None),
+    ),
+    (
+      "renderServiceUnavailable",
+      "service-unavailable",
+      (service, id) =>
+        service.renderServiceUnavailable(id.getOrElse(clientId), redirectUri.encode, None, ResponseMode.Query, None),
+    ),
+    (
+      "renderAccount",
+      "auth-settings",
+      (service, id) =>
+        service.renderAccount(id.getOrElse(clientId), StepView.AccountSettings(Nil, Nil, None, None), None),
+    ),
+    (
+      "renderLogoutConfirm",
+      "confirm-logout",
+      (service, id) =>
+        service.renderLogoutConfirm(
+          SessionInfo(
+            MAC(Array.fill(32)(1.toByte)),
+            SessionRecord(
+              userId = UserId(UUID.randomUUID()),
+              clients = id.toList.map(ClientEntry(_, Instant.EPOCH)),
+              userAgentId = testUserAgentId,
+              createdAt = Instant.EPOCH,
+              amr = Map.empty,
+              publicId = PublicSessionId("public-session-3"),
+              expiresAt = Instant.EPOCH,
+            ),
+          ),
+          "csrf-token",
+          None,
+          None,
+          None,
+        ),
+    ),
+    ("renderLogout", "signed-out", (service, id) => service.renderLogout(Nil, None, None, None, id)),
+  )
+
+  // What the page says, with `client` as what the configuration knows of the client (None: nothing).
+  private def pageOf(formId: String, client: Option[OAuthClientRecord], knownId: Option[ClientId])(
+      render: (ConversationRenderService, Option[ClientId]) => Task[Response],
+  ) =
+    val env = Env()
+    for
+      _ <- env.configuration.find.succeedsWith(client)
+      _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(theme)))
+      _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = formId)))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+      _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
+      response <- render(env.service, knownId)
+      body <- response.body.asString
+    yield (response.status, body)
+
+  private val themedPageTests: List[Spec[Any, Any]] =
+    pages.flatMap { (name, formId, render) =>
+      List(
+        test(s"$name puts them after the theme's CSS") {
+          pageOf(formId, Some(withOverrides), Some(clientId))(render).map: (status, body) =>
+            assertTrue(
+              status == Status.Ok,
+              body.contains("--brand:#112233;"),
+              body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
+            )
+        },
+        test(s"$name shows the theme as it is when the configuration does not know the client") {
+          pageOf(formId, None, Some(clientId))(render).map: (status, body) =>
+            assertTrue(status == Status.Ok, !body.contains("--brand:"), body.contains(".body { color: black; }"))
+        },
+      )
+    } :+ test("renderLogout shows the theme as it is when no client is known") {
+      pageOf("signed-out", Some(withOverrides), None)((service, id) => service.renderLogout(Nil, None, None, None, id)).map: (status, body) =>
+        assertTrue(status == Status.Ok, !body.contains("--brand:"))
+    }
 
   // Every <style> the page opens is closed once and by the page itself: injected text that closed one early would add a closer.
   private def styleBlocksAreBalanced(body: String): Boolean =
@@ -247,6 +359,154 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
       },
+      suite("what the form is told about the client, the languages and the signed-in user")(
+        test("a partner's app is announced with its name and logo") {
+          val partner = clientRecord.copy(
+            logoUri = Some("https://acme.test/app.svg"),
+            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+          )
+          page(conversationRecord, client = Some(partner)).map: body =>
+            assertTrue(
+              body.contains(""""client":{"name":"Test Client","names":{"en":"Test Client"},"logo":"https://acme.test/app.svg","partner":true}"""),
+            )
+        },
+        test("an app of the identity provider's own, which has no consent flow, is not a partner") {
+          page(conversationRecord).map(body =>
+            assertTrue(body.contains(""""client":{"name":"Test Client","names":{"en":"Test Client"},"partner":false}""")),
+          )
+        },
+        test("the client's names in every language travel with the one picked for the first render") {
+          val named = clientRecord.copy(clientName = Map("en" -> "Shop", "pt" -> "Loja", "PT-br" -> "Loja BR"))
+          page(conversationRecord.copy(uiLocales = Some(List("pt-BR"))), client = Some(named)).map: body =>
+            assertTrue(
+              body.contains(""""name":"Loja BR""""),
+              body.contains(""""names":{"""),
+              body.contains(""""en":"Shop""""),
+              body.contains(""""PT-br":"Loja BR""""),
+            )
+        },
+        test("a client name is picked by exact locale ignoring case, then without the region, then the default, then any entry") {
+          def picked(names: Map[String, String], requested: String) =
+            page(conversationRecord.copy(uiLocales = Some(List(requested))), client = Some(clientRecord.copy(clientName = names)))
+              .map(body => """"client":\{"name":"([^"]*)"""".r.findFirstMatchIn(body).map(_.group(1)))
+          for
+            exact <- picked(Map("en" -> "Shop", "pt-BR" -> "Loja BR", "pt" -> "Loja"), "PT-br")
+            language <- picked(Map("en" -> "Shop", "pt" -> "Loja"), "pt-BR")
+            default <- picked(Map("en" -> "Shop", "de" -> "Laden"), "fr")
+            any <- picked(Map("de" -> "Laden"), "fr")
+          yield assertTrue(exact.contains("Loja BR"), language.contains("Loja"), default.contains("Shop"), any.contains("Laden"))
+        },
+        test("a client name is cut by code points, so an emoji at the limit is whole") {
+          val emoji = "\uD83D\uDE00"
+          val long = clientRecord.copy(clientName = Map("en" -> ("a" * 99 + emoji + "tail")))
+          page(conversationRecord, client = Some(long)).map: body =>
+            assertTrue(
+              body.contains(""""name":"""" + "a" * 99 + emoji + """""""),
+              !body.contains("tail"),
+            )
+        },
+        test("a client name loses newlines and bidi override and zero-width characters") {
+          val hostile = clientRecord.copy(clientName = Map("en" -> "Sh\u202Eop\n\r\u200B\u2066x\u0007", "de" -> "\u202E\n"))
+          page(conversationRecord, client = Some(hostile)).map: body =>
+            assertTrue(
+              body.contains(""""name":"Shopx""""),
+              body.contains(""""names":{"en":"Shopx"}"""),
+              !body.contains("202E") && !body.contains("202e"),
+            )
+        },
+        test("the consent step carries the client's names, cleaned and in every language") {
+          val named = clientRecord.copy(clientName = Map("en" -> "Shop", "fr" -> "Bou\u202Etique"))
+          page(consentRecord, client = Some(named), formId = "consent").map: body =>
+            assertTrue(body.contains(""""clientName":"Shop""""), body.contains(""""clientNames":{"en":"Shop","fr":"Boutique"}"""))
+        },
+        test("a client that cannot be found is not announced") {
+          page(conversationRecord, client = None).map(body => assertTrue(!body.contains("\"client\":")))
+        },
+        test("the languages the form is offered in carry the names configured under Locales") {
+          val both =
+            Locales(default = "en", locales = Vector(LocaleRecord("en", "English"), LocaleRecord("de", "Deutsch"), LocaleRecord("fr", "Français")))
+          val twoLanguages =
+            formRecord.copy(localizations = Map("en" -> Map("page_title" -> "Sign In Test"), "de" -> Map("page_title" -> "Anmelden")))
+          page(conversationRecord, locales = both, form = twoLanguages).map: body =>
+            assertTrue(
+              body.contains(""""localeNames":{"en":"English","de":"Deutsch"}""") || body.contains(
+                """"localeNames":{"de":"Deutsch","en":"English"}""",
+              ),
+              !body.contains("Français"),
+            )
+        },
+        test("the consent card is told who is signed in: a name, a masked address and an https picture") {
+          val record = consentRecord.copy(
+            userEmail = Some(Email("anna@example.com")),
+            userClaims = Some(Json.Obj("name" -> Json.Str("Anna Petrova"), "picture" -> Json.Str("https://cdn.example/anna.png"))),
+          )
+          page(record, formId = "consent").map: body =>
+            assertTrue(
+              body.contains(""""user":{"name":"Anna Petrova","identifier":"a•••a@example.com","picture":"https://cdn.example/anna.png"}"""),
+              !body.contains("anna@example.com"),
+            )
+        },
+        test("an https picture is accepted whatever the case of its scheme") {
+          val record = consentRecord.copy(
+            userEmail = Some(Email("anna@example.com")),
+            userClaims = Some(Json.Obj("picture" -> Json.Str("HTTPS://cdn.example/a.png"))),
+          )
+          page(record, formId = "consent").map(body => assertTrue(body.contains(""""picture":"HTTPS://cdn.example/a.png"""")))
+        },
+        test("a user name is cut by code points, so an emoji at the limit is whole") {
+          val emoji = "\uD83D\uDE00"
+          val record =
+            consentRecord.copy(userClaims = Some(Json.Obj("name" -> Json.Str("x" * 199 + emoji + "tail"))), userEmail = Some(Email("a@example.com")))
+          page(record, formId = "consent").map(body => assertTrue(body.contains("\"name\":\"" + "x" * 199 + emoji + "\""), !body.contains("tail")))
+        },
+        test("a picture that is not an https URL is left out, since the browser would load it from wherever it points") {
+          val pictures =
+            List(
+              "http://cdn.example/a.png",
+              "javascript:alert(1)",
+              "data:image/png;base64,AAAA",
+              "//cdn.example/a.png",
+              "/a.png",
+              "not a url",
+              " https://cdn.example/a.png",
+              "https://cdn.example/a.png ",
+              "https:\\\\cdn.example\\a.png",
+              "https://user:pw@cdn.example/a.png",
+              "https://@cdn.example/a.png",
+              "https://",
+              "https:///a.png",
+            )
+          ZIO.foreach(pictures): picture =>
+            val record = consentRecord.copy(
+              userEmail = Some(Email("anna@example.com")),
+              userClaims = Some(Json.Obj("picture" -> Json.Str(picture))),
+            )
+            page(record, formId = "consent").map(body => body.contains("\"picture\"")).map(!_)
+          .map(results => assertTrue(results.forall(identity)))
+        },
+        test("a name is built from the given and family names when there is none, and cut to a sane length") {
+          val fromParts = consentRecord.copy(
+            userClaims = Some(Json.Obj("given_name" -> Json.Str("Anna"), "family_name" -> Json.Str("Petrova"))),
+            userPhone = Some(Phone("+77001234567")),
+          )
+          val long = consentRecord.copy(userClaims = Some(Json.Obj("name" -> Json.Str("x" * 500))), userEmail = Some(Email("a@example.com")))
+          for
+            first <- page(fromParts, formId = "consent")
+            second <- page(long, formId = "consent")
+          yield assertTrue(
+            first.contains(""""name":"Anna Petrova""""),
+            second.contains("\"name\":\"" + "x" * 200 + "\""),
+            !second.contains("x" * 201),
+          )
+        },
+        test("with nothing to name the user by, the consent card is told nobody") {
+          page(consentRecord, formId = "consent").map(body => assertTrue(!body.contains("\"user\":")))
+        },
+        test("only a form that is the consent step carries the user") {
+          val record = conversationRecord.copy(userEmail = Some(Email("anna@example.com")))
+          page(record).map(body => assertTrue(!body.contains("\"user\":")))
+        },
+      ),
       suite("a theme built from tokens")(
         test("is the current default stylesheet, then what its tokens set, then its own CSS") {
           val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio")))
@@ -281,6 +541,47 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
           rendered(tokenTheme).map: body =>
             assertTrue(styleBlocksAreBalanced(body), body.contains("\\3c /style>"))
+        },
+      ),
+      suite("a client's theme overrides")(
+        test("come after the theme's own CSS, so they win over it") {
+          rendered(fintechTheme, withOverrides).map: body =>
+            assertTrue(
+              body.contains("--brand:#5b5bd6;"),
+              body.contains("--brand:#112233;"),
+              body.indexOf(".extra { top: 0; }") < body.indexOf("--brand:#112233;"),
+              body.indexOf("--brand:#5b5bd6;") < body.indexOf("--brand:#112233;"),
+              // bold is written out, to undo the neutral page of the theme under it
+              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 22%"),
+            )
+        },
+        test("go after the CSS of a stylesheet theme") {
+          rendered(theme, withOverrides).map: body =>
+            assertTrue(
+              body.contains(".body { color: red; }"),
+              body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
+            )
+        },
+        test("go on top of a stylesheet theme, with nothing else changed in it") {
+          for
+            plain <- rendered(theme)
+            over <- rendered(theme, withOverrides)
+            // everything up to the end of the theme's own CSS is the page it was, and its CSS is written once
+            end = plain.indexOf(".body { color: red; }") + ".body { color: red; }".length
+          yield assertTrue(
+            end > ".body { color: red; }".length,
+            over.take(end) == plain.take(end),
+            over.sliding(".body { color: red; }".length).count(_ == ".body { color: red; }") == 1,
+            !plain.contains("--brand:"),
+            over.contains("--brand:#112233;"),
+          )
+        },
+        test("leave the page exactly as it was when empty or absent") {
+          for
+            plain <- rendered(fintechTheme)
+            none <- rendered(fintechTheme, clientRecord.copy(themeOverrides = None))
+            empty <- rendered(fintechTheme, clientRecord.copy(themeOverrides = Some(ThemeOverrides())))
+          yield assertTrue(plain == none, plain == empty, !plain.contains("client overrides"))
         },
       ),
       test("returns 304 if ETag matches") {
@@ -809,6 +1110,18 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           !body.contains("\"logoutUrl\""),
         )
       },
+      test("names the languages as configured under Locales") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil, None, None), None)
+          body <- response.body.asString
+        yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
+      },
       test("renders 404 if the auth-settings form is not found") {
         val env = Env()
         for
@@ -843,7 +1156,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("error=login_required")) &&
           assertTrue(body.contains("state=test-state")) &&
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
-          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg""""))
+          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg"""")) &&
+          // No client badge is drawn here, so the client is not sent; the language names are.
+          assertTrue(!body.contains("\"client\":")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("renders the expired page in the locale the user chose, not the tenant default") {
         val env = Env()
@@ -980,7 +1296,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("Sign out?")) &&
           assertTrue(body.contains("csrf-token-1")) &&
           assertTrue(body.contains("https://example.com/post-logout")) &&
-          assertTrue(body.contains("test-state"))
+          assertTrue(body.contains("test-state")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("renders 404 if the confirm-logout form is not found") {
         val env = Env()
@@ -1024,7 +1341,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service-unavailable")) &&
           assertTrue(body.contains("error=temporarily_unavailable")) &&
-          assertTrue(body.contains("state=test-state"))
+          assertTrue(body.contains("state=test-state")) &&
+          assertTrue(!body.contains("\"client\":")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
     ),
     suite("renderSubmit")(
@@ -1180,6 +1499,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         )
       },
     ),
+    suite("a client's theme overrides on every page that wears a theme")(themedPageTests*),
     suite("renderLogout")(
       test("renders SignedOut view with encoded logout URIs and redirect URI including state") {
         val env = Env()
@@ -1190,7 +1510,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None)
+          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
@@ -1209,9 +1529,20 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, None, None, Some(List("fr")))
+          response <- env.service.renderLogout(Nil, None, None, Some(List("fr")), None)
           body <- response.body.asString
         yield assertTrue(body.contains("<title>Connexion</title>"))
+      },
+      test("names the languages as configured under Locales") {
+        val env = Env()
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderLogout(Nil, None, None, None, None)
+          body <- response.body.asString
+        yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("omits redirectUri when postLogoutRedirectUri is absent") {
         val env = Env()
@@ -1220,7 +1551,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, None, None, None)
+          response <- env.service.renderLogout(Nil, None, None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(!body.contains("\"redirectUri\"")) &&
@@ -1233,7 +1564,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, Some(redirectUri), None, None)
+          response <- env.service.renderLogout(Nil, Some(redirectUri), None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))

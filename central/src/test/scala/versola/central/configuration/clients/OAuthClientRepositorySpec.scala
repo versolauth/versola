@@ -5,6 +5,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.util.theme.{BrandColor, Mode, Shape, Surface, ThemeOverrides}
 import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
 import zio.http.URL
@@ -223,6 +224,28 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         yield assertTrue(
           created === Some(consenting),
           updated.flatMap(_.consentFlow) === Some(widened),
+        )
+      },
+      test("create and find a client with theme overrides, then replace and clear them") {
+        val branded = client.copy(themeOverrides = Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))))
+        val replaced = ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark))
+
+        for
+          _ <- env.repository.createClient(branded)
+          created <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(replaced)))
+          replacedFound <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(clientName = Some(Map("en" -> "patched"))))
+          untouched <- env.repository.find(clientId)
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(ThemeOverrides())))
+          cleared <- env.repository.find(clientId)
+        yield assertTrue(
+          created === Some(branded),
+          replacedFound.flatMap(_.themeOverrides) == Some(replaced),
+          // a patch of something else changed the row, and left the overrides as they were
+          untouched.map(_.clientName) == Some(Map("en" -> "patched")),
+          untouched.flatMap(_.themeOverrides) == Some(replaced),
+          cleared.map(_.themeOverrides) == Some(None),
         )
       },
       test("create and find a client with a DPoP proof key policy") {

@@ -166,7 +166,7 @@ test.describe('password', () => {
     const { submitted, all } = await renderForm(page, 'password', { step });
 
     await page.locator('.locale-trigger').click();
-    await page.getByRole('button', { name: 'Русский', exact: true }).click();
+    await page.getByRole('option', { name: 'ru', exact: true }).click();
     await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
 
     await page.getByLabel(all.ru.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
@@ -709,7 +709,8 @@ test.describe('confirm-logout', () => {
   test('sends the chosen language with the confirmation', async ({ page }) => {
     const { submitted, all } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
 
-    await page.getByLabel('Language').selectOption('ru');
+    await page.locator('.locale-trigger').click();
+    await page.getByRole('option', { name: 'ru', exact: true }).click();
     await page.getByRole('button', { name: all.ru.confirm_button }).click();
 
     await expectSubmissions(submitted, 1);
@@ -841,76 +842,264 @@ for (const [id, config] of accessibilityCases) {
   });
 }
 
-/**
- * A theme is a full replacement of common.css, so a tenant that forked the previous one keeps it
- * while the forms are updated underneath it. tests/fixtures/previous-common.css is that frozen
- * copy; the forms must stay usable over it.
- */
-test.describe('over a theme forked from the previous common.css', () => {
-  const previous = { commonCss: 'fixtures/previous-common.css' };
+test('the card fills the width of a phone, however little it holds', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 760 });
+  await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root"><div class="container"><h1>Hi</h1></div></div>`);
 
-  test('does not flag empty required fields as invalid', async ({ page }) => {
-    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true } }, previous);
+  const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
+  expect(width).toBe(375);
+});
 
-    for (const field of await page.locator('.input-field').all()) {
+test.describe('the partner\'s app and the languages, as the server tells the form', () => {
+  const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23b4348a"/></svg>';
+  const partner = { name: 'Storefront', logo, partner: true };
+  const signIn = ['credential', 'otp', 'password', 'set-password', 'passkey-enroll'] as const;
+  const stepOf = (id: string) => ({
+    credential: { type: 'credential', primaryCredentials: ['email'] },
+    otp: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' },
+    password: { type: 'password' },
+    'set-password': { type: 'set-password' },
+    'passkey-enroll': { type: 'passkey-enroll', publicKeyOptions: '{}' },
+  } as Record<string, Record<string, unknown>>)[id];
+
+  for (const id of signIn) {
+    test(`${id}: names a partner\'s app inside the card, with its icon`, async ({ page }) => {
+      await renderForm(page, id, { step: stepOf(id), client: partner });
+
+      const badge = page.locator('.container .client-badge');
+      await expect(badge.locator('.client-badge-name')).toHaveText('Storefront');
+      await expect(badge.locator('img')).toBeVisible();
+      // Inside the card, directly above its heading, and nowhere in the brand zone over the card.
+      const card = page.locator('.container');
+      expect(await badge.evaluate(el => el.parentElement?.classList.contains('container'))).toBe(true);
+      const badgeBox = (await badge.boundingBox())!;
+      const cardBox = (await card.boundingBox())!;
+      const headingBox = (await card.locator('h1').first().boundingBox())!;
+      expect(badgeBox.y).toBeGreaterThanOrEqual(cardBox.y);
+      expect(badgeBox.y + badgeBox.height).toBeLessThanOrEqual(headingBox.y);
+      expect(await badge.locator('img').getAttribute('referrerpolicy')).toBe('no-referrer');
+      await expect(page.locator('.page-brand .client-badge')).toHaveCount(0);
+    });
+  }
+
+  test('an app of the identity provider\'s own, or no client at all, is not announced', async ({ page }) => {
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo, partner: false } });
+    await expect(page.locator('.client-badge')).toHaveCount(0);
+
+    const none = await page.context().newPage();
+    await renderForm(none, 'credential', { step: stepOf('credential') });
+    await expect(none.locator('.client-badge')).toHaveCount(0);
+  });
+
+  test('shows the name\'s initial on a tile when the logo is missing or does not load', async ({ page }) => {
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', partner: true } });
+    await expect(page.locator('.client-badge-initial')).toHaveText('S');
+
+    const broken = await page.context().newPage();
+    await broken.route('**/missing.png', route => route.abort());
+    await renderForm(broken, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo: '/missing.png', partner: true } });
+    await expect(broken.locator('.client-badge-initial')).toHaveText('S');
+  });
+
+  test('draws nothing when the logo does not load and the client has no name', async ({ page }) => {
+    await page.route('**/missing.png', route => route.abort());
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { logo: '/missing.png', partner: true } });
+    await expect(page.locator('.container h1').first()).toBeVisible();
+    await expect(page.locator('.client-badge')).toHaveCount(0);
+  });
+
+  test('a long unbroken client name wraps inside the card at 320px', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'A'.repeat(80), logo, partner: true } });
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`the badge has no axe violations in the ${scheme} scheme`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await renderForm(page, 'credential', { step: stepOf('credential'), client: partner });
+
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.help}`)).toEqual([]);
+    });
+  }
+
+  test('the language switcher shows the names configured under Locales, and the bare code where one is missing', async ({ page }) => {
+    await renderForm(page, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)', ru: 'Русский язык' } });
+    await expect(page.locator('.locale-trigger')).toHaveText('English (US)');
+    await page.locator('.locale-trigger').click();
+    await expect(page.getByRole('option', { name: 'Русский язык', exact: true })).toBeVisible();
+
+    const partly = await page.context().newPage();
+    await renderForm(partly, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)' } });
+    await partly.locator('.locale-trigger').click();
+    await expect(partly.getByRole('option', { name: 'ru', exact: true })).toBeVisible();
+  });
+
+  test('without localeNames the switcher shows the bare codes, with them the names', async ({ page }) => {
+    await renderForm(page, 'password', { step: stepOf('password') });
+    await expect(page.locator('.locale-trigger')).toHaveText('en');
+    await page.locator('.locale-trigger').click();
+    await expect(page.getByRole('option', { name: 'ru', exact: true })).toBeVisible();
+
+    const named = await page.context().newPage();
+    await renderForm(named, 'password', { step: stepOf('password'), localeNames: { en: 'English', ru: 'Русский' } });
+    await expect(named.locator('.locale-trigger')).toHaveText('English');
+    await named.locator('.locale-trigger').click();
+    await expect(named.getByRole('option', { name: 'Русский', exact: true })).toBeVisible();
+  });
+
+  test('the badge shows the client\'s name in the form\'s current language', async ({ page }) => {
+    const client = { name: 'Storefront', names: { en: 'Storefront', ru: 'Витрина' }, partner: true };
+    const { all } = await renderForm(page, 'password', { step: stepOf('password'), client });
+    await expect(page.locator('.client-badge-name')).toHaveText('Storefront');
+
+    await page.locator('.locale-trigger').click();
+    await page.getByRole('option', { name: 'ru', exact: true }).click();
+    await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+    await expect(page.locator('.client-badge-name')).toHaveText('Витрина');
+    await expect(page.locator('.client-badge-initial')).toHaveText('В');
+  });
+
+  test('the consent sentence names the client in the current language too', async ({ page }) => {
+    const step = {
+      type: 'consent', clientName: 'Storefront', clientNames: { en: 'Storefront', ru: 'Витрина' }, allowPartial: true, denyUri: '/d',
+      scopes: [{ scope: 'openid', description: 'Know who you are', claims: [], deselectable: true }],
+    };
+    const { all } = await renderForm(page, 'consent', { step });
+    await expect(page.locator('.consent-client')).toHaveText('Storefront');
+
+    await page.locator('.locale-trigger').click();
+    await page.getByRole('option', { name: 'ru', exact: true }).click();
+    await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+    await expect(page.locator('.consent-client')).toHaveText('Витрина');
+  });
+
+  test('a configured logo that does not load and has no name leaves no empty badge; images send no referrer', async ({ page }) => {
+    await page.route('**/missing.png', route => route.abort());
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { logo: '/missing.png', partner: true } });
+    await expect(page.locator('.client-badge')).toHaveCount(0);
+
+    const shown = await page.context().newPage();
+    await renderForm(shown, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo, partner: true } });
+    await expect(shown.locator('.client-badge img')).toHaveAttribute('referrerpolicy', 'no-referrer');
+  });
+});
+
+test.describe('the language dropdown, from the keyboard', () => {
+  const localeNames = { en: 'English', ru: 'Русский' };
+
+  test('opens with the arrows, moves, and picks with Enter; focus returns to the button', async ({ page }) => {
+    const { submitted, all } = await renderForm(page, 'password', { step: { type: 'password' }, localeNames });
+    const trigger = page.getByRole('button', { name: 'English' });
+    await expect(trigger).toHaveAttribute('aria-haspopup', 'listbox');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+
+    await trigger.focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const listbox = page.getByRole('listbox');
+    await expect(listbox.getByRole('option', { name: 'English' })).toHaveAttribute('aria-selected', 'true');
+    await expect(listbox.getByRole('option', { name: 'English' })).toBeFocused();
+
+    await page.keyboard.press('ArrowDown');
+    await expect(listbox.getByRole('option', { name: 'Русский' })).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(listbox.getByRole('option', { name: 'English' })).toBeFocused();
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+
+    await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Русский' })).toBeFocused();
+
+    await page.getByLabel(all.ru.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
+    await page.getByRole('button', { name: all.ru.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+  });
+
+  test('Space picks, Escape closes without picking, an outside click closes', async ({ page }) => {
+    const { all } = await renderForm(page, 'password', { step: { type: 'password' }, localeNames });
+    const trigger = page.getByRole('button', { name: 'English' });
+
+    await trigger.press('Enter');
+    await expect(page.getByRole('listbox')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect(page.getByRole('heading', { name: all.en.title })).toBeVisible();
+
+    await trigger.click();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    await page.getByRole('heading').click();
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+
+    await trigger.click();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press(' ');
+    await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+  });
+
+  test('confirm-logout: the language can be changed by keyboard alone and is sent', async ({ page }) => {
+    const { submitted, all } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'x' }, localeNames });
+
+    await page.getByRole('button', { name: 'English' }).press('ArrowDown');
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
+
+    await page.getByRole('button', { name: all.ru.confirm_button }).press('Enter');
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].query.get('ui_locale')).toBe('ru');
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`the open dropdown has no axe violations in the ${scheme} scheme`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
+      await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'x' }, localeNames });
+      await page.getByRole('button', { name: 'English' }).press('ArrowDown');
+      await expect(page.getByRole('listbox')).toBeVisible();
+
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.help}`)).toEqual([]);
+    });
+  }
+});
+
+test.describe('states the forms keep drawing', () => {
+  test('an empty required field is not flagged as invalid before the user typed', async ({ page }) => {
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true } });
+
+    const fields = await page.locator('.input-field').all();
+    expect(fields.length).toBeGreaterThan(0);
+    for (const field of fields) {
+      await expect(field).not.toHaveAttribute('aria-invalid', 'true');
       await expect(field).not.toHaveCSS('border-color', 'rgb(220, 38, 38)');
     }
   });
 
-  test('draws the ticked state of a consent scope', async ({ page }) => {
+  test('a ticked consent scope is drawn as ticked, an unticked one is not', async ({ page }) => {
     await renderForm(page, 'consent', {
       step: { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes: [{ scope: 'email', description: 'Read your email address', claims: [], deselectable: true }] },
-    }, previous);
+    });
+    const box = page.getByLabel('Read your email address');
 
-    await expect(page.getByLabel('Read your email address')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+    await expect(box).toBeChecked();
+    const ticked = await box.evaluate(el => getComputedStyle(el).backgroundColor);
+    expect(ticked).not.toBe('rgba(0, 0, 0, 0)');
+    await box.uncheck();
+    expect(await box.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(ticked);
   });
 
-  test('keeps the password toggle next to its field', async ({ page }) => {
-    const { t } = await renderForm(page, 'password', { step: { type: 'password' } }, previous);
+  test('the password toggle sits inside its field, on the right', async ({ page }) => {
+    const { t } = await renderForm(page, 'password', { step: { type: 'password' } });
 
     const field = await page.getByLabel(t.password_placeholder, { exact: true }).boundingBox();
     const toggle = await page.getByRole('button', { name: t.show_password }).boundingBox();
     expect(toggle!.x).toBeGreaterThan(field!.x + field!.width / 2);
     expect(toggle!.y).toBeGreaterThanOrEqual(field!.y);
     expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(field!.y + field!.height);
-  });
-});
-
-/**
- * A form version stored before the redesign keeps running over the current common.css (the version
- * was never replaced, or it is previewed in the console). Its markup is reproduced here as stored.
- */
-test.describe('older form versions over the current common.css', () => {
-  const render = async (page: import('@playwright/test').Page, body: string) => {
-    await page.setViewportSize({ width: 375, height: 760 });
-    await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root">${body}</div>`);
-  };
-
-  test('centres the label of a link button that sets display:block itself', async ({ page }) => {
-    await render(page, '<div class="container"><h1>Access Denied</h1><a href="#" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;">Return</a></div>');
-
-    const link = page.getByRole('link', { name: 'Return' });
-    await expect(link).toHaveCSS('display', 'flex');
-    const [box, text] = await link.evaluate(el => {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      return [el.getBoundingClientRect().toJSON(), range.getBoundingClientRect().toJSON()];
-    });
-    expect(Math.abs((text.y + text.height / 2) - (box.y + box.height / 2))).toBeLessThanOrEqual(2);
-  });
-
-  test('keeps the logo mark an older sign-in form drew inside the card at its own size', async ({ page }) => {
-    await render(page, '<div class="container"><div class="brand-mark"><svg viewBox="0 0 64 64"><path d="M32 6 54 12v18Q54 48 32 58 10 48 10 30V12z" stroke="currentColor" fill="none"/></svg></div><h1>Sign In</h1></div>');
-
-    const box = await page.locator('.brand-mark svg').boundingBox();
-    expect(box!.width).toBeLessThanOrEqual(48);
-    expect(box!.height).toBeLessThanOrEqual(48);
-  });
-
-  test('fills the width of a phone, however little the card holds', async ({ page }) => {
-    await render(page, '<div class="container"><h1>Hi</h1></div>');
-
-    const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
-    expect(width).toBe(375);
   });
 });

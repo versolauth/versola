@@ -2,6 +2,7 @@ package versola.central.configuration.clients
 
 import versola.central.configuration.challenges.SecurityProfile
 import versola.central.configuration.{ConsentFlowDto, CreateClientRequest, UpdateClientRequest}
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
@@ -54,6 +55,21 @@ object InvalidRegistrationConfiguration:
           "consentFlow cannot be removed from a client that asks for consent (a partner client); " +
             "delete the client and register it again to make it a first-party one",
         )
+
+  /** Only a partner app (one that asks users for consent) has an appearance of its own on top of its theme: a
+    * first-party client looks like the product it belongs to. Clearing overrides (an empty set) is always
+    * allowed, so a client that has some from before can be brought in line. */
+  def validateThemeOverridesForPartner(
+      clientId: ClientId,
+      themeOverrides: Option[ThemeOverrides],
+      asksForConsent: Boolean,
+  ): Option[InvalidRegistrationConfiguration] =
+    Option.when(!asksForConsent && themeOverrides.exists(!_.isEmpty)):
+      InvalidRegistrationConfiguration(
+        clientId,
+        "themeOverrides can only be set on a client that asks for consent (a partner client); " +
+          "set a consentFlow first, or leave themeOverrides out",
+      )
 
   def validateAccessTokenTtl(
       clientId: ClientId,

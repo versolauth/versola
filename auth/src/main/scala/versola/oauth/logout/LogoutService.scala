@@ -29,6 +29,8 @@ object LogoutService:
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
+      /** The first client of the session, as the confirmation page takes it: the one whose theme dresses the page. */
+      clientId: Option[ClientId] = None,
   )
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
@@ -63,7 +65,7 @@ object LogoutService:
                 case None => ZIO.none
                 case Some(uri) => ZIO.succeed(uri).whenZIO(allowedRedirect(sessionParticipants, uri))
               _ <- sendBackChannelLogouts(sessionParticipants, session.record)
-            yield LogoutResult(logoutUris, redirect, state)
+            yield LogoutResult(logoutUris, redirect, state, session.record.clients.headOption.map(_.clientId))
       yield result
 
     /** Ending every session a user has is one event per endpoint rather than one per session:
