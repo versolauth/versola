@@ -166,7 +166,20 @@ test('the preview starts in the scheme of the operator\'s device, light on a lig
   const scheme = page.getByRole('group', { name: 'Preview scheme' });
 
   await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
-  await expect.poll(() => srcdoc(page)).not.toContain('color-scheme:dark');
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:light}');
+  expect(await srcdoc(page)).not.toContain('color-scheme:dark');
+});
+
+test('the light preview is forced, so it does not follow a dark device', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await scheme.getByRole('button', { name: 'Light' }).click();
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:light}');
+  expect(await srcdoc(page)).not.toContain(':root{color-scheme:dark}');
+  await scheme.getByRole('button', { name: 'Dark' }).click();
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:dark}');
 });
 
 test('the preview starts dark on a dark device, so it shows what real pages show there', async ({ page }) => {

@@ -126,10 +126,11 @@ object ThemeCssSpec extends ZIOSpecDefault:
     ),
     suite("generatePartial")(
       test("is empty when nothing is overridden") {
-        assertTrue(ThemeCss.generatePartial(base, ThemeOverrides.empty) == "")
+        assertTrue(ThemeCss.generatePartial(base, ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)) == "")
       },
       test("writes only the variables of the overridden tokens") {
-        val css = ThemeCss.generatePartial(base, ThemeOverrides(shape = Some(Shape.sharp), background = None))
+        val css =
+          ThemeCss.generatePartial(base, ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None))
         assertTrue(
           css.contains("--rf:4px;--rb:4px;--rs:6px;"),
           !css.contains("--brand"),
@@ -138,7 +139,10 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
       test("a brand override writes the brand, the text on it and the focus ring, but no page variables") {
-        val css = ThemeCss.generatePartial(base, ThemeOverrides(brand = Some(colour("#f5c518")), background = None))
+        val css = ThemeCss.generatePartial(
+          base,
+          ThemeOverrides(brand = Some(colour("#f5c518")), shape = None, surface = None, mode = None, background = None),
+        )
         assertTrue(
           css.contains("--brand:#f5c518;--on-brand:#1c1b19;"),
           css.contains("--focus:light-dark("),
@@ -147,7 +151,8 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
       test("bold is written out, so it undoes a soft or neutral theme under it") {
-        val css = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.bold), background = None))
+        val css =
+          ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.bold), brand = None, shape = None, mode = None, background = None))
         assertTrue(
           css.contains("--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);"),
           css.contains("--page-dark:"),
@@ -156,13 +161,17 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
       test("soft and neutral write their page variables") {
-        val soft = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.soft), background = None))
-        val neutral = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.neutral), background = None))
+        val soft =
+          ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.soft), brand = None, shape = None, mode = None, background = None))
+        val neutral =
+          ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.neutral), brand = None, shape = None, mode = None, background = None))
         assertTrue(soft.contains("--page-light:color-mix(in oklab,var(--brand) 14%"), neutral.contains("--page-light:#ecebe7;"))
       },
       test("auto mode is written, so it undoes a forced scheme under it") {
-        val css = ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.auto), background = None))
-        val dark = ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.light), background = None))
+        val css =
+          ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.auto), brand = None, shape = None, surface = None, background = None))
+        val dark =
+          ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None, background = None))
         assertTrue(css.contains("color-scheme:light dark;"), dark.contains("color-scheme:light;"))
       },
       test("is one rule, so it can be appended to a stylesheet") {
@@ -206,24 +215,28 @@ object ThemeCssSpec extends ZIOSpecDefault:
         assertTrue(css.contains("--brand:#155e75;"), css.contains("--rf:14px;--rb:14px;--rs:24px;"), !css.contains("--page-"))
       },
       test("resolves a base with its overrides laid over it") {
-        val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption, mode = Some(Mode.dark), background = None))
+        val tokens = ThemeTokens(
+          "studio",
+          Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, mode = Some(Mode.dark), shape = None, surface = None, background = None)),
+        )
         assertTrue(
           ThemePresets.resolve(tokens) == Right(ResolvedTokens(colour("#112233"), Shape.round, Surface.bold, Mode.dark, Background.glow)),
-          ThemePresets.resolve(ThemeTokens("studio")).map(_.brand) == Right(colour("#ff6b4a")),
+          ThemePresets.resolve(ThemeTokens("studio", overrides = None)).map(_.brand) == Right(colour("#ff6b4a")),
         )
       },
       test("refuses a base that is not built in, without echoing it") {
-        val hostile = ThemePresets.resolve(ThemeTokens("<script>alert(1)</script>"))
-        assertTrue(ThemePresets.resolve(ThemeTokens("nope")).isLeft, hostile.isLeft, hostile.left.exists(!_.contains("script")))
+        val hostile = ThemePresets.resolve(ThemeTokens("<script>alert(1)</script>", overrides = None))
+        assertTrue(ThemePresets.resolve(ThemeTokens("nope", overrides = None)).isLeft, hostile.isLeft, hostile.left.exists(!_.contains("script")))
       },
     ),
     suite("JSON")(
       test("tokens round-trip, with absent overrides left out") {
-        val tokens = ThemeTokens("fintech", ThemeOverrides(shape = Some(Shape.sharp), background = None))
+        val tokens =
+          ThemeTokens("fintech", Some(ThemeOverrides(shape = Some(Shape.sharp), brand = None, surface = None, mode = None, background = None)))
         assertTrue(tokens.toJson == """{"base":"fintech","overrides":{"shape":"sharp"}}""", tokens.toJson.fromJson[ThemeTokens] == Right(tokens))
       },
       test("a theme saved without overrides reads back with none") {
-        assertTrue("""{"base":"studio"}""".fromJson[ThemeTokens] == Right(ThemeTokens("studio")))
+        assertTrue("""{"base":"studio"}""".fromJson[ThemeTokens] == Right(ThemeTokens("studio", overrides = None)))
       },
       test("refuses an unknown shape, surface or mode") {
         assertTrue(

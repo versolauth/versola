@@ -63,7 +63,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
-import versola.util.theme.{ThemeOverrides, ThemePresets, ThemeTokens}
+import versola.util.theme.{ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -925,7 +925,7 @@ object BootstrapService:
     * and nothing is lost; a token row is the administrator's and is left alone.
     */
   private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
-    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = ThemeOverrides.empty))
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = None))
     for
       _ <- ZIO.logInfo("Seeding default theme...")
       themes <- themeRepo.getAll
@@ -1244,6 +1244,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // Issued by central: `register` takes the profile enforcement as it is, which for the one
       // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
@@ -1298,6 +1299,7 @@ object BootstrapService:
                   if credential.issueEdgeClientCertificate then None
                   else Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1358,6 +1360,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = false,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1408,6 +1411,7 @@ object BootstrapService:
                 edgeSigningKey = None,
                 edgeClientCertificate = None,
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)

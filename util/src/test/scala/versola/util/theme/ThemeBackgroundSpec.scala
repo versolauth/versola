@@ -91,7 +91,7 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
     val (light, deep) = ThemeCss.tint(background, surface)
     val share = (if dark then deep else light) / 100.0
     background match
-      case Background.linear => mix(brand, share, here) // the 0% stop: brand mixed into the page
+      case Background.linear => mix(brand, share, here)   // the 0% stop: brand mixed into the page
       case Background.horizon => over(brand, share, here) // the strongest stop: brand at that alpha over the page
       case Background.glow | Background.flat => here
 
@@ -129,7 +129,9 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
             val base = if background == Background.linear then ("var(--page-light)", "var(--page-dark)") else ("transparent", "transparent")
             supported > 0 &&
             css.indexOf("--page-bg:") > supported &&
-            css.contains(s"--page-tint:light-dark(color-mix(in oklab,var(--brand) $light%,${base._1}),color-mix(in oklab,var(--brand) $dark%,${base._2}));")
+            css.contains(
+              s"--page-tint:light-dark(color-mix(in oklab,var(--brand) $light%,${base._1}),color-mix(in oklab,var(--brand) $dark%,${base._2}));",
+            )
         assertTrue(checks.forall(identity))
       },
       test("linear is a diagonal wash from the tint to the page, horizon a light rising from the bottom edge") {
@@ -158,7 +160,10 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
         val onSurface = ThemeOverrides(None, None, Some(Surface.neutral), None, None)
         val (light, dark) = ThemeCss.tint(Background.linear, Surface.neutral)
         assertTrue(
-          ThemeCss.generatePartial(base(Background.linear), onSurface).contains(s"var(--brand) $light%,var(--page-light)),color-mix(in oklab,var(--brand) $dark%"),
+          ThemeCss.generatePartial(
+            base(Background.linear),
+            onSurface,
+          ).contains(s"var(--brand) $light%,var(--page-light)),color-mix(in oklab,var(--brand) $dark%"),
           !ThemeCss.generatePartial(base(Background.glow), onSurface).contains("--page-bg"),
         )
       },
@@ -195,7 +200,7 @@ object ThemeBackgroundSpec extends ZIOSpecDefault:
         )
       },
       test("a theme is decoded with its background, and an unknown one is refused") {
-        val tokens = ThemeTokens("fintech", ThemeOverrides(None, None, None, None, Some(Background.horizon)))
+        val tokens = ThemeTokens("fintech", Some(ThemeOverrides(None, None, None, None, Some(Background.horizon))))
         assertTrue(
           tokens.toJson == """{"base":"fintech","overrides":{"background":"horizon"}}""",
           tokens.toJson.fromJson[ThemeTokens] == Right(tokens),

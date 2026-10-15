@@ -40,7 +40,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       dpopBoundAccessTokens: Boolean,
       authMethod: AuthMethod,
       certificateBoundAccessTokens: Boolean,
-      themeOverrides: Option[ThemeOverrides] = None,
+      themeOverrides: Option[ThemeOverrides],
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -66,6 +66,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     false,
     AuthMethod.client_secret,
     false,
+    themeOverrides = None,
   )
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
@@ -128,11 +129,14 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       true,
                       AuthMethod.client_secret,
                       false,
-                      themeOverrides = Some(ThemeOverrides(
-                        brand = BrandColor.parse("#112233").toOption,
-                        shape = Some(Shape.sharp),
-                        background = Some(Background.horizon),
-                      )),
+                      themeOverrides =
+                        Some(ThemeOverrides(
+                          brand = BrandColor.parse("#112233").toOption,
+                          shape = Some(Shape.sharp),
+                          surface = None,
+                          mode = None,
+                          background = Some(Background.horizon),
+                        )),
                     ),
                     serviceClient,
                   ),
@@ -160,6 +164,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         client.themeOverrides == Some(ThemeOverrides(
           brand = BrandColor.parse("#112233").toOption,
           shape = Some(Shape.sharp),
+          surface = None,
+          mode = None,
           background = Some(Background.horizon),
         )),
         result(ClientId("service")).themeOverrides.isEmpty,

@@ -4798,10 +4798,10 @@ components:
       properties:
         base:
           type: string
-          default: versola
           description: The id of a built-in theme, from `GET /configuration/themes/presets`.
         overrides:
           $ref: '#/components/schemas/ThemeOverrides'
+      required: [base]
     ThemeOverrides:
       type: object
       description: Each value that is absent is the base theme's.
@@ -4876,8 +4876,7 @@ components:
           $ref: '#/components/schemas/ThemeTokens'
         css:
           type: string
-          default: ''
-          description: The theme's own CSS, laid after the generated one.
+          description: The theme's own CSS, laid after the generated one; absent means none.
       required: [tokens]
     RenderThemeResponse:
       type: object

@@ -30,7 +30,7 @@ object LogoutService:
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
       /** The first client of the session, as the confirmation page takes it: the one whose theme dresses the page. */
-      clientId: Option[ClientId] = None,
+      clientId: Option[ClientId],
   )
 
   private val BackChannelLogoutEvent = "http://schemas.openid.net/event/backchannel-logout"
@@ -56,7 +56,7 @@ object LogoutService:
           // No session means there is no client to validate the redirect against; drop it
           // rather than passing it through unvalidated, which would be an open redirect.
           case None =>
-            ZIO.succeed(LogoutResult(Nil, None, state))
+            ZIO.succeed(LogoutResult(Nil, None, state, clientId = None))
           case Some(session) =>
             for
               sessionParticipants <- sessionClients(session.record.clients.map(_.clientId))
