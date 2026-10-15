@@ -10,7 +10,7 @@ import {
   fetchThemes,
   setActiveFormVersion,
 } from '../utils/central-api';
-import { buildPreviewSrcdoc } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
 import './error-card';
@@ -590,6 +590,7 @@ export class VersolaFormsList extends LitElement {
       localizations: form.localizations,
       locale: this.previewLocale[key] || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
+      localeNames: localeNamesOf(this.locales),
       themeCss: this.themes.find(t => t.id === themeId)?.css ?? '',
       style: form.style,
       jsCompiled: form.jsCompiled ?? '',

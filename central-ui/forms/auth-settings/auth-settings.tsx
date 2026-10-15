@@ -84,7 +84,7 @@ interface FormConfig {
   previewId?: string;
   csrf?: string;
   logo?: string;
-  client?: { name?: string; logo?: string; partner: boolean };
+  client?: { name?: string; names?: Record<string, string>; logo?: string; partner: boolean };
   localeNames?: Record<string, string>;
 }
 

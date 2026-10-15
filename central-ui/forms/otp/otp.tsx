@@ -33,18 +33,18 @@ function PageBrand(props: { logo?: string }) {
 
 // The partner's app the user is signing in to, inside the card: its icon and name. Only for a partner's app (one with a
 // consent flow); the identity provider's own apps are not announced.
-function ClientBadge(props: { client?: { name?: string; logo?: string; partner: boolean } }) {
+function ClientBadge(props: { client?: { name?: string; names?: Record<string, string>; logo?: string; partner: boolean } }) {
   const [failed, setFailed] = createSignal(false);
   const initial = () => Array.from(props.client?.name?.trim() ?? '')[0]?.toLocaleUpperCase();
   return (
-    <Show when={props.client?.partner && (props.client.name || props.client.logo)}>
+    <Show when={props.client?.partner && (props.client.name || (props.client.logo && !failed()))}>
       <div class="client-badge">
         <Show
           when={props.client?.logo && !failed()}
           fallback={<Show when={initial()}>{(letter) => <span class="client-badge-icon client-badge-initial" aria-hidden="true">{letter()}</span>}</Show>}
         >
           <span class="client-badge-icon" aria-hidden="true">
-            <img src={props.client?.logo} alt="" style="height:32px;width:32px;object-fit:contain" onError={() => setFailed(true)} />
+            <img src={props.client?.logo} alt="" referrerpolicy="no-referrer" style="height:32px;width:32px;object-fit:contain" onError={() => setFailed(true)} />
           </span>
         </Show>
         <Show when={props.client?.name}>{(name) => <span class="client-badge-name">{name()}</span>}</Show>
@@ -109,7 +109,7 @@ interface FormConfig {
   previewId?: string;
   csrf?: string;
   logo?: string;
-  client?: { name?: string; logo?: string; partner: boolean };
+  client?: { name?: string; names?: Record<string, string>; logo?: string; partner: boolean };
   localeNames?: Record<string, string>;
 }
 

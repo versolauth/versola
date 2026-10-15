@@ -270,10 +270,58 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
           )
           page(conversationRecord, client = Some(partner)).map: body =>
-            assertTrue(body.contains(""""client":{"name":"Test Client","logo":"https://acme.test/app.svg","partner":true}"""))
+            assertTrue(
+              body.contains(""""client":{"name":"Test Client","names":{"en":"Test Client"},"logo":"https://acme.test/app.svg","partner":true}"""),
+            )
         },
         test("an app of the identity provider's own, which has no consent flow, is not a partner") {
-          page(conversationRecord).map(body => assertTrue(body.contains(""""client":{"name":"Test Client","partner":false}""")))
+          page(conversationRecord).map(body =>
+            assertTrue(body.contains(""""client":{"name":"Test Client","names":{"en":"Test Client"},"partner":false}""")),
+          )
+        },
+        test("the client's names in every language travel with the one picked for the first render") {
+          val named = clientRecord.copy(clientName = Map("en" -> "Shop", "pt" -> "Loja", "PT-br" -> "Loja BR"))
+          page(conversationRecord.copy(uiLocales = Some(List("pt-BR"))), client = Some(named)).map: body =>
+            assertTrue(
+              body.contains(""""name":"Loja BR""""),
+              body.contains(""""names":{"""),
+              body.contains(""""en":"Shop""""),
+              body.contains(""""PT-br":"Loja BR""""),
+            )
+        },
+        test("a client name is picked by exact locale ignoring case, then without the region, then the default, then any entry") {
+          def picked(names: Map[String, String], requested: String) =
+            page(conversationRecord.copy(uiLocales = Some(List(requested))), client = Some(clientRecord.copy(clientName = names)))
+              .map(body => """"client":\{"name":"([^"]*)"""".r.findFirstMatchIn(body).map(_.group(1)))
+          for
+            exact <- picked(Map("en" -> "Shop", "pt-BR" -> "Loja BR", "pt" -> "Loja"), "PT-br")
+            language <- picked(Map("en" -> "Shop", "pt" -> "Loja"), "pt-BR")
+            default <- picked(Map("en" -> "Shop", "de" -> "Laden"), "fr")
+            any <- picked(Map("de" -> "Laden"), "fr")
+          yield assertTrue(exact.contains("Loja BR"), language.contains("Loja"), default.contains("Shop"), any.contains("Laden"))
+        },
+        test("a client name is cut by code points, so an emoji at the limit is whole") {
+          val emoji = "\uD83D\uDE00"
+          val long = clientRecord.copy(clientName = Map("en" -> ("a" * 99 + emoji + "tail")))
+          page(conversationRecord, client = Some(long)).map: body =>
+            assertTrue(
+              body.contains(""""name":"""" + "a" * 99 + emoji + """""""),
+              !body.contains("tail"),
+            )
+        },
+        test("a client name loses newlines and bidi override and zero-width characters") {
+          val hostile = clientRecord.copy(clientName = Map("en" -> "Sh\u202Eop\n\r\u200B\u2066x\u0007", "de" -> "\u202E\n"))
+          page(conversationRecord, client = Some(hostile)).map: body =>
+            assertTrue(
+              body.contains(""""name":"Shopx""""),
+              body.contains(""""names":{"en":"Shopx"}"""),
+              !body.contains("202E") && !body.contains("202e"),
+            )
+        },
+        test("the consent step carries the client's names, cleaned and in every language") {
+          val named = clientRecord.copy(clientName = Map("en" -> "Shop", "fr" -> "Bou\u202Etique"))
+          page(consentRecord, client = Some(named), formId = "consent").map: body =>
+            assertTrue(body.contains(""""clientName":"Shop""""), body.contains(""""clientNames":{"en":"Shop","fr":"Boutique"}"""))
         },
         test("a client that cannot be found is not announced") {
           page(conversationRecord, client = None).map(body => assertTrue(!body.contains("\"client\":")))
@@ -302,9 +350,36 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               !body.contains("anna@example.com"),
             )
         },
+        test("an https picture is accepted whatever the case of its scheme") {
+          val record = consentRecord.copy(
+            userEmail = Some(Email("anna@example.com")),
+            userClaims = Some(Json.Obj("picture" -> Json.Str("HTTPS://cdn.example/a.png"))),
+          )
+          page(record, formId = "consent").map(body => assertTrue(body.contains(""""picture":"HTTPS://cdn.example/a.png"""")))
+        },
+        test("a user name is cut by code points, so an emoji at the limit is whole") {
+          val emoji = "\uD83D\uDE00"
+          val record =
+            consentRecord.copy(userClaims = Some(Json.Obj("name" -> Json.Str("x" * 199 + emoji + "tail"))), userEmail = Some(Email("a@example.com")))
+          page(record, formId = "consent").map(body => assertTrue(body.contains("\"name\":\"" + "x" * 199 + emoji + "\""), !body.contains("tail")))
+        },
         test("a picture that is not an https URL is left out, since the browser would load it from wherever it points") {
           val pictures =
-            List("http://cdn.example/a.png", "javascript:alert(1)", "data:image/png;base64,AAAA", "//cdn.example/a.png", "/a.png", "not a url")
+            List(
+              "http://cdn.example/a.png",
+              "javascript:alert(1)",
+              "data:image/png;base64,AAAA",
+              "//cdn.example/a.png",
+              "/a.png",
+              "not a url",
+              " https://cdn.example/a.png",
+              "https://cdn.example/a.png ",
+              "https:\\\\cdn.example\\a.png",
+              "https://user:pw@cdn.example/a.png",
+              "https://@cdn.example/a.png",
+              "https://",
+              "https:///a.png",
+            )
           ZIO.foreach(pictures): picture =>
             val record = consentRecord.copy(
               userEmail = Some(Email("anna@example.com")),
@@ -898,6 +973,18 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           !body.contains("\"logoutUrl\""),
         )
       },
+      test("names the languages as configured under Locales") {
+        val env = Env()
+        for
+          _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+          _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "auth-settings")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderAccount(clientId, StepView.AccountSettings(Nil, Nil), None)
+          body <- response.body.asString
+        yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
+      },
       test("renders 404 if the auth-settings form is not found") {
         val env = Env()
         for
@@ -932,7 +1019,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("error=login_required")) &&
           assertTrue(body.contains("state=test-state")) &&
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
-          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg""""))
+          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg"""")) &&
+          // No client badge is drawn here, so the client is not sent; the language names are.
+          assertTrue(!body.contains("\"client\":")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("renders the expired page in the locale the user chose, not the tenant default") {
         val env = Env()
@@ -1069,7 +1159,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("Sign out?")) &&
           assertTrue(body.contains("csrf-token-1")) &&
           assertTrue(body.contains("https://example.com/post-logout")) &&
-          assertTrue(body.contains("test-state"))
+          assertTrue(body.contains("test-state")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("renders 404 if the confirm-logout form is not found") {
         val env = Env()
@@ -1113,7 +1204,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(body.contains("service-unavailable")) &&
           assertTrue(body.contains("error=temporarily_unavailable")) &&
-          assertTrue(body.contains("state=test-state"))
+          assertTrue(body.contains("state=test-state")) &&
+          assertTrue(!body.contains("\"client\":")) &&
+          assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
     ),
     suite("renderSubmit")(
@@ -1301,6 +1394,17 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderLogout(Nil, None, None, Some(List("fr")))
           body <- response.body.asString
         yield assertTrue(body.contains("<title>Connexion</title>"))
+      },
+      test("names the languages as configured under Locales") {
+        val env = Env()
+        for
+          _ <- env.configuration.getTheme.succeedsWith(Some(defaultTheme))
+          _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
+          _ <- env.configuration.getLocales.succeedsWith(locales)
+          _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+          response <- env.service.renderLogout(Nil, None, None, None)
+          body <- response.body.asString
+        yield assertTrue(body.contains(""""localeNames":{"en":"English"}"""))
       },
       test("omits redirectUri when postLogoutRedirectUri is absent") {
         val env = Env()

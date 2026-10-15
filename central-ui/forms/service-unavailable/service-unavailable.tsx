@@ -42,7 +42,7 @@ const languageName = (code: string, names?: Record<string, string>) => {
   }
 };
 
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (locale: string) => void }) {
+function LocaleDropdown(props: { locales: string[]; current: string; names?: Record<string, string>; onChange: (locale: string) => void }) {
   const [open, setOpen] = createSignal(false);
   return (
     <div class="locale-dropdown">
@@ -56,7 +56,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
         <div class="locale-options">
           {props.locales.map((locale) => (
             <button type="button" class={`locale-option${locale === props.current ? ' locale-option-active' : ''}`} onMouseDown={() => { props.onChange(locale); setOpen(false); }}>
-              {languageName(locale)}
+              {languageName(locale, props.names)}
             </button>
           ))}
         </div>
@@ -73,6 +73,7 @@ interface FormConfig {
   locale?: string;
   locales?: string[];
   allT?: Record<string, Record<string, string>>;
+  localeNames?: Record<string, string>;
   previewId?: string;
 }
 
