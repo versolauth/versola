@@ -61,7 +61,7 @@ export class VersolaThemeTokenControls extends LitElement {
       :host { display: block; }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: rgba(0,0,0,0.25); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
       .kv-value:focus { outline: none; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
       .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
@@ -80,18 +80,18 @@ export class VersolaThemeTokenControls extends LitElement {
       .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
       .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
       .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
-      .sketch { display: grid; place-items: center; height: 6rem; border-radius: var(--radius-md); overflow: hidden; margin-bottom: var(--spacing-lg); background: color-mix(in oklab, var(--b) 24%, #0c1110); }
+      .sketch { display: grid; place-items: center; height: 4.5rem; border-radius: var(--radius-md); overflow: hidden; margin-bottom: var(--spacing-md); background: color-mix(in oklab, var(--b) 24%, #0c1110); }
       .sketch[data-surface='soft'] { background: color-mix(in oklab, var(--b) 14%, #f7f4ee); }
       .sketch[data-surface='neutral'] { background: #ecebe7; }
       .sketch[data-surface='soft'][data-mode='dark'] { background: color-mix(in oklab, var(--b) 7%, #0e0e0d); }
       .sketch[data-surface='neutral'][data-mode='dark'] { background: #0b0b0a; }
-      .sketch-card { width: 9rem; display: flex; flex-direction: column; gap: 0.25rem; padding: 0.5rem 0.625rem; background: #fffdf9; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
+      .sketch-card { width: 8rem; display: flex; flex-direction: column; gap: 0.1875rem; padding: 0.375rem 0.5rem; background: #fffdf9; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
       .sketch[data-mode='dark'] .sketch-card { background: #262628; }
       .sketch[data-shape='soft'] .sketch-card { border-radius: 8px; }
       .sketch[data-shape='sharp'] .sketch-card { border-radius: 2px; }
       .sketch i { display: block; }
       .sketch-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--b); }
-      .sketch-field { height: 0.5rem; background: #efeae0; border-radius: 6px; }
+      .sketch-field { height: 0.4375rem; background: #e6e1d6; border-radius: 6px; }
       .sketch[data-mode='dark'] .sketch-field { background: #3a3a3d; }
       .sketch[data-shape='sharp'] .sketch-field, .sketch[data-shape='sharp'] .sketch-btn { border-radius: 1px; }
       .sketch-btn { height: 0.625rem; background: var(--b); border-radius: 999px; margin-top: 0.125rem; }

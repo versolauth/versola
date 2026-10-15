@@ -552,6 +552,31 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "carry a client's theme overrides to auth in the sync response and to the console in the list",
+      request = Request.get(
+        (URL.empty / "configuration" / "clients" / "sync")
+          .addQueryParam("tenantId", tenantId.toString),
+      ).addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getClientsForSync.succeedsWith(Vector(clients.head.copy(themeOverrides = Some(partnerTheme)), clients(1))),
+      verify = (response, _, _) =>
+        for
+          payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        yield assertTrue(payload.clients.map(_.themeOverrides) == Vector(Some(partnerTheme), None)),
+    ),
+    controllerTestCase(
+      description = "list a client's theme overrides",
+      request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantClients.succeedsWith(Vector(clients.head.copy(themeOverrides = Some(partnerTheme)))),
+      verify = (response, _, _) =>
+        for
+          payload <- response.body.asJson[GetAllClientsResponse]
+        yield assertTrue(payload.clients.map(_.themeOverrides) == List(Some(partnerTheme))),
+    ),
+    controllerTestCase(
       description = "reject synced tenant clients request without service token",
       request = Request.get(
         (URL.empty / "configuration" / "clients" / "sync")

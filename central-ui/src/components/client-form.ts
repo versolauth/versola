@@ -1795,6 +1795,7 @@ export class VersolaClientForm extends LitElement {
       template: this.client?.template ?? (this.kind ? { kind: this.kind } : null),
       edgeFronted: !this.client && this.clientCredentialMode === 'edge',
       createdAt: this.client?.createdAt ?? null,
+      themeOverrides: authFlow ? this.formData.themeOverrides ?? null : null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
