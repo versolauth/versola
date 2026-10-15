@@ -391,7 +391,10 @@ object ConversationService:
                 val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
                 conversationRepository.overwrite(authId, updated)
                   .flatMap:
-                    case true => ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                    case true =>
+                      ZIO.foreachDiscard(conversation.userId.zip(conversation.credential).toList):
+                        case (uid, cred) => userRepository.markVerified(uid, cred)
+                      .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
                     case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
 
     override def preparePasswordStep(
@@ -962,6 +965,7 @@ object ConversationService:
       for
         client <- configService.get(conversation.clientId)
         user <- userService.register(credential, client.tenantId, flow.roleIds)
+        _ <- userRepository.markVerified(user.id, credential)
         updated = conversation.copy(
           userId = Some(user.id),
           userEmail = user.email,

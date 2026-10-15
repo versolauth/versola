@@ -336,6 +336,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.userRepository.markVerified.succeedsWith(())
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
       },
@@ -438,6 +439,41 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
+      },
+      test("marks the credential as verified on OTP success when userId is known") {
+        val env = Env()
+        val otp = realOtp.copy(timesRequested = 1)
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.userRepository.markVerified.succeedsWith(())
+          _ <- env.service.checkOtp(otpRecord, otp, otpCode, authId)
+        yield assertTrue(
+          env.userRepository.markVerified.calls.size == 1,
+          env.userRepository.markVerified.calls.head == (userId, Left(email)),
+        )
+      },
+      test("does not call markVerified when OTP fails") {
+        val env = Env()
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Failure)
+          _ <- env.submissionLimiter.recordLimit.succeedsWith(LimitStatus.Allowed)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
+        yield assertTrue(env.userRepository.markVerified.calls.isEmpty)
+      },
+      test("does not call markVerified when userId is absent") {
+        // Conversation where credential is set but no userId yet (anonymous registration flow)
+        val env = Env()
+        val anonymousRecord = otpRecord.copy(userId = None)
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.service.checkOtp(anonymousRecord, submittedOtp, otpCode, authId)
+        yield assertTrue(env.userRepository.markVerified.calls.isEmpty)
       },
     ),
     suite("finish")(

@@ -359,6 +359,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.get.succeedsWith(registrationClient)
           _ <- env.userService.register.succeedsWith(newUser)
+          _ <- env.userRepository.markVerified.succeedsWith(())
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
         yield assertTrue(
@@ -371,6 +372,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             ),
           ),
           env.userService.register.calls.map(_._3) == List(roleIds),
+          env.userRepository.markVerified.calls == List((userId, Left(email))),
         )
       },
       test("reports a write conflict when the conversation moved on") {
@@ -380,6 +382,7 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.get.succeedsWith(registrationClient)
           _ <- env.userService.register.succeedsWith(newUser)
+          _ <- env.userRepository.markVerified.succeedsWith(())
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
         yield assertTrue(result == ConversationResult.WriteConflict)

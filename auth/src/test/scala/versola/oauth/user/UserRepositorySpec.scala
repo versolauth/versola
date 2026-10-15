@@ -51,6 +51,7 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
       registerTests(env),
       claimsTests(env),
       deleteTests(env),
+      markVerifiedTests(env),
     )
 
   private def seed(
@@ -261,6 +262,68 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           _ <- env.userRepository.delete(userId2)
           found <- env.userRepository.find(userId1)
         yield assertTrue(found.nonEmpty)
+      },
+    )
+
+  def markVerifiedTests(env: UserRepositorySpec.Env) =
+    suite("markVerified")(
+      test("sets email_verified to true after successful email OTP") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          before <- env.userRepository.find(userId1)
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          before.exists(!_.emailVerified),
+          after.exists(_.emailVerified),
+        )
+      },
+      test("sets phone_verified to true after successful phone OTP") {
+        for
+          _ <- seed(env, userId1, phone = Some(phone1))
+          before <- env.userRepository.find(userId1)
+          _ <- env.userRepository.markVerified(userId1, Right(phone1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(
+          before.exists(!_.phoneVerified),
+          after.exists(_.phoneVerified),
+        )
+      },
+      test("is idempotent: calling twice leaves the flag true") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(after.exists(_.emailVerified))
+      },
+      test("does not set the flag when the stored email differs from the credential") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email2))
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(after.exists(!_.emailVerified))
+      },
+      test("upsert resets email_verified when email changes") {
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          verified <- env.userRepository.find(userId1)
+          _ <- env.userRepository.upsert(userId1, UUID.randomUUID(), Some(email2), None, None)
+          afterChange <- env.userRepository.find(userId1)
+        yield assertTrue(
+          verified.exists(_.emailVerified),
+          afterChange.exists(!_.emailVerified),
+        )
+      },
+      test("upsert preserves email_verified when email is unchanged") {
+        val version = UUID.randomUUID()
+        for
+          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.markVerified(userId1, Left(email1))
+          _ <- env.userRepository.upsert(userId1, version, Some(email1), None, None)
+          after <- env.userRepository.find(userId1)
+        yield assertTrue(after.exists(_.emailVerified))
       },
     )
 

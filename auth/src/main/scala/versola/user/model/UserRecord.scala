@@ -12,6 +12,8 @@ case class UserRecord(
     login: Option[Login],
     claims: Json.Obj,
     uiLocales: Option[List[String]],
+    emailVerified: Boolean = false,
+    phoneVerified: Boolean = false,
 ):
   def createdAt: Instant = id.createdAt
 
