@@ -4,6 +4,16 @@ import { createSignal, Show } from 'solid-js';
 interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string; state?: string }; t: Record<string, string>; locale?: string; locales?: string[]; allT?: Record<string, Record<string, string>>; logo?: string; }
 declare global { interface Window { __VERSOLA_FORM__?: FormConfig } }
 
+// The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
+const languageName = (code: string) => {
+  try {
+    const name = new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
+    return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
+  } catch (_) {
+    return code;
+  }
+};
+
 function ConfirmLogout(props: { config: FormConfig }) {
   const allT = props.config.allT ?? {};
   const [locale, setLocale] = createSignal(props.config.locale ?? 'en');
@@ -11,7 +21,7 @@ function ConfirmLogout(props: { config: FormConfig }) {
   return <div class="container">
     <Show when={(props.config.locales ?? []).length > 1}>
       <select value={locale()} onChange={e => setLocale(e.currentTarget.value)} aria-label="Language">
-        {(props.config.locales ?? []).map(l => <option value={l}>{l}</option>)}
+        {(props.config.locales ?? []).map(l => <option value={l}>{languageName(l)}</option>)}
       </select>
     </Show>
     <h1>{t().title}</h1><p class="logout-description">{t().description}</p>

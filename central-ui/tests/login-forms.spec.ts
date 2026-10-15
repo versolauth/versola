@@ -165,7 +165,7 @@ test.describe('password', () => {
     const { submitted, all } = await renderForm(page, 'password', { step });
 
     await page.locator('.locale-trigger').click();
-    await page.getByRole('button', { name: 'ru', exact: true }).click();
+    await page.getByRole('button', { name: 'Русский', exact: true }).click();
     await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
 
     await page.getByLabel(all.ru.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);

@@ -280,10 +280,10 @@ a {
 .locale-trigger:hover {
   color: var(--ink);
 }
-.locale-chevron {
-  width: 10px;
-  height: 6px;
-  color: var(--text-muted);
+.locale-globe {
+  width: 15px;
+  height: 15px;
+  flex: none;
 }
 .locale-options {
   position: absolute;
