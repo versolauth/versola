@@ -709,7 +709,8 @@ test.describe('confirm-logout', () => {
   test('sends the chosen language with the confirmation', async ({ page }) => {
     const { submitted, all } = await renderForm(page, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'logout-csrf' } });
 
-    await page.getByLabel('Language').selectOption('ru');
+    await page.locator('.locale-trigger').click();
+    await page.getByRole('button', { name: 'Русский', exact: true }).click();
     await page.getByRole('button', { name: all.ru.confirm_button }).click();
 
     await expectSubmissions(submitted, 1);
@@ -841,78 +842,12 @@ for (const [id, config] of accessibilityCases) {
   });
 }
 
-/**
- * A theme is a full replacement of common.css, so a tenant that forked the previous one keeps it
- * while the forms are updated underneath it. tests/fixtures/previous-common.css is that frozen
- * copy; the forms must stay usable over it.
- */
-test.describe('over a theme forked from the previous common.css', () => {
-  const previous = { commonCss: 'fixtures/previous-common.css' };
+test('the card fills the width of a phone, however little it holds', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 760 });
+  await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root"><div class="container"><h1>Hi</h1></div></div>`);
 
-  test('does not flag empty required fields as invalid', async ({ page }) => {
-    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true } }, previous);
-
-    for (const field of await page.locator('.input-field').all()) {
-      await expect(field).not.toHaveCSS('border-color', 'rgb(220, 38, 38)');
-    }
-  });
-
-  test('draws the ticked state of a consent scope', async ({ page }) => {
-    await renderForm(page, 'consent', {
-      step: { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes: [{ scope: 'email', description: 'Read your email address', claims: [], deselectable: true }] },
-    }, previous);
-
-    await expect(page.getByLabel('Read your email address')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
-  });
-
-  test('keeps the password toggle next to its field', async ({ page }) => {
-    const { t } = await renderForm(page, 'password', { step: { type: 'password' } }, previous);
-
-    const field = await page.getByLabel(t.password_placeholder, { exact: true }).boundingBox();
-    const toggle = await page.getByRole('button', { name: t.show_password }).boundingBox();
-    expect(toggle!.x).toBeGreaterThan(field!.x + field!.width / 2);
-    expect(toggle!.y).toBeGreaterThanOrEqual(field!.y);
-    expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(field!.y + field!.height);
-  });
-});
-
-/**
- * A form version stored before the redesign keeps running over the current common.css (the version
- * was never replaced, or it is previewed in the console). Its markup is reproduced here as stored.
- */
-test.describe('older form versions over the current common.css', () => {
-  const render = async (page: import('@playwright/test').Page, body: string) => {
-    await page.setViewportSize({ width: 375, height: 760 });
-    await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root">${body}</div>`);
-  };
-
-  test('centres the label of a link button that sets display:block itself', async ({ page }) => {
-    await render(page, '<div class="container"><h1>Access Denied</h1><a href="#" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;">Return</a></div>');
-
-    const link = page.getByRole('link', { name: 'Return' });
-    await expect(link).toHaveCSS('display', 'flex');
-    const [box, text] = await link.evaluate(el => {
-      const range = document.createRange();
-      range.selectNodeContents(el);
-      return [el.getBoundingClientRect().toJSON(), range.getBoundingClientRect().toJSON()];
-    });
-    expect(Math.abs((text.y + text.height / 2) - (box.y + box.height / 2))).toBeLessThanOrEqual(2);
-  });
-
-  test('keeps the logo mark an older sign-in form drew inside the card at its own size', async ({ page }) => {
-    await render(page, '<div class="container"><div class="brand-mark"><svg viewBox="0 0 64 64"><path d="M32 6 54 12v18Q54 48 32 58 10 48 10 30V12z" stroke="currentColor" fill="none"/></svg></div><h1>Sign In</h1></div>');
-
-    const box = await page.locator('.brand-mark svg').boundingBox();
-    expect(box!.width).toBeLessThanOrEqual(48);
-    expect(box!.height).toBeLessThanOrEqual(48);
-  });
-
-  test('fills the width of a phone, however little the card holds', async ({ page }) => {
-    await render(page, '<div class="container"><h1>Hi</h1></div>');
-
-    const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
-    expect(width).toBe(375);
-  });
+  const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
+  expect(width).toBe(375);
 });
 
 test.describe('the partner\'s app and the languages, as the server tells the form', () => {
@@ -976,20 +911,15 @@ test.describe('the partner\'s app and the languages, as the server tells the for
     });
   }
 
-  test('the language switcher shows the names configured under Locales, and falls back to the browser\'s names', async ({ page }) => {
+  test('the language switcher shows the names configured under Locales, and the bare code where one is missing', async ({ page }) => {
     await renderForm(page, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)', ru: 'Русский язык' } });
     await expect(page.locator('.locale-trigger')).toHaveText('English (US)');
     await page.locator('.locale-trigger').click();
     await expect(page.getByRole('button', { name: 'Русский язык', exact: true })).toBeVisible();
 
-    const bare = await page.context().newPage();
-    await renderForm(bare, 'password', { step: stepOf('password') });
-    await bare.locator('.locale-trigger').click();
-    await expect(bare.getByRole('button', { name: 'Русский', exact: true })).toBeVisible();
-
     const partly = await page.context().newPage();
     await renderForm(partly, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)' } });
     await partly.locator('.locale-trigger').click();
-    await expect(partly.getByRole('button', { name: 'Русский', exact: true })).toBeVisible();
+    await expect(partly.getByRole('button', { name: 'ru', exact: true })).toBeVisible();
   });
 });

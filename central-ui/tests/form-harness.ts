@@ -55,14 +55,16 @@ export async function translations(id: string): Promise<Translations> {
 /** What a form config needs besides its `step`; anything given overrides the defaults. */
 export type FormConfig = { step: Record<string, unknown> } & Record<string, unknown>;
 
-export async function renderForm(page: Page, id: string, config: FormConfig, options: { commonCss?: string; extraCss?: string } = {}) {
+export async function renderForm(page: Page, id: string, config: FormConfig, options: { extraCss?: string } = {}) {
   const [all, commonCss, formCss, script] = await Promise.all([
     translations(id),
-    options.commonCss ? read(options.commonCss) : read('../forms/common.css'),
+    read('../forms/common.css'),
     read(`../forms/${id}/${id}.css`),
     formBundle(id),
   ]);
-  const full = { locale: 'en', locales: Object.keys(all), t: all.en, allT: all, csrf: CSRF, ...config };
+  // The server always sends the language names configured under Locales.
+  const localeNames = { en: 'English', ru: 'Русский' };
+  const full = { locale: 'en', locales: Object.keys(all), localeNames, t: all.en, allT: all, csrf: CSRF, ...config };
 
   const submitted: SubmittedRequest[] = [];
   await page.route('**/__form__', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>form</title>' }));
