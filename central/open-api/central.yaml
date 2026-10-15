@@ -1337,6 +1337,26 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /configuration/forms/previews:
+    get:
+      tags: [Forms]
+      summary: List the states of the built-in forms the console previews
+      description: |
+        For each built-in form, the states it can be in -- the `step` object `auth` would inject into the page,
+        and the error key shown above it -- with realistic data. The console renders them in the form preview.
+        A form that is not listed (a custom one) is previewed from its backend properties instead. The list is
+        fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getFormPreviews
+      responses:
+        '200':
+          description: The preview scenarios, grouped by form id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetFormPreviewsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /configuration/forms/active:
     put:
       tags: [Forms]
@@ -4531,6 +4551,46 @@ components:
           items:
             $ref: '#/components/schemas/FormRecord'
       required: [forms]
+    GetFormPreviewsResponse:
+      type: object
+      properties:
+        previews:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormPreview'
+      required: [previews]
+    FormPreview:
+      type: object
+      properties:
+        formId:
+          type: string
+          description: The id of a built-in form, for example `consent`.
+        scenarios:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewScenario'
+      required: [formId, scenarios]
+    PreviewScenario:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique within the form.
+        title:
+          type: object
+          additionalProperties:
+            type: string
+          description: A short name for the state, by language code (`en`, `ru`).
+        step:
+          type: object
+          additionalProperties: true
+          description: |
+            The `step` the form receives, shaped like the step `auth` serialises for that form (its `type` is the
+            form id).
+        error:
+          type: string
+          description: The error key shown above the form in this state, when there is one.
+      required: [id, title, step]
     UpdateFormRequest:
       type: object
       properties:

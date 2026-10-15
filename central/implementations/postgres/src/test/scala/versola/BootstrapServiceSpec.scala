@@ -16,6 +16,7 @@ import versola.central.configuration.clients.{
   OAuthClientRecord,
   OAuthClientService,
 }
+import versola.central.configuration.forms.FormPreviews
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.{InjectRule, InjectTarget}
 import versola.util.{Base64Url, EnvName, Phone, Secret, SecureRandom, TestCertificates}
@@ -201,6 +202,23 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       assertTrue(
         description == Map("en" -> "Long-lived access", "ru" -> "Длительный доступ"),
       )
+    },
+    test("the consent previews describe the standard scopes exactly as bootstrap seeds them") {
+      val matches =
+        for
+          form <- FormPreviews.all if form.formId == "consent"
+          scenario <- form.scenarios
+          scope <- scenario.step.asObject.flatMap(_.get("scopes")).flatMap(_.asArray).toList.flatMap(_.toList)
+        yield
+          val token = scope.asObject.flatMap(_.get("scope")).flatMap(_.asString).map(ScopeToken(_))
+          val localizations = scope.asObject
+            .flatMap(_.get("descriptionLocalizations"))
+            .flatMap(_.asObject)
+            .toList
+            .flatMap(_.fields.collect { case (language, Json.Str(text)) => language -> text })
+            .toMap
+          token.flatMap(BootstrapService.scopeDescriptions.get).contains(localizations)
+      assertTrue(matches.nonEmpty, matches.forall(identity))
     },
     test("service:operate covers exactly the service endpoints") {
       assertTrue(

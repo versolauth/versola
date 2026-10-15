@@ -96,6 +96,24 @@ object FormControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ),
     ),
     controllerTestCase(
+      description = "GET /configuration/forms/previews returns the preview scenarios of the built-in forms",
+      request = Request.get(URL.empty / "configuration" / "forms" / "previews"),
+      expectedStatus = Status.Ok,
+      verify = (response, service) =>
+        for
+          body <- response.body.asString
+        yield assertTrue(
+          body.fromJson[GetFormPreviewsResponse] == Right(FormPreviews.response),
+          service.getAllForms.calls.isEmpty,
+        ),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/forms/previews refuses a service token, which is not the admin's basic credential",
+      request = Request.get(URL.empty / "configuration" / "forms" / "previews")
+        .addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Unauthorized,
+    ),
+    controllerTestCase(
       description = "GET /configuration/forms/sync returns active forms for an authorized service token",
       request = Request.get(URL.empty / "configuration" / "forms" / "sync")
         .addHeader(Header.Authorization.Bearer(syncToken)),
