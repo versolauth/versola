@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { BackendProperty, Locale, FormPreview, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
 import { updateForm } from '../utils/central-api';
-import { buildPreviewSrcdoc } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
@@ -183,6 +183,7 @@ export class VersolaFormEdit extends LitElement {
       localizations: this.editLocalizations,
       locale: this.previewLocale || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
+      localeNames: localeNamesOf(this.locales),
       themeCss: this.themes.find(t => t.id === themeId)?.css ?? '',
       style: this.editStyle,
       jsCompiled: this.editJsCompiled || '',

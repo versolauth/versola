@@ -32,7 +32,8 @@ function PageBrand(props: { logo?: string }) {
 }
 
 // The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
-const languageName = (code: string) => {
+const languageName = (code: string, names?: Record<string, string>) => {
+  if (names?.[code]) return names[code];
   try {
     const name = new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
     return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
@@ -41,7 +42,7 @@ const languageName = (code: string) => {
   }
 };
 
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
+function LocaleDropdown(props: { locales: string[]; current: string; names?: Record<string, string>; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
   return (
     <div class="locale-dropdown">
@@ -54,7 +55,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
         <svg class="locale-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>
         </svg>
-        {languageName(props.current)}
+        {languageName(props.current, props.names)}
       </button>
       <Show when={open()}>
         <div class="locale-options">
@@ -64,7 +65,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
               class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
               onMouseDown={() => { props.onChange(loc); setOpen(false); }}
             >
-              {languageName(loc)}
+              {languageName(loc, props.names)}
             </button>
           ))}
         </div>
@@ -85,6 +86,8 @@ type ConsentScope = {
 type ConsentStep = {
   type: 'consent';
   clientName?: string;
+  /** The client's name in every language; the rule for picking one is documented on the server's ClientBrand. */
+  clientNames?: Record<string, string>;
   logoUri?: string;
   /** The signed-in user, when the server knows how to name them: shown so they can see whose account is being shared. */
   user?: { name?: string; identifier?: string; picture?: string };
@@ -123,7 +126,7 @@ function ClientIcon(props: { logoUri?: string; name?: string }) {
       fallback={<Show when={initial()}>{(letter) => <div class="consent-icon consent-icon-initial" aria-hidden="true">{letter()}</div>}</Show>}
     >
       <div class="consent-icon" aria-hidden="true">
-        <img src={props.logoUri} alt="" onError={() => setFailed(true)} />
+        <img src={props.logoUri} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
       </div>
     </Show>
   );
@@ -196,7 +199,7 @@ function ConsentForm(props: { config: FormConfig }) {
     <div class="container">
       <Show when={locales.length > 1}>
         <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
+          <LocaleDropdown locales={locales} current={currentLocale()} names={props.config.localeNames} onChange={changeLocale} />
         </div>
       </Show>
       <ClientIcon logoUri={step.logoUri} name={step.clientName} />

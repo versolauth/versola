@@ -37,6 +37,8 @@ interface FormConfig {
   step: SignedOutStep;
   t: Record<string, string>;
   logo?: string;
+  client?: { name?: string; names?: Record<string, string>; logo?: string; partner: boolean };
+  localeNames?: Record<string, string>;
 }
 
 declare global {

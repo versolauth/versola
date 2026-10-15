@@ -35,7 +35,8 @@ interface FormConfig { step: { csrfToken: string; postLogoutRedirectUri?: string
 declare global { interface Window { __VERSOLA_FORM__?: FormConfig } }
 
 // The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
-const languageName = (code: string) => {
+const languageName = (code: string, names?: Record<string, string>) => {
+  if (names?.[code]) return names[code];
   try {
     const name = new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
     return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
@@ -53,7 +54,7 @@ function ConfirmLogout(props: { config: FormConfig }) {
   <div class="container">
     <Show when={(props.config.locales ?? []).length > 1}>
       <select value={locale()} onChange={e => setLocale(e.currentTarget.value)} aria-label="Language">
-        {(props.config.locales ?? []).map(l => <option value={l}>{languageName(l)}</option>)}
+        {(props.config.locales ?? []).map(l => <option value={l}>{languageName(l, props.config.localeNames)}</option>)}
       </select>
     </Show>
     <div class="logout-icon" aria-hidden="true">

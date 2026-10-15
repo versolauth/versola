@@ -914,3 +914,96 @@ test.describe('older form versions over the current common.css', () => {
     expect(width).toBe(375);
   });
 });
+
+test.describe('the partner\'s app and the languages, as the server tells the form', () => {
+  const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23b4348a"/></svg>';
+  const partner = { name: 'Storefront', logo, partner: true };
+  const signIn = ['credential', 'otp', 'password', 'set-password', 'passkey-enroll'] as const;
+  const stepOf = (id: string) => ({
+    credential: { type: 'credential', primaryCredentials: ['email'] },
+    otp: { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' },
+    password: { type: 'password' },
+    'set-password': { type: 'set-password' },
+    'passkey-enroll': { type: 'passkey-enroll', publicKeyOptions: '{}' },
+  } as Record<string, Record<string, unknown>>)[id];
+
+  for (const id of signIn) {
+    test(`${id}: names a partner\'s app inside the card, with its icon`, async ({ page }) => {
+      await renderForm(page, id, { step: stepOf(id), client: partner });
+
+      const badge = page.locator('.container .client-badge');
+      await expect(badge.locator('.client-badge-name')).toHaveText('Storefront');
+      await expect(badge.locator('img')).toBeVisible();
+      // Inside the card, directly above its heading, and nowhere in the brand zone over the card.
+      const card = page.locator('.container');
+      expect(await badge.evaluate(el => el.parentElement?.classList.contains('container'))).toBe(true);
+      const badgeBox = (await badge.boundingBox())!;
+      const cardBox = (await card.boundingBox())!;
+      const headingBox = (await card.locator('h1').first().boundingBox())!;
+      expect(badgeBox.y).toBeGreaterThanOrEqual(cardBox.y);
+      expect(badgeBox.y + badgeBox.height).toBeLessThanOrEqual(headingBox.y);
+      expect(await badge.locator('img').getAttribute('referrerpolicy')).toBe('no-referrer');
+      await expect(page.locator('.page-brand .client-badge')).toHaveCount(0);
+    });
+  }
+
+  test('an app of the identity provider\'s own, or no client at all, is not announced', async ({ page }) => {
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo, partner: false } });
+    await expect(page.locator('.client-badge')).toHaveCount(0);
+
+    const none = await page.context().newPage();
+    await renderForm(none, 'credential', { step: stepOf('credential') });
+    await expect(none.locator('.client-badge')).toHaveCount(0);
+  });
+
+  test('shows the name\'s initial on a tile when the logo is missing or does not load', async ({ page }) => {
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', partner: true } });
+    await expect(page.locator('.client-badge-initial')).toHaveText('S');
+
+    const broken = await page.context().newPage();
+    await broken.route('**/missing.png', route => route.abort());
+    await renderForm(broken, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo: '/missing.png', partner: true } });
+    await expect(broken.locator('.client-badge-initial')).toHaveText('S');
+  });
+
+  test('draws nothing when the logo does not load and the client has no name', async ({ page }) => {
+    await page.route('**/missing.png', route => route.abort());
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { logo: '/missing.png', partner: true } });
+    await expect(page.locator('.container h1').first()).toBeVisible();
+    await expect(page.locator('.client-badge')).toHaveCount(0);
+  });
+
+  test('a long unbroken client name wraps inside the card at 320px', async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { name: 'A'.repeat(80), logo, partner: true } });
+
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)).toBeLessThanOrEqual(0);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`the badge has no axe violations in the ${scheme} scheme`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await renderForm(page, 'credential', { step: stepOf('credential'), client: partner });
+
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.help}`)).toEqual([]);
+    });
+  }
+
+  test('the language switcher shows the names configured under Locales, and falls back to the browser\'s names', async ({ page }) => {
+    await renderForm(page, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)', ru: 'Русский язык' } });
+    await expect(page.locator('.locale-trigger')).toHaveText('English (US)');
+    await page.locator('.locale-trigger').click();
+    await expect(page.getByRole('button', { name: 'Русский язык', exact: true })).toBeVisible();
+
+    const bare = await page.context().newPage();
+    await renderForm(bare, 'password', { step: stepOf('password') });
+    await bare.locator('.locale-trigger').click();
+    await expect(bare.getByRole('button', { name: 'Русский', exact: true })).toBeVisible();
+
+    const partly = await page.context().newPage();
+    await renderForm(partly, 'password', { step: stepOf('password'), localeNames: { en: 'English (US)' } });
+    await partly.locator('.locale-trigger').click();
+    await expect(partly.getByRole('button', { name: 'Русский', exact: true })).toBeVisible();
+  });
+});

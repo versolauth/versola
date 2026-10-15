@@ -15,7 +15,7 @@ import type {
   ThemeSurface,
 } from '../types';
 import { createTheme, updateTheme, deleteTheme, renderTheme } from '../utils/central-api';
-import { buildPreviewSrcdoc } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './code-editor';
 import './nav-toggle';
@@ -345,6 +345,7 @@ export class VersolaThemeEdit extends LitElement {
       localizations: form.localizations,
       locale: this.locales[0]?.code ?? 'en',
       locales: this.locales.map(l => l.code),
+      localeNames: localeNamesOf(this.locales),
       themeCss: `${this.renderedCss}\n${scheme}`,
       style: form.style,
       jsCompiled: form.jsCompiled ?? '',

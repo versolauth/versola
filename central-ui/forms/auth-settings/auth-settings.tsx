@@ -3,7 +3,8 @@ import { createMemo, createSignal, For, Show } from 'solid-js';
 import { getRegistrationResponse, isPasskeyCancellation, passkeysSupported } from '../passkey/webauthn';
 
 // The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
-const languageName = (code: string) => {
+const languageName = (code: string, names?: Record<string, string>) => {
+  if (names?.[code]) return names[code];
   try {
     const name = new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
     return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
@@ -12,7 +13,7 @@ const languageName = (code: string) => {
   }
 };
 
-function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
+function LocaleDropdown(props: { locales: string[]; current: string; names?: Record<string, string>; onChange: (l: string) => void }) {
   const [open, setOpen] = createSignal(false);
   return (
     <div class="locale-dropdown">
@@ -25,7 +26,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
         <svg class="locale-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>
         </svg>
-        {languageName(props.current)}
+        {languageName(props.current, props.names)}
       </button>
       <Show when={open()}>
         <div class="locale-options">
@@ -35,7 +36,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
               class={`locale-option${loc === props.current ? ' locale-option-active' : ''}`}
               onMouseDown={() => { props.onChange(loc); setOpen(false); }}
             >
-              {languageName(loc)}
+              {languageName(loc, props.names)}
             </button>
           ))}
         </div>
@@ -83,6 +84,8 @@ interface FormConfig {
   previewId?: string;
   csrf?: string;
   logo?: string;
+  client?: { name?: string; names?: Record<string, string>; logo?: string; partner: boolean };
+  localeNames?: Record<string, string>;
 }
 
 declare global {
@@ -255,7 +258,7 @@ function AccountSettingsForm(props: { config: FormConfig }) {
     <div class="container account-container">
       <Show when={locales.length > 1}>
         <div class="locale-selector">
-          <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
+          <LocaleDropdown locales={locales} current={currentLocale()} names={props.config.localeNames} onChange={changeLocale} />
         </div>
       </Show>
       <h1>{t().page_title}</h1>

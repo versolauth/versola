@@ -107,6 +107,43 @@ body {
   width: min(460px, calc(100vw - 48px));
   min-height: min(520px, calc(100dvh - 48px));
 }
+/* The partner's app the user is signing in to, inside the card. */
+.client-badge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 20px;
+}
+.client-badge-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 6px;
+  border-radius: var(--rf);
+  background: var(--field);
+  overflow: hidden;
+}
+@supports (color: light-dark(#000, #fff)) {
+  /* a dark logo must not vanish on the dark card, whatever its colours */
+  .client-badge-icon {
+    background: light-dark(var(--field), rgba(255, 255, 255, 0.94));
+  }
+}
+.client-badge-initial {
+  padding: 0;
+  background: var(--brand);
+  color: var(--on-brand);
+  font-size: 1.2rem;
+  font-weight: 750;
+}
+.client-badge-name {
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+
 /* Older stored versions of a form still run over this stylesheet (a version that was never replaced,
  * a preview of an old version). They set display:block on their link buttons, which would pin the
  * label to the top of the taller button, and draw their own logo mark inside the card. Keep both
