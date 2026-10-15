@@ -728,7 +728,7 @@ object ConversationRenderService:
       case _: SignedOut => "signed-out"
 
     private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(
           info.title,
         )}</title>${faviconLink(
@@ -752,10 +752,6 @@ object ConversationRenderService:
     private def escapeAttribute(value: String): String =
       value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
-    private def formLogo(step: StepView, logo: Option[String]): Option[String] = step match
-      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.ConversationExpired | _: StepView.ServiceUnavailable => None
-      case _ => logo
-
     private def inlineScriptJson(value: String): String =
       value
         .replace("&", "\\u0026")
@@ -765,7 +761,7 @@ object ConversationRenderService:
         .replace("\u2029", "\\u2029")
 
     private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html>
          |<html lang="en">
          |  <head>
