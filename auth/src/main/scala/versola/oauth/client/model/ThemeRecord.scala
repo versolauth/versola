@@ -8,5 +8,5 @@ case class ThemeRecord(
     css: String,
     tenantId: Option[TenantId],
     // Set when the theme is a built-in base with overrides; `css` is then only the theme's own additions.
-    tokens: Option[ThemeTokens] = None,
+    tokens: Option[ThemeTokens],
 ) derives JsonCodec

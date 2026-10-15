@@ -104,6 +104,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = None,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   /** What the web endpoint registers the general request as: its kind recorded. */
@@ -146,6 +147,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   /** A fixed registration time, so the response carries the record's own rather than
@@ -187,6 +189,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       edgeClientCertificate = None,
       template = Some(ClientTemplate(ClientKind.web)),
       createdAt = registeredAt,
+      themeOverrides = None,
     ),
     OAuthClientRecord(
       id = ClientId("mobile-app"),
@@ -222,6 +225,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       edgeClientCertificate = None,
       template = None,
       createdAt = registeredAt,
+      themeOverrides = None,
     ),
   )
 
@@ -237,9 +241,10 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     authMethod = AuthMethod.client_secret,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
-  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))
+  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None)
 
   private val createNativeRequest = CreateNativeClientRequest(
     tenantId = tenantId,
@@ -253,6 +258,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     authMethod = AuthMethod.none,
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   private val createServiceRequest = CreateServiceClientRequest(
@@ -455,6 +461,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 createdAt = registeredAt,
                 applicationType = ApplicationType.web,
                 kind = ClientKind.web,
+                themeOverrides = None,
               ),
               OAuthClientResponse(
                 id = ClientId("mobile-app"),
@@ -488,6 +495,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 createdAt = registeredAt,
                 applicationType = ApplicationType.web,
                 kind = ClientKind.web,
+                themeOverrides = None,
               ),
             ),
           ),
@@ -1207,11 +1215,22 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a web client's theme overrides; an empty value is passed on to clear them",
-      request = json(Method.PUT, "web", UpdateWebClientRequest.of(clientId).copy(themeOverrides = Some(ThemeOverrides())).toJson),
+      request = json(
+        Method.PUT,
+        "web",
+        UpdateWebClientRequest.of(clientId).copy(themeOverrides =
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None)),
+        ).toJson,
+      ),
       expectedStatus = Status.NoContent,
       setup = service => service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
-        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(ThemeOverrides())))),
+        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(ThemeOverrides(
+          brand = None,
+          shape = None,
+          surface = None,
+          mode = None,
+        ))))),
     ),
     controllerTestCase(
       description = "update a native client's theme overrides",

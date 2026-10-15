@@ -59,10 +59,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
-  private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId))
-  private val defaultTheme = ThemeRecord("default", ".body { color: black; }", None)
+  private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId), tokens = None)
+  private val defaultTheme = ThemeRecord("default", ".body { color: black; }", None, tokens = None)
 
   private val locales = Locales(default = "en", locales = Vector(LocaleRecord("en", "English")))
 
@@ -177,9 +178,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       body <- response.body.asString
     yield body
 
-  private val ownOverrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold))
+  private val ownOverrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold), shape = None, mode = None)
   private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
-  private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech")))
+  private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech", overrides = None)))
 
   // The same rule on each caller of the theme: the client the page is for, when it is known, brings its overrides;
   // when it is not (removed since, or never named) the page is the theme's own and nothing fails.
@@ -508,7 +509,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       ),
       suite("a theme built from tokens")(
         test("is the current default stylesheet, then what its tokens set, then its own CSS") {
-          val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio")))
+          val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio", overrides = None)))
           rendered(tokenTheme).map: body =>
             assertTrue(
               body.contains(".body { color: black; }"),
@@ -520,24 +521,28 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             )
         },
         test("needs no CSS of its own") {
-          val tokenTheme = theme.copy(css = "", tokens = Some(ThemeTokens("fintech", ThemeOverrides(mode = Some(Mode.dark)))))
+          val tokenTheme = theme.copy(
+            css = "",
+            tokens = Some(ThemeTokens("fintech", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None)))),
+          )
           rendered(tokenTheme).map(body => assertTrue(body.contains("--brand:#5b5bd6;"), body.contains("color-scheme:dark;")))
         },
         test("applies its overrides over the base") {
-          val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption))
+          val tokens =
+            ThemeTokens("studio", Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None)))
           rendered(theme.copy(css = "", tokens = Some(tokens))).map: body =>
             assertTrue(body.contains("--brand:#112233;"), !body.contains("--brand:#ff6b4a;"))
         },
         test("falls back to the default stylesheet when its base is not one this service knows") {
-          rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
+          rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future", overrides = None)))).map: body =>
             assertTrue(body.contains(".body { color: black; }"), !body.contains("--brand:"))
         },
         test("keeps its own CSS on the default stylesheet when its base is not one this service knows") {
-          rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
+          rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future", overrides = None)))).map: body =>
             assertTrue(body.contains(".body { color: black; }"), body.contains(".extra { top: 0; }"), !body.contains("--brand:"))
         },
         test("has its own CSS escaped like any other, so it cannot end the style element") {
-          val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
+          val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio", overrides = None)))
           rendered(tokenTheme).map: body =>
             assertTrue(styleBlocksAreBalanced(body), body.contains("\\3c /style>"))
         },
@@ -579,7 +584,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           for
             plain <- rendered(fintechTheme)
             none <- rendered(fintechTheme, clientRecord.copy(themeOverrides = None))
-            empty <- rendered(fintechTheme, clientRecord.copy(themeOverrides = Some(ThemeOverrides())))
+            empty <- rendered(
+              fintechTheme,
+              clientRecord.copy(themeOverrides = Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None))),
+            )
           yield assertTrue(plain == none, plain == empty, !plain.contains("client overrides"))
         },
       ),

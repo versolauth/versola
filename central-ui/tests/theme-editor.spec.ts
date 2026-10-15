@@ -165,6 +165,14 @@ test('the fields of the editor are as light as the other forms of the console in
 
   await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
   await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+
+test('the light preview is forced, so it does not follow a dark device', async ({ page }) => {
+  await newTheme(page);
+
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:light}');
+  await page.getByRole('group', { name: 'Preview scheme' }).getByRole('button', { name: 'Dark' }).click();
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:dark}');
+  expect(await srcdoc(page)).not.toContain(':root{color-scheme:light}');
 });
 
 test('opens a stored token theme on its base with its overrides, and saves it back as tokens', async ({ page }) => {
