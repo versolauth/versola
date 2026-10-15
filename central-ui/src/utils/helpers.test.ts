@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createDefaultAuthFlow, createDefaultConsentFlow, createDefaultRegistrationFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
+import { createDefaultAuthFlow, createDefaultConsentFlow, isPartnerClient, otpTemplateForConsent } from './helpers';
 
 const WITH_PARTNER = ['default', 'partner'];
 
@@ -41,9 +41,5 @@ describe('default sign-in flows', () => {
       { type: 'otp', required: true },
       { type: 'passkeyEnroll', required: false },
     ]);
-  });
-
-  it('offers a passkey after the OTP when registering', () => {
-    expect(createDefaultRegistrationFlow().steps).toEqual([{ type: 'otp' }, { type: 'passkeyEnroll' }]);
   });
 });

@@ -42,7 +42,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     permissions = Set(readPermission),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -66,10 +65,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     createdAt = Instant.EPOCH,
   )
 
-  /** Applies a registration-flow patch, leaving every other field of the client alone. */
+  /** Applies a patch to the nullable fields, leaving every other field of the client alone. */
   private def patchNullableFields(
       env: OAuthClientRepositorySpec.Env,
-      registrationFlow: Option[Patch[RegistrationFlow]] = None,
       authFlow: Option[Patch[AuthFlow]] = None,
       frontChannelLogoutUri: Option[Patch[URL]] = None,
       backChannelLogoutUri: Option[Patch[URL]] = None,
@@ -78,17 +76,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       clientId,
       OAuthClientPatch.empty.copy(
         authFlow = authFlow,
-        registrationFlow = registrationFlow,
         frontChannelLogoutUri = frontChannelLogoutUri,
         backChannelLogoutUri = backChannelLogoutUri,
       ),
     )
-
-  private def patchRegistrationFlow(
-      env: OAuthClientRepositorySpec.Env,
-      registrationFlow: Option[Patch[RegistrationFlow]],
-  ) =
-    patchNullableFields(env, registrationFlow = registrationFlow)
 
   override def testCases(env: OAuthClientRepositorySpec.Env) =
     List(
@@ -171,53 +162,6 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
               accessTokenTtl = 15.minutes,
             ),
           ),
-        )
-      },
-      test("create and find client with a registration flow") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found === Some(registering),
-        )
-      },
-      test("update client should leave the registration flow untouched when the patch is absent") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          _ <- patchRegistrationFlow(env, None)
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(RegistrationFlow.default),
-        )
-      },
-      test("update client should clear the registration flow when the patch is an explicit None") {
-        val registering = client.copy(registrationFlow = Some(RegistrationFlow.default))
-
-        for
-          _ <- env.repository.createClient(registering)
-          _ <- patchRegistrationFlow(env, Some(Patch.Deleted))
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.map(_.registrationFlow) === Some(None),
-        )
-      },
-      test("update client should replace the registration flow when the patch carries one") {
-        val updated = RegistrationFlow(
-          credential = RegistrationCredential.phone,
-          steps = List(RegistrationStep.Otp(), RegistrationStep.SetPassword()),
-          roleIds = Set(RegistrationFlow.defaultRoleId),
-        )
-
-        for
-          _ <- env.repository.createClient(client)
-          _ <- patchRegistrationFlow(env, Some(Patch.Modified(updated)))
-          found <- env.repository.find(clientId)
-        yield assertTrue(
-          found.flatMap(_.registrationFlow) === Some(updated),
         )
       },
       test("update client should leave the auth flow untouched when the patch is absent") {

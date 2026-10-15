@@ -2,6 +2,7 @@ package versola.central.configuration.challenges
 
 import versola.central.configuration.edges.EdgeService
 import versola.central.configuration.resources.ResourceService
+import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, authorizeBasic, authorizeInternal}
 import versola.util.Patch.applyTo
@@ -11,7 +12,7 @@ import zio.http.{Method, Request, Response, Routes, Status, handler}
 import zio.json.EncoderOps
 
 object OtpChallengeController extends Controller:
-  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService
+  type Env = Tracing & OtpChallengeService & ChallengeSettingsService & ResourceService & CentralConfig & EdgeService & RoleRepository
 
   def routes: Routes[Env, Throwable] = Routes(
     getTemplatesEndpoint,
@@ -117,10 +118,25 @@ object OtpChallengeController extends Controller:
           clientAssertionMaxLifetimeSeconds < ChallengeSettingsRecord.MinClientAssertionMaxLifetimeSeconds ||
             clientAssertionMaxLifetimeSeconds > ChallengeSettingsRecord.MaxClientAssertionMaxLifetimeSeconds,
         )
+        _ <- ZIO.foreachDiscard(PhoneRegion.validate(body.phoneRegions))(error => ZIO.fail(BadRequest(error)))
+        emailRegistration <- ZIO.fromEither(EmailRegistration.normalize(body.emailRegistration)).mapError(BadRequest(_))
+        _ <- ZIO.fail(BadRequest("defaultRoles must name at least one role")).when(body.defaultRoles.isEmpty)
+        // Roles are only looked up while some credential can register: a tenant that registers
+        // nobody (a new tenant has no `user` role yet) must still be able to save other settings.
+        registrationPossible = emailRegistration.mode != EmailRegistrationMode.closed || body.phoneRegions.exists(_.registration)
+        roles <- ZIO.service[RoleRepository]
+        _ <- ZIO.when(registrationPossible):
+          ZIO.foreachDiscard(body.defaultRoles): roleId =>
+            roles.findRole(
+              body.tenantId,
+              roleId,
+            ).someOrFail(BadRequest(s"defaultRoles names role '$roleId', which does not exist in tenant '${body.tenantId}'"))
         _ <- service.upsertSettings(
           ChallengeSettingsRecord(
             body.tenantId,
-            body.allowedPrefixes,
+            body.phoneRegions,
+            emailRegistration,
+            body.defaultRoles,
             body.submissionLimits,
             body.otpLength,
             body.otpResendAfter,

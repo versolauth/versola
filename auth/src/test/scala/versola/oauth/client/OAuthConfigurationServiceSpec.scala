@@ -4,6 +4,7 @@ import versola.oauth.client.model.*
 import versola.oauth.conversation.otp.model.OtpTemplate
 import versola.oauth.jwks.JwksSyncClient
 import versola.oauth.metadata.{MetadataSyncClient, ServedMetadata}
+import versola.role.model.RoleId
 import versola.util.*
 import zio.*
 import zio.durationInt
@@ -30,7 +31,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -61,7 +61,6 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 7776000.seconds,
     theme = "default",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -87,7 +86,9 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
   val testLocales = Locales(Vector(LocaleRecord("en", "English")), "en")
   val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List("+1"),
+    phoneRegions = List(PhoneRegion("US", "+1", 10, "\\d{10}", true)),
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(RoleId("user")),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,
@@ -169,6 +170,127 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
       authorizationDetailTypeRepository = stub[AuthorizationDetailTypeSyncClient],
       jwksRepository = stub[JwksSyncClient],
       mutualTlsExternalUrl = None,
+    )
+
+  private def registrationPolicySuite =
+    val phoneClientId = ClientId("phone-client")
+    val emailClientId = ClientId("email-client")
+    val loginClientId = ClientId("login-client")
+    val inlinePasswordClientId = ClientId("inline-password-client")
+    def clientSigningInBy(id: ClientId, credentials: List[PrimaryCredential], inlinePassword: Boolean = false) =
+      privateClient.copy(
+        id = id,
+        authFlow = Some(AuthFlow.default.copy(
+          primary = AuthFlow.default.primary.copy(credentials = credentials, inlinePassword = inlinePassword),
+        )),
+      )
+    val clients = Map(
+      phoneClientId -> clientSigningInBy(phoneClientId, List(PrimaryCredential.phone)),
+      emailClientId -> clientSigningInBy(emailClientId, List(PrimaryCredential.email)),
+      loginClientId -> clientSigningInBy(loginClientId, List(PrimaryCredential.login), inlinePassword = true),
+      inlinePasswordClientId -> clientSigningInBy(inlinePasswordClientId, List(PrimaryCredential.email), inlinePassword = true),
+    )
+    def tenantWith(email: EmailRegistration, regions: List[PhoneRegion] = challengeSettings.phoneRegions) =
+      Vector(challengeSettings.copy(emailRegistration = email, phoneRegions = regions, defaultRoles = Set(RoleId("member"))))
+    val open = EmailRegistration(EmailRegistrationMode.open, Nil, blockSubaddress = false)
+    val someone = Email("someone@example.com")
+    val number = Phone("+12025551234")
+
+    suite("registration policy of the tenant")(
+      test("an email registers when the tenant is open, with the tenant's default roles and a one-time code") {
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open))
+          flow <- env.registrationFor(emailClientId, Left(someone))
+        yield assertTrue(
+          flow == Some(RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp()), Set(RoleId("member")))),
+        )
+      },
+      test("an email does not register while the tenant's email policy is closed") {
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(EmailRegistration.Closed))
+          flow <- env.registrationFor(emailClientId, Left(someone))
+        yield assertTrue(flow.isEmpty)
+      },
+      test("registration asks for a password when the client's sign-in requires one, and only then") {
+        val passwordFlow = AuthFlow.default.copy(
+          primary = AuthFlow.default.primary.copy(
+            credentials = List(PrimaryCredential.email),
+            factors = List(AuthFactor(AuthFactorType.otp, required = true), AuthFactor(AuthFactorType.password, required = true)),
+          ),
+        )
+        val optionalPassword = passwordFlow.copy(
+          primary = passwordFlow.primary.copy(
+            factors = List(AuthFactor(AuthFactorType.otp, required = true), AuthFactor(AuthFactorType.password, required = false)),
+          ),
+        )
+        val withPassword = clients.updated(emailClientId, clients(emailClientId).copy(authFlow = Some(passwordFlow)))
+        val withOptionalPassword = clients.updated(emailClientId, clients(emailClientId).copy(authFlow = Some(optionalPassword)))
+        for
+          required <-
+            makeEnv(clients = withPassword, challengeSettingsVec = tenantWith(open)).flatMap(_.registrationFor(emailClientId, Left(someone)))
+          optional <-
+            makeEnv(clients = withOptionalPassword, challengeSettingsVec = tenantWith(open)).flatMap(_.registrationFor(emailClientId, Left(someone)))
+          otpOnly <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open)).flatMap(_.registrationFor(emailClientId, Left(someone)))
+        yield assertTrue(
+          required.map(_.steps) == Some(List(RegistrationStep.Otp(), RegistrationStep.SetPassword())),
+          optional.map(_.steps) == Some(List(RegistrationStep.Otp())),
+          otpOnly.map(_.steps) == Some(List(RegistrationStep.Otp())),
+        )
+      },
+      test("an email outside the allowlist does not register, one inside does") {
+        val allowlist = EmailRegistration(EmailRegistrationMode.allowlist, List("example.com"), false)
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(allowlist))
+          inside <- env.registrationFor(emailClientId, Left(someone))
+          outside <- env.registrationFor(emailClientId, Left(Email("someone@other.org")))
+        yield assertTrue(inside.isDefined, outside.isEmpty)
+      },
+      test("a phone number registers only when its region allows it") {
+        val closedRegion = challengeSettings.phoneRegions.map(_.copy(registration = false))
+        for
+          allowed <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open)).flatMap(_.registrationFor(phoneClientId, Right(number)))
+          refused <-
+            makeEnv(clients = clients, challengeSettingsVec = tenantWith(open, closedRegion)).flatMap(_.registrationFor(phoneClientId, Right(number)))
+          noRegions <-
+            makeEnv(clients = clients, challengeSettingsVec = tenantWith(open, Nil)).flatMap(_.registrationFor(phoneClientId, Right(number)))
+        yield assertTrue(
+          allowed.map(_.credential) == Some(RegistrationCredential.phone),
+          refused.isEmpty,
+          noRegions.isEmpty,
+        )
+      },
+      test("a client that signs in by login, or asks for a password beside the credential, offers no registration") {
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open))
+          byLogin <- env.registrationFor(loginClientId, Left(someone))
+          inline <- env.registrationFor(inlinePasswordClientId, Left(someone))
+        yield assertTrue(byLogin.isEmpty, inline.isEmpty)
+      },
+      test("an unknown client registers nobody") {
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open))
+          flow <- env.registrationFor(ClientId("missing"), Left(someone))
+        yield assertTrue(flow.isEmpty)
+      },
+      test("a tenant with no settings registers nobody") {
+        for
+          env <- makeEnv(clients = clients, challengeSettingsVec = Vector.empty)
+          flow <- env.registrationFor(emailClientId, Left(someone))
+          available <- env.registrationAvailable(clients(emailClientId))
+        yield assertTrue(flow.isEmpty, !available)
+      },
+      test("registration is available when a credential of the client can register, and not otherwise") {
+        for
+          openEmail <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open))
+          closedEmail <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(EmailRegistration.Closed))
+          emailOpen <- openEmail.registrationAvailable(clients(emailClientId))
+          emailClosed <- closedEmail.registrationAvailable(clients(emailClientId))
+          phoneWithRegion <- closedEmail.registrationAvailable(clients(phoneClientId))
+          phoneWithoutRegion <- makeEnv(clients = clients, challengeSettingsVec = tenantWith(open, Nil))
+            .flatMap(_.registrationAvailable(clients(phoneClientId)))
+          login <- openEmail.registrationAvailable(clients(loginClientId))
+        yield assertTrue(emailOpen, !emailClosed, phoneWithRegion, !phoneWithoutRegion, !login)
+      },
     )
 
   val spec = suite("OAuthConfigurationService")(
@@ -258,18 +380,19 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
         result <- env.getClientTemplate(clientId1, OtpType.sms, None)
       yield assertTrue(result == OtpTemplate("Default {{code}}"))
     },
-    test("getAllowedPhonePrefixes returns prefixes for known client") {
+    test("getPhoneRegions returns regions for known client") {
       for
         env <- makeEnv()
-        result <- env.getAllowedPhonePrefixes(clientId1)
-      yield assertTrue(result == List("+1"))
+        result <- env.getPhoneRegions(clientId1)
+      yield assertTrue(result == List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
     },
-    test("getAllowedPhonePrefixes returns Nil for unknown client") {
+    test("getPhoneRegions returns Nil for unknown client") {
       for
         env <- makeEnv()
-        result <- env.getAllowedPhonePrefixes(ClientId("missing"))
+        result <- env.getPhoneRegions(ClientId("missing"))
       yield assertTrue(result.isEmpty)
     },
+    registrationPolicySuite,
     test("getPasswordRegex returns from system settings") {
       for
         env <- makeEnv()

@@ -13,6 +13,7 @@ import versola.oauth.client.model.{
   PassedFactorRecord,
   PasskeyAuthFlow,
   PasskeySettings,
+  PhoneRegion,
   PrimaryAuthFlow,
   PrimaryCredential,
   RegistrationCredential,
@@ -42,6 +43,8 @@ object ConversationRouterSpec extends UnitSpecBase:
   val testUserId = UserId(UUID.randomUUID())
   val email = Email("test@example.com")
   val phone = Phone("+1234567890")
+
+  /** A region that takes `phone` and lets it register. */
   val otpCode = OtpCode("123456")
 
   val clientId = ClientId("test-client")
@@ -185,10 +188,15 @@ object ConversationRouterSpec extends UnitSpecBase:
     registrationFlow = Some(RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp(), RegistrationStep.SetPassword()), Set(roleId))),
   )
 
+  /** What the tenant's policy gives an unknown phone number: the one-time code, then the default roles. */
+  val tenantRegistrationFlow = RegistrationFlow(RegistrationCredential.phone, List(RegistrationStep.Otp()), Set(roleId))
+
   class Env:
     val conversationRepository = stub[ConversationRepository]
     val otpConversationService = stub[ConversationService]
     val configService = stub[OAuthConfigurationService]
+    // Registration is the tenant's decision; a test about it says what the tenant decided.
+    configService.registrationFor.returnsWith(ZIO.succeed(None))
     val secureRandom = stub[SecureRandom]
     val userRepository = stub[UserRepository]
     val router = ConversationRouter.Impl(
@@ -514,6 +522,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(
             RegistrationEntry.Registering(
@@ -532,6 +541,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(ConversationResult.WriteConflict)
           (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
@@ -549,6 +559,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         )
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(RegistrationEntry.Registering(registering))
           _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
@@ -559,6 +570,7 @@ object ConversationRouterSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow))
           _ <- env.userRepository.findByCredential.succeedsWith(None)
           _ <- env.otpConversationService.startRegistration.succeedsWith(
             RegistrationEntry.Registering(registrationRecord.copy(registrationStep = Some(0), credential = Some(Right(phone)))),
@@ -568,6 +580,36 @@ object ConversationRouterSpec extends UnitSpecBase:
         yield assertTrue(
           result == conversationResult,
         )
+      },
+      test("an unknown credential the tenant does not let register takes the ordinary sign-in path") {
+        val env = Env()
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(registrationRecord))
+          _ <- env.configService.registrationFor.succeedsWith(None)
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.configService.getAcrVocabulary.succeedsWith(Map.empty)
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, PhoneSubmission(phone, "test-csrf"), None, None)
+          startTimes = env.otpConversationService.startRegistration.times
+        yield assertTrue(result == conversationResult, startTimes == 0)
+      },
+      test("an unknown email registers when the tenant lets it") {
+        val env = Env()
+        val emailRecord = registrationRecord.copy(
+          authFlow = otpAuthFlow.copy(primary = otpAuthFlow.primary.copy(credentials = List(PrimaryCredential.email))),
+          registrationFlow = Some(RegistrationFlow(RegistrationCredential.email, List(RegistrationStep.Otp()), Set(roleId))),
+        )
+        for
+          _ <- env.otpConversationService.find.succeedsWith(Some(emailRecord))
+          _ <- env.userRepository.findByCredential.succeedsWith(None)
+          _ <- env.configService.registrationFor.succeedsWith(Some(tenantRegistrationFlow.copy(credential = RegistrationCredential.email)))
+          _ <- env.otpConversationService.startRegistration.succeedsWith(
+            RegistrationEntry.Registering(emailRecord.copy(registrationStep = Some(0), credential = Some(Left(email)))),
+          )
+          _ <- env.otpConversationService.prepareInitialOtp.succeedsWith(conversationResult)
+          (result, _) <- env.router.submit(authId, EmailSubmission(email, "test-csrf"), None, None)
+          startTimes = env.otpConversationService.startRegistration.times
+        yield assertTrue(result == conversationResult, startTimes == 1)
       },
       test("an existing credential uses authentication instead of registration") {
         val env = Env()

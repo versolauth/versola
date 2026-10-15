@@ -4,7 +4,6 @@ import versola.central.CentralConfig
 import versola.central.configuration.challenges.{ChallengeSettingsRecord, ChallengeSettingsService, SecurityProfile}
 import versola.central.configuration.edges.EdgeId
 import versola.central.configuration.permissions.{Permission, PermissionRepository}
-import versola.central.configuration.roles.RoleRepository
 import versola.central.configuration.scopes.{OAuthScopeRepository, ScopeToken}
 import versola.central.configuration.sync.{SyncEvent, SyncOps}
 import versola.central.configuration.tenants.{TenantId, TenantRepository}
@@ -109,7 +108,7 @@ trait OAuthClientService:
 
 object OAuthClientService:
   def live: ZLayer[
-    Scope & OAuthClientRepository & TenantRepository & RoleRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName,
+    Scope & OAuthClientRepository & TenantRepository & ChallengeSettingsService & SecureRandom & SecurityService & ClientCertificateAuthority & CentralConfig & EnvName,
     Throwable,
     OAuthClientService,
   ] =
@@ -118,7 +117,7 @@ object OAuthClientService:
         ZIO.serviceWithZIO[CentralConfig](config =>
           ReloadingCache.make[Vector[OAuthClientRecord]](config.configurationCacheRefreshInterval),
         )) >>>
-      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _, _))
+      ZLayer.fromFunction(Impl(_, _, _, _, _, _, _, _, _))
 
   /** A [[CacheSource]] that reads the client records from the
     * repository and decrypts their secrets, so the in-memory cache holds plaintext
@@ -159,7 +158,6 @@ object OAuthClientService:
       cache: ReloadingCache[Vector[OAuthClientRecord]],
       clientRepository: OAuthClientRepository,
       tenantRepository: TenantRepository,
-      roleRepository: RoleRepository,
       challengeSettingsService: ChallengeSettingsService,
       secureRandom: SecureRandom,
       securityService: SecurityService,
@@ -256,7 +254,6 @@ object OAuthClientService:
         _ <- validateRedirectUris(Some(request.tenantId), request.redirectUris)
         frontChannelLogoutUrl <- validateLogoutUri("frontChannelLogoutUri", request.frontChannelLogoutUri)
         backChannelLogoutUrl <- validateLogoutUri("backChannelLogoutUri", request.backChannelLogoutUri)
-        _ <- validateRegistration(request.id, request.tenantId, request.authFlow, request.registrationFlow)
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateAccessTokenTtl(
           request.id,
           Duration.fromSeconds(request.accessTokenTtl),
@@ -342,7 +339,6 @@ object OAuthClientService:
           permissions = request.permissions,
           theme = request.theme,
           authFlow = request.authFlow,
-          registrationFlow = request.registrationFlow,
           otpTemplateId = request.otpTemplateId,
           frontChannelLogoutUri = frontChannelLogoutUrl,
           frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
@@ -405,12 +401,7 @@ object OAuthClientService:
           // a patch that leaves a setting alone still has to leave the client valid.
           val applicationType = request.applicationType.getOrElse(client.applicationType)
           val authMethod = client.authMethod
-          validateRegistration(
-            clientId = request.clientId,
-            tenantId = client.tenantId,
-            authFlow = request.authFlow.applyTo(client.authFlow),
-            registrationFlow = request.registrationFlow.applyTo(client.registrationFlow),
-          ) *> ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateAccessTokenTtl(
+          ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateAccessTokenTtl(
             clientId = request.clientId,
             accessTokenTtl = request.accessTokenTtl.map(Duration.fromSeconds).getOrElse(client.accessTokenTtl),
             dpopBoundAccessTokens = request.dpopBoundAccessTokens.getOrElse(client.dpopBoundAccessTokens),
@@ -474,7 +465,6 @@ object OAuthClientService:
             refreshTokenTtl = request.refreshTokenTtl.map(Duration.fromSeconds),
             theme = request.theme,
             authFlow = request.authFlow,
-            registrationFlow = request.registrationFlow,
             otpTemplateId = request.otpTemplateId,
             frontChannelLogoutUri = request.frontChannelLogoutUri.map(decodeUrlPatch),
             frontChannelLogoutSessionRequired = request.frontChannelLogoutSessionRequired,
@@ -564,23 +554,6 @@ object OAuthClientService:
         clients.find(_.id == CentralConfig.centralClientId).exists: client =>
           client.secret.exists(MessageDigest.isEqual(provided, _)) ||
             client.previousSecret.exists(MessageDigest.isEqual(provided, _))
-
-    /** Rejects a registration flow the auth service could not run: one without a usable
-      * entry credential, or one granting roles that do not exist in the client's tenant.
-      */
-    private def validateRegistration(
-        clientId: ClientId,
-        tenantId: TenantId,
-        authFlow: Option[AuthFlow],
-        registrationFlow: Option[RegistrationFlow],
-    ): IO[InvalidRegistrationConfiguration | Throwable, Unit] =
-      for
-        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validate(clientId, authFlow, registrationFlow))(ZIO.fail(_))
-        _ <- ZIO.foreachDiscard(registrationFlow): flow =>
-          ZIO.foreachDiscard(flow.roleIds): roleId =>
-            roleRepository.findRole(tenantId, roleId).someOrFail:
-              InvalidRegistrationConfiguration(clientId, s"role '$roleId' does not exist in tenant '$tenantId'")
-      yield ()
 
     private def isEdgeFrontedNative(applicationType: ApplicationType, authMethod: AuthMethod): Boolean =
       applicationType == ApplicationType.native && authMethod == AuthMethod.tls_client_auth

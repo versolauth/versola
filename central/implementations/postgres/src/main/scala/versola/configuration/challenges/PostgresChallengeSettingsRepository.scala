@@ -6,11 +6,14 @@ import com.augustnagro.magnum.pg.PgCodec
 import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
+  EmailRegistration,
   MtlsCertificateEncoding,
   PasskeySettings,
+  PhoneRegion,
   SecurityProfile,
   SubmissionLimits,
 }
+import versola.central.configuration.roles.RoleId
 import versola.central.configuration.tenants.TenantId
 import versola.util.postgres.BasicCodecs
 import zio.{Task, ZLayer}
@@ -19,6 +22,9 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
 
   given DbCodec[TenantId] = DbCodec.StringCodec.biMap(TenantId(_), identity[String])
   given DbCodec[List[String]] = PgCodec.ListCodec[String]
+  given phoneRegionsCodec: DbCodec[List[PhoneRegion]] = jsonBCodec[List[PhoneRegion]]
+  given DbCodec[EmailRegistration] = jsonBCodec[EmailRegistration]
+  given DbCodec[Set[RoleId]] = jsonBCodec[Set[RoleId]]
   given DbCodec[SubmissionLimits] = jsonBCodec[SubmissionLimits]
   given DbCodec[PasskeySettings] = jsonBCodec[PasskeySettings]
   given DbCodec[MtlsCertificateEncoding] =
@@ -29,22 +35,24 @@ class PostgresChallengeSettingsRepository(xa: TransactorZIO) extends ChallengeSe
 
   override def getAll: Task[Vector[ChallengeSettingsRecord]] =
     xa.connectMeasured("get-all-challenge-settings"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile FROM challenge_settings ORDER BY tenant_id"""
+      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile FROM challenge_settings ORDER BY tenant_id"""
         .query[ChallengeSettingsRecord].run()
 
   override def findByTenant(tenantId: TenantId): Task[Option[ChallengeSettingsRecord]] =
     xa.connectMeasured("find-challenge-settings-by-tenant"):
-      sql"""SELECT tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile FROM challenge_settings WHERE tenant_id = $tenantId"""
+      sql"""SELECT tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile FROM challenge_settings WHERE tenant_id = $tenantId"""
         .query[ChallengeSettingsRecord].run()
         .headOption
 
   override def upsert(record: ChallengeSettingsRecord): Task[Boolean] =
     xa.connectMeasured("upsert-challenge-settings"):
       sql"""
-        INSERT INTO challenge_settings (tenant_id, allowed_prefixes, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile)
-        VALUES (${record.tenantId}, ${record.allowedPrefixes}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris}, ${record.requireDpopNonce}, ${record.mtlsCertificateHeader}, ${record.mtlsCertificateEncoding}, ${record.signingKeyId}, ${record.clientAssertionMaxLifetimeSeconds}, ${record.securityProfile})
+        INSERT INTO challenge_settings (tenant_id, phone_regions, email_registration, default_roles, submission_limits, otp_length, otp_resend_after, passkey_settings, auth_conversation_ttl_seconds, session_ttl_seconds, session_idle_ttl_seconds, user_agent_ttl_seconds, ip_header, acr_vocabulary, post_logout_redirect_uris, require_dpop_nonce, mtls_certificate_header, mtls_certificate_encoding, signing_key_id, client_assertion_max_lifetime_seconds, security_profile)
+        VALUES (${record.tenantId}, ${record.phoneRegions}, ${record.emailRegistration}, ${record.defaultRoles}, ${record.submissionLimits}, ${record.otpLength}, ${record.otpResendAfter}, ${record.passkeySettings}, ${record.authConversationTtlSeconds}, ${record.sessionTtlSeconds}, ${record.sessionIdleTtlSeconds}, ${record.userAgentTtlSeconds}, ${record.ipHeader}, ${record.acrVocabulary}, ${record.postLogoutRedirectUris}, ${record.requireDpopNonce}, ${record.mtlsCertificateHeader}, ${record.mtlsCertificateEncoding}, ${record.signingKeyId}, ${record.clientAssertionMaxLifetimeSeconds}, ${record.securityProfile})
         ON CONFLICT (tenant_id) DO UPDATE SET
-          allowed_prefixes = EXCLUDED.allowed_prefixes,
+          phone_regions = EXCLUDED.phone_regions,
+          email_registration = EXCLUDED.email_registration,
+          default_roles = EXCLUDED.default_roles,
           submission_limits = EXCLUDED.submission_limits,
           otp_length = EXCLUDED.otp_length,
           otp_resend_after = EXCLUDED.otp_resend_after,

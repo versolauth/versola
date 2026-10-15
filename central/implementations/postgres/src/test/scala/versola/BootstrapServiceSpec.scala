@@ -54,7 +54,6 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set.empty,
       theme = "default",
       authFlow = None,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,

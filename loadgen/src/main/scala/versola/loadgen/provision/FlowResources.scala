@@ -19,19 +19,16 @@ object FlowResources:
   val phoneOtpAuthFlowFile = "phone-otp-auth-flow.json"
   val phoneOtpPasswordAuthFlowFile = "phone-otp-password-auth-flow.json"
   val phonePasskeyAuthFlowFile = "phone-passkey-auth-flow.json"
-  val registrationFlowFile = "phone-otp-password-registration-flow.json"
 
   def load: Task[CampaignFlows] =
     for
       phoneOtp <- read(phoneOtpAuthFlowFile)
       phoneOtpPassword <- read(phoneOtpPasswordAuthFlowFile)
       phonePasskey <- read(phonePasskeyAuthFlowFile)
-      registration <- read(registrationFlowFile)
     yield CampaignFlows(
       phoneOtpAuthFlow = phoneOtp,
       phoneOtpPasswordAuthFlow = phoneOtpPassword,
       phonePasskeyAuthFlow = phonePasskey,
-      registrationFlow = registration,
     )
 
   private def read(name: String): Task[Json] =

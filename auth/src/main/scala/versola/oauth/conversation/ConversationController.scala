@@ -2,7 +2,7 @@ package versola.oauth.conversation
 
 import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, ScopeToken}
+import versola.oauth.client.model.{ClientId, PhoneRegion, ScopeToken}
 import versola.oauth.conversation.model.Error
 import versola.oauth.model.ConversationCookie
 import versola.user.model.Login
@@ -169,8 +169,8 @@ object ConversationController extends Controller:
   private def validate(clientId: ClientId, submission: Submission): URIO[OAuthConfigurationService, Boolean] =
     submission match
       case submitted: PhoneSubmission =>
-        ZIO.serviceWithZIO[OAuthConfigurationService](_.getAllowedPhonePrefixes(clientId))
-          .map(prefixes => prefixes.isEmpty || prefixes.exists(submitted.phone.startsWith))
+        ZIO.serviceWithZIO[OAuthConfigurationService](_.getPhoneRegions(clientId))
+          .map(regions => PhoneRegion.allows(regions, submitted.phone))
 
       case submitted: PasswordSubmission =>
         ZIO.serviceWithZIO[OAuthConfigurationService](_.getPasswordRegex)

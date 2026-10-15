@@ -46,7 +46,9 @@ case class ConversationRecord(
     userLogin: Option[Login],
     userClaims: Option[Json.Obj],
     authFlow: AuthFlow,
-    /** Snapshot of the client's registration flow, absent when the client has none. */
+    /** The registration this conversation went through, built from the tenant's policy when an unknown
+      * address was entered ([[versola.oauth.client.OAuthConfigurationService.registrationFor]]); absent
+      * until then. */
     registrationFlow: Option[RegistrationFlow],
     /** Index into `registrationFlow.steps` while the user is registering; `None` while logging in. */
     registrationStep: Option[Int],

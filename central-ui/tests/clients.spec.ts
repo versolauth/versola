@@ -91,7 +91,7 @@ const tenantsOn = (profile: Profile) => (profile === 'standard' ? standardTenant
 
 const mtlsTerminatingSettings = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: [],
+  phoneRegions: [],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
@@ -115,7 +115,6 @@ const SECTION_TITLES: Record<string, string> = {
   'Token lifetimes': 'Tokens',
   'How users sign in': 'Sign-in',
   'Scopes and permissions': 'Scopes',
-  'Registration and consent': 'Registration and consent',
   'Branding and logout': 'Branding and logout',
   'Client credential and binding': 'Type',
   'Request integrity': 'Type',
@@ -1019,18 +1018,10 @@ test('shows OTP settings for OTP factors and locks channel for phone credentials
   await expect(page.getByText('OTP Settings', { exact: true })).toBeVisible();
 });
 
-test('configures a registration flow and sends it when creating a client', async ({ page }) => {
+test('sends no registration flow: self-registration is a tenant setting, not a client one', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
-    state: {
-      clients: { 'tenant-alpha': [alphaClient] },
-      roles: {
-        'tenant-alpha': [
-          { id: 'user', description: { en: 'User' }, permissions: [], active: true },
-          { id: 'alpha-admin', description: { en: 'Alpha admin' }, permissions: ['alpha.read'], active: true },
-        ],
-      },
-    },
+    state: { clients: { 'tenant-alpha': [alphaClient] } },
   });
 
   await startCreate(page);
@@ -1039,37 +1030,24 @@ test('configures a registration flow and sends it when creating a client', async
   await page.getByPlaceholder('https://app.example.com/callback').press('Enter');
   await continueToThirdStep(page);
 
-  // Creation asks only whether users may sign themselves up; the credential they verify follows
-  // from the first screen, and the steps and roles are refined on the edit page.
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveAttribute('aria-pressed', 'false');
-  await checkRow(page, 'Let users sign themselves up').click();
-  await expect(checkRow(page, 'Let users sign themselves up'))
-    .toContainText('The phone is the credential whose ownership is verified');
+  await expect(page.getByText('Let users sign themselves up')).toHaveCount(0);
+  await expect(page.locator('versola-client-form .plan-line').filter({ hasText: 'register' })).toHaveCount(0);
+  await expect(page.locator('versola-client-form .wizard-warn').filter({ hasText: 'register' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Email', exact: true }).click();
+  await page.getByRole('button', { name: 'Phone', exact: true }).click();
 
   await continueToReview(page);
-  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'Self-service sign-up' }))
-    .toContainText('on');
+  await expect(page.locator('versola-client-form .review-row').filter({ hasText: 'sign-up' })).toHaveCount(0);
   await submitCreate(page);
 
-  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
-    registrationFlow: {
-      credential: 'phone',
-      steps: [{ type: 'otp' }, { type: 'passkeyEnroll' }],
-      roleIds: ['user'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 
-  await openEditSection(page, 'Registration and consent');
-  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
-  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha-admin', exact: true }).check();
+  await openEditSection(page, 'Consent');
+  await expect(page.getByText('Assigned roles', { exact: false })).toHaveCount(0);
+  await expect(page.getByLabel('Challenge', { exact: true })).toHaveCount(0);
   await saveEdit(page);
 
-  expect((await findClientWrite(api.requests, 'PUT')).body).toMatchObject({
-    registrationFlow: {
-      steps: [{ type: 'otp' }, { type: 'setPassword' }],
-      roleIds: ['user', 'alpha-admin'],
-    },
-  });
+  expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('configures a consent flow and sends it when creating a client', async ({ page }) => {
@@ -1123,7 +1101,7 @@ test('reads and updates a finite consent duration as seconds', async ({ page }) 
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
   await expect(page.getByLabel('Remember', { exact: true })).toHaveValue('days');
   await expect(page.getByLabel('Remember duration in days')).toHaveValue('14');
 
@@ -1149,7 +1127,7 @@ test('marks required consent scopes and sends them with the flow', async ({ page
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
 
   const required = page.getByRole('group', { name: 'Required scopes' });
   // openid and offline_access are always required, so they are not offered as a choice.
@@ -1179,7 +1157,7 @@ test('lets the administrator allow users to turn off long-lived access', async (
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
   const toggle = page.getByLabel('Let the user turn off long-lived access');
   await expect(toggle).not.toBeChecked();
   await toggle.check();
@@ -1204,7 +1182,7 @@ test('offers required scopes only while partial grants are allowed', async ({ pa
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
   await expect(page.getByRole('group', { name: 'Required scopes' })).toHaveCount(0);
   await page.getByLabel('Let the user deselect optional scopes').check();
   await expect(page.getByRole('group', { name: 'Required scopes' })).toBeVisible();
@@ -1217,7 +1195,7 @@ test('explains consent settings with info buttons', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
 
   await page.getByRole('button', { name: 'Consent settings info' }).click();
   await expect(page.getByText('Shows the user which scopes the client is requesting before an authorization code is issued.', { exact: true })).toBeVisible();
@@ -1264,7 +1242,7 @@ test('uses sentence case for consent property labels', async ({ page }) => {
   });
 
   await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
   const consentRow = page.getByText('Consent', { exact: true }).locator('..');
   await consentRow.locator('label.toggle').click();
 
@@ -1296,43 +1274,7 @@ test('hides consent settings when the auth flow is disabled', async ({ page }) =
   await expect(page.getByText('Consent', { exact: true })).toHaveCount(0);
 });
 
-test('hides registration settings when inline password is enabled', async ({ page }) => {
-  const api = await loadAdminApp(page, {
-    path: clientsPath,
-    state: { clients: { 'tenant-alpha': [alphaClient] } },
-  });
-
-  // Inline password is a sign-in refinement; turning it on leaves sign-up nothing to verify.
-  await openClientPage(page, 'alpha-web');
-  await openEditSection(page, 'Registration and consent');
-
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.getByText('Assigned roles *', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-
-  await openEditSection(page, 'How users sign in');
-  await page.getByRole('checkbox', { name: 'inline password', exact: true }).check();
-  await saveEdit(page);
-
-  await openEditSection(page, 'Registration and consent');
-  await expect(page.getByText('Registration', { exact: true })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
-
-  // Patch semantics: alpha-web had no registration flow before either, so nothing changed and
-  // the key is omitted rather than sent as an explicit null.
-  const putBody = (await findClientWrite(api.requests, 'PUT')).body;
-  expect(putBody).toMatchObject({
-    authFlow: {
-      primary: {
-        inlinePassword: true,
-      },
-    },
-  });
-  expect(putBody.registrationFlow).toBeUndefined();
-});
-
-test('hides registration settings for a login+password flow', async ({ page }) => {
+test('sends no registration flow for a login+password client', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
     state: { clients: { 'tenant-alpha': [alphaClient] } },
@@ -1343,19 +1285,13 @@ test('hides registration settings for a login+password flow', async ({ page }) =
   await addRedirectUri(page, 'https://login-password.example/callback');
   await continueToThirdStep(page);
 
-  await checkRow(page, 'Let users sign themselves up').click();
-
-  // A login is not a delivery address, so there is nothing for sign-up to prove ownership of.
   await page.getByRole('button', { name: 'Login + password', exact: true }).click();
-  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toBeVisible();
-  await expect(checkRow(page, 'Let users sign themselves up')).toHaveCount(0);
+  await expect(page.getByText('Users cannot sign themselves up', { exact: true })).toHaveCount(0);
 
   await continueToReview(page);
   await submitCreate(page);
 
-  expect((await findClientWrite(api.requests, 'POST')).body).toMatchObject({
-    registrationFlow: null,
-  });
+  expect((await findClientWrite(api.requests, 'POST')).body).not.toHaveProperty('registrationFlow');
 });
 
 test('leaves out everything a sign-in flow owns when the client has none', async ({ page }) => {
@@ -1385,7 +1321,7 @@ test('leaves out everything a sign-in flow owns when the client has none', async
 
   // The service endpoint has no member for any of it, so none is sent.
   const sent = (await findClientWrite(api.requests, 'POST')).body as Record<string, unknown>;
-  for (const owned of ['authFlow', 'registrationFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
+  for (const owned of ['authFlow', 'theme', 'redirectUris', 'otpTemplateId', 'frontChannelLogoutUri',
     'frontChannelLogoutSessionRequired', 'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow']) {
     expect(sent).not.toHaveProperty(owned);
   }
@@ -1743,7 +1679,6 @@ test('shows error alert when creating a client with duplicate ID', async ({ page
       equivalents: {},
       otpType: 'sms',
     },
-    registrationFlow: null,
     otpTemplateId: 'default',
     theme: 'default',
     frontChannelLogoutUri: null,
@@ -2122,7 +2057,7 @@ test('marks a client that asks for consent as a partner and keeps its consent sw
   await openClientPage(page, 'acme-app');
   await expect(page.locator('versola-clients-list .view-meta .chip', { hasText: 'Partner' })).toBeVisible();
 
-  await openEditSection(page, 'Registration and consent');
+  await openEditSection(page, 'Consent');
   // Not a switch at all: there is nothing to flip, only a lock and what it holds.
   await expect(page.locator('versola-client-form .locked-state', { hasText: 'Always on' })).toBeVisible();
   await expect(page.getByText('A partner client asks users for consent for good')).toBeVisible();

@@ -200,23 +200,39 @@ test('client create form', async ({ page }) => {
   await shot(page, 'client-created-edge');
 });
 
-test('client registration flow form', async ({ page }) => {
-  // Registration challenge and role assignment are edit-page refinements now - creation only
-  // asks whether sign-up is on at all - so this shot comes from editing an existing client.
-  await loadAdminApp(page, { path: `/?view=clients&tenant=${tenant}`, state });
+/**
+ * Self-registration is a tenant policy, not a client setting: the Registration group of the
+ * Challenges & Security edit form holds the email mode (with its info popover), the domain list
+ * and the default roles.
+ */
+test('challenge settings registration form', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: `/?view=challenges&tenant=${tenant}`,
+    state: {
+      ...state,
+      challengeSettings: {
+        [tenant]: {
+          tenantId: tenant,
+          phoneRegions: [{ region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true }],
+          emailRegistration: { mode: 'allowlist', domains: ['example.com', '*.corp.example'], blockSubaddress: false },
+          defaultRoles: ['user'],
+          submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
+          otpLength: 6,
+          otpResendAfter: 60,
+          authConversationTtlSeconds: 900,
+          sessionTtlSeconds: 86400,
+          userAgentTtlSeconds: 15552000,
+          passkeySettings: { rpId: 'example.com', rpName: 'Example', origins: ['https://example.com'], userVerification: 'preferred' },
+        },
+      },
+    },
+  });
 
-  await page.getByRole('button', { name: 'Open client storefront-web', exact: true }).click();
-
-  // Each group of settings has its own Edit button on the client's page.
-  await page.getByRole('button', { name: 'Edit registration and consent', exact: true }).click();
-
-  const registrationRow = page.getByText('Registration', { exact: true }).locator('..');
-  await registrationRow.locator('label.toggle').click();
-  await expect(page.locator('[aria-label="Registration credential (locked)"]')).toContainText('phone');
-
-  await page.getByLabel('Challenge', { exact: true }).selectOption('setPassword');
-  await page.getByRole('group', { name: 'Assigned roles' }).getByRole('checkbox', { name: 'alpha_admin', exact: true }).check();
-  await shot(page, 'client-form-registration', true);
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByRole('button', { name: 'About email registration modes', exact: true }).click();
+  await expect(page.getByLabel('Allowed domains')).toHaveValue('example.com\n*.corp.example');
+  await page.getByRole('heading', { name: 'Registration', exact: true }).scrollIntoViewIfNeeded();
+  await shot(page, 'challenge-settings-registration');
 });
 
 test('resources list', async ({ page }) => {

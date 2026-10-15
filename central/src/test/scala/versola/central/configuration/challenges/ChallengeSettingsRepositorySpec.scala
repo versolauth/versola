@@ -24,7 +24,9 @@ trait ChallengeSettingsRepositorySpec extends DatabaseSpecBase[ChallengeSettings
 
   private def settingsFor(tenantId: TenantId) = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List("+1", "+44"),
+    phoneRegions = List(PhoneRegion("US", "+1", 10, "[2-9]\\d{9}", true), PhoneRegion("GB", "+44", 10, "7\\d{9}", true)),
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 30,

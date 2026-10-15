@@ -65,7 +65,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
       permissions = Set.empty[Permission],
       theme = "default",
       authFlow = request.authFlow,
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -174,7 +173,6 @@ object ClientKindRulesSpec extends ZIOSpecDefault:
         assertTrue(
           fixed.redirectUris.isEmpty,
           fixed.authFlow.isEmpty,
-          fixed.registrationFlow.isEmpty,
           fixed.consentFlow.isEmpty,
           fixed.refreshTokenTtl.isEmpty,
           !fixed.requirePushedAuthorizationRequests,

@@ -41,7 +41,6 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     refreshTokenTtl = 30.days,
     theme = "custom-theme",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -151,7 +150,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
           faviconSvg = """<link rel="icon" href="data:image/svg\+xml;base64,([^"]+)">""".r
@@ -176,7 +175,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some("https://acme.test/logo.svg?a=1&b=2"))
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg?a=1&amp;b=2">""")) &&
@@ -192,7 +191,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(Some(maliciousLogo))
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(
@@ -213,7 +212,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(hostileForm))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
@@ -235,7 +234,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           firstResponse <- env.service.renderStep(conversationRecord, None)
           etag = firstResponse.headers.get("ETag").getOrElse("")
           secondResponse <- env.service.renderStep(conversationRecord, Some(etag))
@@ -251,7 +250,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(body.contains(".body { color: black; }"))
@@ -265,7 +264,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
@@ -711,10 +710,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(record, None)
           body <- response.body.asString
-        yield assertTrue(body.contains("\"+1\""))
+        yield assertTrue(body.contains("\"dialCode\":\"+1\""))
       },
       test("surfaces the otp_wrong error once an OTP has been submitted") {
         val env = Env()
@@ -1002,7 +1001,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
           _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderSubmit(ConversationResult.ServiceUnavailable, conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&

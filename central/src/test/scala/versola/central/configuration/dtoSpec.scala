@@ -1,6 +1,6 @@
 package versola.central.configuration
 
-import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow, RegistrationFlow}
+import versola.central.configuration.clients.{AuthFlow, ClientId, ConsentFlow}
 import versola.central.configuration.scopes.ScopeToken
 import versola.util.Patch
 import zio.json.*
@@ -27,16 +27,6 @@ object dtoSpec extends ZIOSpecDefault:
           absent.map(_.authFlow) == Right(None),
           cleared.map(_.authFlow) == Right(Some(Patch.Deleted)),
           set.map(_.authFlow) == Right(Some(Patch.Modified(AuthFlow.default))),
-        )
-      },
-      test("an absent registration flow means no change, an explicit null clears it") {
-        val absent = decodeUpdate("")
-        val cleared = decodeUpdate(""","registrationFlow":null""")
-        val set = decodeUpdate(s""","registrationFlow":${RegistrationFlow.default.toJson}""")
-        assertTrue(
-          absent.map(_.registrationFlow) == Right(None),
-          cleared.map(_.registrationFlow) == Right(Some(Patch.Deleted)),
-          set.map(_.registrationFlow) == Right(Some(Patch.Modified(RegistrationFlow.default))),
         )
       },
       test("a finite consent duration is decoded from seconds") {

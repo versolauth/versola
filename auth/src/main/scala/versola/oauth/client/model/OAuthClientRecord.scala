@@ -24,7 +24,6 @@ case class OAuthClientRecord(
     refreshTokenTtl: Duration,
     theme: String,
     authFlow: Option[AuthFlow],
-    registrationFlow: Option[RegistrationFlow],
     otpTemplateId: String,
     frontChannelLogoutUri: Option[URL],
     frontChannelLogoutSessionRequired: Boolean,
@@ -83,6 +82,17 @@ case class OAuthClientRecord(
       * before central sent the field. */
     applicationType: ApplicationType = ApplicationType.web,
 ) derives CanEqual, Equal:
+
+  /** Whether this client's credential card can lead to account creation: it asks for an email or
+    * a phone number, since registration proves ownership of the one entered, and not for a login
+    * or a password alongside it. Whether the tenant lets an address register is its own setting
+    * ([[OAuthConfigurationService.registrationAvailable]]).
+    */
+  def offersRegistration: Boolean =
+    authFlow.exists: flow =>
+      !flow.primary.inlinePassword &&
+        !flow.primary.credentials.contains(PrimaryCredential.login) &&
+        flow.primary.credentials.exists(c => c == PrimaryCredential.email || c == PrimaryCredential.phone)
 
   /** A native app whose client authentication is done by the edge fronting it (#420): edge
     * presents this client's `tls_client_auth` certificate, the device holds the DPoP key. */

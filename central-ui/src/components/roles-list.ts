@@ -6,6 +6,7 @@ import { Permission, Resource, Role } from '../types';
 import {
   createRole,
   deleteRole,
+  fetchChallengeSettings,
   getPermissions,
   getResources,
   getRoles,
@@ -25,6 +26,8 @@ export class VersolaRolesList extends LitElement {
   @property({ type: Boolean }) canManage = false;
 
   @state() private roles: Role[] = [];
+  /** Roles the tenant grants every self-registered account: they cannot be deleted while named there. */
+  @state() private defaultRoleIds: Set<string> = new Set();
   @state() private searchQuery = '';
   @state() private showCreateForm = false;
   @state() private editingRole: Role | null = null;
@@ -62,9 +65,13 @@ export class VersolaRolesList extends LitElement {
     this.errorMessage = '';
 
     try {
-      const result = await getRoles(this.tenantId);
+      const [result, settings] = await Promise.all([
+        getRoles(this.tenantId),
+        fetchChallengeSettings(this.tenantId).catch(() => null),
+      ]);
       if (requestId !== this.loadRequestId) return;
       this.roles = result;
+      this.defaultRoleIds = new Set(settings?.defaultRoles ?? []);
     } catch (error) {
       if (requestId !== this.loadRequestId) return;
       this.roles = [];
@@ -306,7 +313,7 @@ export class VersolaRolesList extends LitElement {
 
   private async handleDeleteClick(role: Role, e: Event) {
     e.stopPropagation();
-    if (!this.tenantId) {
+    if (!this.tenantId || this.defaultRoleIds.has(role.id)) {
       return;
     }
 
@@ -490,7 +497,8 @@ export class VersolaRolesList extends LitElement {
                   <button
                     class="icon-action danger"
                     @click=${(e: Event) => this.handleDeleteClick(role, e)}
-                    title="Delete"
+                    ?disabled=${this.defaultRoleIds.has(role.id)}
+                    title=${this.defaultRoleIds.has(role.id) ? 'Default role for new registrations: change it in the sign-in settings first' : 'Delete'}
                     aria-label=${`Delete role ${role.id}`}
                   >
                     ✕

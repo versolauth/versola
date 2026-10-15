@@ -64,24 +64,20 @@ object Flows:
     "otpType" -> Json.Str("sms"),
   )
 
-  /** Registration entered from the phone credential card: prove the number, then pick a password. */
-  val otpPasswordRegistrationFlow: Json = Json.Obj(
-    "credential" -> Json.Str("phone"),
-    "steps" -> Json.Arr(
-      Json.Obj("type" -> Json.Str("otp")),
-      Json.Obj("type" -> Json.Str("setPassword")),
+  /** Phone credential whose sign-in asks for the OTP and then a password: a user who registers
+    * through it has to choose a password too, or could not sign in the next time. */
+  val phoneOtpPasswordAuthFlow: Json = Json.Obj(
+    "primary" -> Json.Obj(
+      "credentials" -> Json.Arr(Json.Str("phone")),
+      "inlinePassword" -> Json.Bool(false),
+      "factors" -> Json.Arr(
+        Json.Obj("type" -> Json.Str("otp"), "required" -> Json.Bool(true)),
+        Json.Obj("type" -> Json.Str("password"), "required" -> Json.Bool(true)),
+      ),
     ),
-    "roleIds" -> Json.Arr(Json.Str("user")),
-  )
-
-  /** Registration entered from the email credential card: prove the address, then pick a password. */
-  val emailOtpPasswordRegistrationFlow: Json = Json.Obj(
-    "credential" -> Json.Str("email"),
-    "steps" -> Json.Arr(
-      Json.Obj("type" -> Json.Str("otp")),
-      Json.Obj("type" -> Json.Str("setPassword")),
-    ),
-    "roleIds" -> Json.Arr(Json.Str("user")),
+    "passkey" -> Json.Null,
+    "equivalents" -> Json.Obj(),
+    "otpType" -> Json.Str("sms"),
   )
 
   /** Consent policy that prompts on the first authorization and remembers the grant. */
@@ -213,12 +209,15 @@ object Flows:
       _ <- oauthClient.setUserPassword(userId, password)
     yield Setup(clientId, clientResult.secret, redirectUri, userId, None, None, Some(phone), password)
 
-  /** Register a client that offers self-service registration next to phone + OTP sign-in.
+  /** Register a phone + OTP client whose tenant lets new numbers register (see `OAuthClient.germanMobileRegion`).
     *
     * No user is created: registration tests create their own account through the flow, and
     * `Setup.phone` carries an unused number they can claim.
     */
-  def setupPhoneRegistration(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
+  def setupPhoneRegistration(
+      redirectUri: String = "http://localhost:3000",
+      authFlow: Json = phoneOtpAuthFlow,
+  ): RIO[OAuthClient, Setup] =
     val uid = UUID.randomUUID()
     val uidStr = uid.toString.replace("-", "")
     val phone = f"+49152${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
@@ -230,12 +229,11 @@ object Flows:
         clientId,
         "Registration Test Client",
         Set(redirectUri),
-        authFlow = Some(phoneOtpAuthFlow),
-        registrationFlow = Some(otpPasswordRegistrationFlow),
+        authFlow = Some(authFlow),
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, None, Some(phone), password)
 
-  /** Register a client that offers self-service registration next to email + OTP sign-in. */
+  /** Register an email + OTP client whose tenant lets new addresses register (the suite's `open` policy). */
   def setupEmailRegistration(redirectUri: String = "http://localhost:3000"): RIO[OAuthClient, Setup] =
     val uid = UUID.randomUUID().toString.replace("-", "")
     val email = s"registration-${uid.take(12)}@example.test"
@@ -248,7 +246,6 @@ object Flows:
         "Email Registration Test Client",
         Set(redirectUri),
         authFlow = Some(emailOtpAuthFlow),
-        registrationFlow = Some(emailOtpPasswordRegistrationFlow),
       ).success
     yield Setup(clientId, clientResult.secret, redirectUri, new UUID(0L, 0L), None, Some(email), None, password)
 
@@ -303,7 +300,8 @@ object Flows:
 
   /** Identifies a registered auth flow variant in the shared bootstrap data. */
   enum Id:
-    case LoginPassword, PasskeyLogin, EmailOtp, PhoneOtp, PhoneRegistration, EmailRegistration, Consent, ConsentPartial, BackChannelLogout
+    case LoginPassword, PasskeyLogin, EmailOtp, PhoneOtp, PhoneRegistration, PhoneRegistrationWithPassword, EmailRegistration, Consent,
+      ConsentPartial, BackChannelLogout
 
   /** All shared test data for the e2e suite. */
   case class Setups(setups: Map[Id, Setup], client: OAuthClient):
@@ -322,6 +320,7 @@ object Flows:
         otp <- setupEmailOtp()
         phoneOtp <- setupPhoneOtp()
         registration <- setupPhoneRegistration()
+        registrationWithPassword <- setupPhoneRegistration(authFlow = phoneOtpPasswordAuthFlow)
         emailRegistration <- setupEmailRegistration()
         consent <- setupConsent()
         consentPartial <- setupConsent(consentFlow = partialConsentFlow)
@@ -359,6 +358,7 @@ object Flows:
           Id.EmailOtp -> otp,
           Id.PhoneOtp -> phoneOtp,
           Id.PhoneRegistration -> registration,
+          Id.PhoneRegistrationWithPassword -> registrationWithPassword,
           Id.EmailRegistration -> emailRegistration,
           Id.Consent -> consent,
           Id.ConsentPartial -> consentPartial,

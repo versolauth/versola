@@ -79,7 +79,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = Some(7776000),
     theme = "default",
     authFlow = Some(AuthFlow.default),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -126,7 +125,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     refreshTokenTtl = None,
     theme = None,
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = None,
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = None,
@@ -167,7 +165,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(readPermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -203,7 +200,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       permissions = Set(writePermission),
       theme = "",
       authFlow = Some(AuthFlow.default),
-      registrationFlow = None,
       otpTemplateId = "default",
       frontChannelLogoutUri = None,
       frontChannelLogoutSessionRequired = false,
@@ -434,7 +430,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
-                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
@@ -470,7 +465,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
                 refreshTokenTtl = 7776000L,
                 theme = "",
                 authFlow = Some(AuthFlow.default),
-                registrationFlow = None,
                 otpTemplateId = "default",
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = false,
@@ -866,32 +860,6 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service, _) =>
         ZIO.succeed(
           assertTrue(service.updateClient.calls == List((updateRequest, true, false))),
-        ),
-    ),
-    controllerTestCase(
-      description = "clear registration flow while leaving auth flow unchanged",
-      request = Request(
-        method = Method.PUT,
-        url = URL.empty / "configuration" / "clients" / "web",
-        body = Body.fromString(
-          """{
-            |  "clientId": "web-app",
-            |  "clientName": {"en": "Updated Web App"},
-            |  "redirectUris": {"add": ["https://example.com/alt-callback"], "remove": ["https://example.com/callback"]},
-            |  "scope": {"add": ["write"], "remove": ["read"]},
-            |  "accessTokenTtl": 900,
-            |  "registrationFlow": null
-            |}""".stripMargin,
-        ),
-      ).addHeader(Header.ContentType(MediaType.application.json)),
-      expectedStatus = Status.NoContent,
-      setup = service =>
-        service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
-      verify = (_, service, _) =>
-        ZIO.succeed(
-          assertTrue(
-            service.updateClient.calls == List((updateRequest.copy(registrationFlow = Some(Patch.Deleted)), true, false)),
-          ),
         ),
     ),
     controllerTestCase(
