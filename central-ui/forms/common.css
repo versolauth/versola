@@ -8,68 +8,39 @@
  *   --rf / --rb / --rs      corner radius of fields, buttons and the card
  *   --page-light/--page-dark  page background per colour scheme, --glow-dark the dark-mode halo
  *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
- * Older themes override the legacy names below (--accent, --bg, --card-bg, --text, ...); they are
- * kept as aliases, so a theme or per-form CSS written against them keeps working.
+ * The neutral surface and text tokens below (--ink, --sheet, --field, --line, ...) are defined per
+ * colour scheme with light-dark(), so they follow color-scheme.
  */
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --brand: #155e75;
   --on-brand: #ffffff;
-  --focus: var(--brand);
-  --on-focus: var(--on-brand);
+  --focus: light-dark(var(--brand), color-mix(in oklab, var(--brand) 50%, white));
+  --on-focus: light-dark(var(--on-brand), #1c1b19);
   --rf: 14px;
   --rb: 14px;
   --rs: 24px;
+  --control-h: 54px;
 
   --page-light: color-mix(in oklab, var(--brand) 22%, #0c1110);
   --page-dark: color-mix(in oklab, var(--brand) 10%, #060707);
   --glow-dark: color-mix(in oklab, var(--brand) 55%, transparent);
+  --page: light-dark(var(--page-light), var(--page-dark));
+  --page-ink: light-dark(#ffffff, #f3f2f0);
+  --glow: light-dark(transparent, var(--glow-dark));
 
-  --ink: #1c1b19;
-  --text-muted: #6b6a66;
-  --sheet: #ffffff;
-  --sheet-line: transparent;
-  --field: #f5f3ee;
-  --field-hover: #edeae3;
-  --line: #e6e2d8;
-  --line-strong: #cfc9bb;
-  --invert: #ffffff;
-  --danger: #c0341d;
-  --glow: transparent;
-  --shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.45);
-
-  /* legacy names, kept for themes and form versions written against the previous design */
-  --bg: var(--page-light);
-  --card-bg: var(--sheet);
-  --field-bg: var(--field);
-  --field-bg-hover: var(--field-hover);
-  --border: var(--line);
-  --border-hover: var(--line-strong);
-  --text: var(--ink);
-  --accent: var(--brand);
-  --accent-hover: color-mix(in oklab, var(--brand) 82%, black);
-  --radius: var(--rf);
-  --radius-lg: var(--rs);
-}
-@supports (color: light-dark(#000, #fff)) {
-  :root {
-    color-scheme: light dark;
-    --bg: light-dark(var(--page-light), var(--page-dark));
-    --glow: light-dark(transparent, var(--glow-dark));
-    --focus: light-dark(var(--brand), color-mix(in oklab, var(--brand) 50%, white));
-    --on-focus: light-dark(var(--on-brand), #1c1b19);
-    --ink: light-dark(#1c1b19, #f3f2f0);
-    --text-muted: light-dark(#6b6a66, #a9a9b0);
-    --sheet: light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20));
-    --sheet-line: light-dark(transparent, rgba(255, 255, 255, 0.09));
-    --field: light-dark(#f5f3ee, color-mix(in oklab, var(--brand) 9%, #2b2b2d));
-    --field-hover: light-dark(#edeae3, color-mix(in oklab, var(--brand) 12%, #323235));
-    --line: light-dark(#e6e2d8, color-mix(in oklab, var(--brand) 10%, #38383b));
-    --line-strong: light-dark(#cfc9bb, #55535a);
-    --invert: light-dark(#ffffff, #1c1b19);
-    --danger: light-dark(#c0341d, #ff8a73);
-    --shadow: light-dark(0 30px 60px -24px rgba(0, 0, 0, 0.45), 0 40px 80px -30px rgba(0, 0, 0, 0.8));
-  }
+  --ink: light-dark(#1c1b19, #f3f2f0);
+  --text-muted: light-dark(#6b6a66, #a9a9b0);
+  --sheet: light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20));
+  --sheet-line: light-dark(transparent, rgba(255, 255, 255, 0.09));
+  --field: light-dark(#f5f3ee, color-mix(in oklab, var(--brand) 9%, #2b2b2d));
+  --field-hover: light-dark(#edeae3, color-mix(in oklab, var(--brand) 12%, #323235));
+  --line: light-dark(#e6e2d8, color-mix(in oklab, var(--brand) 10%, #38383b));
+  --line-strong: light-dark(#cfc9bb, #55535a);
+  --invert: light-dark(#ffffff, #1c1b19);
+  --danger: light-dark(#c0341d, #ff8a73);
+  --shadow: 0 30px 60px -24px light-dark(rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0.8));
+  --passkey-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 12C2 6.5 6.5 2 12 2a10 10 0 0 1 8 4'/%3E%3Cpath d='M5 19.5C5.5 18 6 15 6 12c0-.7.12-1.37.34-2'/%3E%3Cpath d='M17.29 21.02c.12-.6.43-2.3.5-3.02'/%3E%3Cpath d='M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4'/%3E%3Cpath d='M8.65 22c.21-.66.45-1.32.57-2'/%3E%3Cpath d='M14 13.12c0 2.38 0 6.38-1 8.88'/%3E%3Cpath d='M2 16h.01'/%3E%3Cpath d='M21.8 16c.2-2 .131-5.354 0-6'/%3E%3Cpath d='M9 6.8a6 6 0 0 1 9 5.2c0 .47 0 1.17-.02 2'/%3E%3C/svg%3E");
 }
 * {
   box-sizing: border-box;
@@ -87,7 +58,7 @@ body {
   font-size: 16px;
   line-height: 1.5;
   color: var(--ink);
-  background: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--bg);
+  background: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--page);
   margin: 0;
   padding: 24px;
   width: 100%;
@@ -99,7 +70,7 @@ body {
   flex-direction: column;
   justify-content: center;
   text-align: left;
-  background: var(--card-bg);
+  background: var(--sheet);
   border: 1px solid var(--sheet-line);
   border-radius: var(--rs);
   padding: 56px 40px 32px;
@@ -123,14 +94,14 @@ body {
   height: 44px;
   padding: 6px;
   border-radius: var(--rf);
-  background: var(--field);
+  /* a dark logo must not vanish on the dark card, whatever its colours */
+  background: light-dark(var(--field), rgba(255, 255, 255, 0.94));
   overflow: hidden;
 }
-@supports (color: light-dark(#000, #fff)) {
-  /* a dark logo must not vanish on the dark card, whatever its colours */
-  .client-badge-icon {
-    background: light-dark(var(--field), rgba(255, 255, 255, 0.94));
-  }
+.client-badge-icon img {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
 }
 .client-badge-initial {
   padding: 0;
@@ -144,43 +115,8 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* Older stored versions of a form still run over this stylesheet (a version that was never replaced,
- * a preview of an old version). They set display:block on their link buttons, which would pin the
- * label to the top of the taller button, and draw their own logo mark inside the card. Keep both
- * laid out; current forms need neither. */
-.btn {
-  display: flex !important;
-}
-.brand-mark {
-  height: 40px;
-  max-width: 200px;
-  margin: 0 0 22px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-}
-.brand-mark svg {
-  width: 40px;
-  height: 40px;
-  display: block;
-}
-.brand-mark img {
-  height: 100%;
-  width: auto;
-  max-width: 100%;
-  display: block;
-  object-fit: contain;
-}
 /* The brand zone: above the card on a desktop, and on a phone the brand-coloured space over the
  * sheet. It lives on the page, not in the card, so the logo never competes with the title. */
-:root {
-  --page-ink: #ffffff;
-}
-@supports (color: light-dark(#000, #fff)) {
-  :root {
-    --page-ink: light-dark(#ffffff, #f3f2f0);
-  }
-}
 #versola-form-root {
   display: flex;
   flex-direction: column;
@@ -235,12 +171,12 @@ form {
   margin-bottom: 4px;
 }
 .input-field {
-  height: 54px;
+  height: var(--control-h);
   padding: 0 18px;
   font: inherit;
   font-size: 1rem;
   color: var(--ink);
-  background: var(--field-bg);
+  background: var(--field);
   border: 2px solid transparent;
   border-radius: var(--rf);
   outline: none;
@@ -252,10 +188,10 @@ form {
   opacity: 0.7;
 }
 .input-field:hover {
-  background: var(--field-bg-hover);
+  background: var(--field-hover);
 }
 .input-field:focus {
-  background: var(--card-bg);
+  background: var(--sheet);
   border-color: var(--ink);
 }
 .input-field[aria-invalid='true'],
@@ -271,7 +207,7 @@ form {
   justify-content: center;
   gap: 10px;
   width: 100%;
-  height: 54px;
+  height: var(--control-h);
   padding: 0 22px;
   font: inherit;
   font-size: 1rem;
@@ -296,7 +232,7 @@ form {
 .btn-secondary {
   color: var(--ink);
   background: transparent;
-  border-color: var(--border);
+  border-color: var(--line);
 }
 .btn-secondary:hover:not(:disabled) {
   border-color: var(--ink);
@@ -326,7 +262,7 @@ a {
 .divider::after {
   content: '';
   flex: 1;
-  border-bottom: 2px solid var(--border);
+  border-bottom: 2px solid var(--line);
   border-radius: 2px;
 }
 .divider span {
@@ -343,12 +279,70 @@ a {
   font-size: 0.9rem;
   font-weight: 550;
 }
+.error-text-block {
+  margin-bottom: 16px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  text-align: left;
+}
+.field-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ink);
+  margin-left: 2px;
+}
+.field-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-left: 2px;
+}
+.password-field {
+  position: relative;
+}
+.password-field .input-field {
+  padding-right: 52px;
+}
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: var(--rf);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.password-toggle:hover {
+  color: var(--ink);
+}
+.password-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+.passkey-icon {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: var(--passkey-icon) no-repeat center / contain;
+  mask: var(--passkey-icon) no-repeat center / contain;
+}
 #message {
   font-size: 1rem;
   margin-top: 20px;
   padding: 16px;
-  background: var(--field-bg);
-  border-left: 3px solid var(--brand);
+  background: var(--field);
+  border-left: 3px solid var(--focus);
   border-radius: var(--rf);
   color: var(--ink);
   min-height: 50px;
@@ -372,7 +366,7 @@ a {
   padding: 7px 12px;
   border-radius: 999px;
   border: 0;
-  background: var(--field-bg);
+  background: var(--field);
   font-size: 0.8rem;
   font-family: inherit;
   color: var(--text-muted);
@@ -388,12 +382,15 @@ a {
   flex: none;
 }
 .locale-options {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
   min-width: 100%;
-  background: var(--card-bg);
-  border: 1px solid var(--border);
+  background: var(--sheet);
+  border: 1px solid var(--line);
   border-radius: calc(var(--rf) - 2px);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   overflow: hidden;
@@ -412,8 +409,12 @@ a {
   cursor: pointer;
   transition: background 0.1s;
 }
+.locale-option:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
 .locale-option:hover {
-  background: var(--field-bg);
+  background: var(--field);
 }
 .locale-option-active {
   font-weight: 700;

@@ -6,7 +6,7 @@
 }
 .otp-destination {
   white-space: nowrap;
-  color: var(--text);
+  color: var(--ink);
   font-weight: 650;
 }
 .otp-wrapper {
@@ -22,25 +22,25 @@
   flex: 1;
   max-width: 64px;
   min-width: 0;
-  height: 62px;
+  height: var(--control-h);
   display: flex;
   align-items: center;
   justify-content: center;
   border: 2px solid transparent;
-  border-radius: var(--radius);
-  background: var(--field-bg);
+  border-radius: var(--rf);
+  background: var(--field);
   font-size: 1.6rem;
   font-weight: 750;
-  color: var(--text);
+  color: var(--ink);
   font-variant-numeric: tabular-nums;
   transition: border-color 0.15s, background 0.15s;
 }
 .otp-cell-active {
-  border-color: var(--text);
-  background: var(--card-bg);
+  border-color: var(--ink);
+  background: var(--sheet);
 }
 .otp-cell-filled {
-  background: var(--field-bg);
+  background: var(--field);
 }
 .otp-hidden-input {
   position: absolute;

@@ -30,7 +30,19 @@ for (const id of forms) {
   });
   const compiled = result.outputFiles[0].text;
   await writeFile(resolve(outDir, `${id}.js`), compiled, 'utf8');
-  await copyFile(entry, resolve(outDir, `${id}.tsx`));
+  // The stored source is what the console shows and forks. It imports ../shared/*, which nothing stores,
+  // so the shared modules are inlined: readable (not minified), JSX kept, only solid-js left as an import.
+  // Type annotations are dropped by esbuild; jsCompiled above is what runs.
+  const source = await build({
+    entryPoints: [entry],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    jsx: 'preserve',
+    target: 'esnext',
+    external: ['solid-js', 'solid-js/web'],
+  });
+  await writeFile(resolve(outDir, `${id}.tsx`), source.outputFiles[0].text, 'utf8');
   await copyFile(resolve(formDir, `${id}.i18n.json`), resolve(outDir, `${id}.i18n.json`));
   await copyFile(resolve(formDir, `${id}.css`), resolve(outDir, `${id}.css`));
   console.log(`Built ${id}: ${compiled.length} bytes`);
