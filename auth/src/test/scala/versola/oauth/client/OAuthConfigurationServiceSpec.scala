@@ -48,6 +48,7 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -78,11 +79,12 @@ object OAuthConfigurationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   val testScopes = Vector(ScopeRecord(ScopeToken("read"), Map("en" -> "Read access"), Vector.empty))
   val testForm = FormRecord("form-1", 1, true, "body{}", None, None, Map.empty, Vector.empty)
-  val testTheme = ThemeRecord("default", "body{}", None)
+  val testTheme = ThemeRecord("default", "body{}", None, tokens = None)
   val testLocales = Locales(Vector(LocaleRecord("en", "English")), "en")
   val challengeSettings = ChallengeSettingsRecord(
     tenantId = tenantId,

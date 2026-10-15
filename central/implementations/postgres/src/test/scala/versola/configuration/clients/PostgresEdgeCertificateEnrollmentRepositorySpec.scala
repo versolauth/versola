@@ -52,6 +52,7 @@ object PostgresEdgeCertificateEnrollmentRepositorySpec extends PostgresSpec:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
   private val setup =

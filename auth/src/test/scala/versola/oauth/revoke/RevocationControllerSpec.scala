@@ -59,6 +59,7 @@ object RevocationControllerSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   def authHeader(clientId: ClientId, secret: Secret): Header.Authorization =
