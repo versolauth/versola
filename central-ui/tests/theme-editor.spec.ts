@@ -165,6 +165,7 @@ test('the fields of the editor are as light as the other forms of the console in
 
   await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
   await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+});
 
 test('the light preview is forced, so it does not follow a dark device', async ({ page }) => {
   await newTheme(page);
