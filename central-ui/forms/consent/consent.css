@@ -45,15 +45,15 @@
   content: '';
   width: 5px;
   height: 10px;
-  border: solid var(--on-brand, #fff);
+  border: solid var(--on-focus, #fff);
   border-width: 0 1.75px 1.75px 0;
   transform: translateY(-1px) rotate(45deg) scale(0);
   transition: transform 0.12s;
 }
-.consent-scope-label input[type='checkbox']:checked { background: var(--brand, var(--accent)); border-color: var(--brand, var(--accent)); }
+.consent-scope-label input[type='checkbox']:checked { background: var(--focus, var(--accent)); border-color: var(--focus, var(--accent)); }
 .consent-scope-label input[type='checkbox']:checked::after { transform: translateY(-1px) rotate(45deg) scale(1); }
 /* A scope the user cannot drop is ticked like any other: dimming it looked muddy, and its "Required" tag already says why it is fixed. */
-.consent-scope-label input[type='checkbox']:focus-visible { outline: 2px solid var(--brand, var(--accent)); outline-offset: 3px; }
+.consent-scope-label input[type='checkbox']:focus-visible { outline: 2px solid var(--focus, var(--accent)); outline-offset: 3px; }
 .btn-quiet { border-color: transparent; color: var(--text-muted); }
 .btn-quiet:hover:not(:disabled) { border-color: transparent; color: var(--text); }
 .consent-legal { color: var(--text-muted); font-size: 0.85rem; margin: 18px 0 0; }

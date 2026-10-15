@@ -18,7 +18,6 @@ import './loading-cards';
 import './code-editor';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './form-edit';
-import './theme-edit';
 
 @customElement('versola-forms-list')
 export class VersolaFormsList extends LitElement {
@@ -50,9 +49,6 @@ export class VersolaFormsList extends LitElement {
   ];
 
   @state() private formsExpanded = true;
-  @state() private themesExpanded = false;
-
-  @state() private editingTheme: ThemeRecord | null = null;
 
   private readonly handleIframeMessage = (e: MessageEvent) => {
     if (
@@ -726,83 +722,8 @@ export class VersolaFormsList extends LitElement {
     await this.loadData();
   }
 
-  private toggleThemesExpand() {
-    this.themesExpanded = !this.themesExpanded;
-  }
-
   private toggleFormsExpand() {
     this.formsExpanded = !this.formsExpanded;
-  }
-
-  private handleCreateTheme() {
-    this.editingTheme = { id: '', css: '', tenantId: null };
-  }
-
-  private handleThemeEdit(t: ThemeRecord) {
-    this.editingTheme = { ...t };
-  }
-
-  private handleThemeEditCancel() {
-    this.editingTheme = null;
-  }
-
-  private handleThemeEditSubmit(e: CustomEvent<{ theme: ThemeRecord }>) {
-    const updated = e.detail.theme;
-    if (this.themes.some(t => t.id === updated.id)) {
-      this.themes = this.themes.map(t => t.id === updated.id ? updated : t);
-    } else {
-      this.themes = [...this.themes, updated];
-    }
-    this.editingTheme = null;
-  }
-
-  private handleThemeDelete(e: CustomEvent<{ id: string }>) {
-    this.themes = this.themes.filter(t => t.id !== e.detail.id);
-    this.editingTheme = null;
-  }
-
-  private renderThemesSection() {
-    const globalThemes = this.themes.filter(t => !t.tenantId);
-    const tenantThemes = this.themes.filter(t => !!t.tenantId);
-    const renderThemeRow = (t: ThemeRecord) => html`
-      <div class="locale-row">
-        <span class="form-id" style="font-size:0.9375rem">${t.id}</span>
-        <span style="margin-left:auto">
-          <button class="icon-action" title="Edit theme" aria-label=${`Edit theme ${t.id}`}
-            @click=${() => this.handleThemeEdit(t)}>✎</button>
-        </span>
-      </div>
-    `;
-    return html`
-      <div class="form-card">
-        <div class="form-header" @click=${() => this.toggleThemesExpand()}>
-          <div class="form-id">Themes</div>
-          <div style="display:flex;align-items:center;gap:var(--spacing-sm)" @click=${(e: Event) => e.stopPropagation()}>
-            ${this.themesExpanded && this.canManage ? html`
-              <button class="icon-action" title="New Theme" aria-label="New Theme"
-                @click=${() => this.handleCreateTheme()}>＋</button>
-            ` : nothing}
-            <span style="color:var(--text-secondary)">${this.themesExpanded ? '▲' : '▼'}</span>
-          </div>
-        </div>
-        ${this.themesExpanded ? html`
-          <div class="form-body">
-            ${this.themes.length === 0 ? html`<div class="hint">No themes configured yet.</div>` : html`
-              <div class="locale-list">
-                ${globalThemes.length > 0 ? html`
-                  <div class="locale-row" style="font-size:0.8125rem;color:var(--text-secondary);font-weight:600;padding-bottom:0">Global</div>
-                  ${globalThemes.map(renderThemeRow)}
-                ` : nothing}
-                ${tenantThemes.length > 0 ? html`
-                  <div class="locale-row" style="font-size:0.8125rem;color:var(--text-secondary);font-weight:600;padding-bottom:0;margin-top:var(--spacing-sm)">This tenant</div>
-                  ${tenantThemes.map(renderThemeRow)}
-                ` : nothing}
-              </div>
-            `}
-          </div>
-        ` : nothing}
-      </div>
-    `;
   }
 
   render() {
@@ -816,18 +737,6 @@ export class VersolaFormsList extends LitElement {
           @cancel=${() => this.handleFormEditCancel()}
           @submit=${(e: CustomEvent<{ form: FormRecord }>) => this.handleFormEditSubmit(e)}
         ></versola-form-edit>
-      `;
-    }
-
-    if (this.editingTheme !== null) {
-      return html`
-        <versola-theme-edit
-          .theme=${this.editingTheme}
-          .tenantId=${this.tenantId}
-          @cancel=${() => this.handleThemeEditCancel()}
-          @submit=${(e: CustomEvent<{ theme: ThemeRecord }>) => this.handleThemeEditSubmit(e)}
-          @delete=${(e: CustomEvent<{ id: string }>) => this.handleThemeDelete(e)}
-        ></versola-theme-edit>
       `;
     }
 
@@ -880,7 +789,6 @@ export class VersolaFormsList extends LitElement {
           ` : nothing}
         </div>
 
-        ${this.renderThemesSection()}
       `}
     `;
   }

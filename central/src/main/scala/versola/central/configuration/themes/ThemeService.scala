@@ -3,6 +3,7 @@ package versola.central.configuration.themes
 import versola.central.CentralConfig
 import versola.central.configuration.tenants.TenantId
 import versola.util.ReloadingCache
+import versola.util.theme.{ThemeCss, ThemePresets}
 import zio.{Schedule, Scope, Task, ZIO, ZLayer}
 
 import java.sql.SQLException
@@ -13,6 +14,11 @@ trait ThemeService:
   def createTheme(theme: ThemeRecord): Task[Unit]
   def updateTheme(theme: ThemeRecord): Task[Unit]
   def deleteTheme(id: String): Task[Unit]
+
+  /** The stylesheet a theme built from these tokens has, for the console's preview. Fails with an
+    * [[IllegalArgumentException]] when the tokens name a base that is not built in.
+    */
+  def render(request: RenderThemeRequest): Task[RenderThemeResponse]
   def sync(): Task[Unit]
 
 object ThemeService:
@@ -45,10 +51,29 @@ object ThemeService:
       }
 
     override def createTheme(theme: ThemeRecord): Task[Unit] =
-      repository.create(theme)
+      validated(theme) *> repository.create(theme)
 
     override def updateTheme(theme: ThemeRecord): Task[Unit] =
-      repository.update(theme)
+      validated(theme) *> repository.update(theme)
+
+    override def render(request: RenderThemeRequest): Task[RenderThemeResponse] =
+      for
+        resolved <- ZIO.fromEither(ThemePresets.resolve(request.tokens)).mapError(IllegalArgumentException(_))
+        defaultCss <- cache.get.map(_.find(_.id == DefaultThemeId).fold("")(_.css))
+      yield RenderThemeResponse(
+        css = ThemeCss.compose(defaultCss, resolved, request.css),
+        generated = ThemeCss.generate(resolved),
+      )
+
+    // The tokens are written into a stylesheet, so a base that is not built in is refused here, and the default
+    // theme, which every token theme is laid over, cannot itself be built from tokens.
+    private def validated(theme: ThemeRecord): Task[Unit] =
+      theme.tokens match
+        case None => ZIO.unit
+        case Some(_) if theme.id == DefaultThemeId =>
+          ZIO.fail(IllegalArgumentException("The default theme is a stylesheet and cannot be built from tokens"))
+        case Some(tokens) =>
+          ZIO.fromEither(ThemePresets.resolve(tokens)).mapError(IllegalArgumentException(_)).unit
 
     override def deleteTheme(id: String): Task[Unit] =
       if id == DefaultThemeId then

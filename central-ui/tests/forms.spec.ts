@@ -47,15 +47,11 @@ async function expandCredential(page: Page) {
   await formHeader(page, 'credential').click();
 }
 
-async function expandThemes(page: Page) {
-  await formHeader(page, 'Themes').click();
-}
-
-test('renders forms and themes sections', async ({ page }) => {
+test('renders the forms, and no Themes section: themes have a page of their own', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: fullState });
 
   await expect(page.locator('.form-id').filter({ hasText: 'credential' })).toBeVisible();
-  await expect(page.locator('.form-id').filter({ hasText: 'Themes' })).toBeVisible();
+  await expect(page.locator('.form-id').filter({ hasText: 'Themes' })).toHaveCount(0);
 });
 
 test('expands a form and shows versions with active badge', async ({ page }) => {
@@ -184,46 +180,6 @@ test('shows missing localized fields when locale activation is rejected', async 
   expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
 });
 
-test('creates a global theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'New Theme', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'New Theme', exact: true })).toBeVisible();
-  await page.getByPlaceholder('e.g. default').fill('brand');
-  await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/themes')).body).toMatchObject({
-    id: 'brand',
-    tenantId: null,
-  });
-});
-
-test('edits a theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'Edit theme dark', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Edit Theme', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ id: 'dark' });
-});
-
-test('deletes a non-default theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'Edit theme dark', exact: true }).click();
-  await page.getByRole('button', { name: 'Delete', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  const req = await findRequest(api.requests, 'DELETE', '/configuration/themes');
-  expect(req.searchParams['id']).toBe('dark');
-});
-
 test('renders a live preview iframe', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: fullState });
 
@@ -287,13 +243,10 @@ test('previews a form central lists nothing for from its own backend properties'
   await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
 });
 
-test('keeps previewing from backend properties when central has no list of states', async ({ page }) => {
+test('says so when central cannot list the states, instead of quietly previewing something else', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: null } });
-  await expandCredential(page);
-  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
 
-  await expect(page.getByRole('group', { name: 'Preview state' })).toHaveCount(0);
-  await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
+  await expect(page.getByText('Could not load forms')).toBeVisible();
 });
 
 test('the new-version editor previews a built-in form from the listed states and hides its property authoring', async ({ page }) => {

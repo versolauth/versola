@@ -1,6 +1,7 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemeTokens}
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -91,6 +92,64 @@ object ThemeServiceSpec extends UnitSpecBase:
         result <- env.service.deleteTheme(themeId).either
       yield assertTrue(result == Left(error))
     },
+    suite("a theme built from tokens")(
+      test("is stored with its tokens and its own CSS") {
+        val env = Env()
+        val tokens = ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))
+        val theme = ThemeRecord("studio-dark", "", None, Some(tokens))
+        for
+          _ <- env.repository.create.succeedsWith(())
+          _ <- env.service.createTheme(theme)
+        yield assertTrue(env.repository.create.calls == List(theme))
+      },
+      test("is refused when its base is not a built-in theme, and nothing is stored") {
+        val env = Env()
+        for
+          created <- env.service.createTheme(ThemeRecord("x", "", None, Some(ThemeTokens("nope")))).either
+          updated <- env.service.updateTheme(ThemeRecord("x", "", None, Some(ThemeTokens("nope")))).either
+        yield assertTrue(
+          created.left.exists(_.isInstanceOf[IllegalArgumentException]),
+          updated.left.exists(_.isInstanceOf[IllegalArgumentException]),
+          env.repository.create.calls.isEmpty,
+          env.repository.update.calls.isEmpty,
+        )
+      },
+      test("cannot be the default theme, which every token theme is laid over") {
+        val env = Env()
+        for result <- env.service.updateTheme(ThemeRecord(ThemeService.DefaultThemeId, "", None, Some(ThemeTokens("studio")))).either
+        yield assertTrue(result.left.exists(_.isInstanceOf[IllegalArgumentException]), env.repository.update.calls.isEmpty)
+      },
+      test("a theme without tokens is stored as before, whatever its CSS") {
+        val env = Env()
+        for
+          _ <- env.repository.create.succeedsWith(())
+          _ <- env.service.createTheme(ThemeRecord("plain", "", None))
+        yield assertTrue(env.repository.create.calls == List(ThemeRecord("plain", "", None)))
+      },
+    ),
+    suite("render")(
+      test("lays the default stylesheet, what the tokens set and the theme's own CSS in that order") {
+        val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "DEFAULT-CSS", None)))
+        for rendered <- env.service.render(RenderThemeRequest(ThemeTokens("studio"), "CUSTOM-CSS"))
+        yield assertTrue(
+          rendered.css.indexOf("DEFAULT-CSS") < rendered.css.indexOf("--brand:#ff6b4a"),
+          rendered.css.indexOf("--brand:#ff6b4a") < rendered.css.indexOf("CUSTOM-CSS"),
+          rendered.generated.contains("--brand:#ff6b4a"),
+          !rendered.generated.contains("DEFAULT-CSS"),
+        )
+      },
+      test("applies the overrides over the base") {
+        val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "D", None)))
+        val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption))
+        for rendered <- env.service.render(RenderThemeRequest(tokens))
+        yield assertTrue(rendered.generated.contains("--brand:#112233"), rendered.generated.contains("--rs:32px"))
+      },
+      test("is refused for a base that is not built in") {
+        val env = Env()
+        for result <- env.service.render(RenderThemeRequest(ThemeTokens("nope"))).either
+        yield assertTrue(result.left.exists(_.isInstanceOf[IllegalArgumentException]))
+      },
+    ),
     test("sync refreshes the cache from the repository") {
       val env = Env(Vector(globalTheme))
       for
