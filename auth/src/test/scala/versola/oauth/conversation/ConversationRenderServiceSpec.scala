@@ -351,7 +351,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("Email address")) &&
           assertTrue(body.contains("Adresse e-mail"))
       },
-      test("uses the identity provider logo as consent favicon but omits it from the consent config") {
+      test("uses the identity provider logo as consent favicon and brands the consent page with it") {
         val env = Env()
         val consentForm = formRecord.copy(id = "consent")
         for
@@ -365,7 +365,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(
           body.contains("""<link rel="icon" href="https://acme.test/logo.svg">"""),
-          !body.contains("\"logo\""),
+          body.contains(""""logo":"https://acme.test/logo.svg""""),
         )
       },
       test("puts the openid scope first in the consent payload") {
@@ -785,7 +785,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("error=login_required")) &&
           assertTrue(body.contains("state=test-state")) &&
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
-          assertTrue(!body.contains("\"logo\""))
+          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg""""))
       },
       test("renders the expired page in the locale the user chose, not the tenant default") {
         val env = Env()

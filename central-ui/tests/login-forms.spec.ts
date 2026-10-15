@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
 
 /**
@@ -81,6 +82,17 @@ test.describe('otp', () => {
     await expect(page.locator('input[name="code"]')).toBeDisabled();
   });
 
+  test('shows the digits as they are typed', async ({ page }) => {
+    await renderForm(page, 'otp', { step });
+
+    await page.keyboard.type('482');
+
+    await expect(page.locator('.otp-cell').nth(0)).toHaveText('4');
+    await expect(page.locator('.otp-cell').nth(1)).toHaveText('8');
+    await expect(page.locator('.otp-cell').nth(2)).toHaveText('2');
+    await expect(page.locator('.otp-cell').nth(3)).toHaveText('');
+  });
+
   test('shows a wrong-code error in words', async ({ page }) => {
     const { t } = await renderForm(page, 'otp', { step, error: 'otp_wrong' });
 
@@ -94,7 +106,7 @@ test.describe('password', () => {
   test('submits the password with the CSRF value', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -106,7 +118,7 @@ test.describe('password', () => {
   test('refuses a password the policy rejects, without asking the server', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -119,14 +131,45 @@ test.describe('password', () => {
     await expect(page.getByText(t.password_wrong)).toBeVisible();
   });
 
+  test('reveals and hides the password on request', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'password', { step });
+    const field = page.getByLabel(t.password_placeholder, { exact: true });
+
+    await field.fill(STRONG_PASSWORD);
+    await expect(field).toHaveAttribute('type', 'password');
+
+    await page.getByRole('button', { name: t.show_password }).click();
+    await expect(field).toHaveAttribute('type', 'text');
+    await expect(field).toHaveValue(STRONG_PASSWORD);
+
+    await page.getByRole('button', { name: t.hide_password }).click();
+    await expect(field).toHaveAttribute('type', 'password');
+
+    await page.getByRole('button', { name: t.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('password')).toBe(STRONG_PASSWORD);
+  });
+
+  test('ties a rejected password to its field for assistive technology', async ({ page }) => {
+    const { t } = await renderForm(page, 'password', { step });
+    const field = page.getByLabel(t.password_placeholder, { exact: true });
+
+    await field.fill('weak');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(field).toHaveAttribute('aria-invalid', 'true');
+    await expect(field).toHaveAccessibleDescription(t.password_not_allowed);
+    await expect(page.getByRole('alert')).toHaveText(t.password_not_allowed);
+  });
+
   test('switches language and sends the chosen one', async ({ page }) => {
     const { submitted, all } = await renderForm(page, 'password', { step });
 
     await page.locator('.locale-trigger').click();
-    await page.getByRole('button', { name: 'ru', exact: true }).click();
+    await page.getByRole('button', { name: 'Русский', exact: true }).click();
     await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
 
-    await page.getByPlaceholder(all.ru.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(all.ru.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: all.ru.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -140,8 +183,8 @@ test.describe('set-password', () => {
   test('submits matching passwords', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
-    await page.getByPlaceholder(t.confirm_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -154,8 +197,8 @@ test.describe('set-password', () => {
   test('flags a mismatch as it is typed and does not submit it', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
-    await page.getByPlaceholder(t.confirm_placeholder).fill('Different1Password');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill('Different1Password');
     await expect(page.getByText(t.password_mismatch)).toBeVisible();
 
     await page.getByRole('button', { name: t.continue }).click();
@@ -165,8 +208,8 @@ test.describe('set-password', () => {
   test('refuses a password the policy rejects', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
-    await page.getByPlaceholder(t.confirm_placeholder).fill('weak');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -178,7 +221,7 @@ test.describe('credential', () => {
   test('email: posts the address to the email challenge', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
 
-    await page.getByPlaceholder(t.email_placeholder).fill('ada@example.com');
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -192,8 +235,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['login'], passwordRegex: PASSWORD_REGEX },
     });
 
-    await page.getByPlaceholder(t.login_placeholder).fill('ada');
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.login_placeholder, { exact: true }).fill('ada');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -207,8 +250,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['login'], passwordRegex: PASSWORD_REGEX },
     });
 
-    await page.getByPlaceholder(t.login_placeholder).fill('ada');
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
+    await page.getByLabel(t.login_placeholder, { exact: true }).fill('ada');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -220,8 +263,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true },
     });
 
-    await page.getByPlaceholder(t.email_placeholder).fill('ada@example.com');
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -341,7 +384,7 @@ test.describe('credential', () => {
   test('phone: a tenant with no regions gets the plain E.164 field', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([]) });
 
-    await page.getByPlaceholder(t.phone_placeholder).fill('+4915112345678');
+    await page.getByLabel(t.phone_placeholder, { exact: true }).fill('+4915112345678');
     await page.getByRole('button', { name: t.continue }).click();
     await expectSubmissions(submitted, 1);
     expect(submitted[0].fields.get('phone')).toBe('+4915112345678');
@@ -350,7 +393,7 @@ test.describe('credential', () => {
   test('several first factors share one field named for all of them', async ({ page }) => {
     const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email', 'phone'] } });
 
-    await expect(page.getByPlaceholder(`${t.email_placeholder} / ${t.phone_placeholder}`)).toBeVisible();
+    await expect(page.getByLabel(`${t.email_placeholder} / ${t.phone_placeholder}`, { exact: true })).toBeVisible();
   });
 
   test('shows a failed sign-in in words', async ({ page }) => {
@@ -383,14 +426,43 @@ test.describe('credential', () => {
     await expect(dialog).toHaveCount(0);
   });
 
-  test('falls back to the built-in mark when the logo cannot load', async ({ page }) => {
-    await page.route('**/missing-logo.png', route => route.abort());
-    await renderForm(page, 'credential', {
-      step: { type: 'credential', primaryCredentials: ['email'] },
-      logo: '/missing-logo.png',
-    });
+  test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
+    const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo });
+    await expect(page.locator('.page-brand img')).toBeVisible();
+    await expect(page.locator('.page-wordmark')).toHaveCount(0);
+    expect(await page.locator('.page-brand').evaluate(el => el.nextElementSibling?.classList.contains('container'))).toBe(true);
 
-    await expect(page.locator('.brand-mark')).toHaveCount(0);
+    const none = await page.context().newPage();
+    await renderForm(none, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    await expect(none.locator('.page-wordmark')).toHaveCount(1);
+
+    const broken = await page.context().newPage();
+    await broken.route('**/missing-logo.png', route => route.abort());
+    await renderForm(broken, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: '/missing-logo.png' });
+    await expect(broken.locator('.page-brand img')).toHaveCount(0);
+    await expect(broken.locator('.page-wordmark')).toHaveCount(1);
+  });
+
+  test('the terminal screens carry an icon, so the card is not a bare title', async ({ page }) => {
+    const out = await renderForm(page, 'signed-out', { step: { type: 'signed-out', logoutUris: [], redirectUri: 'https://app.example' } });
+    await expect(page.locator('.signed-out-icon svg')).toBeVisible();
+    expect(out.t.title).toBeTruthy();
+    const confirm = await page.context().newPage();
+    await renderForm(confirm, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'x' } });
+    await expect(confirm.locator('.logout-icon svg')).toBeVisible();
+  });
+
+  test('the brand zone is shared by every step, not only the first', async ({ page }) => {
+    for (const [id, step] of [
+      ['otp', { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' }],
+      ['password', { type: 'password' }],
+      ['passkey-enroll', { type: 'passkey-enroll', publicKeyOptions: '{}' }],
+    ] as const) {
+      const fresh = await page.context().newPage();
+      await renderForm(fresh, id, { step });
+      await expect(fresh.locator('.page-brand')).toHaveCount(1);
+    }
   });
 });
 
@@ -483,13 +555,123 @@ test.describe('consent', () => {
   });
 });
 
+test.describe('consent, with the seeded scope catalog', () => {
+  // Shaped as ConversationRenderService builds it from BootstrapService.scopeCatalog.
+  const row = (scope: string, description: string, claims: string[], deselectable: boolean) => ({
+    scope, description, descriptionLocalizations: { en: description }, claims, claimLocalizations: claims.map(en => ({ en })), deselectable,
+  });
+  const scopes = [
+    row('openid', 'OpenID Connect authentication', ['Unique identifier of the user'], false),
+    row('address', 'Postal address', ['Postal address'], true),
+    row('email', 'Email address', ['Email address', 'Email address verification status'], true),
+    row('offline_access', 'Long-lived access', [], false),
+    row('phone', 'Phone number', ['Phone number', 'Phone number verification status'], true),
+    row('profile', 'Basic profile information', ['Full name', 'Family name', 'Given name', 'Profile picture URL', 'Locale', 'Time zone', 'Gender', 'Date of birth'], true),
+  ];
+  const step = { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes };
+
+  test('shows every requested scope instead of hiding some behind a scroll box', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 640 });
+    await renderForm(page, 'consent', { step });
+
+    const box = page.locator('.consent-scopes-container');
+    expect(await box.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(0);
+    await expect(page.locator('.consent-scope')).toHaveCount(6);
+    await page.getByLabel('Basic profile information').scrollIntoViewIfNeeded();
+    await expect(page.getByLabel('Basic profile information')).toBeInViewport();
+  });
+
+  test('draws a scope the user cannot drop as a plain ticked one, not dimmed', async ({ page }) => {
+    await renderForm(page, 'consent', { step });
+
+    const required = page.getByLabel('OpenID Connect authentication');
+    await expect(required).toBeDisabled();
+    await expect(required).toBeChecked();
+    await expect(required).toHaveCSS('opacity', '1');
+    await expect(page.getByLabel('Email address')).toHaveCSS('background-color', await required.evaluate(el => getComputedStyle(el).backgroundColor));
+  });
+
+  test('does not repeat a scope\'s own name as its claim', async ({ page }) => {
+    await renderForm(page, 'consent', { step });
+
+    await expect(page.locator('.consent-scope', { hasText: 'Postal address' }).locator('.consent-scope-claims')).toHaveCount(0);
+    await expect(page.locator('.consent-scope', { hasText: 'Phone number' }).locator('.consent-scope-claims'))
+      .toHaveText('Phone number verification status');
+  });
+
+  test('says which scopes are required when the user may drop the others', async ({ page }) => {
+    const { t } = await renderForm(page, 'consent', { step });
+
+    await expect(page.locator('.consent-scope-required')).toHaveCount(2);
+    await expect(page.locator('.consent-scope', { hasText: 'Long-lived access' }).locator('.consent-scope-required')).toHaveText(t.required);
+
+    const all = await page.context().newPage();
+    await renderForm(all, 'consent', { step: { ...step, allowPartial: false, scopes: scopes.map(s => ({ ...s, deselectable: false })) } });
+    await expect(all.locator('.consent-scope-required')).toHaveCount(0);
+  });
+
+  const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="%23c33"/></svg>';
+
+  test('shows the partner\'s icon inside the card, its initial when there is none, and never a text logo there', async ({ page }) => {
+    await renderForm(page, 'consent', { step: { ...step, logoUri: logo } });
+    await expect(page.locator('.container .consent-icon img')).toBeVisible();
+
+    const bare = await page.context().newPage();
+    await renderForm(bare, 'consent', { step });
+    await expect(bare.locator('.container .consent-icon-initial')).toHaveText('A');
+
+    const broken = await page.context().newPage();
+    await renderForm(broken, 'consent', { step: { ...step, logoUri: '/missing-logo.png' } });
+    await expect(broken.locator('.container .consent-icon-initial')).toHaveText('A');
+
+    // The brand above the card is the identity provider's, never the partner's.
+    for (const p of [page, bare, broken]) {
+      await expect(p.locator('.container .page-wordmark')).toHaveCount(0);
+      await expect(p.locator('.page-brand .consent-icon, .page-brand-initial')).toHaveCount(0);
+    }
+  });
+
+  test('puts the identity provider\'s logo, not the partner\'s, in the brand zone', async ({ page }) => {
+    const idp = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%2336c"/></svg>';
+    await renderForm(page, 'consent', { step: { ...step, logoUri: logo }, logo: idp });
+    await expect(page.locator('.page-brand img')).toHaveAttribute('src', idp);
+    await expect(page.locator('.page-wordmark')).toHaveCount(0);
+  });
+
+  test('names the signed-in user, with a picture when there is one', async ({ page }) => {
+    const { t } = await renderForm(page, 'consent', { step: { ...step, user: { name: 'Anna Petrova', picture: logo } } });
+    await expect(page.getByText(t.signed_in_as)).toBeVisible();
+    await expect(page.locator('.consent-user-name')).toHaveText('Anna Petrova');
+    await expect(page.locator('img.consent-avatar')).toBeVisible();
+
+    const plain = await page.context().newPage();
+    await renderForm(plain, 'consent', { step: { ...step, user: { identifier: 'a***a@example.com' } } });
+    await expect(plain.locator('.consent-user-name')).toHaveText('a***a@example.com');
+    await expect(plain.locator('.consent-avatar')).toHaveText('A');
+
+    const none = await page.context().newPage();
+    await renderForm(none, 'consent', { step });
+    await expect(none.locator('.consent-user')).toHaveCount(0);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`has no axe violations in the ${scheme} scheme`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await renderForm(page, 'consent', { step });
+
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+    });
+  }
+});
+
 test.describe('passkey-enroll', () => {
   const step = { type: 'passkey-enroll', publicKeyOptions: '{}' };
 
   test('refuses a name the server would reject', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'passkey-enroll', { step });
 
-    await page.getByPlaceholder(t.name_placeholder).fill(' leading space');
+    await page.getByLabel(t.name_placeholder, { exact: true }).fill(' leading space');
     await page.getByRole('button', { name: t.enroll_button }).click();
 
     await expect(page.getByText(t.name_invalid)).toBeVisible();
@@ -608,9 +790,10 @@ for (const [id, config] of accessibilityCases) {
   });
 }
 
-test('credential phone selector has no axe violations, closed or open', async ({ page }) => {
+for (const scheme of ['light', 'dark'] as const) {
+test(`credential phone selector has no axe violations in the ${scheme} scheme, closed or open`, async ({ page }) => {
+  await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
   // axe reads the colours as painted, so a transition still running would be scanned half way.
-  await page.emulateMedia({ reducedMotion: 'reduce' });
   const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
   const { t } = await renderForm(page, 'credential', {
     step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: ['AM:+374', 'GE:+995', 'UZ:+998', 'KG:+996', 'TJ:+992', 'AZ:+994'].map(e => region(...(e.split(':') as [string, string]))) },
@@ -621,4 +804,113 @@ test('credential phone selector has no axe violations, closed or open', async ({
   await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
   await expect(page.getByRole('searchbox')).toBeVisible();
   expect((await scan()).violations.map(v => v.id)).toEqual([]);
+});
+}
+
+test('credential phone field reflows at 320px with the selector open', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
+  const { t } = await renderForm(page, 'credential', {
+    step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: [region('UZ', '+998'), region('KG', '+996')] },
+  });
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
+  expect(await overflow()).toBeLessThanOrEqual(0);
+});
+
+for (const [id, config] of accessibilityCases) {
+  test(`${id} has no axe violations in the dark colour scheme`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await renderForm(page, id, config);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+
+  test(`${id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await renderForm(page, id, config);
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+}
+
+/**
+ * A theme is a full replacement of common.css, so a tenant that forked the previous one keeps it
+ * while the forms are updated underneath it. tests/fixtures/previous-common.css is that frozen
+ * copy; the forms must stay usable over it.
+ */
+test.describe('over a theme forked from the previous common.css', () => {
+  const previous = { commonCss: 'fixtures/previous-common.css' };
+
+  test('does not flag empty required fields as invalid', async ({ page }) => {
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true } }, previous);
+
+    for (const field of await page.locator('.input-field').all()) {
+      await expect(field).not.toHaveCSS('border-color', 'rgb(220, 38, 38)');
+    }
+  });
+
+  test('draws the ticked state of a consent scope', async ({ page }) => {
+    await renderForm(page, 'consent', {
+      step: { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes: [{ scope: 'email', description: 'Read your email address', claims: [], deselectable: true }] },
+    }, previous);
+
+    await expect(page.getByLabel('Read your email address')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  });
+
+  test('keeps the password toggle next to its field', async ({ page }) => {
+    const { t } = await renderForm(page, 'password', { step: { type: 'password' } }, previous);
+
+    const field = await page.getByLabel(t.password_placeholder, { exact: true }).boundingBox();
+    const toggle = await page.getByRole('button', { name: t.show_password }).boundingBox();
+    expect(toggle!.x).toBeGreaterThan(field!.x + field!.width / 2);
+    expect(toggle!.y).toBeGreaterThanOrEqual(field!.y);
+    expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(field!.y + field!.height);
+  });
+});
+
+/**
+ * A form version stored before the redesign keeps running over the current common.css (the version
+ * was never replaced, or it is previewed in the console). Its markup is reproduced here as stored.
+ */
+test.describe('older form versions over the current common.css', () => {
+  const render = async (page: import('@playwright/test').Page, body: string) => {
+    await page.setViewportSize({ width: 375, height: 760 });
+    await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root">${body}</div>`);
+  };
+
+  test('centres the label of a link button that sets display:block itself', async ({ page }) => {
+    await render(page, '<div class="container"><h1>Access Denied</h1><a href="#" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;">Return</a></div>');
+
+    const link = page.getByRole('link', { name: 'Return' });
+    await expect(link).toHaveCSS('display', 'flex');
+    const [box, text] = await link.evaluate(el => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return [el.getBoundingClientRect().toJSON(), range.getBoundingClientRect().toJSON()];
+    });
+    expect(Math.abs((text.y + text.height / 2) - (box.y + box.height / 2))).toBeLessThanOrEqual(2);
+  });
+
+  test('keeps the logo mark an older sign-in form drew inside the card at its own size', async ({ page }) => {
+    await render(page, '<div class="container"><div class="brand-mark"><svg viewBox="0 0 64 64"><path d="M32 6 54 12v18Q54 48 32 58 10 48 10 30V12z" stroke="currentColor" fill="none"/></svg></div><h1>Sign In</h1></div>');
+
+    const box = await page.locator('.brand-mark svg').boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(48);
+    expect(box!.height).toBeLessThanOrEqual(48);
+  });
+
+  test('fills the width of a phone, however little the card holds', async ({ page }) => {
+    await render(page, '<div class="container"><h1>Hi</h1></div>');
+
+    const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
+    expect(width).toBe(375);
+  });
 });

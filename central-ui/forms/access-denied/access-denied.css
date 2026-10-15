@@ -1,24 +1,23 @@
 .access-denied-icon {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
-  background: rgba(239, 68, 68, 0.12);
+  background: color-mix(in oklab, var(--danger) 16%, var(--card-bg));
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 20px;
-  color: var(--danger, #ef4444);
+  margin: 0 0 24px;
+  color: var(--danger);
 }
 
 .access-denied-icon svg {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
 }
 
 .access-denied-description {
-  font-size: 0.95rem;
+  font-size: 1rem;
   color: var(--text-muted);
-  margin: -8px 0 28px;
+  margin: -14px 0 28px;
   line-height: 1.6;
-  text-align: center;
-}
+  }
