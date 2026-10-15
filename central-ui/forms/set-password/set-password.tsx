@@ -51,7 +51,7 @@ function SetPasswordForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
-      <ClientBadge client={props.config.client} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
       <Show when={props.config.error}>
         <div class="error-text error-text-block" role="alert">{t()[props.config.error!] ?? props.config.error}</div>

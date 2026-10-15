@@ -340,7 +340,7 @@ export class VersolaFormEdit extends LitElement {
 
       <div class="card">
         <div class="field-label">Solid.js Source (JSX/TSX)</div>
-        <div class="hint">The source code for your Solid.js form components.</div>
+        <div class="hint">The source of your Solid.js form, for reference. A built-in form's source has its shared modules inlined and its type annotations removed; the compiled JavaScript is what runs.</div>
         <versola-code-editor language="typescript" rows="12" .value=${this.editJsSource}
           @code-input=${(e: CustomEvent<{ value: string }>) => { this.editJsSource = e.detail.value; }}
         ></versola-code-editor>

@@ -1,4 +1,5 @@
 import { createSignal, Show } from 'solid-js';
+import { pickClientName } from './client-name';
 import type { ClientInfo } from './config';
 
 // The brand zone above the card: the identity provider's logo (from the system settings) on a light
@@ -25,7 +26,7 @@ export function PageBrand(props: { logo?: string }) {
         }
       >
         <span class="page-brand-tile" aria-hidden="true">
-          <img src={props.logo} alt="" onError={() => setFailed(true)} />
+          <img src={props.logo} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
         </span>
       </Show>
     </div>
@@ -33,22 +34,25 @@ export function PageBrand(props: { logo?: string }) {
 }
 
 // The partner's app the user is signing in to, inside the card: its icon and name. Only for a partner's app (one with a
-// consent flow); the identity provider's own apps are not announced.
-export function ClientBadge(props: { client?: ClientInfo }) {
+// consent flow); the identity provider's own apps are not announced. The name follows the form's current language.
+export function ClientBadge(props: { client?: ClientInfo; locale: string; defaultLocale?: string }) {
   const [failed, setFailed] = createSignal(false);
-  const initial = () => Array.from(props.client?.name?.trim() ?? '')[0]?.toLocaleUpperCase();
+  const name = () => pickClientName(props.locale, props.client?.name, props.client?.names, props.defaultLocale);
+  const initial = () => Array.from(name()?.trim() ?? '')[0]?.toLocaleUpperCase();
+  const logo = () => (props.client?.logo && !failed() ? props.client.logo : undefined);
+  // A logo that failed to load with no name to fall back on leaves nothing to show: no empty pill.
   return (
-    <Show when={props.client?.partner && (props.client.name || props.client.logo)}>
+    <Show when={props.client?.partner && (name() || logo())}>
       <div class="client-badge">
         <Show
-          when={props.client?.logo && !failed()}
+          when={logo()}
           fallback={<Show when={initial()}>{(letter) => <span class="client-badge-icon client-badge-initial" aria-hidden="true">{letter()}</span>}</Show>}
         >
           <span class="client-badge-icon" aria-hidden="true">
-            <img src={props.client?.logo} alt="" onError={() => setFailed(true)} />
+            <img src={logo()} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
           </span>
         </Show>
-        <Show when={props.client?.name}>{(name) => <span class="client-badge-name">{name()}</span>}</Show>
+        <Show when={name()}>{(shown) => <span class="client-badge-name">{shown()}</span>}</Show>
       </div>
     </Show>
   );

@@ -120,7 +120,7 @@ function CredentialForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
-      <ClientBadge client={props.config.client} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>

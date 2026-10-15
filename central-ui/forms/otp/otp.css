@@ -22,7 +22,7 @@
   flex: 1;
   max-width: 64px;
   min-width: 0;
-  height: 62px;
+  height: var(--control-h);
   display: flex;
   align-items: center;
   justify-content: center;

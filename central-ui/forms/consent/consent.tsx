@@ -1,6 +1,7 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
 import { PageBrand } from '../shared/brand';
+import { pickClientName } from '../shared/client-name';
 import { LocaleSelector, createTranslations } from '../shared/locale';
 import type { BaseFormConfig } from '../shared/config';
 
@@ -16,6 +17,8 @@ type ConsentScope = {
 type ConsentStep = {
   type: 'consent';
   clientName?: string;
+  /** The client's name in every locale it is stored in; the card picks by the current language. */
+  clientNames?: Record<string, string>;
   logoUri?: string;
   /** The signed-in user, when the server knows how to name them: shown so they can see whose account is being shared. */
   user?: { name?: string; identifier?: string; picture?: string };
@@ -48,7 +51,7 @@ function ClientIcon(props: { logoUri?: string; name?: string }) {
       fallback={<Show when={initial()}>{(letter) => <div class="consent-icon consent-icon-initial" aria-hidden="true">{letter()}</div>}</Show>}
     >
       <div class="consent-icon" aria-hidden="true">
-        <img src={props.logoUri} alt="" onError={() => setFailed(true)} />
+        <img src={props.logoUri} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
       </div>
     </Show>
   );
@@ -89,8 +92,9 @@ function ConsentForm(props: { config: FormConfig }) {
   };
   // The translated sentence keeps its `{client}` placeholder; splitting on it lets the name be
   // rendered as an element while the surrounding words stay translatable. Odd indices are the name.
+  const clientName = () => pickClientName(currentLocale(), step.clientName, step.clientNames, props.config.defaultLocale);
   const descriptionParts = () => {
-    const name = step.clientName ?? t().unknown_client ?? 'An application';
+    const name = clientName() ?? t().unknown_client ?? 'An application';
     const parts = (t().description ?? '{client} wants to access your account.').split('{client}');
     return parts.flatMap((part, index) => index < parts.length - 1 ? [part, name] : [part]);
   };
@@ -108,7 +112,7 @@ function ConsentForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
-      <ClientIcon logoUri={step.logoUri} name={step.clientName} />
+      <ClientIcon logoUri={step.logoUri} name={clientName()} />
       <h1>{t().title}</h1>
       <p class="consent-description">
         {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}

@@ -2,4 +2,3 @@
 .logout-icon svg { width: 30px; height: 30px; }
 .logout-description { color: var(--text-muted); line-height: 1.55; margin: -14px 0 28px; }
 .container > .btn { margin-top: 12px; }
-select { position: absolute; top: 16px; right: 16px; padding: 7px 12px; border: 0; border-radius: 999px; background: var(--field); color: var(--text-muted); font: inherit; font-size: 0.8rem; }

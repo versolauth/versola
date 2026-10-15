@@ -60,7 +60,7 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
-      <ClientBadge client={props.config.client} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <div class="passkey-enroll-icon" aria-hidden="true">
         <span class="passkey-icon" />
       </div>

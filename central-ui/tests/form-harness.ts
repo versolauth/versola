@@ -62,9 +62,8 @@ export async function renderForm(page: Page, id: string, config: FormConfig, opt
     read(`../forms/${id}/${id}.css`),
     formBundle(id),
   ]);
-  // The server always sends the language names configured under Locales.
-  const localeNames = { en: 'English', ru: 'Русский' };
-  const full = { locale: 'en', locales: Object.keys(all), localeNames, t: all.en, allT: all, csrf: CSRF, ...config };
+  // No localeNames by default: a form without them shows bare codes, and a test that cares passes them.
+  const full = { locale: 'en', locales: Object.keys(all), t: all.en, allT: all, csrf: CSRF, ...config };
 
   const submitted: SubmittedRequest[] = [];
   await page.route('**/__form__', route => route.fulfill({ contentType: 'text/html', body: '<!doctype html><title>form</title>' }));

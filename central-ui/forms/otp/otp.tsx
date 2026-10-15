@@ -61,7 +61,7 @@ function OtpForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <LocaleSelector config={props.config} current={currentLocale()} onChange={changeLocale} />
-      <ClientBadge client={props.config.client} />
+      <ClientBadge client={props.config.client} locale={currentLocale()} defaultLocale={props.config.defaultLocale} />
       <h1>{t().title}</h1>
       <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
