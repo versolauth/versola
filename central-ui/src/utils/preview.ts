@@ -1,4 +1,4 @@
-import type { BackendProperty, FormPreviewScenario } from '../types';
+import type { BackendProperty, FormPreviewScenario, Locale } from '../types';
 
 // Builds the `step` object injected into a form preview generically from the
 // form's `properties`. Each property name becomes a step field, matching the
@@ -26,10 +26,17 @@ export interface PreviewSrcdocParams {
   localizations: Record<string, Record<string, string>>;
   locale: string;
   locales: string[];
+  /** The language names configured under Locales, shown in the form's language switcher instead of bare codes. */
+  localeNames?: Record<string, string>;
   themeCss: string;
   style: string;
   jsCompiled: string;
   previewId?: string;
+}
+
+/** The language switcher's names, the way the server sends them: each configured code with its name. */
+export function localeNamesOf(locales: Locale[]): Record<string, string> {
+  return Object.fromEntries(locales.filter(l => l.name).map(l => [l.code, l.name]));
 }
 
 /** A scenario's name in the given language, else English, else its id. */
@@ -47,6 +54,7 @@ export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
     t: params.localizations[params.locale] ?? {},
     locale: params.locale,
     locales: params.locales,
+    localeNames: params.localeNames,
     allT: params.localizations,
     previewId: params.previewId,
   });

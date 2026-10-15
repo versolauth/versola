@@ -36,7 +36,7 @@ object ThemePresets:
   /** The tokens with the base's values under the overrides; fails when the base is not a preset. */
   def resolve(tokens: ThemeTokens): Either[String, ResolvedTokens] =
     find(tokens.base)
-      .toRight(s"'${tokens.base}' is not a built-in theme (${all.map(_.id).mkString(", ")})")
+      .toRight(s"The base is not a built-in theme (${all.map(_.id).mkString(", ")})")
       .map: base =>
         ResolvedTokens(
           brand = tokens.overrides.brand.getOrElse(base.tokens.brand),

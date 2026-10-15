@@ -869,8 +869,15 @@ test.describe('the partner\'s app and the languages, as the server tells the for
       const badge = page.locator('.container .client-badge');
       await expect(badge.locator('.client-badge-name')).toHaveText('Storefront');
       await expect(badge.locator('img')).toBeVisible();
-      // Above the title, and nowhere in the brand zone over the card.
-      expect(await badge.evaluate(el => el.nextElementSibling?.tagName === 'H1' || el.nextElementSibling?.className.includes('icon'))).toBe(true);
+      // Inside the card, directly above its heading, and nowhere in the brand zone over the card.
+      const card = page.locator('.container');
+      expect(await badge.evaluate(el => el.parentElement?.classList.contains('container'))).toBe(true);
+      const badgeBox = (await badge.boundingBox())!;
+      const cardBox = (await card.boundingBox())!;
+      const headingBox = (await card.locator('h1').first().boundingBox())!;
+      expect(badgeBox.y).toBeGreaterThanOrEqual(cardBox.y);
+      expect(badgeBox.y + badgeBox.height).toBeLessThanOrEqual(headingBox.y);
+      expect(await badge.locator('img').getAttribute('referrerpolicy')).toBe('no-referrer');
       await expect(page.locator('.page-brand .client-badge')).toHaveCount(0);
     });
   }
@@ -892,6 +899,13 @@ test.describe('the partner\'s app and the languages, as the server tells the for
     await broken.route('**/missing.png', route => route.abort());
     await renderForm(broken, 'credential', { step: stepOf('credential'), client: { name: 'Storefront', logo: '/missing.png', partner: true } });
     await expect(broken.locator('.client-badge-initial')).toHaveText('S');
+  });
+
+  test('draws nothing when the logo does not load and the client has no name', async ({ page }) => {
+    await page.route('**/missing.png', route => route.abort());
+    await renderForm(page, 'credential', { step: stepOf('credential'), client: { logo: '/missing.png', partner: true } });
+    await expect(page.locator('.container h1').first()).toBeVisible();
+    await expect(page.locator('.client-badge')).toHaveCount(0);
   });
 
   test('a long unbroken client name wraps inside the card at 320px', async ({ page }) => {

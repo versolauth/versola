@@ -29,7 +29,7 @@ export type SubmittedRequest = {
 
 const bundles = new Map<string, Promise<string>>();
 
-function formBundle(id: string): Promise<string> {
+export function formBundle(id: string): Promise<string> {
   let bundle = bundles.get(id);
   if (!bundle) {
     bundle = build({

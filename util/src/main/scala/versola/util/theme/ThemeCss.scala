@@ -35,9 +35,48 @@ object ThemeCss:
     val own = luminance(colour)
     if contrast(own, 1.0) >= contrast(own, inkLuminance) then White else Ink
 
-  // The card the brand colour is drawn on: white, or the dark card's grey (a little lighter than it is, to stay on the safe side).
+  // The card the brand colour is drawn on: white, or the dark card, which common.css makes by mixing 7% of the brand into
+  // #1f1f20 (`--sheet`). The brand lightens it, so the check is made against the lightest card the brand can give.
   private val lightCard = 1.0
-  private val darkCard = luminance(0x26, 0x26, 0x28)
+
+  private def srgbToLinear(value: Int): Double =
+    val unit = value / 255.0
+    if unit <= 0.04045 then unit / 12.92 else math.pow((unit + 0.055) / 1.055, 2.4)
+
+  private def linearToSrgb(value: Double): Int =
+    val clamped = math.max(0.0, math.min(1.0, value))
+    val unit = if clamped <= 0.0031308 then clamped * 12.92 else 1.055 * math.pow(clamped, 1 / 2.4) - 0.055
+    math.round(unit * 255).toInt
+
+  private def toOklab(red: Int, green: Int, blue: Int): (Double, Double, Double) =
+    val (r, g, b) = (srgbToLinear(red), srgbToLinear(green), srgbToLinear(blue))
+    val l = math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+    val m = math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+    val s = math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+    (
+      0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+      1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+      0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s,
+    )
+
+  private def fromOklab(lightness: Double, a: Double, b: Double): (Int, Int, Int) =
+    val l = math.pow(lightness + 0.3963377774 * a + 0.2158037573 * b, 3)
+    val m = math.pow(lightness - 0.1055613458 * a - 0.0638541728 * b, 3)
+    val s = math.pow(lightness - 0.0894841775 * a - 1.2914855480 * b, 3)
+    (
+      linearToSrgb(4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s),
+      linearToSrgb(-1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s),
+      linearToSrgb(-0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s),
+    )
+
+  /** Luminance of the dark card for a brand: `color-mix(in oklab, brand 7%, #1f1f20)`, as common.css writes it. */
+  private[theme] def darkCardLuminance(colour: BrandColor): Double =
+    def part(from: Int) = Integer.parseInt(colour.value.substring(from, from + 2), 16)
+    val (bl, ba, bb) = toOklab(part(1), part(3), part(5))
+    val (gl, ga, gb) = toOklab(0x1f, 0x1f, 0x20)
+    val (r, g, b) = fromOklab(bl * 0.07 + gl * 0.93, ba * 0.07 + ga * 0.93, bb * 0.07 + gb * 0.93)
+    luminance(r, g, b)
+
   // WCAG asks 3:1 of a focus indicator and of a ticked box against what surrounds it.
   private val indicatorContrast = 3.0
 
@@ -50,7 +89,7 @@ object ThemeCss:
   def indicator(colour: BrandColor, dark: Boolean): String =
     def part(from: Int) = Integer.parseInt(colour.value.substring(from, from + 2), 16)
     val (red, green, blue) = (part(1), part(3), part(5))
-    val (towards, card) = if dark then (255, darkCard) else (0, lightCard)
+    val (towards, card) = if dark then (255, darkCardLuminance(colour)) else (0, lightCard)
     def mixed(step: Int) =
       def channel(value: Int) = (value + (towards - value) * step / 20.0).round.toInt
       (channel(red), channel(green), channel(blue))
@@ -65,27 +104,34 @@ object ThemeCss:
     val (light, dark) = (indicator(colour, dark = false), indicator(colour, dark = true))
     s"--focus:light-dark($light,$dark);--on-focus:light-dark(${onIndicator(light)},${onIndicator(dark)});"
 
-  private def surface(surface: Surface): String = surface match
-    case Surface.bold => ""
+  // The page colours; `--page-ink` is written with light-dark(), so it is returned apart (see `generate`).
+  private def surface(surface: Surface): (String, String) = surface match
+    case Surface.bold => ("", "")
     case Surface.soft =>
-      "--page-ink:light-dark(#1c1b19,#f3f2f0);" +
+      (
         "--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);" +
-        "--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);" +
-        "--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);"
+          "--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);" +
+          "--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);",
+        "--page-ink:light-dark(#1c1b19,#f3f2f0);",
+      )
     case Surface.neutral =>
-      "--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;"
+      ("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;", "--page-ink:light-dark(#1c1b19,#f3f2f0);")
 
   private def scheme(mode: Mode): String = mode match
     case Mode.auto => ""
     case Mode.light => "color-scheme:light;"
     case Mode.dark => "color-scheme:dark;"
 
-  /** The block a theme adds after the default stylesheet. */
+  /** The block a theme adds after the default stylesheet. A declaration with light-dark() is dropped whole by a browser
+    * that does not know it, so those sit in an `@supports` rule, as in common.css; there the default stylesheet's
+    * values stay in force.
+    */
   def generate(tokens: ResolvedTokens): String =
     val (field, button, card) = corners(tokens.shape)
+    val (page, pageInk) = surface(tokens.surface)
     s"/* theme tokens: brand ${tokens.brand.value}, ${tokens.shape}, ${tokens.surface} page, ${tokens.mode} scheme */\n" +
-      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};${focus(tokens.brand)}--rf:$field;--rb:$button;--rs:$card;" +
-      s"${surface(tokens.surface)}${scheme(tokens.mode)}}"
+      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};--rf:$field;--rb:$button;--rs:$card;$page${scheme(tokens.mode)}}\n" +
+      s"@supports (color: light-dark(#000, #fff)){:root{${focus(tokens.brand)}$pageInk}}"
 
   /** The stylesheet of a theme built from tokens: the current default, then what the tokens set, then the
     * theme's own CSS, which may be empty.

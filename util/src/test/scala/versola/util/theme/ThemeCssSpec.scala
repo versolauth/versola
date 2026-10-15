@@ -42,13 +42,18 @@ object ThemeCssSpec extends ZIOSpecDefault:
             if unit <= 0.03928 then unit / 12.92 else math.pow((unit + 0.055) / 1.055, 2.4)
           0.2126 * part(1) + 0.7152 * part(3) + 0.0722 * part(5)
         def ratio(a: Double, b: Double) = (math.max(a, b) + 0.05) / (math.min(a, b) + 0.05)
-        val darkCard = lum("#1f1f20")
+        // The dark card as common.css makes it: 7% of the brand mixed into #1f1f20 (sRGB here, an independent check of the oklab mix).
+        def darkCard(brand: BrandColor) =
+          def mixed(from: Int) =
+            val own = Integer.parseInt(brand.value.substring(from, from + 2), 16)
+            (own * 0.07 + 0x1f * 0.93).round.toInt
+          lum(f"#${mixed(1)}%02x${mixed(3)}%02x${mixed(5)}%02x")
         val weak =
           for
             preset <- ThemePresets.all
             isDark <- List(false, true)
             shown = ThemeCss.indicator(preset.tokens.brand, isDark)
-            if ratio(lum(shown), if isDark then darkCard else 1.0) < 3.0
+            if ratio(lum(shown), if isDark then darkCard(preset.tokens.brand) else 1.0) < 3.0
           yield s"${preset.id}/${if isDark then "dark" else "light"}"
         assertTrue(weak.isEmpty)
       },
@@ -59,7 +64,13 @@ object ThemeCssSpec extends ZIOSpecDefault:
         assertTrue(ThemeCss.indicator(colour("#f5c518"), dark = false) != "#f5c518", ThemeCss.indicator(colour("#14130f"), dark = true) != "#14130f")
       },
       test("is written as --focus for both schemes") {
-        assertTrue(ThemeCss.generate(resolved("#f5c518")).contains("--focus:light-dark("))
+        val brand = colour("#f5c518")
+        val (light, dark) = (ThemeCss.indicator(brand, dark = false), ThemeCss.indicator(brand, dark = true))
+        val (onLight, onDark) = (ThemeCss.onBrand(colour(light)), ThemeCss.onBrand(colour(dark)))
+        val css = ThemeCss.generate(resolved("#f5c518"))
+        assertTrue(
+          css.contains(s"@supports (color: light-dark(#000, #fff)){:root{--focus:light-dark($light,$dark);--on-focus:light-dark($onLight,$onDark);}}"),
+        )
       },
     ),
     suite("generate")(
@@ -90,9 +101,19 @@ object ThemeCssSpec extends ZIOSpecDefault:
           ThemeCss.generate(resolved("#155e75", mode = Mode.light)).contains("color-scheme:light;"),
         )
       },
-      test("is one rule and one comment, with nothing but the tokens in it") {
+      test("is one comment, one rule and one @supports rule, with nothing but the tokens in it") {
         val css = ThemeCss.generate(resolved("#ff6b4a", Shape.sharp, Surface.neutral, Mode.dark))
-        assertTrue(css.count(_ == '{') == 1, css.count(_ == '}') == 1, css.linesIterator.size == 2)
+        assertTrue(css.count(_ == '{') == 3, css.count(_ == '}') == 3, css.linesIterator.size == 3)
+      },
+      test("keeps every light-dark() inside the @supports rule, so a browser without it keeps the default values") {
+        val all =
+          for surface <- Surface.values.toList; mode <- Mode.values.toList
+          yield ThemeCss.generate(resolved("#f5c518", surface = surface, mode = mode))
+        assertTrue(
+          all.forall: css =>
+            val supported = css.indexOf("@supports (color: light-dark(#000, #fff)){")
+            supported > 0 && css.indexOf("light-dark(") > supported,
+        )
       },
     ),
     suite("compose")(
@@ -123,8 +144,9 @@ object ThemeCssSpec extends ZIOSpecDefault:
           ThemePresets.resolve(ThemeTokens("studio")).map(_.brand) == Right(colour("#ff6b4a")),
         )
       },
-      test("refuses a base that is not built in") {
-        assertTrue(ThemePresets.resolve(ThemeTokens("nope")).isLeft)
+      test("refuses a base that is not built in, without echoing it") {
+        val hostile = ThemePresets.resolve(ThemeTokens("<script>alert(1)</script>"))
+        assertTrue(ThemePresets.resolve(ThemeTokens("nope")).isLeft, hostile.isLeft, hostile.left.exists(!_.contains("script")))
       },
     ),
     suite("JSON")(
