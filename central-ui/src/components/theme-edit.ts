@@ -12,7 +12,7 @@ import type {
   ThemeRecord,
 } from '../types';
 import { createTheme, updateTheme, deleteTheme, renderTheme } from '../utils/central-api';
-import { buildPreviewSrcdoc } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './code-editor';
 import './theme-token-controls';
@@ -54,12 +54,16 @@ export class VersolaThemeEdit extends LitElement {
   @state() private saveSuccess = '';
 
   private renderTimer: ReturnType<typeof setTimeout> | undefined;
+  // Bumped by every edit, so an answer to an earlier request is dropped, however it arrives.
   private renderSeq = 0;
+  // Whether the person picked Visual or Stylesheet; until then the default follows what central offers.
+  private kindChosen = false;
 
   willUpdate(changed: Map<string, unknown>) {
     if (changed.has('theme') && this.theme) {
       this.editId = this.theme.id;
       this.editCss = this.theme.css;
+      this.kindChosen = false;
       this.scope = this.theme.tenantId ? 'tenant' : 'global';
       const isNew = this.theme.id === '';
       this.kind = this.theme.tokens || (isNew && this.presets.length > 0) ? 'tokens' : 'css';
@@ -67,6 +71,14 @@ export class VersolaThemeEdit extends LitElement {
       this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
       this.brandInvalid = false;
       this.advancedOpen = this.kind === 'tokens' && this.editCss.trim() !== '';
+      this.scheduleRender();
+    } else if (changed.has('presets') && this.theme) {
+      // The built-in themes arrived after the theme was opened (a new theme opened while the page was still loading):
+      // pick the default base, and start a new theme as a visual one unless the person already chose.
+      if (this.base === '' || !this.basePreset) {
+        this.base = this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
+      }
+      if (this.theme.id === '' && !this.kindChosen && this.presets.length > 0) this.kind = 'tokens';
       this.scheduleRender();
     }
     if (changed.has('forms') || changed.has('previews')) {
@@ -119,6 +131,7 @@ export class VersolaThemeEdit extends LitElement {
       .preset:hover { border-color: var(--text-secondary); }
       .preset.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
       .preset b { display: block; font-size: 0.8125rem; margin-top: 0.375rem; }
+      /* The tiles repeat the page backgrounds of ThemeCss (util) and common.css: bold = brand 24% into #0c1110, soft = brand 14% into #f7f4ee, neutral = #ecebe7. Keep them in step when those change. */
       .th { display: grid; place-items: center; height: 4.5rem; border-radius: 6px; overflow: hidden; background: color-mix(in oklab, var(--b) 24%, #0c1110); }
       .th[data-surface='soft'] { background: color-mix(in oklab, var(--b) 14%, #f7f4ee); }
       .th[data-surface='neutral'] { background: #ecebe7; }
@@ -179,11 +192,24 @@ export class VersolaThemeEdit extends LitElement {
 
   private pickBase(id: string) {
     this.base = id;
+    // As in setOverride: an override equal to the new base's value is no override, so the theme follows that base.
+    const values = this.basePreset?.tokens;
+    if (values) {
+      const next: ThemeOverrides = { ...this.overrides };
+      for (const key of Object.keys(next) as Array<keyof ThemeOverrides>) {
+        if (next[key] === values[key]) delete next[key];
+      }
+      this.overrides = next;
+    }
     this.scheduleRender();
   }
 
   private scheduleRender() {
     clearTimeout(this.renderTimer);
+    // Any request still in flight is for an older state of the editor; its answer must not be applied.
+    this.renderSeq++;
+    // A fixed scheme has no dark preview to switch on.
+    if (this.kind === 'tokens' && (this.resolved?.mode ?? 'auto') !== 'auto') this.previewDark = false;
     if (this.kind !== 'tokens' || !this.base) {
       this.renderedCss = this.editCss;
       this.renderError = '';
@@ -195,7 +221,7 @@ export class VersolaThemeEdit extends LitElement {
   }
 
   private async renderNow() {
-    const seq = ++this.renderSeq;
+    const seq = this.renderSeq;
     try {
       const rendered = await renderTheme({ base: this.base, overrides: this.overrides }, this.editCss);
       if (seq !== this.renderSeq) return;
@@ -204,6 +230,7 @@ export class VersolaThemeEdit extends LitElement {
       this.rendering = false;
     } catch (error) {
       if (seq !== this.renderSeq) return;
+      // The preview keeps the last stylesheet that rendered; it is shown as out of date next to the reason.
       this.renderError = error instanceof Error ? error.message : 'Could not render the theme';
       this.rendering = false;
     }
@@ -260,6 +287,7 @@ export class VersolaThemeEdit extends LitElement {
 
   private setKind(kind: 'tokens' | 'css') {
     this.kind = kind;
+    this.kindChosen = true;
     this.scheduleRender();
   }
 
@@ -285,6 +313,7 @@ export class VersolaThemeEdit extends LitElement {
       localizations: form.localizations,
       locale: this.locales[0]?.code ?? 'en',
       locales: this.locales.map(l => l.code),
+      localeNames: localeNamesOf(this.locales),
       themeCss: `${this.renderedCss}\n${scheme}`,
       style: form.style,
       jsCompiled: form.jsCompiled ?? '',
@@ -369,8 +398,8 @@ export class VersolaThemeEdit extends LitElement {
             </div>
           </div>
         </div>
-        ${this.renderError ? html`<div class="render-error" role="alert">${this.renderError}</div>` : nothing}
-        <div class="preview-stage" aria-busy=${this.rendering ? 'true' : 'false'} style=${this.rendering ? 'opacity:0.55;transition:opacity 0.15s' : 'transition:opacity 0.15s'}>
+        ${this.renderError ? html`<div class="render-error" role="alert">${this.renderError}. The preview shows the last version that rendered.</div>` : nothing}
+        <div class="preview-stage" aria-busy=${this.rendering ? 'true' : 'false'} style=${this.rendering || this.renderError ? 'opacity:0.55;transition:opacity 0.15s' : 'transition:opacity 0.15s'}>
           <iframe class="preview-iframe" title="Preview" style=${`width:${this.previewWidth}px`}
             .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>
         </div>

@@ -15,7 +15,7 @@ import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
 import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
-import zio.http.{Body, Header, Headers, MediaType, Path, Response, Scheme, Status, URL}
+import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.json.{jsonDiscriminator, jsonHint}
@@ -126,6 +126,8 @@ object ConversationRenderService:
     @jsonHint("consent")
     case class Consent(
         clientName: Option[String],
+        /** The client's name in every language, see [[ClientBrand]]. */
+        clientNames: Map[String, String] = Map.empty,
         logoUri: Option[String],
         policyUri: Option[String],
         tosUri: Option[String],
@@ -192,9 +194,16 @@ object ConversationRenderService:
 
   /** What a form shows of the client: its name and logo, and whether it is a partner's (third-party) app, which has
     * a consent flow; the identity provider's own apps are not announced inside the card.
+    *
+    * Contract for the name: `names` is the client's whole `clientName` map (every language, keys as stored, names
+    * cleaned by [[cleanName]]) and `name` is the one the server picked for the first render. A form that lets the user
+    * switch language picks again from `names` with the same rule as the server's `pickLocalized`: the locale matched
+    * case-insensitively, else the same language without the region (`pt-BR` -> `pt`), else the tenant's default locale,
+    * else any entry. The same holds for the consent step's `clientName` / `clientNames`.
     */
   case class ClientBrand(
       name: Option[String],
+      names: Map[String, String] = Map.empty,
       logo: Option[String],
       partner: Boolean,
   ) derives JsonCodec
@@ -242,7 +251,9 @@ object ConversationRenderService:
             record.state,
             record.csrfToken,
             availableClaims = availableClaimNames(record),
-            consentUser = consentUser(record),
+            consentUser = record.step match
+              case _: ConversationStep.Consent => consentUser(record)
+              case _ => None,
             errorOverride = errorKey,
             responseMode = record.responseMode,
           )
@@ -334,7 +345,6 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
-              client = clientBrand(client, uiLocales, locales.default),
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
             ),
             version = form.version,
@@ -370,6 +380,7 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
             ),
             version = form.version,
           )
@@ -472,6 +483,7 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
             ),
             version = form.version,
           )
@@ -512,6 +524,7 @@ object ConversationRenderService:
               value.localizations,
               None,
               csrfToken,
+              localeNames = localeNames(locales, (value.localizations.keySet & activeCodes).toList.sorted),
             ),
             value.version,
           )
@@ -644,19 +657,25 @@ object ConversationRenderService:
     private def defaultCss: UIO[String] =
       configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
 
-    /** Resolves one localized configuration string the same way form translations are resolved:
-      * the first requested locale that has a value, then the tenant default. Falls back to `None`
-      * so the form can render the raw token for a scope that has no description yet.
+    /** Resolves one localized configuration string: the first requested locale that has a value (matched
+      * case-insensitively, then without its region: `pt-BR` -> `pt`), then the tenant default, then any entry. The
+      * same rule the forms apply to a client's names (see [[ClientBrand]]). `None` only when no entry has text, so
+      * the form can render the raw token for a scope that has no description yet.
       */
     private def pickLocalized(
         values: Map[String, String],
         uiLocales: Option[List[String]],
         default: String,
     ): Option[String] =
+      def lookup(code: String): Option[String] =
+        values.collectFirst { case (key, value) if key.equalsIgnoreCase(code) && value.nonEmpty => value }
+      def withoutRegion(code: String): Option[String] =
+        Some(code.takeWhile(c => c != '-' && c != '_')).filter(_ != code)
       uiLocales.getOrElse(Nil).iterator
-        .flatMap(values.get)
-        .find(_.nonEmpty)
-        .orElse(values.get(default).filter(_.nonEmpty))
+        .flatMap(requested => lookup(requested).orElse(withoutRegion(requested).flatMap(lookup)))
+        .nextOption()
+        .orElse(lookup(default))
+        .orElse(values.toList.sortBy(_._1).collectFirst { case (_, value) if value.nonEmpty => value })
 
     private def stepView(
         step: ConversationStep,
@@ -740,7 +759,8 @@ object ConversationRenderService:
                 deselectable = s.allowPartial && !mandatory.contains(token),
               )
           yield StepView.Consent(
-            clientName = client.flatMap(c => pickLocalized(c.clientName, uiLocales, locales.default)),
+            clientName = client.flatMap(c => pickLocalized(cleanNames(c.clientName), uiLocales, locales.default)),
+            clientNames = client.fold(Map.empty[String, String])(c => cleanNames(c.clientName)),
             logoUri = client.flatMap(_.logoUri),
             policyUri = client.flatMap(_.policyUri),
             tosUri = client.flatMap(_.tosUri),
@@ -761,11 +781,28 @@ object ConversationRenderService:
         default: String,
     ): Option[ClientBrand] =
       client.map: c =>
+        val names = cleanNames(c.clientName)
         ClientBrand(
-          name = pickLocalized(c.clientName, uiLocales, default),
+          name = pickLocalized(names, uiLocales, default),
+          names = names,
           logo = c.logoUri,
           partner = c.consentFlow.isDefined,
         )
+
+    private val MaxClientNameCodePoints = 100
+
+    /** A client name is configuration, but it is drawn on a page the user trusts: control and format characters
+      * (newlines, zero-width and bidi override characters, which could reorder the text around the name) are removed,
+      * and it is cut by code points, so an emoji is never split into half a surrogate pair.
+      */
+    private def cleanName(name: String): String =
+      val kept = name.codePoints().toArray.filter: cp =>
+        val kind = Character.getType(cp)
+        kind != Character.CONTROL && kind != Character.FORMAT && kind != Character.UNASSIGNED
+      new String(kept, 0, math.min(kept.length, MaxClientNameCodePoints)).trim
+
+    private def cleanNames(names: Map[String, String]): Map[String, String] =
+      names.flatMap((code, name) => Some(cleanName(name)).filter(_.nonEmpty).map(code -> _))
 
     /** The language names an administrator gave the locales, for the languages this form is offered in. */
     private def localeNames(locales: Locales, offered: List[String]): Map[String, String] =
@@ -777,15 +814,24 @@ object ConversationRenderService:
       */
     private def consentUser(record: ConversationRecord): Option[StepView.ConsentUser] =
       def text(claim: String, limit: Int): Option[String] =
-        record.userClaims.flatMap(_.get(claim)).collect { case Json.Str(value) if value.trim.nonEmpty => value.trim.take(limit) }
+        record.userClaims.flatMap(_.get(claim)).collect { case Json.Str(value) if value.trim.nonEmpty => cutCodePoints(value.trim, limit) }
       val name = text("name", 200).orElse:
         Some(List(text("given_name", 100), text("family_name", 100)).flatten.mkString(" ")).filter(_.nonEmpty)
-      val picture = text("picture", 2048).filter(isHttpsUrl)
+      // Not trimmed like the text claims: a URL with whitespace around it is refused, not repaired.
+      val picture = record.userClaims.flatMap(_.get("picture")).collect { case Json.Str(value) if value.length <= 2048 => value }.filter(isHttpsUrl)
       val identifier = record.userEmail.map(Email.mask).orElse(record.userPhone.map(Phone.mask))
       Option.when(name.isDefined || identifier.isDefined)(StepView.ConsentUser(name, identifier, picture))
 
+    private def cutCodePoints(value: String, limit: Int): String =
+      if value.codePointCount(0, value.length) <= limit then value else value.substring(0, value.offsetByCodePoints(0, limit))
+
+    /** Only an https URL with a host and no userinfo (`https://user:pw@host/` is how a link is made to look like
+      * another host); the scheme is matched case-insensitively, as URLs do, and surrounding whitespace is rejected
+      * rather than trimmed. A backslash makes the string no URI at all.
+      */
     private def isHttpsUrl(value: String): Boolean =
-      URL.decode(value).toOption.exists(url => url.scheme.contains(Scheme.HTTPS) && url.host.exists(_.nonEmpty))
+      value == value.trim && scala.util.Try(new java.net.URI(value)).toOption.exists: uri =>
+        Option(uri.getScheme).exists(_.equalsIgnoreCase("https")) && Option(uri.getHost).exists(_.nonEmpty) && uri.getRawUserInfo == null
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
       val customClaims = record.userClaims.toList

@@ -86,6 +86,8 @@ type ConsentScope = {
 type ConsentStep = {
   type: 'consent';
   clientName?: string;
+  /** The client's name in every language; the rule for picking one is documented on the server's ClientBrand. */
+  clientNames?: Record<string, string>;
   logoUri?: string;
   /** The signed-in user, when the server knows how to name them: shown so they can see whose account is being shared. */
   user?: { name?: string; identifier?: string; picture?: string };
@@ -124,7 +126,7 @@ function ClientIcon(props: { logoUri?: string; name?: string }) {
       fallback={<Show when={initial()}>{(letter) => <div class="consent-icon consent-icon-initial" aria-hidden="true">{letter()}</div>}</Show>}
     >
       <div class="consent-icon" aria-hidden="true">
-        <img src={props.logoUri} alt="" onError={() => setFailed(true)} />
+        <img src={props.logoUri} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
       </div>
     </Show>
   );

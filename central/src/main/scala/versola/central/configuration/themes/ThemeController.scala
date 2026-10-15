@@ -97,8 +97,8 @@ object ThemeController extends Controller:
           case e: IllegalArgumentException => badRequest(e)
     }
 
-  // What a refused theme answers: the reason, as a 400. The message is ours (a known base, a fixed sentence), never
-  // an echo of the request's own text, so it is safe to return.
+  // What a refused theme answers: the reason, as a 400. The messages come from ThemeService and ThemePresets and are
+  // fixed sentences (the list of built-in themes at most): the request's own text, such as a base id, is never put into them.
   private val badRequest: PartialFunction[Throwable, ZIO[Any, Nothing, Response]] =
     case e: IllegalArgumentException =>
       ZIO.succeed(Response.json(zio.json.ast.Json.Obj("message" -> zio.json.ast.Json.Str(e.getMessage)).toJson).status(Status.BadRequest))

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { findRequest, loadAdminApp } from './fixtures';
+import { formBundle, translations } from './form-harness';
 import type { MockConfigState } from './mocks';
 
 const formsPath = '/?view=forms&tenant=tenant-alpha';
@@ -232,6 +233,29 @@ test('previews a built-in form from the states central lists, not from backend p
   const srcdoc = await previewSrcdoc(page);
   expect(srcdoc).toContain('"primaryCredentials":["login"]');
   expect(srcdoc).toContain('"error":"login_failed"');
+});
+
+test('the preview names languages as configured under Locales, not by their codes', async ({ page }) => {
+  const names = [
+    { code: 'en', name: 'English (US)', isDefault: true, active: true },
+    { code: 'ru', name: 'Русский язык', isDefault: false, active: true },
+  ];
+  const password = {
+    ...credentialV1,
+    id: 'password',
+    jsCompiled: await formBundle('password'),
+    localizations: await translations('password'),
+    properties: [],
+  };
+  await loadAdminApp(page, { path: formsPath, state: { forms: [password], formLocales: names, locales: names, themes } });
+  await formHeader(page, 'password').click();
+  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+
+  const trigger = page.frameLocator('iframe.preview-iframe').locator('.locale-trigger');
+  await expect(trigger).toHaveText('English (US)');
+  await trigger.click();
+  await expect(page.frameLocator('iframe.preview-iframe').getByRole('button', { name: 'Русский язык', exact: true })).toBeVisible();
 });
 
 test('previews a form central lists nothing for from its own backend properties', async ({ page }) => {
