@@ -31,18 +31,23 @@ case class JwksRecord(
   def canSign: Boolean = privateKey.isDefined && algorithm.isDefined
 
 object JwksRecord:
-  /** The order a key is chosen in when nobody has chosen one: `PS256` first.
+  /** The order a key is chosen in when nobody has chosen one: `ES256` first, `PS256` as the fallback.
     *
-    * FAPI 2.0 permits `PS256` and `ES256` equally, so the tie is broken on where the cost
-    * falls in this system. Verification runs on the edge's proxy path for every request and
-    * is not cached (`edge.auth`), while signing runs once per token; `PS256` verifies ~18x
-    * faster than `ES256` and signs ~5x slower, so past about 1.4 verifications per issued
-    * token it is the cheaper of the two -- and an access token is verified on every API call
-    * it is presented for. `RS256` is absent: FAPI disallows its PKCS#1 v1.5 padding, so it is
-    * never a default -- a `standard` tenant that needs it selects an RS256 key explicitly.
+    * FAPI 2.0 permits both equally, so the tie is broken on where the cost falls. Without a native
+    * provider it falls on the edge: verification runs on its proxy path for every request and is not
+    * cached (`edge.auth`), and `ES256` verifies ~8x slower than `PS256` on the JDK, so choosing it only
+    * moves the cost from auth (signing, 8x cheaper) to edge. With the native crypto provider (ACCP,
+    * which the auth and edge images require at start, see `CryptoProvider`) that disappears: measured
+    * 1 auth + 1 edge, `ES256` takes ~14% fewer cores per request than `PS256` (auth 0.8 against 1.1 per
+    * 1k steps/s, edge unchanged) and the ceiling is the same. `PS256` stays the fallback for a key set
+    * that has no usable `ES256` key. `RS256` is absent: FAPI disallows its PKCS#1 v1.5 padding, so it
+    * is never a default -- a `standard` tenant that needs it selects an RS256 key explicitly.
+    *
+    * Only tenants created, and deployments seeded, from now on are affected: a tenant that already has a
+    * `signingKeyId` keeps it, and one without keeps signing with auth's configured key.
     */
   val algorithmPreference: List[JWT.Algorithm] =
-    List(JWT.Algorithm.PS256, JWT.Algorithm.ES256)
+    List(JWT.Algorithm.ES256, JWT.Algorithm.PS256)
 
   /** The key a tenant gets when none was selected for it: the most preferred algorithm
     * central can actually sign with, newest kid first. `None` when every stored key is
