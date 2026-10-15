@@ -4,6 +4,7 @@ import versola.central.configuration.*
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.json.{JsonCodec, jsonNoExtraFields}
 import zio.schema.*
@@ -60,6 +61,7 @@ case class CreateWebClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -97,6 +99,7 @@ case class CreateWebClientRequest(
       applicationType = Some(ApplicationType.web),
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
+      themeOverrides,
     )
 
 /** An app installed on a device, which holds a DPoP key of its own and no credential. Either
@@ -133,6 +136,7 @@ case class CreateNativeClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -173,6 +177,7 @@ case class CreateNativeClientRequest(
       applicationType = Some(ApplicationType.native),
       issueEdgeClientCertificate,
       enrollEdgeClientCertificate,
+      themeOverrides,
     )
 
 /** Code calling an API on its own behalf, with no user present: no redirect URIs, sign-in flow,
@@ -263,6 +268,7 @@ case class UpdateWebClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -295,6 +301,7 @@ case class UpdateWebClientRequest(
       edgeSigningKey,
       edgeClientCertificate,
       applicationType = None,
+      themeOverrides = themeOverrides,
     )
 
 object UpdateWebClientRequest:
@@ -349,6 +356,7 @@ case class UpdateNativeClientRequest(
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -381,6 +389,7 @@ case class UpdateNativeClientRequest(
       edgeSigningKey = None,
       edgeClientCertificate,
       applicationType = None,
+      themeOverrides = themeOverrides,
     )
 
 object UpdateNativeClientRequest:

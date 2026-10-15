@@ -3,6 +3,7 @@ package versola.central.configuration.clients
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
+import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, RedirectUri, Secret}
 import zio.http.URL
 import zio.prelude.Equal
@@ -16,6 +17,7 @@ given Schema[URL] = Schema.primitive[String].transformOrFail(
   url => Right(url.encode),
 )
 given Equal[URL] = (a, b) => a == b
+given Equal[ThemeOverrides] = (a, b) => a == b
 given Equal[Instant] = (a, b) => a == b
 
 case class OAuthClientRecord(
@@ -115,6 +117,9 @@ case class OAuthClientRecord(
     /** OIDC Registration §2 `application_type`. Last and defaulted so that a record built
       * without naming it is the `web` client every row before the column was. */
     applicationType: ApplicationType = ApplicationType.web,
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages (a partner app that
+      * brings its own brand colour). `None`, never an empty value, when it changes nothing. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, CanEqual, Equal:
 
   /** A native app whose client authentication is done by the edge fronting it (#420/#421):

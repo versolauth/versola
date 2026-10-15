@@ -13,7 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
-import versola.util.theme.{ThemeCss, ThemePresets}
+import versola.util.theme.{ResolvedTokens, ThemeCss, ThemeOverrides, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Scheme, Status, URL}
 import zio.json.*
@@ -228,7 +228,7 @@ object ConversationRenderService:
       for
         client <- configuration.find(record.clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
+        css <- themeCss(themeId, client.flatMap(_.themeOverrides))
         logo <- configuration.getIdentityProviderLogo
         maybeInfo <-
           formFor(
@@ -311,7 +311,7 @@ object ConversationRenderService:
       for
         client <- configuration.find(clientId)
         themeId = client.map(_.theme).getOrElse(ThemeDefault)
-        css <- themeCss(themeId)
+        css <- themeCss(themeId, client.flatMap(_.themeOverrides))
         logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
@@ -347,7 +347,7 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- configuration.find(clientId)
-        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
         logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm("auth-settings")
         locales <- configuration.getLocales
@@ -487,7 +487,7 @@ object ConversationRenderService:
     ): Task[Response] =
       for
         client <- session.record.clients.headOption.map(_.clientId).fold(ZIO.succeed(None))(configuration.find)
-        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault))
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
         logo <- configuration.getIdentityProviderLogo
         form <- configuration.getForm("confirm-logout")
         locales <- configuration.getLocales
@@ -613,15 +613,28 @@ object ConversationRenderService:
     // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
     // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
     // rather than a broken page (plus the theme's own CSS).
-    private def themeCss(themeId: String): UIO[String] =
+    //
+    // A client may carry overrides of its own (a partner app with its brand colour): they are one more rule after all
+    // of the above, so they win over the theme. A stylesheet theme has no tokens to read the base from, so the default
+    // preset stands in for it, and the overrides apply on top of the stylesheet; a stylesheet written against the legacy
+    // names (--accent, --bg) that sets them to literals is not moved by --brand, as it would not be by any token.
+    private def themeCss(themeId: String, overrides: Option[ThemeOverrides] = None): UIO[String] =
+      themeBase(themeId).map: (css, resolved) =>
+        val partial = (overrides.filterNot(_.isEmpty), resolved) match
+          case (Some(own), Some(base)) => ThemeCss.generatePartial(base, own)
+          case _ => ""
+        Seq(css, partial).filter(_.nonEmpty).mkString("\n")
+
+    private def themeBase(themeId: String): UIO[(String, Option[ResolvedTokens])] =
+      val versola = ThemePresets.find(ThemePresets.DefaultId).map(_.tokens)
       configuration.getTheme(themeId).flatMap {
         case Some(theme) if theme.tokens.isDefined =>
           defaultCss.map: default =>
             theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
-              case Some(resolved) => ThemeCss.compose(default, resolved, theme.css)
-              case None => Seq(default, theme.css).filter(_.nonEmpty).mkString("\n")
-        case Some(theme) if theme.css.nonEmpty => ZIO.succeed(theme.css)
-        case _ => defaultCss
+              case Some(resolved) => (ThemeCss.compose(default, resolved, theme.css), Some(resolved))
+              case None => (Seq(default, theme.css).filter(_.nonEmpty).mkString("\n"), versola)
+        case Some(theme) if theme.css.nonEmpty => ZIO.succeed((theme.css, versola))
+        case _ => defaultCss.map((_, versola))
       }
 
     private def defaultCss: UIO[String] =

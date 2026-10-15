@@ -1,5 +1,6 @@
 package versola.oauth.client.model
 
+import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, Secret}
 import zio.Duration
 import zio.http.URL
@@ -8,6 +9,7 @@ import zio.prelude.Equal
 import zio.schema.*
 
 given Equal[URL] = (a, b) => a == b
+given Equal[ThemeOverrides] = (a, b) => a == b
 
 case class OAuthClientRecord(
     id: ClientId,
@@ -81,6 +83,8 @@ case class OAuthClientRecord(
     /** OIDC Registration §2 `application_type`. Defaulted: `web` is what every client was
       * before central sent the field. */
     applicationType: ApplicationType = ApplicationType.web,
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or

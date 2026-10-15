@@ -12,7 +12,7 @@ import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMetho
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
-import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{BrandColor, Mode, Surface, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -141,10 +141,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService)
 
   // The page rendered with the client's theme set to the given one and the default theme as the base.
-  private def rendered(tokenTheme: ThemeRecord) =
+  private def rendered(tokenTheme: ThemeRecord, client: OAuthClientRecord = clientRecord) =
     val env = Env()
     for
-      _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+      _ <- env.configuration.find.succeedsWith(Some(client))
       _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(tokenTheme)))
       _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
       _ <- env.configuration.getLocales.succeedsWith(locales)
@@ -176,6 +176,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       response <- env.service.renderStep(record, None)
       body <- response.body.asString
     yield body
+
+  private val ownOverrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold))
+  private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
+  private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech")))
 
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
@@ -370,6 +374,34 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
           rendered(tokenTheme).map: body =>
             assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1, body.contains("\\3c /style>"))
+        },
+      ),
+      suite("a client's theme overrides")(
+        test("come after the theme's own CSS, so they win over it") {
+          rendered(fintechTheme, withOverrides).map: body =>
+            assertTrue(
+              body.contains("--brand:#5b5bd6;"),
+              body.contains("--brand:#112233;"),
+              body.indexOf(".extra { top: 0; }") < body.indexOf("--brand:#112233;"),
+              body.indexOf("--brand:#5b5bd6;") < body.indexOf("--brand:#112233;"),
+              // bold is written out, to undo the neutral page of the theme under it
+              body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 22%"),
+            )
+        },
+        test("go on top of a stylesheet theme, with nothing else changed in it") {
+          rendered(theme, withOverrides).map: body =>
+            assertTrue(
+              body.contains(".body { color: red; }"),
+              body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
+              !body.contains(".body { color: black; }"),
+            )
+        },
+        test("leave the page exactly as it was when empty or absent") {
+          for
+            plain <- rendered(fintechTheme)
+            none <- rendered(fintechTheme, clientRecord.copy(themeOverrides = None))
+            empty <- rendered(fintechTheme, clientRecord.copy(themeOverrides = Some(ThemeOverrides())))
+          yield assertTrue(plain == none, plain == empty, !plain.contains("client overrides"))
         },
       ),
       test("returns 304 if ETag matches") {

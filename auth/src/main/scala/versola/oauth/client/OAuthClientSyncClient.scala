@@ -11,6 +11,7 @@ import versola.oauth.client.model.{
   ScopeToken,
   TenantId,
 }
+import versola.util.theme.ThemeOverrides
 import versola.util.{Base64, CacheSource, CoreConfig, Dpop, JsonWebKeySet, Secret, SecurityService}
 import zio.http.{Request, URL}
 import zio.json.JsonCodec
@@ -69,6 +70,7 @@ object OAuthClientSyncClient:
             requireSignedRequestObject = client.requireSignedRequestObject,
             requirePushedAuthorizationRequests = client.requirePushedAuthorizationRequests,
             applicationType = client.applicationType,
+            themeOverrides = client.themeOverrides,
           )
         }
       yield decryptedClients.map(it => it.id -> it).toMap
@@ -115,6 +117,7 @@ object OAuthClientSyncClient:
         /** Defaulted on the same terms: a central that predates the field only has `web`
           * clients. */
         applicationType: ApplicationType = ApplicationType.web,
+        themeOverrides: Option[ThemeOverrides] = None,
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(

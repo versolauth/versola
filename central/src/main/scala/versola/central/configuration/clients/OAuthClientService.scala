@@ -361,6 +361,7 @@ object OAuthClientService:
           template = request.template,
           createdAt = registeredAt,
           applicationType = applicationType,
+          themeOverrides = request.themeOverrides.filterNot(_.isEmpty),
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
@@ -484,6 +485,7 @@ object OAuthClientService:
             edgeSigningKey = edgeSigningKeyPatch,
             edgeClientCertificate = edgeCertificatePatch,
             applicationType = request.applicationType,
+            themeOverrides = request.themeOverrides,
           ),
         )
       yield ()

@@ -87,6 +87,39 @@ object ThemeCss:
       s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};${focus(tokens.brand)}--rf:$field;--rb:$button;--rs:$card;" +
       s"${surface(tokens.surface)}${scheme(tokens.mode)}}"
 
+  // Bold page variables as common.css defines them. `generate` leaves them out (the default stylesheet has them); a
+  // partial block must write them, or an override of `bold` could not undo the soft or neutral surface under it.
+  private val boldSurface =
+    "--page-ink:light-dark(#ffffff,#f3f2f0);" +
+      "--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);" +
+      "--page-dark:color-mix(in oklab,var(--brand) 10%,#060707);" +
+      "--glow-dark:color-mix(in oklab,var(--brand) 55%,transparent);"
+
+  /** The block a client adds on top of the theme it uses: only the variables its overrides change, empty when it
+    * overrides nothing. A brand override needs no page variables: the soft and the bold page derive from
+    * `var(--brand)`, so they follow it. `base` is what the theme resolves to; it is named in the comment only,
+    * because every override is written out even when it equals the base (the theme may be a stylesheet, whose
+    * values are not known).
+    */
+  def generatePartial(base: ResolvedTokens, overrides: ThemeOverrides): String =
+    if overrides.isEmpty then ""
+    else
+      val brand = overrides.brand.fold("")(colour => s"--brand:${colour.value};--on-brand:${onBrand(colour)};${focus(colour)}")
+      val shape = overrides.shape.fold("") { value =>
+        val (field, button, card) = corners(value)
+        s"--rf:$field;--rb:$button;--rs:$card;"
+      }
+      val page = overrides.surface.fold("") {
+        case Surface.bold => boldSurface
+        case other => surface(other)
+      }
+      val mode = overrides.mode.fold("") {
+        case Mode.auto => "color-scheme:light dark;"
+        case other => scheme(other)
+      }
+      s"/* client overrides on ${base.brand.value}, ${base.shape}, ${base.surface} page, ${base.mode} scheme */\n" +
+        s":root{$brand$shape$page$mode}"
+
   /** The stylesheet of a theme built from tokens: the current default, then what the tokens set, then the
     * theme's own CSS, which may be empty.
     */

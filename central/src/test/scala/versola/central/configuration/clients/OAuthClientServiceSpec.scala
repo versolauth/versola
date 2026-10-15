@@ -27,6 +27,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides}
 import versola.util.{
   ClientAssertion,
   Dpop,
@@ -545,6 +546,33 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // other way to know when central dated it.
         result.createdAt == created.createdAt,
       )
+    },
+    test("registerClient stores the theme overrides it was given, and none for an empty value") {
+      val env = new Env()
+      val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption)
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(createRequest.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.registerClient(createRequest)
+        stored = env.repository.createClient.calls.map(_.themeOverrides)
+      yield assertTrue(stored == List(Some(overrides), None, None))
+    },
+    test("updateClient hands the theme overrides to the repository, and an empty value to clear them") {
+      val env = new Env()
+      val overrides = ThemeOverrides(mode = Some(Mode.dark))
+
+      for
+        _ <- env.repository.find.succeedsWith(None)
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.updateClient(noopUpdate)
+        patched = env.repository.updateClient.calls.map(_._2.themeOverrides)
+      yield assertTrue(patched == List(Some(overrides), Some(ThemeOverrides()), None))
     },
     test("registerClient leaves the template unset for a registration that names none") {
       val env = new Env()

@@ -77,6 +77,7 @@ object ClientController extends Controller:
               createdAt = client.createdAt,
               applicationType = client.applicationType,
               kind = ClientKind.of(client),
+              themeOverrides = client.themeOverrides,
             )
           })
       yield Response.json(GetAllClientsResponse(clients.toList).toJson)
@@ -152,6 +153,7 @@ object ClientController extends Controller:
             edgeClientCertificate = edgeClientCertificate,
             applicationType = client.applicationType,
             edgeCertificateSubject = enrollmentSubjects.get(client.id),
+            themeOverrides = client.themeOverrides,
           )
         }
       yield Response.json(GetOAuthClientsSyncResponse(clients = encryptedClients).toJson)
