@@ -570,6 +570,38 @@ test.describe('consent, with the seeded scope catalog', () => {
     await expect(all.locator('.consent-scope-required')).toHaveCount(0);
   });
 
+  const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="%23c33"/></svg>';
+
+  test('shows the client\'s logo, and its initial on a tile when there is none or it does not load', async ({ page }) => {
+    await renderForm(page, 'consent', { step: { ...step, logoUri: logo } });
+    await expect(page.locator('img.consent-logo')).toBeVisible();
+    await expect(page.locator('.consent-mark')).toHaveCount(0);
+
+    const bare = await page.context().newPage();
+    await renderForm(bare, 'consent', { step });
+    await expect(bare.locator('.consent-mark')).toHaveText('A');
+
+    const broken = await page.context().newPage();
+    await renderForm(broken, 'consent', { step: { ...step, logoUri: '/missing-logo.png' } });
+    await expect(broken.locator('.consent-mark')).toHaveText('A');
+  });
+
+  test('names the signed-in user, with a picture when there is one', async ({ page }) => {
+    const { t } = await renderForm(page, 'consent', { step: { ...step, user: { name: 'Anna Petrova', picture: logo } } });
+    await expect(page.getByText(t.signed_in_as)).toBeVisible();
+    await expect(page.locator('.consent-user-name')).toHaveText('Anna Petrova');
+    await expect(page.locator('img.consent-avatar')).toBeVisible();
+
+    const plain = await page.context().newPage();
+    await renderForm(plain, 'consent', { step: { ...step, user: { identifier: 'a***a@example.com' } } });
+    await expect(plain.locator('.consent-user-name')).toHaveText('a***a@example.com');
+    await expect(plain.locator('.consent-avatar')).toHaveText('A');
+
+    const none = await page.context().newPage();
+    await renderForm(none, 'consent', { step });
+    await expect(none.locator('.consent-user')).toHaveCount(0);
+  });
+
   for (const scheme of ['light', 'dark'] as const) {
     test(`has no axe violations in the ${scheme} scheme`, async ({ page }) => {
       await page.emulateMedia({ colorScheme: scheme });

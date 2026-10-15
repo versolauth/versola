@@ -56,6 +56,8 @@ type ConsentStep = {
   type: 'consent';
   clientName?: string;
   logoUri?: string;
+  /** The signed-in user, when the server knows how to name them: shown so they can see whose account is being shared. */
+  user?: { name?: string; identifier?: string; picture?: string };
   policyUri?: string;
   tosUri?: string;
   scopes: ConsentScope[];
@@ -78,6 +80,40 @@ declare global {
   interface Window {
     __VERSOLA_FORM__?: FormConfig;
   }
+}
+
+// The client's logo, or its initial on a tile in the theme colour when there is none (or it fails to load).
+function ClientMark(props: { logoUri?: string; name?: string }) {
+  const [failed, setFailed] = createSignal(false);
+  const initial = () => Array.from(props.name?.trim() ?? '')[0]?.toLocaleUpperCase();
+  return (
+    <Show
+      when={props.logoUri && !failed()}
+      fallback={<Show when={initial()}>{letter => <div class="consent-mark" aria-hidden="true">{letter()}</div>}</Show>}
+    >
+      <img class="consent-logo" src={props.logoUri} alt="" onError={() => setFailed(true)} />
+    </Show>
+  );
+}
+
+function UserBadge(props: { user: NonNullable<ConsentStep['user']>; label: string }) {
+  const [failed, setFailed] = createSignal(false);
+  const shown = () => props.user.name || props.user.identifier || '';
+  const initial = () => Array.from(shown().trim())[0]?.toLocaleUpperCase() ?? '';
+  return (
+    <div class="consent-user">
+      <Show
+        when={props.user.picture && !failed()}
+        fallback={<div class="consent-avatar" aria-hidden="true">{initial()}</div>}
+      >
+        <img class="consent-avatar" src={props.user.picture} alt="" referrerpolicy="no-referrer" onError={() => setFailed(true)} />
+      </Show>
+      <div class="consent-user-text">
+        <span class="consent-user-label">{props.label}</span>
+        <span class="consent-user-name">{shown()}</span>
+      </div>
+    </div>
+  );
 }
 
 function ConsentForm(props: { config: FormConfig }) {
@@ -128,13 +164,14 @@ function ConsentForm(props: { config: FormConfig }) {
           <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
         </div>
       </Show>
-      <Show when={step.logoUri}>
-        {uri => <img class="consent-logo" src={uri()} alt="" />}
-      </Show>
+      <ClientMark logoUri={step.logoUri} name={step.clientName} />
       <h1>{t().title}</h1>
       <p class="consent-description">
         {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}
       </p>
+      <Show when={step.user && (step.user.name || step.user.identifier)}>
+        <UserBadge user={step.user!} label={t().signed_in_as ?? 'Signed in as'} />
+      </Show>
       <Show when={props.config.error}>
         <div class="error-text" role="alert" style="margin-bottom: 16px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
