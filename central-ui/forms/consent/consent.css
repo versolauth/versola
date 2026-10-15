@@ -1,10 +1,3 @@
-.consent-logo { display: block; align-self: flex-start; height: 52px; width: auto; max-width: 220px; object-fit: contain; margin: 0 0 22px; border-radius: var(--radius); }
-.consent-mark {
-  align-self: flex-start;
-  display: flex; align-items: center; justify-content: center; width: 52px; height: 52px; margin: 0 0 22px;
-  border-radius: var(--radius); font-size: 1.5rem; font-weight: 750;
-  background: var(--brand, var(--accent)); color: var(--on-brand, #fff);
-}
 .consent-user { display: flex; align-items: center; gap: 12px; margin: 0 0 20px; }
 .consent-avatar {
   flex: none; display: flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 50%;

@@ -425,14 +425,34 @@ test.describe('credential', () => {
     await expect(dialog).toHaveCount(0);
   });
 
-  test('falls back to the built-in mark when the logo cannot load', async ({ page }) => {
-    await page.route('**/missing-logo.png', route => route.abort());
-    await renderForm(page, 'credential', {
-      step: { type: 'credential', primaryCredentials: ['email'] },
-      logo: '/missing-logo.png',
-    });
+  test('shows the client\'s logo above the card, and the Versola wordmark when there is none or it cannot load', async ({ page }) => {
+    const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%23c33"/></svg>';
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo });
+    await expect(page.locator('.page-brand img')).toBeVisible();
+    await expect(page.locator('.page-wordmark')).toHaveCount(0);
+    expect(await page.locator('.page-brand').evaluate(el => el.nextElementSibling?.classList.contains('container'))).toBe(true);
 
-    await expect(page.locator('.brand-mark')).toHaveCount(0);
+    const none = await page.context().newPage();
+    await renderForm(none, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
+    await expect(none.locator('.page-wordmark')).toHaveCount(1);
+
+    const broken = await page.context().newPage();
+    await broken.route('**/missing-logo.png', route => route.abort());
+    await renderForm(broken, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] }, logo: '/missing-logo.png' });
+    await expect(broken.locator('.page-brand img')).toHaveCount(0);
+    await expect(broken.locator('.page-wordmark')).toHaveCount(1);
+  });
+
+  test('the brand zone is shared by every step, not only the first', async ({ page }) => {
+    for (const [id, step] of [
+      ['otp', { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' }],
+      ['password', { type: 'password' }],
+      ['passkey-enroll', { type: 'passkey-enroll', publicKeyOptions: '{}' }],
+    ] as const) {
+      const fresh = await page.context().newPage();
+      await renderForm(fresh, id, { step });
+      await expect(fresh.locator('.page-brand')).toHaveCount(1);
+    }
   });
 });
 
@@ -574,16 +594,19 @@ test.describe('consent, with the seeded scope catalog', () => {
 
   test('shows the client\'s logo, and its initial on a tile when there is none or it does not load', async ({ page }) => {
     await renderForm(page, 'consent', { step: { ...step, logoUri: logo } });
-    await expect(page.locator('img.consent-logo')).toBeVisible();
-    await expect(page.locator('.consent-mark')).toHaveCount(0);
+    await expect(page.locator('.page-brand-icon img')).toBeVisible();
+    await expect(page.locator('.page-wordmark')).toHaveCount(0);
 
+    // Only the partner's icon: with no logo it is the partner's initial, never the Versola wordmark.
     const bare = await page.context().newPage();
     await renderForm(bare, 'consent', { step });
-    await expect(bare.locator('.consent-mark')).toHaveText('A');
+    await expect(bare.locator('.page-brand-initial')).toHaveText('A');
+    await expect(bare.locator('.page-wordmark')).toHaveCount(0);
 
     const broken = await page.context().newPage();
     await renderForm(broken, 'consent', { step: { ...step, logoUri: '/missing-logo.png' } });
-    await expect(broken.locator('.consent-mark')).toHaveText('A');
+    await expect(broken.locator('.page-brand-initial')).toHaveText('A');
+    await expect(broken.locator('.page-wordmark')).toHaveCount(0);
   });
 
   test('names the signed-in user, with a picture when there is one', async ({ page }) => {

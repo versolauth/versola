@@ -4,6 +4,44 @@ import { PhoneField, type PhoneFieldApi } from './phone-field';
 import type { PhoneRegion } from './phone';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
+// The brand zone above the card. The client's logo sits on a light tile so any logo reads on the
+// brand-coloured page; with no logo (or one that fails to load) it is the Versola wordmark, or the
+// client's initial when the caller asks for one (the consent screen shows only the partner's icon).
+function PageBrand(props: { logo?: string; initial?: string; icon?: boolean }) {
+  const [failed, setFailed] = createSignal(false);
+  const letter = () => Array.from(props.initial?.trim() ?? '')[0]?.toLocaleUpperCase();
+  return (
+    <div class="page-brand" aria-hidden="true">
+      <Show
+        when={props.logo && !failed()}
+        fallback={
+          <Show
+            when={props.initial !== undefined}
+            fallback={
+              <svg class="page-wordmark" viewBox="-2 0 286 56" height="28" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Versola">
+          <path d="M2 22 L18 48 L34 22" />
+          <path d="M50 35 H76 A13 13 0 1 0 72.5 44.3" />
+          <path d="M98 22 V48 M98 36 C98 26 104 22 114 22" />
+          <path d="M158.5 27 C156.5 23 152.5 22 148.5 22 C142.5 22 138.5 25 138.5 29 C138.5 33 142.5 34.5 148.5 36 C154.5 37.5 158.5 39 158.5 42.5 C158.5 46.5 154.5 48.5 148.5 48.5 C143.5 48.5 139.5 46.5 138 42.5" />
+          <circle cx="193.5" cy="35" r="13" />
+          <path d="M228.5 6 V48" />
+          <circle cx="263.5" cy="35" r="13" />
+          <path d="M276.5 22 V48" />
+        </svg>
+            }
+          >
+            <Show when={letter()}>{(l) => <span class="page-brand-tile page-brand-initial">{l()}</span>}</Show>
+          </Show>
+        }
+      >
+        <span class={`page-brand-tile${props.icon ? ' page-brand-icon' : ''}`}>
+          <img src={props.logo} alt="" style="height:40px" onError={() => setFailed(true)} />
+        </span>
+      </Show>
+    </div>
+  );
+}
+
 // The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
 const languageName = (code: string) => {
   try {
@@ -155,7 +193,6 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
-  const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
 
   // All passkey-related errors (client failures and the server's passkey_failed /
   // passkey_orphaned) are surfaced through a dismissible popup rather than inline text.
@@ -224,29 +261,12 @@ function CredentialForm(props: { config: FormConfig }) {
   };
 
   return (
+    <>
+      <PageBrand logo={props.config.logo} />
     <div class="container">
       <Show when={locales.length > 1}>
         <div class="locale-selector">
           <LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} />
-        </div>
-      </Show>
-      <Show when={!props.config.logo || !logoLoadFailed()}>
-        <div class="brand-mark" aria-hidden="true">
-          <Show
-            when={props.config.logo}
-            fallback={
-              <svg viewBox="0 0 64 64" fill="none">
-                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="currentColor" fill-opacity="0.08"/>
-                <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="none" stroke="currentColor" stroke-width="2.2"/>
-                <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
-                      font-size="26" fill="currentColor" text-anchor="middle">V</text>
-              </svg>
-            }
-          >
-            <img src={props.config.logo} alt="" onError={() => setLogoLoadFailed(true)} />
-          </Show>
         </div>
       </Show>
       <h1>{t().title}</h1>
@@ -347,6 +367,7 @@ function CredentialForm(props: { config: FormConfig }) {
         </div>
       </Show>
     </div>
+    </>
   );
 }
 
