@@ -1,17 +1,70 @@
+/*
+ * Shared base styles for every login form. The `default` theme is this file, re-seeded at each
+ * central start, so edits here reach every deployment that has not forked it.
+ *
+ * Theming API (what a theme may override on :root):
+ *   --brand, --on-brand     accent colour and the text colour that is readable on it
+ *   --rf / --rb / --rs      corner radius of fields, buttons and the card
+ *   --page-light/--page-dark  page background per colour scheme, --glow-dark the dark-mode halo
+ *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
+ * Older themes override the legacy names below (--accent, --bg, --card-bg, --text, ...); they are
+ * kept as aliases, so a theme or per-form CSS written against them keeps working.
+ */
 :root {
-  --bg: #faf9f7;
-  --card-bg: #ffffff;
-  --field-bg: #f6f5f3;
-  --field-bg-hover: #efeeeb;
-  --border: rgba(21, 23, 28, 0.08);
-  --border-hover: rgba(21, 23, 28, 0.16);
-  --text: #15171c;
-  --text-muted: #6b7280;
-  --accent: #155e75;
-  --accent-hover: #0e4a5c;
-  --danger: #dc2626;
-  --radius: 12px;
-  --radius-lg: 20px;
+  color-scheme: light;
+  --brand: #155e75;
+  --on-brand: #ffffff;
+  --rf: 14px;
+  --rb: 14px;
+  --rs: 24px;
+
+  --page-light: color-mix(in oklab, var(--brand) 22%, #0c1110);
+  --page-dark: color-mix(in oklab, var(--brand) 10%, #060707);
+  --glow-dark: color-mix(in oklab, var(--brand) 55%, transparent);
+
+  --ink: #1c1b19;
+  --text-muted: #6b6a66;
+  --sheet: #ffffff;
+  --sheet-line: transparent;
+  --field: #f5f3ee;
+  --field-hover: #edeae3;
+  --line: #e6e2d8;
+  --line-strong: #cfc9bb;
+  --invert: #ffffff;
+  --danger: #c0341d;
+  --glow: transparent;
+  --shadow: 0 30px 60px -24px rgba(0, 0, 0, 0.45);
+
+  /* legacy names, kept for themes and form versions written against the previous design */
+  --bg: var(--page-light);
+  --card-bg: var(--sheet);
+  --field-bg: var(--field);
+  --field-bg-hover: var(--field-hover);
+  --border: var(--line);
+  --border-hover: var(--line-strong);
+  --text: var(--ink);
+  --accent: var(--brand);
+  --accent-hover: color-mix(in oklab, var(--brand) 82%, black);
+  --radius: var(--rf);
+  --radius-lg: var(--rs);
+}
+@supports (color: light-dark(#000, #fff)) {
+  :root {
+    color-scheme: light dark;
+    --bg: light-dark(var(--page-light), var(--page-dark));
+    --glow: light-dark(transparent, var(--glow-dark));
+    --ink: light-dark(#1c1b19, #f3f2f0);
+    --text-muted: light-dark(#6b6a66, #a9a9b0);
+    --sheet: light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20));
+    --sheet-line: light-dark(transparent, rgba(255, 255, 255, 0.09));
+    --field: light-dark(#f5f3ee, color-mix(in oklab, var(--brand) 9%, #2b2b2d));
+    --field-hover: light-dark(#edeae3, color-mix(in oklab, var(--brand) 12%, #323235));
+    --line: light-dark(#e6e2d8, color-mix(in oklab, var(--brand) 10%, #38383b));
+    --line-strong: light-dark(#cfc9bb, #55535a);
+    --invert: light-dark(#ffffff, #1c1b19);
+    --danger: light-dark(#c0341d, #ff8a73);
+    --shadow: light-dark(0 30px 60px -24px rgba(0, 0, 0, 0.45), 0 40px 80px -30px rgba(0, 0, 0, 0.8));
+  }
 }
 * {
   box-sizing: border-box;
@@ -27,11 +80,11 @@ body {
   min-height: 100%;
   font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   font-size: 16px;
-  color: var(--text);
-  background: var(--bg);
+  line-height: 1.5;
+  color: var(--ink);
+  background: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--bg);
   margin: 0;
-  padding: 20px;
-  box-sizing: border-box;
+  padding: 24px;
   width: 100%;
   overflow-x: hidden;
 }
@@ -40,25 +93,22 @@ body {
   display: flex;
   flex-direction: column;
   justify-content: center;
-  text-align: center;
+  text-align: left;
   background: var(--card-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
-  padding: 44px 40px 36px;
-  box-shadow:
-    0 1px 1px rgba(16, 24, 40, 0.02),
-    0 4px 10px rgba(16, 24, 40, 0.04),
-    0 20px 48px rgba(16, 24, 40, 0.09);
-  width: min(420px, calc(100vw - 40px));
-  min-height: max(460px, min(520px, calc(100dvh - 40px)));
+  border: 1px solid var(--sheet-line);
+  border-radius: var(--rs);
+  padding: 56px 40px 32px;
+  box-shadow: var(--shadow);
+  width: min(460px, calc(100vw - 48px));
+  min-height: min(520px, calc(100dvh - 48px));
 }
 .brand-mark {
-  width: 46px;
-  height: 46px;
-  margin: 0 auto 20px;
+  width: 40px;
+  height: 40px;
+  margin: 0 0 22px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .brand-mark svg,
 .brand-mark img {
@@ -66,92 +116,101 @@ body {
   height: 100%;
   display: block;
   object-fit: contain;
+  object-position: left center;
 }
 h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text);
-  margin: 0 0 26px;
+  font-size: 1.9rem;
+  line-height: 1.15;
+  font-weight: 750;
+  letter-spacing: -0.03em;
+  color: var(--ink);
+  margin: 0 0 28px;
 }
 form {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   margin-bottom: 4px;
 }
 .input-field {
-  padding: 14px 16px;
-  font-size: 0.98rem;
-  color: var(--text);
+  height: 54px;
+  padding: 0 18px;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
   background: var(--field-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: 2px solid transparent;
+  border-radius: var(--rf);
   outline: none;
-  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+  transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   width: 100%;
 }
 .input-field::placeholder {
   color: var(--text-muted);
+  opacity: 0.7;
 }
 .input-field:hover {
   background: var(--field-bg-hover);
 }
 .input-field:focus {
-  background: #ffffff;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(21, 94, 117, 0.14);
+  background: var(--card-bg);
+  border-color: var(--ink);
 }
-.input-field:invalid:not(:placeholder-shown) {
-  border-color: var(--danger);
-}
+.input-field[aria-invalid='true'],
 .input-field.input-error {
   border-color: var(--danger);
 }
 .input-field.input-error:focus {
   border-color: var(--danger);
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.15);
 }
 .btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 10px;
   width: 100%;
-  padding: 14px 22px;
-  font-size: 0.98rem;
-  font-weight: 600;
-  border: none;
-  border-radius: var(--radius);
+  height: 54px;
+  padding: 0 22px;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  border: 2px solid transparent;
+  border-radius: var(--rb);
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s, transform 0.15s, box-shadow 0.2s, opacity 0.2s;
-}
-.btn:active {
-  transform: translateY(0);
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
 }
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  transform: none;
 }
 .btn-primary {
-  color: #ffffff;
-  background: var(--accent);
+  color: var(--invert);
+  background: var(--ink);
 }
-.btn-primary:hover {
-  background: var(--accent-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 16px rgba(21, 94, 117, 0.28);
+.btn-primary:hover:not(:disabled) {
+  opacity: 0.88;
 }
 .btn-secondary {
-  color: var(--text);
-  background: var(--field-bg);
-  border: 1px solid var(--border);
+  color: var(--ink);
+  background: transparent;
+  border-color: var(--border);
 }
-.btn-secondary:hover {
-  background: var(--field-bg-hover);
-  border-color: var(--border-hover);
-  transform: translateY(-1px);
+.btn-secondary:hover:not(:disabled) {
+  border-color: var(--ink);
+}
+.btn:focus-visible,
+.password-toggle:focus-visible,
+.locale-trigger:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+}
+a {
+  color: var(--ink);
+  font-weight: 650;
+  text-decoration-color: var(--brand);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
 }
 .divider {
   display: flex;
@@ -159,16 +218,17 @@ form {
   text-align: center;
   margin: 4px 0;
   color: var(--text-muted);
-  font-size: 0.82rem;
+  font-size: 0.85rem;
 }
 .divider::before,
 .divider::after {
   content: '';
   flex: 1;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-radius: 2px;
 }
 .divider span {
-  padding: 0 12px;
+  padding: 0 14px;
 }
 .error-message {
   font-size: 1rem;
@@ -178,19 +238,20 @@ form {
 }
 .error-text {
   color: var(--danger);
+  font-size: 0.9rem;
+  font-weight: 550;
 }
 #message {
   font-size: 1rem;
   margin-top: 20px;
   padding: 16px;
   background: var(--field-bg);
-  border-left: 3px solid var(--accent);
-  border-radius: 10px;
-  color: var(--text);
+  border-left: 3px solid var(--brand);
+  border-radius: var(--rf);
+  color: var(--ink);
   min-height: 50px;
   display: flex;
   align-items: center;
-  justify-content: center;
   text-align: left;
 }
 .locale-selector {
@@ -205,21 +266,19 @@ form {
 .locale-trigger {
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  background: transparent;
-  font-size: 0.78rem;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--field-bg);
+  font-size: 0.8rem;
   font-family: inherit;
   color: var(--text-muted);
   cursor: pointer;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  transition: color 0.15s;
 }
 .locale-trigger:hover {
-  background: var(--field-bg);
-  border-color: var(--border);
-  color: var(--text);
+  color: var(--ink);
 }
 .locale-chevron {
   width: 10px;
@@ -231,10 +290,10 @@ form {
   top: calc(100% + 6px);
   right: 0;
   min-width: 100%;
-  background: #ffffff;
+  background: var(--card-bg);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
+  border-radius: calc(var(--rf) - 2px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
   overflow: hidden;
   z-index: 200;
 }
@@ -245,7 +304,7 @@ form {
   text-align: left;
   font-size: 0.85rem;
   font-family: inherit;
-  color: var(--text);
+  color: var(--ink);
   background: transparent;
   border: none;
   cursor: pointer;
@@ -255,14 +314,21 @@ form {
   background: var(--field-bg);
 }
 .locale-option-active {
-  color: var(--accent);
-  font-weight: 600;
+  font-weight: 700;
 }
-@media (max-width: 540px) {
+/* Phones: the card becomes a sheet anchored to the bottom edge. */
+@media (max-width: 520px) {
+  body {
+    padding: 0;
+    justify-content: flex-end;
+  }
   .container {
-    padding: 36px 24px;
+    width: 100%;
+    min-height: min(82dvh, 640px);
+    border-radius: var(--rs) var(--rs) 0 0;
+    padding: 56px 22px 24px;
   }
   h1 {
-    font-size: 1.45rem;
+    font-size: 1.75rem;
   }
 }

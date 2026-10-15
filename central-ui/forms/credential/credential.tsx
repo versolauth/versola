@@ -64,6 +64,56 @@ declare global {
   }
 }
 
+function PasswordInput(props: {
+  id: string;
+  name: string;
+  label: string;
+  autocomplete: string;
+  error?: string;
+  showLabel: string;
+  hideLabel: string;
+  onInput?: (value: string, input: HTMLInputElement) => void;
+}) {
+  const [visible, setVisible] = createSignal(false);
+  return (
+    <div class="field">
+      <label class="field-label" for={props.id}>{props.label}</label>
+      <div class="password-field">
+        <input
+          id={props.id}
+          type={visible() ? 'text' : 'password'}
+          name={props.name}
+          class={`input-field${props.error ? ' input-error' : ''}`}
+          placeholder=" "
+          autocomplete={props.autocomplete}
+          required
+          aria-invalid={props.error ? 'true' : undefined}
+          aria-describedby={props.error ? `${props.id}-error` : undefined}
+          onInput={(e) => props.onInput?.(e.currentTarget.value, e.currentTarget)}
+        />
+        <button
+          type="button"
+          class="password-toggle"
+          aria-label={visible() ? props.hideLabel : props.showLabel}
+          onClick={() => setVisible(!visible())}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <Show
+              when={visible()}
+              fallback={<><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></>}
+            >
+              <path d="M3 3l18 18M10.6 5.1A10 10 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7c1.7 0 3.2-.4 4.5-1M9.9 9.9a3 3 0 0 0 4.2 4.2"/>
+            </Show>
+          </svg>
+        </button>
+      </div>
+      <Show when={props.error}>
+        <div id={`${props.id}-error`} class="error-text" role="alert">{props.error}</div>
+      </Show>
+    </div>
+  );
+}
+
 function CredentialForm(props: { config: FormConfig }) {
   const allT = props.config.allT ?? {};
   const baseT = props.config.t;
@@ -192,50 +242,63 @@ function CredentialForm(props: { config: FormConfig }) {
       <h1>{t().title}</h1>
 
       <Show when={props.config.error && !isPasskeyError(props.config.error)}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text" role="alert" style="margin-bottom: 16px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
 
       <form method="post" onSubmit={handleSubmit}>
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <Show when={single === 'email'}>
-          <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
+          <div class="field">
+            <label class="field-label" for="credential-email">{t().email_placeholder}</label>
+            <input id="credential-email" type="email" name="email" class="input-field" placeholder=" " autocomplete="email" required />
+          </div>
         </Show>
         <Show when={single === 'phone'}>
-          <Show
-            when={phoneRegions.length > 0}
-            fallback={
-              <input
-                type="tel"
-                name="phone"
-                class="input-field"
-                placeholder={t().phone_placeholder}
-                pattern="^\+[1-9]\d{6,14}$"
-                required
-              />
-            }
-          >
-            <PhoneField regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
-          </Show>
+          <div class="field">
+            <label class="field-label" for="credential-phone">{t().phone_placeholder}</label>
+            <Show
+              when={phoneRegions.length > 0}
+              fallback={
+                <input
+                  id="credential-phone"
+                  type="tel"
+                  name="phone"
+                  class="input-field"
+                  placeholder=" "
+                  autocomplete="tel"
+                  pattern="^\+[1-9]\d{6,14}$"
+                  required
+                />
+              }
+            >
+              <PhoneField id="credential-phone" regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
+            </Show>
+          </div>
         </Show>
         <Show when={single === 'login'}>
-          <input type="text" name="login" class="input-field" placeholder={t().login_placeholder} required />
+          <div class="field">
+            <label class="field-label" for="credential-login">{t().login_placeholder}</label>
+            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+          </div>
         </Show>
         <Show when={single === null && primaries.length > 0}>
-          <input type="text" name="login" class="input-field" placeholder={combinedPlaceholder()} required />
+          <div class="field">
+            <label class="field-label" for="credential-login">{combinedPlaceholder()}</label>
+            <input id="credential-login" type="text" name="login" class="input-field" placeholder=" " autocomplete="username" required />
+          </div>
         </Show>
 
         <Show when={showPassword()}>
-          <input
-            type="password"
+          <PasswordInput
+            id="credential-password"
             name="password"
-            class={`input-field${passwordNotAllowed() ? ' input-error' : ''}`}
-            placeholder={t().password_placeholder}
-            required
-            onInput={(e) => checkPassword((e.currentTarget as HTMLInputElement).value)}
+            label={t().password_placeholder}
+            autocomplete="current-password"
+            error={passwordNotAllowed() ? t().password_not_allowed : undefined}
+            showLabel={t().show_password}
+            hideLabel={t().hide_password}
+            onInput={(value) => checkPassword(value)}
           />
-          <Show when={passwordNotAllowed()}>
-            <div class="phone-error-message error-text">{t().password_not_allowed}</div>
-          </Show>
         </Show>
 
         <button type="submit" formAction={formAction()} class="btn btn-primary">

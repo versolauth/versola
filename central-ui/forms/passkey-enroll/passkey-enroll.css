@@ -1,26 +1,40 @@
+/* Field layout. Kept with the form rather than in common.css so that a theme forked from an
+ * earlier common.css still lays the field out; only the long-standing theme variables are used. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  text-align: left;
+}
+.field-label {
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-left: 2px;
+}
+
 .passkey-enroll-icon {
-  width: 56px;
-  height: 56px;
+  width: 64px;
+  height: 64px;
   border-radius: 50%;
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in oklab, var(--brand, var(--accent)) 16%, var(--card-bg));
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto 20px;
-  color: var(--primary, #6366f1);
+  margin: 0 0 24px;
+  color: var(--text);
 }
 
 .passkey-enroll-icon .passkey-icon {
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
 }
 
 .passkey-enroll-description {
-  font-size: 0.95rem;
+  font-size: 1rem;
   color: var(--text-muted);
-  margin: -8px 0 28px;
+  margin: -14px 0 24px;
   line-height: 1.6;
-  text-align: center;
 }
 
 .passkey-icon {
@@ -37,7 +51,6 @@
   margin-top: 6px;
   margin-bottom: 14px;
   font-size: 0.85rem;
-  text-align: center;
 }
 
 .name-field {

@@ -125,7 +125,7 @@ function ConsentForm(props: { config: FormConfig }) {
         {descriptionParts().map((part, index) => index % 2 === 1 ? <strong class="consent-client">{part}</strong> : part)}
       </p>
       <Show when={props.config.error}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text" role="alert" style="margin-bottom: 16px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
       <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
@@ -163,7 +163,7 @@ function ConsentForm(props: { config: FormConfig }) {
       </form>
       <form method="post" action={`/challenge/consent/deny?ui_locale=${currentLocale()}`}>
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
-        <button type="submit" class="btn btn-secondary">{t().deny_button}</button>
+        <button type="submit" class="btn btn-secondary btn-quiet">{t().deny_button}</button>
       </form>
       <Show when={step.policyUri || step.tosUri}>
         <p class="consent-legal">

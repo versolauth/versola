@@ -114,12 +114,12 @@ function OtpForm(props: { config: FormConfig }) {
       <h1>{t().title}</h1>
       <p class="otp-description">{description()}</p>
       <Show when={lockRemaining() > 0}>
-        <div class="error-text" style="margin-bottom: 8px;">
+        <div class="error-text" role="alert" style="margin-bottom: 16px;">
           {(t().locked_for ?? 'Input locked. Try again in {seconds}s.').replace('{seconds}', String(lockRemaining()))}
         </div>
       </Show>
       <Show when={props.config.error && lockRemaining() <= 0}>
-        <div class="error-text" style="margin-bottom: 8px;">{t()[props.config.error!] ?? props.config.error}</div>
+        <div class="error-text" role="alert" style="margin-bottom: 16px;">{t()[props.config.error!] ?? props.config.error}</div>
       </Show>
         <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
@@ -129,7 +129,7 @@ function OtpForm(props: { config: FormConfig }) {
               const digit = otp()[i];
               return (
                 <div class={`otp-cell${digit !== undefined ? ' otp-cell-filled' : ''}${i === otp().length && lockRemaining() <= 0 ? ' otp-cell-active' : ''}`}>
-                  <span class={`otp-cell-dot${digit !== undefined ? ' otp-cell-dot-filled' : ''}`} />
+                  {digit ?? ''}
                 </div>
               );
             })}

@@ -116,23 +116,27 @@ function PasskeyEnrollForm(props: { config: FormConfig }) {
       <h1>{t().title}</h1>
       <p class="passkey-enroll-description">{t().description}</p>
 
-      <div class="name-field">
+      <div class="name-field field">
+        <label class="field-label" for="passkey-name">{t().name_placeholder}</label>
         <input
+          id="passkey-name"
           class={`input-field${nameError() ? ' input-error' : ''}`}
           type="text"
           value={name()}
-          placeholder={t().name_placeholder}
           onInput={(e) => { setName(e.currentTarget.value); setNameError(false); }}
           disabled={busy()}
+          placeholder=" "
           autocomplete="off"
+          aria-invalid={nameError() ? 'true' : undefined}
+          aria-describedby={nameError() ? 'passkey-name-error' : undefined}
         />
         <Show when={nameError()}>
-          <div class="field-error error-text">{t().name_invalid}</div>
+          <div id="passkey-name-error" class="field-error error-text" role="alert">{t().name_invalid}</div>
         </Show>
       </div>
 
       <Show when={enrollError()}>
-        <div class="phone-error-message error-text">{t().enroll_failed}</div>
+        <div class="phone-error-message error-text" role="alert">{t().enroll_failed}</div>
       </Show>
 
       <button type="button" class="btn btn-primary" disabled={busy()} onClick={handleEnroll}>

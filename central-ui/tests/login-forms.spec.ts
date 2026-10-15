@@ -81,6 +81,17 @@ test.describe('otp', () => {
     await expect(page.locator('input[name="code"]')).toBeDisabled();
   });
 
+  test('shows the digits as they are typed', async ({ page }) => {
+    await renderForm(page, 'otp', { step });
+
+    await page.keyboard.type('482');
+
+    await expect(page.locator('.otp-cell').nth(0)).toHaveText('4');
+    await expect(page.locator('.otp-cell').nth(1)).toHaveText('8');
+    await expect(page.locator('.otp-cell').nth(2)).toHaveText('2');
+    await expect(page.locator('.otp-cell').nth(3)).toHaveText('');
+  });
+
   test('shows a wrong-code error in words', async ({ page }) => {
     const { t } = await renderForm(page, 'otp', { step, error: 'otp_wrong' });
 
@@ -94,7 +105,7 @@ test.describe('password', () => {
   test('submits the password with the CSRF value', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -106,7 +117,7 @@ test.describe('password', () => {
   test('refuses a password the policy rejects, without asking the server', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -119,6 +130,37 @@ test.describe('password', () => {
     await expect(page.getByText(t.password_wrong)).toBeVisible();
   });
 
+  test('reveals and hides the password on request', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'password', { step });
+    const field = page.getByLabel(t.password_placeholder, { exact: true });
+
+    await field.fill(STRONG_PASSWORD);
+    await expect(field).toHaveAttribute('type', 'password');
+
+    await page.getByRole('button', { name: t.show_password }).click();
+    await expect(field).toHaveAttribute('type', 'text');
+    await expect(field).toHaveValue(STRONG_PASSWORD);
+
+    await page.getByRole('button', { name: t.hide_password }).click();
+    await expect(field).toHaveAttribute('type', 'password');
+
+    await page.getByRole('button', { name: t.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('password')).toBe(STRONG_PASSWORD);
+  });
+
+  test('ties a rejected password to its field for assistive technology', async ({ page }) => {
+    const { t } = await renderForm(page, 'password', { step });
+    const field = page.getByLabel(t.password_placeholder, { exact: true });
+
+    await field.fill('weak');
+    await page.getByRole('button', { name: t.continue }).click();
+
+    await expect(field).toHaveAttribute('aria-invalid', 'true');
+    await expect(field).toHaveAccessibleDescription(t.password_not_allowed);
+    await expect(page.getByRole('alert')).toHaveText(t.password_not_allowed);
+  });
+
   test('switches language and sends the chosen one', async ({ page }) => {
     const { submitted, all } = await renderForm(page, 'password', { step });
 
@@ -126,7 +168,7 @@ test.describe('password', () => {
     await page.getByRole('button', { name: 'ru', exact: true }).click();
     await expect(page.getByRole('heading', { name: all.ru.title })).toBeVisible();
 
-    await page.getByPlaceholder(all.ru.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(all.ru.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: all.ru.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -140,8 +182,8 @@ test.describe('set-password', () => {
   test('submits matching passwords', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
-    await page.getByPlaceholder(t.confirm_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -154,8 +196,8 @@ test.describe('set-password', () => {
   test('flags a mismatch as it is typed and does not submit it', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
-    await page.getByPlaceholder(t.confirm_placeholder).fill('Different1Password');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill('Different1Password');
     await expect(page.getByText(t.password_mismatch)).toBeVisible();
 
     await page.getByRole('button', { name: t.continue }).click();
@@ -165,8 +207,8 @@ test.describe('set-password', () => {
   test('refuses a password the policy rejects', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'set-password', { step });
 
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
-    await page.getByPlaceholder(t.confirm_placeholder).fill('weak');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
+    await page.getByLabel(t.confirm_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -178,7 +220,7 @@ test.describe('credential', () => {
   test('email: posts the address to the email challenge', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'] } });
 
-    await page.getByPlaceholder(t.email_placeholder).fill('ada@example.com');
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -192,8 +234,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['login'], passwordRegex: PASSWORD_REGEX },
     });
 
-    await page.getByPlaceholder(t.login_placeholder).fill('ada');
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.login_placeholder, { exact: true }).fill('ada');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -207,8 +249,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['login'], passwordRegex: PASSWORD_REGEX },
     });
 
-    await page.getByPlaceholder(t.login_placeholder).fill('ada');
-    await page.getByPlaceholder(t.password_placeholder).fill('weak');
+    await page.getByLabel(t.login_placeholder, { exact: true }).fill('ada');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill('weak');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expect(page.getByText(t.password_not_allowed)).toBeVisible();
@@ -220,8 +262,8 @@ test.describe('credential', () => {
       step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true },
     });
 
-    await page.getByPlaceholder(t.email_placeholder).fill('ada@example.com');
-    await page.getByPlaceholder(t.password_placeholder).fill(STRONG_PASSWORD);
+    await page.getByLabel(t.email_placeholder, { exact: true }).fill('ada@example.com');
+    await page.getByLabel(t.password_placeholder, { exact: true }).fill(STRONG_PASSWORD);
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
@@ -350,7 +392,7 @@ test.describe('credential', () => {
   test('several first factors share one field named for all of them', async ({ page }) => {
     const { t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email', 'phone'] } });
 
-    await expect(page.getByPlaceholder(`${t.email_placeholder} / ${t.phone_placeholder}`)).toBeVisible();
+    await expect(page.getByLabel(`${t.email_placeholder} / ${t.phone_placeholder}`, { exact: true })).toBeVisible();
   });
 
   test('shows a failed sign-in in words', async ({ page }) => {
@@ -489,7 +531,7 @@ test.describe('passkey-enroll', () => {
   test('refuses a name the server would reject', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'passkey-enroll', { step });
 
-    await page.getByPlaceholder(t.name_placeholder).fill(' leading space');
+    await page.getByLabel(t.name_placeholder, { exact: true }).fill(' leading space');
     await page.getByRole('button', { name: t.enroll_button }).click();
 
     await expect(page.getByText(t.name_invalid)).toBeVisible();
@@ -621,4 +663,60 @@ test('credential phone selector has no axe violations, closed or open', async ({
   await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
   await expect(page.getByRole('searchbox')).toBeVisible();
   expect((await scan()).violations.map(v => v.id)).toEqual([]);
+});
+
+for (const [id, config] of accessibilityCases) {
+  test(`${id} has no axe violations in the dark colour scheme`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await renderForm(page, id, config);
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
+      .analyze();
+
+    expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+
+  test(`${id} reflows at 320px without horizontal scrolling`, async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 640 });
+    await renderForm(page, id, config);
+
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+}
+
+/**
+ * A theme is a full replacement of common.css, so a tenant that forked the previous one keeps it
+ * while the forms are updated underneath it. tests/fixtures/previous-common.css is that frozen
+ * copy; the forms must stay usable over it.
+ */
+test.describe('over a theme forked from the previous common.css', () => {
+  const previous = { commonCss: 'fixtures/previous-common.css' };
+
+  test('does not flag empty required fields as invalid', async ({ page }) => {
+    await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true } }, previous);
+
+    for (const field of await page.locator('.input-field').all()) {
+      await expect(field).not.toHaveCSS('border-color', 'rgb(220, 38, 38)');
+    }
+  });
+
+  test('draws the ticked state of a consent scope', async ({ page }) => {
+    await renderForm(page, 'consent', {
+      step: { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes: [{ scope: 'email', description: 'Read your email address', claims: [], deselectable: true }] },
+    }, previous);
+
+    await expect(page.getByLabel('Read your email address')).not.toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+  });
+
+  test('keeps the password toggle next to its field', async ({ page }) => {
+    const { t } = await renderForm(page, 'password', { step: { type: 'password' } }, previous);
+
+    const field = await page.getByLabel(t.password_placeholder, { exact: true }).boundingBox();
+    const toggle = await page.getByRole('button', { name: t.show_password }).boundingBox();
+    expect(toggle!.x).toBeGreaterThan(field!.x + field!.width / 2);
+    expect(toggle!.y).toBeGreaterThanOrEqual(field!.y);
+    expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(field!.y + field!.height);
+  });
 });

@@ -35,6 +35,8 @@ const Check = () => (
  * dial code and the digits, which is what the server checks again.
  */
 export function PhoneField(props: {
+  /** Id of the number input, so the form's visible label can name it. */
+  id: string;
   regions: PhoneRegion[];
   t: () => Record<string, string>;
   locale: () => string;
@@ -171,12 +173,12 @@ export function PhoneField(props: {
         </Show>
         <input
           ref={input}
+          id={props.id}
           class="phone-input"
           type="tel"
           inputmode="tel"
           autocomplete="tel-national"
           placeholder={placeholder()}
-          aria-label={props.t().phone_placeholder}
           aria-invalid={invalid()}
           required
           onInput={onInput}

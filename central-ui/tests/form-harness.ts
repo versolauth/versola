@@ -55,10 +55,10 @@ export async function translations(id: string): Promise<Translations> {
 /** What a form config needs besides its `step`; anything given overrides the defaults. */
 export type FormConfig = { step: Record<string, unknown> } & Record<string, unknown>;
 
-export async function renderForm(page: Page, id: string, config: FormConfig) {
+export async function renderForm(page: Page, id: string, config: FormConfig, options: { commonCss?: string } = {}) {
   const [all, commonCss, formCss, script] = await Promise.all([
     translations(id),
-    read('../forms/common.css'),
+    options.commonCss ? read(options.commonCss) : read('../forms/common.css'),
     read(`../forms/${id}/${id}.css`),
     formBundle(id),
   ]);

@@ -81,7 +81,7 @@ function AccessDeniedForm(props: { config: FormConfig }) {
       </div>
       <h1>{t().title}</h1>
       <p class="access-denied-description">{t().description}</p>
-      <a href={redirectUri} class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;">
+      <a href={redirectUri} class="btn btn-primary">
         {t().return_button}
       </a>
     </div>
