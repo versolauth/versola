@@ -18,12 +18,14 @@ object CryptoProviderSpec extends ZIOSpecDefault:
 
   def spec = suite("CryptoProvider")(
     suite("Mode.parse")(
-      test("an unset or empty value is the JDK default"):
+      test("an unset or empty value uses the native provider when it works"):
         assertTrue(
-          Mode.parse(None) == Right(Mode.Jdk),
-          Mode.parse(Some("  ")) == Right(Mode.Jdk),
-          Mode.parse(Some("jdk")) == Right(Mode.Jdk),
+          Mode.parse(None) == Right(Mode.Accp),
+          Mode.parse(Some("  ")) == Right(Mode.Accp),
         )
+      ,
+      test("jdk is the explicit opt-out"):
+        assertTrue(Mode.parse(Some("JDK")) == Right(Mode.Jdk))
       ,
       test("accp and accp-required are recognised whatever their case"):
         assertTrue(

@@ -653,9 +653,10 @@ fallback is a latency incident, not a degraded mode. Check `crypto_provider_nati
 
 - **Images are published for amd64 and arm64**; each carries the jar for its own CPU, fetched at build time
   by a pinned checksum (`docker/Dockerfile.auth`, `docker/Dockerfile.edge`).
-- **A custom image or an unusual base** (musl/Alpine, a CPU without the native library): set
-  `VERSOLA_CRYPTO_PROVIDER=accp` (use it when it works, otherwise log and continue on the JDK) or `jdk` to opt out.
-  Running from sbt or a plain `java -cp` defaults to the JDK.
+- **The native provider is the default everywhere**, not just in the images: with `VERSOLA_CRYPTO_PROVIDER` unset the service
+  uses it when it loads and works, and otherwise logs why and continues on the JDK (sbt, tests and a plain `java -cp`
+  have no jar). `accp-required` is the same without the fallback and is what the images set. A custom image or an
+  unusual base (musl/Alpine, a CPU without the native library) can set `accp` to fall back, or `jdk` to opt out.
 - **Signing key default for new tenants and fresh seeds is now `ES256`** (`JwksRecord.algorithmPreference`:
   ES256, then PS256). Existing tenants are untouched: one with a `signingKeyId` keeps it, one without keeps
   signing with auth's configured key. To move an existing tenant, generate an ES256 key
@@ -768,7 +769,7 @@ Environment variables read by the containers:
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (see [`RUN_MIGRATIONS`](#run_migrations)) |
-| `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images, `jdk` otherwise | `jdk`, `accp` (native if it works, else the JDK) or `accp-required` (refuse to start without it); jar path in `VERSOLA_ACCP_JAR` (default `/app/accp/accp.jar`) |
+| `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images, `accp` when unset | `accp` (native if it works, else the JDK), `accp-required` (refuse to start without it) or `jdk` (opt out); jar path in `VERSOLA_ACCP_JAR` (default `/app/accp/accp.jar`) |
 | `JAVA_OPTS` | see below | JVM flags. The images set a fixed budget: `-Xms512m -Xmx512m`, `-XX:MaxDirectMemorySize=64m` (`96m` for edge, which proxies), `-XX:MaxMetaspaceSize=128m`, `-XX:ReservedCodeCacheSize=64m`, `-Xss512k`; a heap dump and a rotating GC log are written to `/diagnostics`. Overriding `JAVA_OPTS` replaces the whole string, so repeat any of these you still want |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file

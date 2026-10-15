@@ -13,9 +13,9 @@ import scala.util.Try
   * dearer, so the cost moves from auth to edge instead of going away.
   *
   * `VERSOLA_CRYPTO_PROVIDER` picks the mode:
-  *  - unset or `jdk`: the JDK providers, nothing is loaded;
-  *  - `accp`: use ACCP when it loads and works, otherwise say why and carry on with the JDK (development,
-  *    where the native library for the machine may not exist);
+  *  - unset or `accp`: use ACCP when it loads and works, otherwise say why and carry on with the JDK
+  *    (development and tests, where there is no jar or no native library for the machine);
+  *  - `jdk`: the JDK providers, nothing is loaded -- the explicit opt-out;
   *  - `accp-required`: the same, but a provider that is missing, fails to load, fails its own health check
   *    or does not end up serving ECDSA and RSASSA-PSS refuses the start. What the images run: a service
   *    that quietly fell back would be five times dearer on the edge and would only show as a latency
@@ -33,8 +33,8 @@ object CryptoProvider:
   object Mode:
     def parse(value: Option[String]): Either[String, Mode] =
       value.map(_.trim.toLowerCase).filter(_.nonEmpty) match
-        case None | Some("jdk") => Right(Jdk)
-        case Some("accp") => Right(Accp)
+        case Some("jdk") => Right(Jdk)
+        case None | Some("accp") => Right(Accp)
         case Some("accp-required") => Right(AccpRequired)
         case Some(other) => Left(s"VERSOLA_CRYPTO_PROVIDER=$other: expected jdk, accp or accp-required")
 
