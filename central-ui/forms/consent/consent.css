@@ -52,7 +52,7 @@
 }
 .consent-scope-label input[type='checkbox']:checked { background: var(--brand, var(--accent)); border-color: var(--brand, var(--accent)); }
 .consent-scope-label input[type='checkbox']:checked::after { transform: translateY(-1px) rotate(45deg) scale(1); }
-.consent-scope-label input[type='checkbox']:disabled { opacity: 0.55; }
+/* A scope the user cannot drop is ticked like any other: dimming it looked muddy, and its "Required" tag already says why it is fixed. */
 .consent-scope-label input[type='checkbox']:focus-visible { outline: 2px solid var(--brand, var(--accent)); outline-offset: 3px; }
 .btn-quiet { border-color: transparent; color: var(--text-muted); }
 .btn-quiet:hover:not(:disabled) { border-color: transparent; color: var(--text); }

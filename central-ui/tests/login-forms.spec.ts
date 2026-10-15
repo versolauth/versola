@@ -581,6 +581,16 @@ test.describe('consent, with the seeded scope catalog', () => {
     await expect(page.getByLabel('Basic profile information')).toBeInViewport();
   });
 
+  test('draws a scope the user cannot drop as a plain ticked one, not dimmed', async ({ page }) => {
+    await renderForm(page, 'consent', { step });
+
+    const required = page.getByLabel('OpenID Connect authentication');
+    await expect(required).toBeDisabled();
+    await expect(required).toBeChecked();
+    await expect(required).toHaveCSS('opacity', '1');
+    await expect(page.getByLabel('Email address')).toHaveCSS('background-color', await required.evaluate(el => getComputedStyle(el).backgroundColor));
+  });
+
   test('does not repeat a scope\'s own name as its claim', async ({ page }) => {
     await renderForm(page, 'consent', { step });
 
