@@ -383,7 +383,7 @@ test.describe('credential', () => {
   test('phone: a tenant with no regions gets the plain E.164 field', async ({ page }) => {
     const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([]) });
 
-    await page.getByPlaceholder(t.phone_placeholder).fill('+4915112345678');
+    await page.getByLabel(t.phone_placeholder, { exact: true }).fill('+4915112345678');
     await page.getByRole('button', { name: t.continue }).click();
     await expectSubmissions(submitted, 1);
     expect(submitted[0].fields.get('phone')).toBe('+4915112345678');
@@ -650,9 +650,10 @@ for (const [id, config] of accessibilityCases) {
   });
 }
 
-test('credential phone selector has no axe violations, closed or open', async ({ page }) => {
+for (const scheme of ['light', 'dark'] as const) {
+test(`credential phone selector has no axe violations in the ${scheme} scheme, closed or open`, async ({ page }) => {
+  await page.emulateMedia({ colorScheme: scheme, reducedMotion: 'reduce' });
   // axe reads the colours as painted, so a transition still running would be scanned half way.
-  await page.emulateMedia({ reducedMotion: 'reduce' });
   const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
   const { t } = await renderForm(page, 'credential', {
     step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: ['AM:+374', 'GE:+995', 'UZ:+998', 'KG:+996', 'TJ:+992', 'AZ:+994'].map(e => region(...(e.split(':') as [string, string]))) },
@@ -663,6 +664,20 @@ test('credential phone selector has no axe violations, closed or open', async ({
   await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
   await expect(page.getByRole('searchbox')).toBeVisible();
   expect((await scan()).violations.map(v => v.id)).toEqual([]);
+});
+}
+
+test('credential phone field reflows at 320px with the selector open', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
+  const { t } = await renderForm(page, 'credential', {
+    step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: [region('UZ', '+998'), region('KG', '+996')] },
+  });
+  const overflow = () => page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+
+  expect(await overflow()).toBeLessThanOrEqual(0);
+  await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
+  expect(await overflow()).toBeLessThanOrEqual(0);
 });
 
 for (const [id, config] of accessibilityCases) {
