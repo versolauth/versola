@@ -35,6 +35,36 @@ object ThemeCss:
     val own = luminance(colour)
     if contrast(own, 1.0) >= contrast(own, inkLuminance) then White else Ink
 
+  // The card the brand colour is drawn on: white, or the dark card's grey (a little lighter than it is, to stay on the safe side).
+  private val lightCard = 1.0
+  private val darkCard = luminance(0x26, 0x26, 0x28)
+  // WCAG asks 3:1 of a focus indicator and of a ticked box against what surrounds it.
+  private val indicatorContrast = 3.0
+
+  private def hex(red: Int, green: Int, blue: Int): String = f"#$red%02x$green%02x$blue%02x"
+
+  /** The colour as it is, or moved towards black (on a light card) or white (on a dark one) until it can be seen
+    * on the card. A pale brand such as yellow vanishes on white and a near-black one on the dark card, so the
+    * rings and ticks use this, not the brand itself.
+    */
+  def indicator(colour: BrandColor, dark: Boolean): String =
+    def part(from: Int) = Integer.parseInt(colour.value.substring(from, from + 2), 16)
+    val (red, green, blue) = (part(1), part(3), part(5))
+    val (towards, card) = if dark then (255, darkCard) else (0, lightCard)
+    def mixed(step: Int) =
+      def channel(value: Int) = (value + (towards - value) * step / 20.0).round.toInt
+      (channel(red), channel(green), channel(blue))
+    val enough = (0 to 20).iterator.map(mixed).find((r, g, b) => contrast(luminance(r, g, b), card) >= indicatorContrast)
+    val (r, g, b) = enough.getOrElse(mixed(20))
+    hex(r, g, b)
+
+  private def onIndicator(indicatorColour: String): String =
+    BrandColor.parse(indicatorColour).fold(_ => White, onBrand)
+
+  private def focus(colour: BrandColor): String =
+    val (light, dark) = (indicator(colour, dark = false), indicator(colour, dark = true))
+    s"--focus:light-dark($light,$dark);--on-focus:light-dark(${onIndicator(light)},${onIndicator(dark)});"
+
   private def surface(surface: Surface): String = surface match
     case Surface.bold => ""
     case Surface.soft =>
@@ -54,7 +84,7 @@ object ThemeCss:
   def generate(tokens: ResolvedTokens): String =
     val (field, button, card) = corners(tokens.shape)
     s"/* theme tokens: brand ${tokens.brand.value}, ${tokens.shape}, ${tokens.surface} page, ${tokens.mode} scheme */\n" +
-      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};--rf:$field;--rb:$button;--rs:$card;" +
+      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};${focus(tokens.brand)}--rf:$field;--rb:$button;--rs:$card;" +
       s"${surface(tokens.surface)}${scheme(tokens.mode)}}"
 
   /** The stylesheet of a theme built from tokens: the current default, then what the tokens set, then the

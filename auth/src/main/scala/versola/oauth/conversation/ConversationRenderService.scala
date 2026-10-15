@@ -582,12 +582,14 @@ object ConversationRenderService:
 
     // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
     // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
-    // rather than a broken page.
+    // rather than a broken page (plus the theme's own CSS).
     private def themeCss(themeId: String): UIO[String] =
       configuration.getTheme(themeId).flatMap {
         case Some(theme) if theme.tokens.isDefined =>
           defaultCss.map: default =>
-            theme.tokens.flatMap(ThemePresets.resolve(_).toOption).fold(default)(ThemeCss.compose(default, _, theme.css))
+            theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
+              case Some(resolved) => ThemeCss.compose(default, resolved, theme.css)
+              case None => Seq(default, theme.css).filter(_.nonEmpty).mkString("\n")
         case Some(theme) if theme.css.nonEmpty => ZIO.succeed(theme.css)
         case _ => defaultCss
       }

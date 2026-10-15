@@ -267,6 +267,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
             assertTrue(body.contains(".body { color: black; }"), !body.contains("--brand:"))
         },
+        test("keeps its own CSS on the default stylesheet when its base is not one this service knows") {
+          rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
+            assertTrue(body.contains(".body { color: black; }"), body.contains(".extra { top: 0; }"), !body.contains("--brand:"))
+        },
         test("has its own CSS escaped like any other, so it cannot end the style element") {
           val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
           rendered(tokenTheme).map: body =>

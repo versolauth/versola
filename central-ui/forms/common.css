@@ -4,6 +4,7 @@
  *
  * Theming API (what a theme may override on :root):
  *   --brand, --on-brand     accent colour and the text colour that is readable on it
+ *   --focus, --on-focus     the brand as focus rings and ticked boxes: kept visible (3:1) on the card; follows --brand
  *   --rf / --rb / --rs      corner radius of fields, buttons and the card
  *   --page-light/--page-dark  page background per colour scheme, --glow-dark the dark-mode halo
  *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
@@ -14,6 +15,8 @@
   color-scheme: light;
   --brand: #155e75;
   --on-brand: #ffffff;
+  --focus: var(--brand);
+  --on-focus: var(--on-brand);
   --rf: 14px;
   --rb: 14px;
   --rs: 24px;
@@ -53,6 +56,8 @@
     color-scheme: light dark;
     --bg: light-dark(var(--page-light), var(--page-dark));
     --glow: light-dark(transparent, var(--glow-dark));
+    --focus: light-dark(var(--brand), color-mix(in oklab, var(--brand) 50%, white));
+    --on-focus: light-dark(var(--on-brand), #1c1b19);
     --ink: light-dark(#1c1b19, #f3f2f0);
     --text-muted: light-dark(#6b6a66, #a9a9b0);
     --sheet: light-dark(#ffffff, color-mix(in oklab, var(--brand) 7%, #1f1f20));
@@ -262,13 +267,13 @@ form {
 .btn:focus-visible,
 .password-toggle:focus-visible,
 .locale-trigger:focus-visible {
-  outline: 2px solid var(--brand);
+  outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 a {
   color: var(--ink);
   font-weight: 650;
-  text-decoration-color: var(--brand);
+  text-decoration-color: var(--focus);
   text-decoration-thickness: 2px;
   text-underline-offset: 4px;
 }

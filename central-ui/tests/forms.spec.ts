@@ -243,13 +243,10 @@ test('previews a form central lists nothing for from its own backend properties'
   await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
 });
 
-test('keeps previewing from backend properties when central has no list of states', async ({ page }) => {
+test('says so when central cannot list the states, instead of quietly previewing something else', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: null } });
-  await expandCredential(page);
-  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
 
-  await expect(page.getByRole('group', { name: 'Preview state' })).toHaveCount(0);
-  await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
+  await expect(page.getByText('Could not load forms')).toBeVisible();
 });
 
 test('the new-version editor previews a built-in form from the listed states and hides its property authoring', async ({ page }) => {

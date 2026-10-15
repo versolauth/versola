@@ -423,6 +423,9 @@ object BootstrapService:
       Set(
         endpointId("GET", "/configuration/forms"),
         endpointId("GET", "/configuration/forms/previews"),
+        endpointId("GET", "/configuration/themes"),
+        endpointId("GET", "/configuration/themes/presets"),
+        endpointId("POST", "/configuration/themes/css"),
       ),
     ),
     (
@@ -431,6 +434,9 @@ object BootstrapService:
       Set(
         endpointId("PUT", "/configuration/forms"),
         endpointId("PUT", "/configuration/forms/active"),
+        endpointId("POST", "/configuration/themes"),
+        endpointId("PUT", "/configuration/themes"),
+        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
@@ -453,9 +459,6 @@ object BootstrapService:
       localized("View tenants", "Просмотр тенантов"),
       Set(
         endpointId("GET", "/configuration/tenants"),
-        endpointId("GET", "/configuration/themes"),
-        endpointId("GET", "/configuration/themes/presets"),
-        endpointId("POST", "/configuration/themes/css"),
       ),
     ),
     (
@@ -465,9 +468,6 @@ object BootstrapService:
         endpointId("POST", "/configuration/tenants"),
         endpointId("PUT", "/configuration/tenants"),
         endpointId("DELETE", "/configuration/tenants"),
-        endpointId("POST", "/configuration/themes"),
-        endpointId("PUT", "/configuration/themes"),
-        endpointId("DELETE", "/configuration/themes"),
       ),
     ),
     (
