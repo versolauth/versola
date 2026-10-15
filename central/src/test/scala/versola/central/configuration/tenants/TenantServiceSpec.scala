@@ -141,7 +141,7 @@ object TenantServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.challengeSettingsService.upsertSettings.succeedsWith(())
         _ <- env.service.createTenant(createRequest)
       yield assertTrue(
-        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(Some("ps-kid")),
+        env.challengeSettingsService.upsertSettings.calls.map(_.signingKeyId) == List(Some("es-kid")),
       )
     },
     // The state of a deployment seeded from `bootstrap.jwks`: central holds no private half

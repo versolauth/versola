@@ -642,6 +642,27 @@ user has to authorize again. This removes the per-refresh write of `refresh_toke
   released migrations are immutable, so it is left as it is.
 - Rolling back to the previous version restores sliding, from the then-current `expires_at`.
 
+#### Behaviour change: native crypto provider required, new tenants default to ES256
+
+The `auth` and `edge` images now carry the Amazon Corretto Crypto Provider (Apache-2.0, AWS-LC underneath) and start with
+`VERSOLA_CRYPTO_PROVIDER=accp-required`: the service **refuses to start** when the provider is missing,
+fails to load, fails its own health check, or does not end up serving ECDSA and RSASSA-PSS. This is
+deliberate. On the load test it cuts the CPU per request by about 30% and raises one auth + edge pair's
+ceiling by 15-20%; without it ES256 would move cost from auth to edge instead of removing it, so a silent
+fallback is a latency incident, not a degraded mode. Check `crypto_provider_native` (1 = native) on `/metrics`.
+
+- **Images are published for amd64 and arm64**; each carries the jar for its own CPU, fetched at build time
+  by a pinned checksum (`docker/Dockerfile.auth`, `docker/Dockerfile.edge`).
+- **The native provider is the default everywhere**, not just in the images: with `VERSOLA_CRYPTO_PROVIDER` unset the service
+  uses it when it loads and works, and otherwise logs why and continues on the JDK (sbt, tests and a plain `java -cp`
+  have no jar). `accp-required` is the same without the fallback and is what the images set. A custom image or an
+  unusual base (musl/Alpine, a CPU without the native library) can set `accp` to fall back, or `jdk` to opt out.
+- **Signing key default for new tenants and fresh seeds is now `ES256`** (`JwksRecord.algorithmPreference`:
+  ES256, then PS256). Existing tenants are untouched: one with a `signingKeyId` keeps it, one without keeps
+  signing with auth's configured key. To move an existing tenant, generate an ES256 key
+  (`POST /configuration/jwks/generate?alg=ES256`) and select it in the tenant's challenge settings; to go back,
+  select a PS256 key or clear the selection. Relying parties must accept ES256 (FAPI 2.0 requires them to).
+
 ### `RUN_MIGRATIONS`
 
 `RUN_MIGRATIONS` controls whether a service applies Flyway migrations itself on startup:
@@ -748,6 +769,7 @@ Environment variables read by the containers:
 | `BIND_HOST` | — | address to bind; the vps compose file sets `127.0.0.1` |
 | `CONFIG_PATH` | `/app/config/env.conf` | path to the mounted HOCON config |
 | `RUN_MIGRATIONS` | `false` | apply Flyway migrations on startup (see [`RUN_MIGRATIONS`](#run_migrations)) |
+| `VERSOLA_CRYPTO_PROVIDER` | `accp-required` in the auth and edge images, `accp` when unset | `accp` (native if it works, else the JDK), `accp-required` (refuse to start without it) or `jdk` (opt out); jar path in `VERSOLA_ACCP_JAR` (default `/app/accp/accp.jar`) |
 | `JAVA_OPTS` | see below | JVM flags. The images set a fixed budget: `-Xms512m -Xmx512m`, `-XX:MaxDirectMemorySize=64m` (`96m` for edge, which proxies), `-XX:MaxMetaspaceSize=128m`, `-XX:ReservedCodeCacheSize=64m`, `-Xss512k`; a heap dump and a rotating GC log are written to `/diagnostics`. Overriding `JAVA_OPTS` replaces the whole string, so repeat any of these you still want |
 
 Everything else — secrets, keys, database credentials, bootstrap data — lives in the HOCON file
