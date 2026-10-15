@@ -7,6 +7,7 @@ import type {
   BackendProperty,
   Edge,
   Locale,
+  FormPreview,
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
@@ -32,7 +33,9 @@ import type {
   ServiceKey,
   SecurityProfile,
   Tenant,
+  ThemePreset,
   ThemeRecord,
+  ThemeTokens,
 } from '../types';
 
 export const DEFAULT_PAGE_SIZE = 30;
@@ -1380,6 +1383,13 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
+// The states of the built-in forms that central previews. A central without this endpoint answers
+// with an error; the console then previews every form from its backend properties, as before.
+export async function fetchFormPreviews(): Promise<FormPreview[]> {
+  const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
+  return response.previews;
+}
+
 export async function fetchLocales(): Promise<Locale[]> {
   const response = await request<{ locales: Locale[] }>('/configuration/locales');
   return response.locales;
@@ -1430,14 +1440,30 @@ export async function fetchThemes(tenantId: string): Promise<ThemeRecord[]> {
 export async function createTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'POST',
-    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId },
+    body: { id: theme.id, css: theme.css, tenantId: theme.tenantId, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
   });
 }
 
 export async function updateTheme(theme: ThemeRecord): Promise<void> {
   await requestVoid('/configuration/themes', {
     method: 'PUT',
-    body: { id: theme.id, css: theme.css },
+    body: { id: theme.id, css: theme.css, ...(theme.tokens ? { tokens: theme.tokens } : {}) },
+  });
+}
+
+// The built-in themes a theme can be based on. A central that has none answers with an error; the
+// console then offers only themes written as CSS, as before.
+export async function fetchThemePresets(): Promise<ThemePreset[]> {
+  const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
+  return response.presets;
+}
+
+// The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
+// exactly what users get, because nobody but central builds it.
+export async function renderTheme(tokens: ThemeTokens, css: string): Promise<{ css: string; generated: string }> {
+  return request<{ css: string; generated: string }>('/configuration/themes/css', {
+    method: 'POST',
+    body: { tokens, css },
   });
 }
 

@@ -133,7 +133,7 @@ shadow DOM. Read the values there, and use only the tokens in components:
 - Accent `--accent`, `--accent-gradient`, and `--accent-tint` for tinted backgrounds
 - Text `--text-primary`, `--text-secondary`
 - Borders `--border-dark`, `--border-light`
-- Semantic `--success`, `--warning`, `--danger` (+ `--danger-tint`, `--danger-strong`), `--info`
+- Semantic `--success`, `--warning`, `--danger` (+ `--danger-tint`, `--danger-strong`, and `--on-danger`, the text colour on a solid danger fill), `--info`
 - Overlay and inset surfaces `--surface-overlay`, `--surface-inset`; switches `--toggle-track-off`
 
 A new colour is a new token with a value in **both** themes, not a literal in a component.

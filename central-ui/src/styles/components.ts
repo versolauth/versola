@@ -48,7 +48,7 @@ export const buttonStyles = css`
 
   .btn-danger {
     background: var(--danger);
-    color: white;
+    color: var(--on-danger, white);
     border: none;
   }
 

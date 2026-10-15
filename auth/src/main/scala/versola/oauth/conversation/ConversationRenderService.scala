@@ -13,6 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
+import versola.util.theme.{ThemeCss, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
@@ -582,11 +583,22 @@ object ConversationRenderService:
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
+    // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
+    // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
+    // rather than a broken page (plus the theme's own CSS).
     private def themeCss(themeId: String): UIO[String] =
       configuration.getTheme(themeId).flatMap {
+        case Some(theme) if theme.tokens.isDefined =>
+          defaultCss.map: default =>
+            theme.tokens.flatMap(ThemePresets.resolve(_).toOption) match
+              case Some(resolved) => ThemeCss.compose(default, resolved, theme.css)
+              case None => Seq(default, theme.css).filter(_.nonEmpty).mkString("\n")
         case Some(theme) if theme.css.nonEmpty => ZIO.succeed(theme.css)
-        case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
+        case _ => defaultCss
       }
+
+    private def defaultCss: UIO[String] =
+      configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
 
     /** Resolves one localized configuration string the same way form translations are resolved:
       * the first requested locale that has a value, then the tenant default. Falls back to `None`
@@ -731,7 +743,7 @@ object ConversationRenderService:
       case _: SignedOut => "signed-out"
 
     private def logoutConfirmPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>${escapeHtml(
           info.title,
         )}</title>${faviconLink(
@@ -755,10 +767,6 @@ object ConversationRenderService:
     private def escapeAttribute(value: String): String =
       value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
 
-    private def formLogo(step: StepView, logo: Option[String]): Option[String] = step match
-      case _: StepView.Consent | _: StepView.AccessDenied | _: StepView.ConversationExpired | _: StepView.ServiceUnavailable => None
-      case _ => logo
-
     private def inlineScriptJson(value: String): String =
       value
         .replace("&", "\\u0026")
@@ -768,7 +776,7 @@ object ConversationRenderService:
         .replace("\u2029", "\\u2029")
 
     private def solidPage(info: FormRenderInfo, themeCss: String, logo: Option[String]): String =
-      val config = inlineScriptJson(info.config.copy(logo = formLogo(info.config.step, logo)).toJson)
+      val config = inlineScriptJson(info.config.copy(logo = logo).toJson)
       s"""<!DOCTYPE html>
          |<html lang="en">
          |  <head>

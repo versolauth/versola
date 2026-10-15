@@ -401,10 +401,46 @@ export interface UserRoleAssignment {
 export type UserSearchField = 'id' | 'email' | 'phone' | 'login';
 
 // Theme
+export type ThemeShape = 'round' | 'soft' | 'sharp';
+export type ThemeSurface = 'bold' | 'soft' | 'neutral';
+export type ThemeMode = 'auto' | 'light' | 'dark';
+
+// What a theme sets over its base; an absent value is the base's.
+export interface ThemeOverrides {
+  brand?: string;
+  shape?: ThemeShape;
+  surface?: ThemeSurface;
+  mode?: ThemeMode;
+}
+
+// A built-in base theme and the values a theme overrides on it.
+export interface ThemeTokens {
+  base: string;
+  overrides?: ThemeOverrides;
+}
+
+// Every token with a value: a built-in theme's own.
+export interface ResolvedThemeTokens {
+  brand: string;
+  shape: ThemeShape;
+  surface: ThemeSurface;
+  mode: ThemeMode;
+}
+
+// A theme that ships with Versola: what a theme can be based on. Fixed by the central build.
+export interface ThemePreset {
+  id: string;
+  title: Record<string, string>;
+  tokens: ResolvedThemeTokens;
+}
+
+// A theme is a stylesheet, or -- with `tokens` -- a built-in base with overrides, in which case
+// `css` holds only the theme's own additions and may be empty.
 export interface ThemeRecord {
   id: string;
   css: string;
   tenantId: string | null;
+  tokens?: ThemeTokens | null;
 }
 
 // Backend properties
@@ -428,6 +464,20 @@ export interface NumberProperty {
 }
 
 export type BackendProperty = BooleanProperty | StringArrayProperty | NumberProperty;
+
+// One state of a built-in form, as central lists it: the `step` the form receives (shaped like the
+// step auth serialises) and the error key shown above it. Fixed by the central build.
+export interface FormPreviewScenario {
+  id: string;
+  title: Record<string, string>;
+  step: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface FormPreview {
+  formId: string;
+  scenarios: FormPreviewScenario[];
+}
 
 // Auth Forms
 export interface FormRecord {

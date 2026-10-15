@@ -25,7 +25,7 @@ const Chevron = () => (
 
 const Check = () => (
   <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
-    <path d="M2.5 7.5l3 3 6-6.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M2.5 7.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
   </svg>
 );
 
@@ -35,6 +35,8 @@ const Check = () => (
  * dial code and the digits, which is what the server checks again.
  */
 export function PhoneField(props: {
+  /** Id of the number input, so the form's visible label can name it. */
+  id: string;
   regions: PhoneRegion[];
   t: () => Record<string, string>;
   locale: () => string;
@@ -171,12 +173,12 @@ export function PhoneField(props: {
         </Show>
         <input
           ref={input}
+          id={props.id}
           class="phone-input"
           type="tel"
           inputmode="tel"
           autocomplete="tel-national"
           placeholder={placeholder()}
-          aria-label={props.t().phone_placeholder}
           aria-invalid={invalid()}
           required
           onInput={onInput}

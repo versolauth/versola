@@ -1341,6 +1341,26 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /configuration/forms/previews:
+    get:
+      tags: [Forms]
+      summary: List the states of the built-in forms the console previews
+      description: |
+        For each built-in form, the states it can be in -- the `step` object `auth` would inject into the page,
+        and the error key shown above it -- with realistic data. The console renders them in the form preview.
+        A form that is not listed (a custom one) is previewed from its backend properties instead. The list is
+        fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getFormPreviews
+      responses:
+        '200':
+          description: The preview scenarios, grouped by form id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetFormPreviewsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /configuration/forms/active:
     put:
       tags: [Forms]
@@ -1452,11 +1472,19 @@ paths:
       responses:
         '201':
           description: Theme created.
+        '400':
+          description: |
+            Refused, with nothing stored: `tokens` name a base that is not built in, a brand colour is not `#rrggbb`,
+            a shape, surface or mode is unknown, or the theme is `default`, which is a stylesheet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '401':
           $ref: '#/components/responses/Unauthorized'
     put:
       tags: [Themes]
-      summary: Update a theme's CSS
+      summary: Update a theme's CSS or tokens
       operationId: updateTheme
       requestBody:
         required: true
@@ -1466,7 +1494,13 @@ paths:
               $ref: '#/components/schemas/UpdateThemeRequest'
       responses:
         '204':
-          description: Theme updated.
+          description: Theme updated. Sending no `tokens` makes it a plain stylesheet again.
+        '400':
+          description: Refused, with nothing stored, for the reasons given for creating a theme.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
         '401':
           $ref: '#/components/responses/Unauthorized'
     delete:
@@ -1496,6 +1530,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Message'
+
+  /configuration/themes/presets:
+    get:
+      tags: [Themes]
+      summary: List the built-in themes a theme can be based on
+      description: The list is fixed by the `central` build; it is not stored and cannot be changed through the API.
+      operationId: getThemePresets
+      responses:
+        '200':
+          description: The built-in themes, each with the value of every token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetThemePresetsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /configuration/themes/css:
+    post:
+      tags: [Themes]
+      summary: Render the stylesheet of a theme built from tokens
+      description: |
+        Returns the stylesheet `auth` would serve for a theme with these tokens and this CSS, so the console's
+        preview shows exactly what users get. Nothing is stored.
+      operationId: renderTheme
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RenderThemeRequest'
+      responses:
+        '200':
+          description: The stylesheet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RenderThemeResponse'
+        '400':
+          description: The tokens name a base that is not built in, or a value is not allowed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Message'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /configuration/jwks:
     get:
@@ -4537,6 +4617,46 @@ components:
           items:
             $ref: '#/components/schemas/FormRecord'
       required: [forms]
+    GetFormPreviewsResponse:
+      type: object
+      properties:
+        previews:
+          type: array
+          items:
+            $ref: '#/components/schemas/FormPreview'
+      required: [previews]
+    FormPreview:
+      type: object
+      properties:
+        formId:
+          type: string
+          description: The id of a built-in form, for example `consent`.
+        scenarios:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewScenario'
+      required: [formId, scenarios]
+    PreviewScenario:
+      type: object
+      properties:
+        id:
+          type: string
+          description: Unique within the form.
+        title:
+          type: object
+          additionalProperties:
+            type: string
+          description: A short name for the state, by language code (`en`, `ru`).
+        step:
+          type: object
+          additionalProperties: true
+          description: |
+            The `step` the form receives, shaped like the step `auth` serialises for that form (its `type` is the
+            form id).
+        error:
+          type: string
+          description: The error key shown above the form in this state, when there is one.
+      required: [id, title, step]
     UpdateFormRequest:
       type: object
       properties:
@@ -4630,7 +4750,99 @@ components:
           oneOf:
             - $ref: '#/components/schemas/TenantId'
             - type: 'null'
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
       required: [id, css]
+      description: |
+        A theme is a stylesheet or, when `tokens` is set, a built-in base theme with overrides. For a token theme
+        `css` holds only the theme's own additions and may be empty: `auth` lays the current default stylesheet and
+        the CSS generated from the tokens before it. A theme without `tokens` is a whole stylesheet, as before.
+    ThemeTokens:
+      type: object
+      description: A built-in base theme and the values a theme sets over it.
+      properties:
+        base:
+          type: string
+          default: versola
+          description: The id of a built-in theme, from `GET /configuration/themes/presets`.
+        overrides:
+          $ref: '#/components/schemas/ThemeOverrides'
+    ThemeOverrides:
+      type: object
+      description: Each value that is absent is the base theme's.
+      properties:
+        brand:
+          type: string
+          pattern: '^#[0-9a-fA-F]{6}$'
+          description: The accent colour, as `#rrggbb`. Nothing else is accepted, because it is written into a stylesheet.
+        shape:
+          type: string
+          enum: [round, soft, sharp]
+          description: How round the corners of fields, buttons and the card are.
+        surface:
+          type: string
+          enum: [bold, soft, neutral]
+          description: What fills the page behind the card.
+        mode:
+          type: string
+          enum: [auto, light, dark]
+          description: The colour scheme; `auto` follows the visitor's device.
+    ThemePreset:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: object
+          additionalProperties:
+            type: string
+        tokens:
+          $ref: '#/components/schemas/ResolvedThemeTokens'
+      required: [id, title, tokens]
+    ResolvedThemeTokens:
+      type: object
+      description: Every token, with its value.
+      properties:
+        brand:
+          type: string
+        shape:
+          type: string
+          enum: [round, soft, sharp]
+        surface:
+          type: string
+          enum: [bold, soft, neutral]
+        mode:
+          type: string
+          enum: [auto, light, dark]
+      required: [brand, shape, surface, mode]
+    GetThemePresetsResponse:
+      type: object
+      properties:
+        presets:
+          type: array
+          items:
+            $ref: '#/components/schemas/ThemePreset'
+      required: [presets]
+    RenderThemeRequest:
+      type: object
+      properties:
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
+        css:
+          type: string
+          default: ''
+          description: The theme's own CSS, laid after the generated one.
+      required: [tokens]
+    RenderThemeResponse:
+      type: object
+      properties:
+        css:
+          type: string
+          description: The whole stylesheet - the current default, what the tokens set, then the theme's own CSS.
+        generated:
+          type: string
+          description: Only what the tokens set.
+      required: [css, generated]
     GetAllThemesResponse:
       type: object
       properties:
@@ -4648,6 +4860,8 @@ components:
           type: string
         css:
           type: string
+        tokens:
+          $ref: '#/components/schemas/ThemeTokens'
       required: [id, css]
 
     # ─────────────────────────── System settings ───────────────────────────

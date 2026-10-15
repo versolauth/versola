@@ -9,6 +9,7 @@ import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth}
 import versola.util.JWT
 import versola.util.http.Observability
+import versola.util.theme.{ThemePresets, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -139,6 +140,92 @@ object ThemeControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(
           service.updateTheme.calls == List(ThemeRecord(themeId, "body { color: yellow; }", None)),
         )),
+    ),
+    controllerTestCase(
+      description = "create theme passes its tokens on",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes",
+        body = Body.fromString(CreateThemeRequest(themeId, "", Some(tenantId), Some(ThemeTokens("studio"))).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Created,
+      setup = service => service.createTheme.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.createTheme.calls == List(ThemeRecord(themeId, "", Some(tenantId), Some(ThemeTokens("studio")))))),
+    ),
+    controllerTestCase(
+      description = "create theme answers 400 with the reason when its tokens name no built-in base",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes",
+        body = Body.fromString(CreateThemeRequest(themeId, "", None, Some(ThemeTokens("nope"))).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.createTheme.failsWith(new IllegalArgumentException("'nope' is not a built-in theme")),
+      verify = (response, _) => response.body.asString.map(body => assertTrue(body.contains("not a built-in theme"))),
+    ),
+    controllerTestCase(
+      description = "create theme refuses a brand colour that is not #rrggbb before it reaches the service",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes",
+        body = Body.fromString("""{"id":"x","css":"","tokens":{"base":"studio","overrides":{"brand":"#ff0000;}body{display:none"}}}"""),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      verify = (_, service) => ZIO.succeed(assertTrue(service.createTheme.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "update theme answers 400 when its tokens are refused",
+      request = Request(
+        method = Method.PUT,
+        url = URL.root / "configuration" / "themes",
+        body = Body.fromString(UpdateThemeRequest(themeId, "", Some(ThemeTokens("nope"))).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.updateTheme.failsWith(new IllegalArgumentException("'nope' is not a built-in theme")),
+    ),
+    controllerTestCase(
+      description = "GET /configuration/themes/presets lists the built-in themes",
+      request = Request.get(URL.root / "configuration" / "themes" / "presets"),
+      expectedStatus = Status.Ok,
+      verify = (response, _) =>
+        for body <- response.body.asString
+        yield assertTrue(body.fromJson[GetThemePresetsResponse] == Right(GetThemePresetsResponse(ThemePresets.all))),
+    ),
+    controllerTestCase(
+      description = "POST /configuration/themes/css returns the stylesheet of the tokens",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes" / "css",
+        body = Body.fromString(RenderThemeRequest(ThemeTokens("fintech"), "x{}").toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Ok,
+      setup = service => service.render.succeedsWith(RenderThemeResponse("full", "gen")),
+      verify = (response, service) =>
+        for body <- response.body.asString
+        yield assertTrue(
+          service.render.calls == List(RenderThemeRequest(ThemeTokens("fintech"), "x{}")),
+          body.fromJson[RenderThemeResponse] == Right(RenderThemeResponse("full", "gen")),
+        ),
+    ),
+    controllerTestCase(
+      description = "POST /configuration/themes/css answers 400 for a base that is not built in",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes" / "css",
+        body = Body.fromString(RenderThemeRequest(ThemeTokens("nope")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.BadRequest,
+      setup = service => service.render.failsWith(new IllegalArgumentException("'nope' is not a built-in theme")),
+    ),
+    controllerTestCase(
+      description = "POST /configuration/themes/css refuses a service token, which is not the admin's basic credential",
+      request = Request(
+        method = Method.POST,
+        url = URL.root / "configuration" / "themes" / "css",
+        body = Body.fromString(RenderThemeRequest(ThemeTokens("studio")).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)).addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Unauthorized,
     ),
     controllerTestCase(
       description = "sync themes returns 200 OK for an authorized service token",

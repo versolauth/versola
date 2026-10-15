@@ -75,7 +75,8 @@
 }
 .account-row-action {
   width: auto;
-  padding: 8px 14px;
+  height: 40px;
+  padding: 0 14px;
   font-size: 0.85rem;
 }
 .account-rename {

@@ -68,3 +68,40 @@ for (const theme of themes) {
     await clean();
   });
 }
+
+const themePresets = [
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
+  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto' } },
+];
+
+for (const theme of themes) {
+  test(`the themes page and the theme editor have no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, {
+      path: '/?view=themes&tenant=tenant-alpha',
+      state: {
+        themePresets,
+        themes: [
+          { id: 'default', css: '', tenantId: null },
+          { id: 'brand', css: '', tenantId: null, tokens: { base: 'studio', overrides: { brand: '#112233' } } },
+        ],
+        forms: [{ id: 'access-denied', version: 1, active: true, style: '', jsSource: null, jsCompiled: 'document.getElementById("versola-form-root").innerHTML = "<h1>Access denied</h1>";', localizations: { en: {} }, properties: [] }],
+        formPreviews: [{ formId: 'access-denied', scenarios: [{ id: 'access-denied', title: { en: 'Access denied' }, step: { type: 'access-denied' } }] }],
+        locales: [{ code: 'en', name: 'English', active: true, isDefault: true }],
+      },
+    });
+    const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    const clean = async () => expect((await scan()).violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+
+    await expect(page.getByRole('button', { name: 'Edit theme brand', exact: true })).toBeVisible();
+    await clean();
+
+    await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
+    await expect(page.getByText('1 override on Studio')).toBeVisible();
+    await clean();
+
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
+    await clean();
+  });
+}

@@ -85,9 +85,12 @@ object ConsentFlowSpec extends E2ESpec:
         assertTrue(consent.html.contains("email"))
           .label("the consent screen must list the requested 'email' scope") &&
         assertTrue(consent.html.contains("consent-scopes-container"))
-          .label("the requested scopes must be rendered in a scrollable region") &&
-        assertTrue(consent.html.contains("overflow-y: auto"))
-          .label("the scopes region must enable vertical scrolling when it overflows")
+          .label("the requested scopes must be rendered in their own region") &&
+        // A box that scrolls inside the card hides the scopes below its edge on screens whose scrollbars are
+        // invisible, and a consent screen must show everything it asks for: the card grows with the list and
+        // the page scrolls instead.
+        assertTrue(!consent.html.contains("overflow-y: auto"))
+          .label("the scopes region must not hide some scopes behind a scroll box")
     },
     test("the consent screen shows all client scopes when scope is omitted") {
       for

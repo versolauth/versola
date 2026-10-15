@@ -12,6 +12,7 @@ import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMetho
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -140,6 +141,26 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
     val responseService = AuthorizationResponseService.Impl(TestEnvConfig.coreConfig, configuration, jwksService)
     val service = ConversationRenderService.Impl(TestEnvConfig.coreConfig, configuration, jwksService, responseService)
 
+  // The page rendered with the client's theme set to the given one and the default theme as the base.
+  private def rendered(tokenTheme: ThemeRecord) =
+    val env = Env()
+    for
+      _ <- env.configuration.find.succeedsWith(Some(clientRecord))
+      _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(tokenTheme)))
+      _ <- env.configuration.getForm.succeedsWith(Some(formRecord))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+      _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
+      response <- env.service.renderStep(conversationRecord, None)
+      body <- response.body.asString
+    yield body
+
+  // Every <style> the page opens is closed once and by the page itself: injected text that closed one early would add a closer.
+  private def styleBlocksAreBalanced(body: String): Boolean =
+    def count(tag: String) = body.sliding(tag.length).count(_ == tag)
+    count("<style") > 0 && count("<style") == count("</style>")
+
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
       test("renders HTML with theme and form") {
@@ -220,12 +241,48 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         yield
           // The page owns exactly one <style> and two <script> blocks; any extra closing tag
           // means injected text ended one of them early.
-          assertTrue(body.sliding("</style>".length).count(_ == "</style>") == 1) &&
+          assertTrue(styleBlocksAreBalanced(body)) &&
             assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
             assertTrue(body.contains("\\3c /style>")) &&
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
       },
+      suite("a theme built from tokens")(
+        test("is the current default stylesheet, then what its tokens set, then its own CSS") {
+          val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio")))
+          rendered(tokenTheme).map: body =>
+            assertTrue(
+              body.contains(".body { color: black; }"),
+              body.contains("--brand:#ff6b4a;"),
+              body.contains(".extra { top: 0; }"),
+              body.indexOf(".body { color: black; }") < body.indexOf("--brand:#ff6b4a;"),
+              body.indexOf("--brand:#ff6b4a;") < body.indexOf(".extra { top: 0; }"),
+              !body.contains(".body { color: red; }"),
+            )
+        },
+        test("needs no CSS of its own") {
+          val tokenTheme = theme.copy(css = "", tokens = Some(ThemeTokens("fintech", ThemeOverrides(mode = Some(Mode.dark)))))
+          rendered(tokenTheme).map(body => assertTrue(body.contains("--brand:#5b5bd6;"), body.contains("color-scheme:dark;")))
+        },
+        test("applies its overrides over the base") {
+          val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption))
+          rendered(theme.copy(css = "", tokens = Some(tokens))).map: body =>
+            assertTrue(body.contains("--brand:#112233;"), !body.contains("--brand:#ff6b4a;"))
+        },
+        test("falls back to the default stylesheet when its base is not one this service knows") {
+          rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
+            assertTrue(body.contains(".body { color: black; }"), !body.contains("--brand:"))
+        },
+        test("keeps its own CSS on the default stylesheet when its base is not one this service knows") {
+          rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
+            assertTrue(body.contains(".body { color: black; }"), body.contains(".extra { top: 0; }"), !body.contains("--brand:"))
+        },
+        test("has its own CSS escaped like any other, so it cannot end the style element") {
+          val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
+          rendered(tokenTheme).map: body =>
+            assertTrue(styleBlocksAreBalanced(body), body.contains("\\3c /style>"))
+        },
+      ),
       test("returns 304 if ETag matches") {
         val env = Env()
         for
@@ -352,7 +409,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("Email address")) &&
           assertTrue(body.contains("Adresse e-mail"))
       },
-      test("uses the identity provider logo as consent favicon but omits it from the consent config") {
+      test("uses the identity provider logo as consent favicon and brands the consent page with it") {
         val env = Env()
         val consentForm = formRecord.copy(id = "consent")
         for
@@ -366,7 +423,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           body <- response.body.asString
         yield assertTrue(
           body.contains("""<link rel="icon" href="https://acme.test/logo.svg">"""),
-          !body.contains("\"logo\""),
+          body.contains(""""logo":"https://acme.test/logo.svg""""),
         )
       },
       test("puts the openid scope first in the consent payload") {
@@ -786,7 +843,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains("error=login_required")) &&
           assertTrue(body.contains("state=test-state")) &&
           assertTrue(body.contains("""<link rel="icon" href="https://acme.test/logo.svg">""")) &&
-          assertTrue(!body.contains("\"logo\""))
+          assertTrue(body.contains(""""logo":"https://acme.test/logo.svg""""))
       },
       test("renders the expired page in the locale the user chose, not the tenant default") {
         val env = Env()
