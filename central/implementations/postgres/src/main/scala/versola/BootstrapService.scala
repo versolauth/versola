@@ -454,6 +454,8 @@ object BootstrapService:
       Set(
         endpointId("GET", "/configuration/tenants"),
         endpointId("GET", "/configuration/themes"),
+        endpointId("GET", "/configuration/themes/presets"),
+        endpointId("POST", "/configuration/themes/css"),
       ),
     ),
     (
@@ -885,6 +887,8 @@ object BootstrapService:
     "PUT" -> "/configuration/tenants",
     "DELETE" -> "/configuration/tenants",
     "GET" -> "/configuration/themes",
+    "GET" -> "/configuration/themes/presets",
+    "POST" -> "/configuration/themes/css",
     "POST" -> "/configuration/themes",
     "PUT" -> "/configuration/themes",
     "DELETE" -> "/configuration/themes",

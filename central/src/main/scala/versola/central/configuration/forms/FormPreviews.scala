@@ -84,7 +84,13 @@ object FormPreviews:
     )
 
   private val openid =
-    scope("openid", "OpenID Connect authentication", "Аутентификация OpenID Connect", List("Unique identifier of the user" -> "Уникальный идентификатор пользователя"), false)
+    scope(
+      "openid",
+      "OpenID Connect authentication",
+      "Аутентификация OpenID Connect",
+      List("Unique identifier of the user" -> "Уникальный идентификатор пользователя"),
+      false,
+    )
   private def profile(deselectable: Boolean) =
     scope(
       "profile",
@@ -208,7 +214,12 @@ object FormPreviews:
           "Запрошено всё",
           consent(List(openid, address(true), email(true), offlineAccess, phone(true), profile(true)), allowPartial = true),
         ),
-        scenario("all-required", "Nothing optional", "Ничего необязательного", consent(List(openid, email(false), profile(false)), allowPartial = false)),
+        scenario(
+          "all-required",
+          "Nothing optional",
+          "Ничего необязательного",
+          consent(List(openid, email(false), profile(false)), allowPartial = false),
+        ),
         scenario(
           "signed-in-user",
           "With the signed-in user",
