@@ -3,6 +3,7 @@ package versola.oauth.client
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, ScopeToken, TenantId}
 import versola.util.*
+import versola.util.theme.{BrandColor, Shape, ThemeOverrides}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -39,6 +40,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       dpopBoundAccessTokens: Boolean,
       authMethod: AuthMethod,
       certificateBoundAccessTokens: Boolean,
+      themeOverrides: Option[ThemeOverrides] = None,
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -126,6 +128,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       true,
                       AuthMethod.client_secret,
                       false,
+                      themeOverrides = Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))),
                     ),
                     serviceClient,
                   ),
@@ -150,6 +153,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         result.size == 2,
         result(ClientId("service")).redirectUris.isEmpty,
         client.redirectUris == Set("https://example.com/callback"),
+        client.themeOverrides == Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))),
+        result(ClientId("service")).themeOverrides.isEmpty,
         client.scope == Set(ScopeToken.OpenId, ScopeToken("profile")),
         client.secret.exists(_.sameElements(currentSecret)),
         client.previousSecret.exists(_.sameElements(previousSecret)),
@@ -166,4 +171,28 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         !client.bindsAccessTokens,
       )
     },
-  ).provideShared(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live) @@ TestAspect.silentLogging
+    // The overrides are validated strictly, so a value the auth node does not know (a newer central, an old stored
+    // format) fails that one record's decode; it must not take every other client with it.
+    test("skip a client that does not decode, keep the others, and name only its id in the log") {
+      val encoded = serviceClient.toJsonAST.toOption.get.asObject.get
+      val unknownShape = Json.Obj(encoded.fields.filterNot(_._1 == "id").filterNot(_._1 == "themeOverrides") ++
+        Chunk("id" -> Json.Str("bad-shape"), "themeOverrides" -> Json.Obj("shape" -> Json.Str("triangle-with-secret-marker"))))
+      val oldFormat = Json.Obj(encoded.fields.filterNot(_._1 == "id").filterNot(_._1 == "themeOverrides") ++
+        Chunk("id" -> Json.Str("bad-format"), "themeOverrides" -> Json.Str("legacy")))
+      val good = serviceClient.copy(id = ClientId("good"))
+      val body = Json.Obj("clients" -> Json.Arr(unknownShape, good.toJsonAST.toOption.get, oldFormat, serviceClient.toJsonAST.toOption.get))
+      for
+        _ <- TestClient.addRoutes(Handler.succeed(Response.json(body.toJson)).toRoutes)
+        service <- ZIO.service[OAuthClientSyncClient]
+        result <- service.getAll
+        logs <- ZTestLogger.logOutput
+        warnings = logs.filter(_.logLevel == LogLevel.Warning).map(_.message()).filter(_.startsWith("Skipped"))
+      yield assertTrue(
+        result.keySet == Set(ClientId("good"), ClientId("service")),
+        warnings.size == 2,
+        warnings.exists(_.contains("'bad-shape'")),
+        warnings.exists(_.contains("'bad-format'")),
+        warnings.forall(!_.contains("triangle-with-secret-marker")),
+      )
+    },
+  ).provide(TestClient.layer, configLayer, tokenLayer, securityLayer, OAuthClientSyncClient.live)

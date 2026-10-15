@@ -47,6 +47,39 @@ for (const theme of themes) {
 }
 
 for (const theme of themes) {
+  test(`a partner app's appearance editor has no axe violations in the ${theme} theme`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
+    await loadAdminApp(page, {
+      path: '/?view=clients&tenant=tenant-alpha',
+      state: {
+        clients: {
+          'tenant-alpha': [{
+            id: 'partner-app',
+            clientName: { en: 'Partner App' },
+            redirectUris: ['https://partner.example/callback'],
+            scope: ['openid'],
+            permissions: [],
+            secretRotation: false,
+            accessTokenTtl: 3600,
+            authFlow: { primary: { credentials: ['phone'], inlinePassword: false, factors: [{ type: 'otp', required: true }] }, passkey: null, otpType: 'sms' },
+            consentFlow: { allowPartial: false, rememberDuration: 15552000 },
+            themeOverrides: { brand: '#b4348a' },
+          }],
+        },
+        themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
+        themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } }],
+      },
+    });
+    await page.getByRole('button', { name: 'Open client partner-app', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
+
+    const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+  });
+}
+
+for (const theme of themes) {
   test(`every step of creating a client has no axe violations in the ${theme} theme`, async ({ page }) => {
     await page.addInitScript(value => localStorage.setItem('versola-theme', value), theme);
     await loadAdminApp(page, { path: '/?view=clients&tenant=tenant-alpha' });

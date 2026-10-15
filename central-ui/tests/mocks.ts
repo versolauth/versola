@@ -27,7 +27,7 @@ type BackendConsentFlow = { allowPartial: boolean; rememberDuration: number | nu
 type AuthMethodDto = 'client_secret' | 'private_key_jwt' | 'tls_client_auth' | 'self_signed_tls_client_auth' | 'none';
 type ClientTemplateDto = { kind: string };
 type ClientKindDto = 'web' | 'device' | 'service';
-type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string };
+type ClientDto = { kind?: ClientKindDto; id: string; clientName: Record<string, string>; redirectUris: string[]; scope: string[]; permissions: string[]; secretRotation: boolean; authMethod?: AuthMethodDto; refreshTokenTtl?: number; edgeId?: string; authFlow?: BackendAuthFlow | null; consentFlow?: BackendConsentFlow | null; theme?: string; otpTemplateId?: string; frontChannelLogoutUri?: string | null; frontChannelLogoutSessionRequired?: boolean; backChannelLogoutUri?: string | null; template?: ClientTemplateDto | null; createdAt?: string; themeOverrides?: ThemeOverridesDto | null };
 type ScopeDto = { scope: string; description: Record<string, string>; claims: Array<{ claim: string; description: Record<string, string> }> };
 type PermissionDto = { permission: string; description: Record<string, string>; endpointIds: ResourceEndpointId[] };
 type InjectTargetDto = 'header' | 'query' | 'body';
@@ -71,7 +71,8 @@ type FormPreviewDto = {
   scenarios: Array<{ id: string; title: Record<string, string>; step: Record<string, unknown>; error?: string }>;
 };
 type FormLocaleDto = { code: string; name: string };
-type ThemeTokensDto = { base: string; overrides?: { brand?: string; shape?: string; surface?: string; mode?: string } };
+type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string };
+type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
 type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
@@ -91,6 +92,7 @@ type CreateClientRequest = {
   consentFlow?: BackendConsentFlow | null;
   authMethod?: AuthMethodDto;
   template?: ClientTemplateDto | null;
+  themeOverrides?: ThemeOverridesDto;
 };
 type UpdateClientRequest = {
   clientId: string;
@@ -102,6 +104,7 @@ type UpdateClientRequest = {
   refreshTokenTtl?: number;
   authFlow?: BackendAuthFlow | null;
   consentFlow?: BackendConsentFlow | null;
+  themeOverrides?: ThemeOverridesDto;
 };
 type CreateScopeRequest = {
   tenantId: string;
@@ -439,13 +442,13 @@ const CREATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
     'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'certificateBoundAccessTokens', 'jwks', 'generateJwks',
     'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey', 'edgeClientCertificate',
-    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+    'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
   ],
   device: [
     'tenantId', 'id', 'clientName', 'redirectUris', 'allowedScopes', 'accessTokenTtl', 'refreshTokenTtl', 'theme',
     'authFlow', 'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired',
     'backChannelLogoutUri', 'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
-    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate',
+    'dpopMinRsaKeySize', 'authMethod', 'mtlsAuth', 'edgeClientCertificate', 'issueEdgeClientCertificate', 'enrollEdgeClientCertificate', 'themeOverrides',
   ],
   service: [
     'tenantId', 'id', 'clientName', 'allowedScopes', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
@@ -459,13 +462,13 @@ const UPDATE_MEMBERS: Record<ClientKindDto, string[]> = {
     'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize', 'mtlsAuth',
     'certificateBoundAccessTokens', 'jwks', 'requireSignedRequestObject', 'requirePushedAuthorizationRequests', 'edgeSigningKey',
-    'edgeClientCertificate',
+    'edgeClientCertificate', 'themeOverrides',
   ],
   device: [
     'clientId', 'clientName', 'redirectUris', 'scope', 'accessTokenTtl', 'refreshTokenTtl', 'theme', 'authFlow',
     'otpTemplateId', 'frontChannelLogoutUri', 'frontChannelLogoutSessionRequired', 'backChannelLogoutUri',
     'logoUri', 'policyUri', 'tosUri', 'consentFlow', 'dpopBoundAccessTokens', 'dpopSigningAlgs', 'dpopMinRsaKeySize',
-    'edgeClientCertificate',
+    'edgeClientCertificate', 'themeOverrides',
   ],
   service: [
     'clientId', 'clientName', 'scope', 'permissions', 'accessTokenTtl', 'dpopBoundAccessTokens', 'dpopSigningAlgs',
@@ -635,6 +638,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           template: typedKind ? { kind: typedKind } : payload.template ?? null,
           kind: typedKind ?? (payload.template?.kind as ClientKindDto | undefined),
           createdAt,
+          ...(payload.themeOverrides && Object.keys(payload.themeOverrides).length > 0 ? { themeOverrides: payload.themeOverrides } : {}),
         };
 
         state.clients[payload.tenantId] = [createdClient, ...tenantClients];
@@ -690,6 +694,10 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
         if ('consentFlow' in payload) {
           client.consentFlow = payload.consentFlow ?? null;
+        }
+        // An empty object clears the overrides, as central does.
+        if (payload.themeOverrides !== undefined) {
+          client.themeOverrides = Object.keys(payload.themeOverrides).length > 0 ? payload.themeOverrides : null;
         }
 
         await route.fulfill({ status: 204, body: '' });

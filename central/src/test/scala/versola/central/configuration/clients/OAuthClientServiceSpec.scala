@@ -27,6 +27,7 @@ import versola.central.configuration.{
   UpdateClientRequest,
 }
 import versola.central.{CentralConfig, TestCentralConfig}
+import versola.util.theme.{BrandColor, Mode, ThemeOverrides}
 import versola.util.{
   ClientAssertion,
   Dpop,
@@ -544,6 +545,78 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         // Handed back as well as stored: the caller holding the client it just sent has no
         // other way to know when central dated it.
         result.createdAt == created.createdAt,
+      )
+    },
+    test("registerClient stores the theme overrides it was given, and none for an empty value") {
+      val env = new Env()
+      val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption)
+      val partnerRequest = createRequest.copy(consentFlow = Some(ConsentFlowDto(allowPartial = true, rememberDuration = None)))
+
+      for
+        _ <- env.secureRandom.nextBytes.succeedsWith(Array.fill(32)(11.toByte))
+        _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
+        _ <- env.repository.createClient.succeedsWith(())
+        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.registerClient(createRequest)
+        stored = env.repository.createClient.calls.map(_.themeOverrides)
+      yield assertTrue(stored == List(Some(overrides), None, None, None))
+    },
+    test("registerClient refuses theme overrides on a client that does not ask for consent, and stores nothing") {
+      val env = new Env()
+
+      for
+        result <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides(mode = Some(Mode.dark))))).either
+        createCalls = env.repository.createClient.times
+      yield assertTrue(
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case _ => false,
+        createCalls == 0,
+      )
+    },
+    test("updateClient hands the theme overrides of a partner client to the repository, and an empty value to clear them") {
+      val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
+      val env = new Env(Vector(partner))
+      val overrides = ThemeOverrides(mode = Some(Mode.dark))
+
+      for
+        _ <- env.repository.updateClient.succeedsWith(())
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides)))
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.updateClient(noopUpdate)
+        patched = env.repository.updateClient.calls.map(_._2.themeOverrides)
+      yield assertTrue(patched == List(Some(overrides), Some(ThemeOverrides()), None))
+    },
+    test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
+      val overrides = ThemeOverrides(mode = Some(Mode.dark))
+      val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
+      val partner = new Env(Vector(cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))))
+      val refused = (result: Either[Any, Unit]) =>
+        result.left.toOption.exists:
+          case error: InvalidRegistrationConfiguration => error.reason.startsWith("themeOverrides can only be set on a client that asks for consent")
+          case _ => false
+
+      for
+        _ <- firstParty.repository.updateClient.succeedsWith(())
+        _ <- partner.repository.updateClient.succeedsWith(())
+        withoutConsent <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
+        // the same patch that gives the consent flow is a partner's from the start
+        giving <- firstParty.service.updateClient(noopUpdate.copy(
+          themeOverrides = Some(overrides),
+          consentFlow = Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None))),
+        )).either
+        // clearing is always allowed, so a client with overrides from before can be brought in line
+        clearing <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides()))).either
+        keeping <- partner.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
+        updateCalls = firstParty.repository.updateClient.times
+      yield assertTrue(
+        refused(withoutConsent),
+        giving.isRight,
+        clearing.isRight,
+        keeping.isRight,
+        updateCalls == 2,
       )
     },
     test("registerClient leaves the template unset for a registration that names none") {

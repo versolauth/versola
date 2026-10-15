@@ -152,6 +152,43 @@ for (const scheme of ['dark', 'light'] as const) {
   });
 }
 
+// A partner app's own appearance on the client page (docs: entities/client). The client is the mock's, so the
+// screenshot shows the mocked API, not a staged stack.
+for (const scheme of ['dark', 'light'] as const) {
+  test(`client appearance ${scheme}`, async ({ page }) => {
+    await page.addInitScript(value => localStorage.setItem('versola-theme', value), scheme);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await loadAdminApp(page, {
+      path: `/?view=clients&tenant=${tenant}`,
+      state: {
+        clients: {
+          [tenant]: [{
+            id: 'acme-wallet',
+            clientName: { en: 'Acme Wallet' },
+            redirectUris: ['https://wallet.example.com/callback'],
+            scope: ['openid', 'profile'],
+            permissions: [],
+            secretRotation: false,
+            accessTokenTtl: 3600,
+            theme: 'acme',
+            authFlow: { primary: { credentials: ['phone'], inlinePassword: false, factors: [{ type: 'otp', required: true }] }, passkey: null, otpType: 'sms' },
+            consentFlow: { allowPartial: false, rememberDuration: 15552000 },
+            themeOverrides: { brand: '#b4348a', shape: 'sharp' },
+          }],
+        },
+        themePresets: presets,
+        themes,
+      },
+    });
+    await page.getByRole('button', { name: 'Open client acme-wallet', exact: true }).click();
+    await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
+    const block = page.getByRole('region', { name: 'Appearance for this app' });
+    await expect(block.getByText('Overridden · base: #2563eb')).toBeVisible();
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: `${outputDir}/entities/client-appearance${scheme === 'light' ? '-light' : ''}.png` });
+  });
+}
+
 // The login screens the themes style, rendered by the real forms. Dark and light are the device's scheme.
 const kz = { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' };
 const partnerLogo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" rx="14" fill="%23b4348a"/><text x="32" y="43" font-size="30" font-weight="800" text-anchor="middle" fill="white" font-family="sans-serif">S</text></svg>';

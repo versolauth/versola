@@ -20,6 +20,7 @@ import versola.central.configuration.roles.RoleId
 import versola.central.configuration.scopes.{Claim, ClaimRecord, ScopeToken}
 import versola.central.configuration.tenants.TenantId
 import versola.util.CertificateSubject
+import versola.util.theme.ThemeOverrides
 import versola.util.{ClientAssertion, Dpop, JsonWebKeySet, Patch, PrivateClientCertificate, PrivateJsonWebKey, RedirectUri}
 import zio.http.{Scheme, URL}
 import zio.json.ast.Json
@@ -377,6 +378,8 @@ case class OAuthClientResponse(
       * it at, which an update must be sent to. Fixed for the client's life; read off the template
       * and the settings for a client registered before the kinds had endpoints. */
     kind: ClientKind,
+    /** What this client changes in the theme it uses; absent when it changes nothing. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -495,6 +498,8 @@ case class CreateClientRequest(
       * `CN=<client>,OU=<tenant>,O=Versola` where it names none). Mutually exclusive with
       * [[issueEdgeClientCertificate]] and with supplying [[edgeClientCertificate]]. */
     enrollEdgeClientCertificate: Boolean,
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -549,6 +554,8 @@ case class UpdateClientRequest(
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
     applicationType: Option[ApplicationType],
+    /** Replaces the client's theme overrides; an empty value clears them, absent leaves them. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -760,6 +767,8 @@ case class SyncOAuthClientRecord(
       * key. What the certificate the edge asks for must say; the edge builds its request for
       * exactly this, and central refuses a request that says anything else. */
     edgeCertificateSubject: Option[CertificateSubject],
+    /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
+    themeOverrides: Option[ThemeOverrides] = None,
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

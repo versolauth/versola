@@ -1,6 +1,7 @@
 package versola.central.configuration.clients
 
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
+import versola.util.theme.ThemeOverrides
 import versola.util.{Dpop, JsonWebKeySet, Patch, Secret}
 import zio.Duration
 import zio.http.URL
@@ -45,6 +46,8 @@ case class OAuthClientPatch(
       * same terms as [[edgeSigningKey]]. */
     edgeClientCertificate: Option[Patch[Secret]],
     applicationType: Option[ApplicationType],
+    /** `Some(empty)` clears the overrides. */
+    themeOverrides: Option[ThemeOverrides] = None,
 )
 
 object OAuthClientPatch:

@@ -10,6 +10,8 @@ object ThemeCssSpec extends ZIOSpecDefault:
   private def resolved(raw: String, shape: Shape = Shape.soft, surface: Surface = Surface.bold, mode: Mode = Mode.auto) =
     ResolvedTokens(colour(raw), shape, surface, mode)
 
+  private val base = resolved("#155e75", surface = Surface.soft, mode = Mode.dark)
+
   def spec = suite("ThemeCss")(
     suite("BrandColor")(
       test("accepts #rrggbb in either case and keeps it lower case") {
@@ -114,6 +116,55 @@ object ThemeCssSpec extends ZIOSpecDefault:
             val supported = css.indexOf("@supports (color: light-dark(#000, #fff)){")
             supported > 0 && css.indexOf("light-dark(") > supported,
         )
+      },
+    ),
+    suite("generatePartial")(
+      test("is empty when nothing is overridden") {
+        assertTrue(ThemeCss.generatePartial(base, ThemeOverrides()) == "")
+      },
+      test("writes only the variables of the overridden tokens") {
+        val css = ThemeCss.generatePartial(base, ThemeOverrides(shape = Some(Shape.sharp)))
+        assertTrue(
+          css.contains("--rf:4px;--rb:4px;--rs:6px;"),
+          !css.contains("--brand"),
+          !css.contains("--page-"),
+          !css.contains("color-scheme"),
+        )
+      },
+      test("a brand override writes the brand, the text on it and the focus ring, but no page variables") {
+        val css = ThemeCss.generatePartial(base, ThemeOverrides(brand = Some(colour("#f5c518"))))
+        assertTrue(
+          css.contains("--brand:#f5c518;--on-brand:#1c1b19;"),
+          css.contains("--focus:light-dark("),
+          css.contains("--on-focus:light-dark("),
+          !css.contains("--page-"),
+        )
+      },
+      test("bold is written out, so it undoes a soft or neutral theme under it") {
+        val css = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.bold)))
+        assertTrue(
+          css.contains("--page-light:color-mix(in oklab,var(--brand) 22%,#0c1110);"),
+          css.contains("--page-dark:"),
+          css.contains("--glow-dark:"),
+          css.contains("--page-ink:"),
+        )
+      },
+      test("soft and neutral write their page variables") {
+        val soft = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.soft)))
+        val neutral = ThemeCss.generatePartial(base, ThemeOverrides(surface = Some(Surface.neutral)))
+        assertTrue(soft.contains("--page-light:color-mix(in oklab,var(--brand) 14%"), neutral.contains("--page-light:#ecebe7;"))
+      },
+      test("auto mode is written, so it undoes a forced scheme under it") {
+        val css = ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.auto)))
+        val dark = ThemeCss.generatePartial(base, ThemeOverrides(mode = Some(Mode.light)))
+        assertTrue(css.contains("color-scheme:light dark;"), dark.contains("color-scheme:light;"))
+      },
+      test("is one rule, so it can be appended to a stylesheet") {
+        val css = ThemeCss.generatePartial(
+          base,
+          ThemeOverrides(brand = Some(colour("#f5c518")), shape = Some(Shape.round), surface = Some(Surface.neutral), mode = Some(Mode.dark)),
+        )
+        assertTrue(css.count(_ == '{') == 1, css.count(_ == '}') == 1, css.endsWith("}"))
       },
     ),
     suite("compose")(

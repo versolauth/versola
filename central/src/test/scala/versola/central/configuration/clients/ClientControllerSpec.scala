@@ -16,6 +16,7 @@ import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.{CentralConfig, TestAdminAuth, TestCentralConfig}
 import versola.util.http.Observability
+import versola.util.theme.{BrandColor, Mode, Shape, ThemeOverrides}
 import versola.util.{Base64, Base64Url, JWT, Patch, RedirectUri, RsaKeyPair, Secret, SecureRandom, SecurityService, TestCertificates}
 import zio.*
 import zio.http.*
@@ -237,6 +238,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     issueEdgeClientCertificate = false,
     enrollEdgeClientCertificate = false,
   )
+
+  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))
 
   private val createNativeRequest = CreateNativeClientRequest(
     tenantId = tenantId,
@@ -547,6 +550,31 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
             ),
           ),
         ),
+    ),
+    controllerTestCase(
+      description = "carry a client's theme overrides to auth in the sync response and to the console in the list",
+      request = Request.get(
+        (URL.empty / "configuration" / "clients" / "sync")
+          .addQueryParam("tenantId", tenantId.toString),
+      ).addHeader(Header.Authorization.Bearer(syncToken)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getClientsForSync.succeedsWith(Vector(clients.head.copy(themeOverrides = Some(partnerTheme)), clients(1))),
+      verify = (response, _, _) =>
+        for
+          payload <- response.body.asJson[GetOAuthClientsSyncResponse]
+        yield assertTrue(payload.clients.map(_.themeOverrides) == Vector(Some(partnerTheme), None)),
+    ),
+    controllerTestCase(
+      description = "list a client's theme overrides",
+      request = Request.get((URL.empty / "configuration" / "clients").addQueryParam("tenantId", tenantId.toString)),
+      expectedStatus = Status.Ok,
+      setup = service =>
+        service.getTenantClients.succeedsWith(Vector(clients.head.copy(themeOverrides = Some(partnerTheme)))),
+      verify = (response, _, _) =>
+        for
+          payload <- response.body.asJson[GetAllClientsResponse]
+        yield assertTrue(payload.clients.map(_.themeOverrides) == List(Some(partnerTheme))),
     ),
     controllerTestCase(
       description = "reject synced tenant clients request without service token",
@@ -1157,6 +1185,41 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
       setup = _.findClient.succeedsWith(clients.headOption),
       verify = (response, service, _) =>
         refusedWith(response, "at least one redirect URI").map(_ && assertTrue(service.updateClient.calls.isEmpty)),
+    ),
+    controllerTestCase(
+      description = "register a web client with theme overrides: they reach the registration, and the body names them as the console sends them",
+      request = json(Method.POST, "web", createWebRequest.copy(themeOverrides = Some(partnerTheme)).toJson),
+      expectedStatus = Status.Created,
+      setup = _.registerClient.succeedsWith(RegisteredClient(Some(rotatedSecret), registeredAt, None)),
+      verify = (_, service, _) =>
+        ZIO.succeed(assertTrue(
+          service.registerClient.calls.map(_._1.themeOverrides) == List(Some(partnerTheme)),
+          createWebRequest.copy(themeOverrides = Some(partnerTheme)).toJson.contains(""""themeOverrides":{"brand":"#112233","shape":"sharp"}"""),
+        )),
+    ),
+    controllerTestCase(
+      description = "register a native client with theme overrides",
+      request = json(Method.POST, "native", createNativeRequest.copy(themeOverrides = Some(partnerTheme)).toJson),
+      expectedStatus = Status.Created,
+      setup = _.registerClient.succeedsWith(RegisteredClient(None, registeredAt, None)),
+      verify = (_, service, _) =>
+        ZIO.succeed(assertTrue(service.registerClient.calls.map(_._1.themeOverrides) == List(Some(partnerTheme)))),
+    ),
+    controllerTestCase(
+      description = "update a web client's theme overrides; an empty value is passed on to clear them",
+      request = json(Method.PUT, "web", UpdateWebClientRequest.of(clientId).copy(themeOverrides = Some(ThemeOverrides())).toJson),
+      expectedStatus = Status.NoContent,
+      setup = service => service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(ThemeOverrides())))),
+    ),
+    controllerTestCase(
+      description = "update a native client's theme overrides",
+      request = json(Method.PUT, "native", UpdateNativeClientRequest.of(nativeRecord.id).copy(themeOverrides = Some(partnerTheme)).toJson),
+      expectedStatus = Status.NoContent,
+      setup = service => service.findClient.succeedsWith(Some(nativeRecord)) *> service.updateClient.succeedsWith(()),
+      verify = (_, service, _) =>
+        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(partnerTheme)))),
     ),
     controllerTestCase(
       description = "update a native client fronted by edge brings what its kind fixes up with it, whatever it was stored as",

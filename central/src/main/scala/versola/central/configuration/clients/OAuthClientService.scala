@@ -268,6 +268,11 @@ object OAuthClientService:
         // Generated before the checks that read a key set, so that a registration asking for
         // a key is held to exactly the rules one supplying it is -- the request is short a
         // credential only until here, and nothing below can tell the two apart.
+        _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateThemeOverridesForPartner(
+          request.id,
+          request.themeOverrides,
+          request.consentFlow.isDefined,
+        ))(ZIO.fail(_))
         generatedKey <- ZIO.foreach(request.generateJwks)(ClientKeyGeneration.generate(securityService, _))
         jwks = generatedKey.map(_.publicKeys).orElse(request.jwks)
         _ <- ZIO.foreachDiscard(InvalidRegistrationConfiguration.validateClientAuthentication(
@@ -361,6 +366,7 @@ object OAuthClientService:
           template = request.template,
           createdAt = registeredAt,
           applicationType = applicationType,
+          themeOverrides = request.themeOverrides.filterNot(_.isEmpty),
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
@@ -391,6 +397,15 @@ object OAuthClientService:
           InvalidRegistrationConfiguration.validateAuthMethodUnchanged(request.clientId, request.authMethod, client.authMethod))(ZIO.fail(_))
         _ <- ZIO.foreachDiscard(current.flatMap: client =>
           InvalidRegistrationConfiguration.validateConsentFlowKept(request.clientId, request.consentFlow, client.consentFlow))(ZIO.fail(_))
+        _ <- ZIO.foreachDiscard(current.flatMap: client =>
+          InvalidRegistrationConfiguration.validateThemeOverridesForPartner(
+            request.clientId,
+            request.themeOverrides,
+            request.consentFlow match
+              case Some(Patch.Modified(_)) => true
+              case Some(Patch.Deleted) => false
+              case None => client.consentFlow.isDefined,
+          ))(ZIO.fail(_))
         // Only what the patch adds: a URI registered before this rule existed stays removable.
         _ <- validateRedirectUris(current.map(_.tenantId), request.redirectUris.add)
         edgeSigningKey <- ZIO.foreach(current)(effectiveEdgeSigningKey(request, _)).map(_.flatten)
@@ -484,6 +499,7 @@ object OAuthClientService:
             edgeSigningKey = edgeSigningKeyPatch,
             edgeClientCertificate = edgeCertificatePatch,
             applicationType = request.applicationType,
+            themeOverrides = request.themeOverrides,
           ),
         )
       yield ()
