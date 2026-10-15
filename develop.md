@@ -179,7 +179,7 @@ session/cookie secrets, Postgres password, admin bootstrap password, etc.) is a
 server before starting anything: an existing value there wins over the freshly
 generated candidate, so the same secrets survive every reconfigure; a missing one
 is generated and stored (except those the schema marks `generate-on-first-install-only`,
-which on an upgrade are an error — see "Secret schema"). The result goes into `<service>.secrets.env` next to
+which on an upgrade stop the run — see "Secret schema" and "How the CLI applies the schema"). The result goes into `<service>.secrets.env` next to
 the configs, which Compose passes to the containers — the services themselves
 never talk to OpenBao. See `versola-cli`'s `internal/openbao` and
 `internal/deploy/secrets.go`.
@@ -246,6 +246,55 @@ Adding a secret takes four edits that must agree: a `SecretSpec` in `SecretSchem
 `k8s/versola/templates/_helpers.tpl` (and the `Revision` bump above). gen-env stops when the keys it writes differ from the schema;
 `sbt tools/test` covers the schema itself and `.github/scripts/check-secret-schema.sh` runs the
 generator for `docker-local`, `vps` and `k8s` and compares the schema with what it wrote.
+
+### How the CLI applies the schema
+
+Before writing anything, `configure` (so also `bootstrap`, and `rollout` for the version it moves to)
+builds a plan from three facts: the schema, what OpenBao holds, and the schema `revision` this machine
+last deployed (recorded in `~/.versola/active/state.json`). A problem in the plan stops the run with
+nothing written. A stored value always wins; the plan only decides what to do about a missing one. A
+`generate` secret is generated whenever it is missing and an `external` one is reported missing; only
+`generate-on-first-install-only` secrets depend on the state:
+
+- **first install** (no record here, OpenBao empty): everything is generated.
+- **upgrade** (record here, OpenBao not empty): a missing secret is generated only if it is new, i.e.
+  its `since` is above the recorded revision; otherwise it is "lost" and the run stops — a fresh value
+  would make stored data unreadable.
+- **alarm** (record here, OpenBao empty) and **unknown** (no record here, OpenBao not empty): a missing
+  one stops the run. `unknown` is also what a reinstall sees when OpenBao's volume outlived `uninstall`.
+- **installing** (an earlier first install here did not finish): continues it; a half-written key
+  group is generated again as a whole.
+- **local**: throwaway, anything missing is generated.
+
+A secret listed for several services is one value: stored copies that differ stop the run, a copy
+missing where others are stored is filled from them. A group is taken whole or not at all; a group
+stored only in part stops the run, unless it was left half-written by an unfinished first install or
+is new since the deployed revision (then it is generated again whole). The `utils` key pair is outside
+the plan (it has its own path and flow, see above).
+
+`versola secrets plan <target> <version>` prints the plan without applying it (read-only, non-zero exit
+on problems, `--json` for scripts, never a value). **Run it before upgrading a production
+deployment.** Escape hatches, on `configure`, `bootstrap` and `rollout`: `--generate-missing NAME,...`
+(also on `secrets plan`, to preview it)
+(the named secrets may be generated although the plan would stop; a key group only if every member is
+named) and `--allow-legacy-secrets` (a release without `secrets.schema.json` is settled by the old
+rule — anything missing is generated — which is unsafe once OpenBao holds secrets).
+
+Versola's secret values are never printed by the CLI, only names and decisions. Two things are, by
+design: OpenBao's own AppRole `role-id`/`secret-id`, on every `configure` and on every `rollout` /
+`rollout --abort` step that prepares a version (not with `--setup-openbao`), and, on the first vps
+`configure` against a new OpenBao, the Postgres role's password in the `CREATE ROLE`/`ALTER ROLE`
+statements. For k8s a way to print values may be added behind an explicit flag; it is not implemented.
+
+The state file is in layout 4 since versola-cli 0.2.10 (2 added the revision, 3 the Postgres host and
+what a rolling upgrade records, 4 `--postgres-db`/`--postgres-ca`). An older CLI can't read it and
+stops with a "newer schema" error — copy `state.json` before the first run of a newer CLI if you may go
+back. Details and examples: `versola-cli`'s README, "Secrets".
+
+Not covered yet: the record and the "installing" mark live per machine (a second machine running
+`configure` for the same OpenBao sees `unknown`); a soft-deleted KV v2 secret counts as missing; after
+an interrupted first install followed by `uninstall` on vps, half-written key groups stop `configure`
+and OpenBao has to be cleaned by hand (`uninstall` leaves its volume, `versola-openbao-file-vps`).
 
 ### Setup is automatic
 
@@ -390,13 +439,15 @@ counterparts that a fresh one won't match, and each mismatch fails differently:
   `EDGE_KEY_ID`, and central needs it to be an RSA key); a fresh edge key pair
   makes every edge→central sync call 401. `JWKS_JSON` is `{"keys":[<jwk>,…]}`
   holding the public key of `JWT_PRIVATE_KEY` (same RSA modulus) with an `alg`.
-- **`UTILITY_CLIENT_PUBLIC_JWK` / `UTILS_PRIVATE_KEY_JWK`** — central re-applies the
+- **`UTILITY_CLIENT_PUBLIC_JWK` / `UTILS_PRIVATE_KEY_JWK`** (the schema's name; OpenBao keeps the
+  private key as `UTILITY_CLIENT_PRIVATE_JWK`) — central re-applies the
   utility client's public key on every boot, so a fresh pair silently replaces the
-  key loadgen and versola-cli authenticate with. Reuse the existing pair: the public
-  half goes into central's path in step 2 (`kv patch` below); the private half is not
-  stored in OpenBao at all, it stays wherever loadgen/the operator already keeps it
-  (the `utils.private-key.jwk` that a fresh `configure` writes into the bundle is a
-  new, unrelated key; ignore it). gen-env's reuse path takes an EC P-256 private JWK;
+  key loadgen and versola-cli authenticate with. Reuse the existing pair: in step 2 the
+  public half goes into central's path and the private half (an EC P-256 private JWK,
+  single-line JSON) into its own path, `versola/vps/utils`, field
+  `UTILITY_CLIENT_PRIVATE_JWK` (`kv patch` below). The next `configure` takes the stored
+  private key over the one gen-env generates, writes it into the bundle as
+  `utils.private-key.jwk`, and warns if central's public half doesn't match it.
   k8s/README.md covers a client that was seeded with a `client_secret`.
 
 Existing values in OpenBao always win, but with automatic setup OpenBao only
@@ -426,14 +477,21 @@ docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> vers
   bao kv patch -mount=secret versola/vps/edge \
     POSTGRES_PASSWORD='<real password>' EDGE_PRIVATE_KEY='<real private key, base64>' EDGE_KEY_ID='<real kid>' \
     EDGE_TOKEN_ENC_KEY='<real 32-byte base64url value>'
+docker exec -it -e BAO_ADDR=http://127.0.0.1:8200 -e BAO_TOKEN=<root token> versola-openbao-vps \
+  bao kv patch -mount=secret versola/vps/utils \
+    UTILITY_CLIENT_PRIVATE_JWK='<existing private JWK, single-line JSON>'
 ```
 
 3. Run the same `versola configure vps …` again — it now resolves the real
-   values into the bundle — then `versola migrate` and `versola up`.
+   values into the bundle (the plan is an `upgrade`: stored values are kept) — then
+   `versola migrate` and `versola up`.
 
 With `--setup-openbao` instead, nothing is stored before you do it: provision
 OpenBao by hand, write the real values with `bao kv put` (a path's very first
-write — `kv patch` fails on a path that doesn't exist yet), then `configure`.
+write — `kv patch` fails on a path that doesn't exist yet), then `configure`. That first
+`configure` finds secrets but no record on this machine — the plan's `unknown` state: what you
+stored is kept, plain `generate` secrets are created, and it stops naming any first-install-only
+secret you did not store (store it, or name it in `--generate-missing` if a fresh value is fine).
 `ADMIN_BOOTSTRAP_PASSWORD` is deliberately not in this list:
 nothing outside gen-env.scala owns that value, so the generated one is correct.
 
