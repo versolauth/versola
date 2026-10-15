@@ -239,7 +239,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     enrollEdgeClientCertificate = false,
   )
 
-  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))
+  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), background = None)
 
   private val createNativeRequest = CreateNativeClientRequest(
     tenantId = tenantId,
@@ -1207,11 +1207,11 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     ),
     controllerTestCase(
       description = "update a web client's theme overrides; an empty value is passed on to clear them",
-      request = json(Method.PUT, "web", UpdateWebClientRequest.of(clientId).copy(themeOverrides = Some(ThemeOverrides())).toJson),
+      request = json(Method.PUT, "web", UpdateWebClientRequest.of(clientId).copy(themeOverrides = Some(ThemeOverrides.empty)).toJson),
       expectedStatus = Status.NoContent,
       setup = service => service.findClient.succeedsWith(clients.headOption) *> service.updateClient.succeedsWith(()),
       verify = (_, service, _) =>
-        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(ThemeOverrides())))),
+        ZIO.succeed(assertTrue(service.updateClient.calls.map(_._1.themeOverrides) == List(Some(ThemeOverrides.empty)))),
     ),
     controllerTestCase(
       description = "update a native client's theme overrides",

@@ -1,7 +1,7 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
-import versola.util.theme.{BrandColor, Mode, ThemeCss, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Background, BrandColor, Mode, ThemeCss, ThemeOverrides, ThemeTokens}
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -95,7 +95,7 @@ object ThemeServiceSpec extends UnitSpecBase:
     suite("a theme built from tokens")(
       test("is stored with its tokens and its own CSS") {
         val env = Env()
-        val tokens = ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))
+        val tokens = ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark), background = None))
         val theme = ThemeRecord("studio-dark", "", None, Some(tokens))
         for
           _ <- env.repository.create.succeedsWith(())
@@ -146,9 +146,21 @@ object ThemeServiceSpec extends UnitSpecBase:
       },
       test("applies the overrides over the base") {
         val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "D", None)))
-        val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption))
+        val tokens = ThemeTokens("studio", ThemeOverrides(brand = BrandColor.parse("#112233").toOption, background = None))
         for rendered <- env.service.render(RenderThemeRequest(tokens))
         yield assertTrue(rendered.generated.contains("--brand:#112233"), rendered.generated.contains("--rs:32px"))
+      },
+      test("renders the background of the tokens, so the live preview shows what the forms will") {
+        val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "D", None)))
+        val tokens = ThemeTokens("studio", ThemeOverrides(None, None, None, None, Some(Background.horizon)))
+        for
+          horizon <- env.service.render(RenderThemeRequest(tokens))
+          preset <- env.service.render(RenderThemeRequest(ThemeTokens("fintech")))
+        yield assertTrue(
+          horizon.generated.contains("--page-bg:radial-gradient(130% 60% at 50% 110%,var(--page-tint),transparent 72%),var(--page);"),
+          horizon.css.contains(horizon.generated),
+          preset.generated.contains("--page-bg:linear-gradient(160deg,"),
+        )
       },
       test("is refused for a base that is not built in") {
         val env = Env()

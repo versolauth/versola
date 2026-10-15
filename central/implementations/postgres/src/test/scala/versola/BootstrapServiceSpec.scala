@@ -96,7 +96,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- BootstrapService.seedDefaultTheme(themes)
         created = themes.create.calls
         updates = themes.update.times
-      yield assertTrue(created == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", ThemeOverrides())))), updates == 0)
+      yield assertTrue(created == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", ThemeOverrides.empty)))), updates == 0)
     },
     test("converts a stylesheet default (tokens NULL) to the visual theme, keeping its tenant") {
       val themes = stub[ThemeRepository]
@@ -106,11 +106,16 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- BootstrapService.seedDefaultTheme(themes)
         updated = themes.update.calls
         creates = themes.create.times
-      yield assertTrue(updated == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", ThemeOverrides())))), creates == 0)
+      yield assertTrue(updated == List(ThemeRecord("default", "", None, Some(ThemeTokens("versola", ThemeOverrides.empty)))), creates == 0)
     },
     test("leaves a token default alone: the administrator may have changed its base or overrides") {
       val themes = stub[ThemeRepository]
-      val custom = ThemeRecord("default", "a{}", None, Some(ThemeTokens("versola", ThemeOverrides(shape = Some(versola.util.theme.Shape.sharp)))))
+      val custom = ThemeRecord(
+        "default",
+        "a{}",
+        None,
+        Some(ThemeTokens("versola", ThemeOverrides(shape = Some(versola.util.theme.Shape.sharp), background = None))),
+      )
       for
         _ <- themes.getAll.succeedsWith(Vector(custom))
         _ <- BootstrapService.seedDefaultTheme(themes)

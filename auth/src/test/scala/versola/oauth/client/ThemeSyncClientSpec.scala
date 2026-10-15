@@ -34,7 +34,7 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
       )
     },
     test("reads a theme built from tokens, and a theme from a central that sends none") {
-      val tokenTheme = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))))
+      val tokenTheme = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark), background = None))))
       // What a central from before tokens sends: no `tokens` key at all.
       val oldCentral = """{"themes":[{"id":"default","css":"body {}"}]}"""
       def sync(body: String) =
@@ -49,7 +49,7 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
       yield assertTrue(withTokens == Vector(tokenTheme), withoutTokens == Vector(ThemeRecord("default", "body {}", None, None)))
     },
     test("skips a theme that cannot be read and keeps the others") {
-      val good = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))))
+      val good = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark), background = None))))
       val other = ThemeRecord("default", "body {}", None)
       val badMode = """{"id":"bad-mode","css":"","tokens":{"base":"studio","overrides":{"mode":"sepia"}}}"""
       val badColour = """{"id":"bad-colour","css":"","tokens":{"base":"studio","overrides":{"brand":"red"}}}"""

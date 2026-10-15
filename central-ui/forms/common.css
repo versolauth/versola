@@ -7,6 +7,8 @@
  *   --focus, --on-focus     the brand as focus rings and ticked boxes: kept visible (3:1) on the card; follows --brand
  *   --rf / --rb / --rs      corner radius of fields, buttons and the card
  *   --page-light/--page-dark  page background per colour scheme, --glow-dark the dark-mode halo
+ *   --page-bg               what `body` paints behind the card: by default the glow over --page; a theme's background
+ *                           token (glow, linear, horizon, flat) replaces only this variable (see ThemeCss)
  *   color-scheme            `light` or `dark` forces a scheme; the default follows the device
  * The neutral surface and text tokens below (--ink, --sheet, --field, --line, ...) are defined per
  * colour scheme with light-dark(), so they follow color-scheme.
@@ -28,6 +30,7 @@
   --page: light-dark(var(--page-light), var(--page-dark));
   --page-ink: light-dark(#ffffff, #f3f2f0);
   --glow: light-dark(transparent, var(--glow-dark));
+  --page-bg: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--page);
 
   --ink: light-dark(#1c1b19, #f3f2f0);
   --text-muted: light-dark(#6b6a66, #a9a9b0);
@@ -58,7 +61,7 @@ body {
   font-size: 16px;
   line-height: 1.5;
   color: var(--ink);
-  background: radial-gradient(75% 70% at 50% 40%, var(--glow), transparent 75%), var(--page);
+  background: var(--page-bg);
   margin: 0;
   padding: 24px;
   width: 100%;

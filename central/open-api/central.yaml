@@ -4822,6 +4822,14 @@ components:
           type: string
           enum: [auto, light, dark]
           description: The colour scheme; `auto` follows the visitor's device.
+        background:
+          type: string
+          enum: [glow, linear, horizon, flat]
+          description: >-
+            What is drawn over the page colour behind the card. `glow` is the brand glowing from behind the card (dark
+            scheme only; the look before this token existed), `linear` a soft diagonal wash, `horizon` a light rising from
+            the bottom edge, `flat` the plain page colour. Single-hue: each is a tint of the brand. The strength of the
+            tint follows the surface and the scheme and keeps the text above the card readable.
     ThemePreset:
       type: object
       properties:
@@ -4849,7 +4857,10 @@ components:
         mode:
           type: string
           enum: [auto, light, dark]
-      required: [brand, shape, surface, mode]
+        background:
+          type: string
+          enum: [glow, linear, horizon, flat]
+      required: [brand, shape, surface, mode, background]
     GetThemePresetsResponse:
       type: object
       properties:

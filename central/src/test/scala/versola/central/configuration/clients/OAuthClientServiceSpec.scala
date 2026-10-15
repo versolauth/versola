@@ -549,7 +549,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     },
     test("registerClient stores the theme overrides it was given, and none for an empty value") {
       val env = new Env()
-      val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption)
+      val overrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, background = None)
       val partnerRequest = createRequest.copy(consentFlow = Some(ConsentFlowDto(allowPartial = true, rememberDuration = None)))
 
       for
@@ -557,8 +557,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- env.securityService.encryptAes256.succeedsWith(Array.fill(48)(17.toByte))
         _ <- env.repository.createClient.succeedsWith(())
         _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(overrides)))
-        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(ThemeOverrides())))
-        _ <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.registerClient(partnerRequest.copy(themeOverrides = Some(ThemeOverrides.empty)))
+        _ <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides.empty)))
         _ <- env.service.registerClient(createRequest)
         stored = env.repository.createClient.calls.map(_.themeOverrides)
       yield assertTrue(stored == List(Some(overrides), None, None, None))
@@ -567,7 +567,8 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
       val env = new Env()
 
       for
-        result <- env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides(mode = Some(Mode.dark))))).either
+        result <-
+          env.service.registerClient(createRequest.copy(themeOverrides = Some(ThemeOverrides(mode = Some(Mode.dark), background = None)))).either
         createCalls = env.repository.createClient.times
       yield assertTrue(
         result.left.toOption.exists:
@@ -579,18 +580,18 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
     test("updateClient hands the theme overrides of a partner client to the repository, and an empty value to clear them") {
       val partner = cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))
       val env = new Env(Vector(partner))
-      val overrides = ThemeOverrides(mode = Some(Mode.dark))
+      val overrides = ThemeOverrides(mode = Some(Mode.dark), background = None)
 
       for
         _ <- env.repository.updateClient.succeedsWith(())
         _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides)))
-        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides())))
+        _ <- env.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides.empty)))
         _ <- env.service.updateClient(noopUpdate)
         patched = env.repository.updateClient.calls.map(_._2.themeOverrides)
-      yield assertTrue(patched == List(Some(overrides), Some(ThemeOverrides()), None))
+      yield assertTrue(patched == List(Some(overrides), Some(ThemeOverrides.empty), None))
     },
     test("updateClient refuses theme overrides for a client without a consent flow, unless the patch gives it one") {
-      val overrides = ThemeOverrides(mode = Some(Mode.dark))
+      val overrides = ThemeOverrides(mode = Some(Mode.dark), background = None)
       val firstParty = new Env(Vector(cachedClient.copy(consentFlow = None)))
       val partner = new Env(Vector(cachedClient.copy(consentFlow = Some(ConsentFlow(allowPartial = false, rememberDuration = None)))))
       val refused = (result: Either[Any, Unit]) =>
@@ -608,7 +609,7 @@ object OAuthClientServiceSpec extends ZIOSpecDefault, ZIOStubs:
           consentFlow = Some(Patch.Modified(ConsentFlowDto(allowPartial = true, rememberDuration = None))),
         )).either
         // clearing is always allowed, so a client with overrides from before can be brought in line
-        clearing <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides()))).either
+        clearing <- firstParty.service.updateClient(noopUpdate.copy(themeOverrides = Some(ThemeOverrides.empty))).either
         keeping <- partner.service.updateClient(noopUpdate.copy(themeOverrides = Some(overrides))).either
         updateCalls = firstParty.repository.updateClient.times
       yield assertTrue(

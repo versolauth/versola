@@ -132,6 +132,47 @@ object ThemeCss:
     case Surface.neutral =>
       ("--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;", "--page-ink:light-dark(#1c1b19,#f3f2f0);")
 
+  private val SupportsLightDark = "@supports (color: light-dark(#000, #fff))"
+
+  /** The share of the brand, in percent, mixed into the page at the strongest point of a gradient, in the light and in the
+    * dark scheme. The page behind the card differs a lot (a pale one, a near-black one, the dark brand-tinted `bold` one),
+    * and the brand text above the card (`--page-ink`) must stay readable on the strongest point, and the strongest point
+    * must not shade into the colour of the dark card, so the strength follows the surface and is tested against every
+    * built-in brand (ThemeBackgroundSpec). Glow and flat have no strength here: the
+    * glow's lives in `--glow-dark` (see `surface`), flat has no tint.
+    */
+  private[theme] def tint(background: Background, surface: Surface): (Int, Int) = (background, surface) match
+    case (Background.linear, Surface.bold) => (40, 45)
+    case (Background.linear, Surface.soft) => (34, 34)
+    case (Background.linear, Surface.neutral) => (14, 16)
+    case (Background.horizon, Surface.bold) => (42, 46)
+    case (Background.horizon, Surface.soft) => (36, 34)
+    case (Background.horizon, Surface.neutral) => (18, 14)
+    case (Background.glow | Background.flat, _) => (0, 0)
+
+  // `--page-bg` is the one variable `body` paints (common.css). The default is the glow; a preset replaces only this
+  // variable. The tint of linear and horizon is a colour written with light-dark(), so those two are returned apart,
+  // for the @supports rule; a browser without light-dark() keeps the default.
+  private def background(background: Background, surface: Surface): (String, String) =
+    val (light, dark) = tint(background, surface)
+    background match
+      case Background.glow =>
+        // The glow is dark-scheme only because `--glow` is transparent in the light one; the formula is common.css's.
+        ("--page-bg:radial-gradient(75% 70% at 50% 40%,var(--glow),transparent 75%),var(--page);", "")
+      case Background.flat => ("--page-bg:var(--page);", "")
+      case Background.linear =>
+        (
+          "",
+          s"--page-tint:light-dark(color-mix(in oklab,var(--brand) $light%,var(--page-light)),color-mix(in oklab,var(--brand) $dark%,var(--page-dark)));" +
+            "--page-bg:linear-gradient(160deg,var(--page-tint) 0%,var(--page) 65%);",
+        )
+      case Background.horizon =>
+        (
+          "",
+          s"--page-tint:light-dark(color-mix(in oklab,var(--brand) $light%,transparent),color-mix(in oklab,var(--brand) $dark%,transparent));" +
+            "--page-bg:radial-gradient(130% 60% at 50% 110%,var(--page-tint),transparent 72%),var(--page);",
+        )
+
   private def scheme(mode: Mode): String = mode match
     case Mode.auto => ""
     case Mode.light => "color-scheme:light;"
@@ -144,9 +185,13 @@ object ThemeCss:
   def generate(tokens: ResolvedTokens): String =
     val (field, button, card) = corners(tokens.shape)
     val (page, pageInk) = surface(tokens.surface)
-    s"/* theme tokens: brand ${tokens.brand.value}, ${tokens.shape}, ${tokens.surface} page, ${tokens.mode} scheme */\n" +
-      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};--rf:$field;--rb:$button;--rs:$card;$page${scheme(tokens.mode)}}\n" +
-      s"@supports (color: light-dark(#000, #fff)){:root{${focus(tokens.brand)}$pageInk}}"
+    // The glow is what common.css paints already, so it is left out here, as the bold page is.
+    val (plainBackground, supportedBackground) = tokens.background match
+      case Background.glow => ("", "")
+      case other => background(other, tokens.surface)
+    s"/* theme tokens: brand ${tokens.brand.value}, ${tokens.shape}, ${tokens.surface} page, ${tokens.background} background, ${tokens.mode} scheme */\n" +
+      s":root{--brand:${tokens.brand.value};--on-brand:${onBrand(tokens.brand)};--rf:$field;--rb:$button;--rs:$card;$page$plainBackground${scheme(tokens.mode)}}\n" +
+      s"$SupportsLightDark{:root{${focus(tokens.brand)}$pageInk$supportedBackground}}"
 
   // Bold page variables as common.css defines them. `generate` leaves them out (the default stylesheet has them); a
   // partial block must write them, or an override of `bold` could not undo the soft or neutral surface under it.
@@ -158,7 +203,7 @@ object ThemeCss:
 
   /** The block a client adds on top of the theme it uses: only the variables its overrides change, empty when it
     * overrides nothing. A brand override needs no page variables: the soft and the bold page derive from
-    * `var(--brand)`, so they follow it. `base` is what the theme resolves to; it is named in the comment only,
+    * `var(--brand)`, so they follow it (as does the tint of a gradient). `base` is what the theme resolves to; it is named in the comment only,
     * because every override is written out even when it equals the base (the theme may be a stylesheet, whose
     * values are not known).
     */
@@ -178,8 +223,16 @@ object ThemeCss:
         case Mode.auto => "color-scheme:light dark;"
         case other => scheme(other)
       }
-      s"/* client overrides on ${base.brand.value}, ${base.shape}, ${base.surface} page, ${base.mode} scheme */\n" +
-        s":root{$brand$shape$page$mode}"
+      // The strength of a tint follows the surface, so a surface override re-writes a background that is not the glow;
+      // the glow follows `--glow` and needs nothing unless it is chosen. A brand override needs nothing: the tint is
+      // mixed from `var(--brand)`.
+      val effective = overrides.background.getOrElse(base.background)
+      val rewritten = overrides.background.isDefined || (overrides.surface.isDefined && effective != Background.glow)
+      val (plainBackground, supportedBackground) =
+        if rewritten then background(effective, overrides.surface.getOrElse(base.surface)) else ("", "")
+      val supported = Option.when(supportedBackground.nonEmpty)(s"\n$SupportsLightDark{:root{$supportedBackground}}").getOrElse("")
+      s"/* client overrides on ${base.brand.value}, ${base.shape}, ${base.surface} page, ${base.background} background, ${base.mode} scheme */\n" +
+        s":root{$brand$shape$page$plainBackground$mode}$supported"
 
   /** The stylesheet of a theme built from tokens: the current default, then what the tokens set, then the
     * theme's own CSS, which may be empty.

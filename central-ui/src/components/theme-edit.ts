@@ -173,6 +173,7 @@ export class VersolaThemeEdit extends LitElement {
       shape: this.overrides.shape ?? base.shape,
       surface: this.overrides.surface ?? base.surface,
       mode: this.overrides.mode ?? base.mode,
+      background: this.overrides.background ?? base.background,
     };
   }
 

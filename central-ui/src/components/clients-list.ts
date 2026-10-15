@@ -49,6 +49,7 @@ function themeOverridesSummary(overrides: ThemeOverrides | null | undefined): st
   const parts = [
     overrides?.brand && `brand ${overrides.brand}`,
     overrides?.surface && `${overrides.surface} page`,
+    overrides?.background && `${overrides.background} background`,
     overrides?.shape && `${overrides.shape} corners`,
     overrides?.mode && `${overrides.mode} scheme`,
   ].filter(Boolean);

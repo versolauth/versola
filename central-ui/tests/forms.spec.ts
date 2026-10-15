@@ -38,7 +38,7 @@ const fullState: Partial<MockConfigState> = {
   formLocales: locales,
   locales: locales.map(l => ({ ...l, active: true, isDefault: l.code === 'en' })),
   themes,
-  themePresets: [{ id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } }],
+  themePresets: [{ id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
 };
 
 function formHeader(page: Page, text: string) {

@@ -71,10 +71,10 @@ type FormPreviewDto = {
   scenarios: Array<{ id: string; title: Record<string, string>; step: Record<string, unknown>; error?: string }>;
 };
 type FormLocaleDto = { code: string; name: string };
-type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string };
+type ThemeOverridesDto = { brand?: string; shape?: string; surface?: string; mode?: string; background?: string };
 type ThemeTokensDto = { base: string; overrides?: ThemeOverridesDto };
 type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
-type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string } };
+type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string; background: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
@@ -1258,7 +1258,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         return;
       }
       const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
-      const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode}}`;
+      const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode};--background:${resolved.background}}`;
       await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? ''].filter(Boolean).join('\n'), generated }));
       return;
     }

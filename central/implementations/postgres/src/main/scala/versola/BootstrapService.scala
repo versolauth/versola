@@ -925,7 +925,7 @@ object BootstrapService:
     * and nothing is lost; a token row is the administrator's and is left alone.
     */
   private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
-    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = ThemeOverrides()))
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = ThemeOverrides.empty))
     for
       _ <- ZIO.logInfo("Seeding default theme...")
       themes <- themeRepo.getAll

@@ -3,7 +3,7 @@ package versola.central.configuration.themes
 import com.augustnagro.magnum.magzio.TransactorZIO
 import versola.central.configuration.tenants.TenantId
 import versola.util.DatabaseSpecBase
-import versola.util.theme.{BrandColor, Mode, Shape, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Background, BrandColor, Mode, Shape, ThemeOverrides, ThemeTokens}
 import zio.test.*
 
 /** Conformance suite for any [[ThemeRepository]] implementation. A backend module extends
@@ -51,7 +51,11 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         yield assertTrue(all == Vector(theme.copy(css = "body { color: black; }")))
       },
       test("create stores the tokens of a theme built from them, and reads them back whole") {
-        val tokens = ThemeTokens("studio", ThemeOverrides(BrandColor.parse("#112233").toOption, Some(Shape.sharp), None, Some(Mode.dark)))
+        val tokens =
+          ThemeTokens(
+            "studio",
+            ThemeOverrides(BrandColor.parse("#112233").toOption, Some(Shape.sharp), None, Some(Mode.dark), background = Some(Background.horizon)),
+          )
         val theme = ThemeRecord("studio-dark", "a { color: red; }", Some(tenantId), Some(tokens))
         for
           _ <- env.repository.create(theme)
@@ -67,7 +71,7 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
       },
       test("update changes the tokens, and can turn a token theme back into a plain stylesheet") {
         val theme = ThemeRecord("brand", "", None, Some(ThemeTokens("fintech")))
-        val retokened = ThemeTokens("berry", ThemeOverrides(mode = Some(Mode.light)))
+        val retokened = ThemeTokens("berry", ThemeOverrides(mode = Some(Mode.light), background = None))
         for
           _ <- env.repository.create(theme)
           _ <- env.repository.update(theme.copy(tokens = Some(retokened)))

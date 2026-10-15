@@ -6,9 +6,9 @@ const themesPath = '/?view=themes&tenant=tenant-alpha';
 const formsPath = () => '/?view=forms&tenant=tenant-alpha';
 
 const presets = [
-  { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'studio', title: { en: 'Studio', ru: 'Студия' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto' } },
-  { id: 'fintech', title: { en: 'Fintech', ru: 'Финтех' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto' } },
+  { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'studio', title: { en: 'Studio', ru: 'Студия' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech', ru: 'Финтех' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
 ];
 
 const credential = {
@@ -399,4 +399,61 @@ test('the dark preview is switched off again when the theme fixes its scheme', a
 
   await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
   await expect.poll(() => srcdoc(page)).not.toContain('color-scheme:dark');
+});
+
+const backgrounds = (page: Page) => page.getByRole('group', { name: 'Background style' });
+
+test('the background is chosen from preset cards, shown against the base, sent as an override and rendered by central', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+
+  // Versola is on the glow; every preset has a card, and the base's own is pressed.
+  await expect(backgrounds(page).getByRole('button')).toHaveText(['Glow', 'Linear', 'Horizon', 'Flat']);
+  await expect(backgrounds(page).getByRole('button', { name: 'Glow' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => srcdoc(page)).toContain('--background:glow');
+
+  await backgrounds(page).getByRole('button', { name: 'Horizon' }).click();
+  await expect(backgrounds(page).getByRole('button', { name: 'Horizon' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+  await expect(page.getByText('1 override on Versola')).toBeVisible();
+  // The preview is what central renders for the tokens: the console writes no gradient of its own.
+  await expect.poll(() => srcdoc(page)).toContain('--background:horizon');
+
+  expect(await save(page, api)).toMatchObject({ tokens: { base: 'versola', overrides: { background: 'horizon' } } });
+});
+
+test('the background can be reset to the base, and the base\'s own value is no override', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+
+  await backgrounds(page).getByRole('button', { name: 'Flat' }).click();
+  await expect.poll(() => srcdoc(page)).toContain('--background:flat');
+  await page.getByRole('button', { name: 'Reset background to the base' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  await expect.poll(() => srcdoc(page)).toContain('--background:glow');
+
+  // Choosing what the base already is overrides nothing.
+  await backgrounds(page).getByRole('button', { name: 'Glow' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  expect(await save(page, api)).toEqual({ id: 'mine', css: '', tenantId: null, tokens: { base: 'versola' } });
+});
+
+test('a base brings its own background, an override follows the base switch only when it differs', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+  await backgrounds(page).getByRole('button', { name: 'Linear' }).click();
+  await expect(page.getByText('1 override on Versola')).toBeVisible();
+
+  // Fintech is linear itself: the override is then the base's value and is dropped.
+  await page.getByRole('button', { name: 'Fintech' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  await expect(backgrounds(page).getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await save(page, api)).toEqual({ id: 'mine', css: '', tenantId: null, tokens: { base: 'fintech' } });
+});
+
+test('the background cards are drawn in the brand colour of the theme', async ({ page }) => {
+  await newTheme(page);
+  await page.getByRole('button', { name: '#f5c518' }).click();
+  const swatch = backgrounds(page).locator('.bg-swatch').first();
+  await expect(swatch).toHaveAttribute('style', /--b:#f5c518/);
 });
