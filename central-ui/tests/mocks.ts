@@ -71,7 +71,9 @@ type FormPreviewDto = {
   scenarios: Array<{ id: string; title: Record<string, string>; step: Record<string, unknown>; error?: string }>;
 };
 type FormLocaleDto = { code: string; name: string };
-type ThemeDto = { id: string; css: string; tenantId: string | null };
+type ThemeTokensDto = { base: string; overrides?: { brand?: string; shape?: string; surface?: string; mode?: string } };
+type ThemeDto = { id: string; css: string; tenantId: string | null; tokens?: ThemeTokensDto | null };
+type ThemePresetDto = { id: string; title: Record<string, string>; tokens: { brand: string; shape: string; surface: string; mode: string } };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
 type SetPatch<T> = { add?: T[]; remove?: T[] };
 type DescriptionPatch = { add?: Record<string, string>; delete?: string[] };
@@ -289,6 +291,8 @@ export type MockConfigState = {
   formPreviews: FormPreviewDto[] | null;
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
+  // The built-in themes; null stands for a central that has none.
+  themePresets: ThemePresetDto[] | null;
   systemSettings: SystemSettingsDto;
   otpTemplates: Record<string, OtpTemplateDto[]>; // keyed by tenantId
   challengeSettings: Record<string, ChallengeSettingsDto>; // keyed by tenantId
@@ -358,6 +362,7 @@ const defaultState: MockConfigState = {
   formPreviews: [],
   formLocales: [],
   themes: [],
+  themePresets: [],
   systemSettings: {
     passwordRegex: '^(?=.*[A-Za-z])(?=.*\\d).{8,}$',
     passwordHistorySize: 5,
@@ -392,6 +397,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     formPreviews: clone(overrides.formPreviews === undefined ? defaultState.formPreviews : overrides.formPreviews),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
+    themePresets: clone(overrides.themePresets === undefined ? defaultState.themePresets : overrides.themePresets),
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
     otpTemplates: clone({ ...defaultState.otpTemplates, ...overrides.otpTemplates }),
     challengeSettings: clone({ ...defaultState.challengeSettings, ...overrides.challengeSettings }),
@@ -1223,6 +1229,30 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
     }
 
+    if (pathname === '/configuration/themes/presets' && method === 'GET') {
+      if (state.themePresets === null) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      await route.fulfill(json({ presets: state.themePresets }));
+      return;
+    }
+
+    // What central renders: the default stylesheet, a line naming the tokens, then the theme's own CSS.
+    if (pathname === '/configuration/themes/css' && method === 'POST') {
+      const payload = body as { tokens: ThemeTokensDto; css?: string };
+      const base = (state.themePresets ?? []).find(preset => preset.id === payload.tokens.base);
+      if (!base) {
+        await route.fulfill(json({ message: `'${payload.tokens.base}' is not a built-in theme` }, 400));
+        return;
+      }
+      const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
+      const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode}}`;
+      const defaults = state.themes.find(theme => theme.id === 'default')?.css ?? '';
+      await route.fulfill(json({ css: [defaults, generated, payload.css ?? ''].filter(Boolean).join('\n'), generated }));
+      return;
+    }
+
     if (pathname === '/configuration/themes') {
       if (method === 'GET') {
         const visible = state.themes.filter(theme => !theme.tenantId || theme.tenantId === tenantId);
@@ -1238,13 +1268,13 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
           return;
         }
 
-        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId });
+        state.themes.push({ id: payload.id, css: payload.css, tenantId: scopedTenantId, ...(payload.tokens ? { tokens: payload.tokens } : {}) });
         await route.fulfill({ status: 201, body: '' });
         return;
       }
 
       if (method === 'PUT') {
-        const payload = body as { id: string; css: string };
+        const payload = body as { id: string; css: string; tokens?: ThemeTokensDto };
         const theme = state.themes.find(candidate => candidate.id === payload.id);
         if (!theme) {
           await route.fulfill(json({ message: `Theme ${payload.id} was not found` }, 404));
@@ -1252,6 +1282,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
         }
 
         theme.css = payload.css;
+        theme.tokens = payload.tokens ?? null;
         await route.fulfill({ status: 204, body: '' });
         return;
       }

@@ -2,29 +2,94 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import type { ThemeRecord } from '../types';
-import { createTheme, updateTheme, deleteTheme } from '../utils/central-api';
+import type {
+  FormPreview,
+  FormRecord,
+  Locale,
+  ResolvedThemeTokens,
+  ThemeMode,
+  ThemeOverrides,
+  ThemePreset,
+  ThemeRecord,
+  ThemeShape,
+  ThemeSurface,
+} from '../types';
+import { createTheme, updateTheme, deleteTheme, renderTheme } from '../utils/central-api';
+import { buildPreviewSrcdoc } from '../utils/preview';
+import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './code-editor';
 import './nav-toggle';
+
+const HEX = /^#?[0-9a-fA-F]{6}$/;
+// Colours to start from; any #rrggbb can be typed.
+const SWATCHES = ['#ff6b4a', '#e5484d', '#b4348a', '#5b5bd6', '#2563eb', '#0e9f8e', '#2f9e63', '#f5c518', '#14130f'];
+const SHAPES: Array<[ThemeShape, string]> = [['round', 'Round'], ['soft', 'Soft'], ['sharp', 'Sharp']];
+const SURFACES: Array<[ThemeSurface, string, string]> = [
+  ['bold', 'Bold', 'The brand colour fills the page'],
+  ['soft', 'Soft', 'A pale tint of the brand colour'],
+  ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
+];
+const MODES: Array<[ThemeMode, string]> = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
+
+const normalize = (hex: string) => (hex.startsWith('#') ? hex : `#${hex}`).toLowerCase();
 
 @customElement('versola-theme-edit')
 export class VersolaThemeEdit extends LitElement {
   @property({ type: Object }) theme!: ThemeRecord;
   @property({ type: String }) tenantId: string | null = null;
+  // The built-in themes; empty from a central that has none, which leaves only themes written as CSS.
+  @property({ type: Array }) presets: ThemePreset[] = [];
+  // Every stored form version, and the states central lists for the built-in forms: the preview renders them.
+  @property({ type: Array }) forms: FormRecord[] = [];
+  @property({ type: Array }) previews: FormPreview[] = [];
+  @property({ type: Array }) locales: Locale[] = [];
 
   @state() private editId = '';
   @state() private editCss = '';
   @state() private scope: 'global' | 'tenant' = 'global';
+  @state() private kind: 'tokens' | 'css' = 'css';
+  @state() private base = '';
+  @state() private overrides: ThemeOverrides = {};
+  @state() private brandText = '';
+  @state() private advancedOpen = false;
+
+  @state() private renderedCss = '';
+  @state() private renderError = '';
+  @state() private previewFormId = '';
+  @state() private previewScenarioId = '';
+  @state() private previewWidth = 390;
+  @state() private previewDark = false;
+
   @state() private saving = false;
   @state() private saveError = '';
   @state() private saveSuccess = '';
+
+  private renderTimer: ReturnType<typeof setTimeout> | undefined;
+  private renderSeq = 0;
 
   willUpdate(changed: Map<string, unknown>) {
     if (changed.has('theme') && this.theme) {
       this.editId = this.theme.id;
       this.editCss = this.theme.css;
       this.scope = this.theme.tenantId ? 'tenant' : 'global';
+      const isNew = this.theme.id === '';
+      this.kind = this.theme.tokens || (isNew && this.presets.length > 0) ? 'tokens' : 'css';
+      this.base = this.theme.tokens?.base ?? this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
+      this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
+      this.brandText = this.overrides.brand ?? '';
+      this.advancedOpen = this.kind === 'tokens' && this.editCss.trim() !== '';
+      this.scheduleRender();
     }
+    if (changed.has('forms') || changed.has('previews')) {
+      if (!this.previewFormId || !this.previewable.some(f => f.id === this.previewFormId)) {
+        this.previewFormId = this.previewable.find(f => f.id === 'credential')?.id ?? this.previewable[0]?.id ?? '';
+      }
+    }
+  }
+
+  disconnectedCallback() {
+    clearTimeout(this.renderTimer);
+    super.disconnectedCallback();
   }
 
   static styles = [
@@ -45,8 +110,135 @@ export class VersolaThemeEdit extends LitElement {
       .save-msg { font-size: 0.875rem; }
       .save-msg.success { color: var(--success, #3fb950); }
       .save-msg.error { color: var(--danger); }
+
+      .editor { display: grid; grid-template-columns: minmax(0, 30rem) minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; margin-top: var(--spacing-lg); }
+      @media (max-width: 1100px) { .editor { grid-template-columns: minmax(0, 1fr); } }
+      .controls { display: flex; flex-direction: column; gap: var(--spacing-lg); }
+      .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
+      .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
+      .summary { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); font-size: 0.8125rem; color: var(--text-secondary); }
+
+      .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }
+      .seg-btn { padding: 0.375rem 0.75rem; font: inherit; font-size: 0.8125rem; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .seg-btn:hover { color: var(--text-primary); }
+      .seg-btn.seg-active { color: var(--text-primary); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+      .seg-btn:disabled { opacity: 0.45; cursor: default; }
+      .ctrl-group { display: flex; align-items: center; gap: var(--spacing-sm); flex-wrap: wrap; }
+      .ctrl-label { font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); }
+
+      .presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(8rem, 1fr)); gap: var(--spacing-sm); }
+      .preset { text-align: left; padding: 0.5rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .preset:hover { border-color: var(--text-secondary); }
+      .preset.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .preset b { display: block; font-size: 0.8125rem; margin-top: 0.375rem; }
+      .th { display: grid; place-items: center; height: 4.5rem; border-radius: 6px; overflow: hidden; background: color-mix(in oklab, var(--b) 24%, #0c1110); }
+      .th[data-surface='soft'] { background: color-mix(in oklab, var(--b) 14%, #f7f4ee); }
+      .th[data-surface='neutral'] { background: #ecebe7; }
+      .th i { display: block; }
+      .th-sheet { width: 58%; height: 78%; background: #fffdf9; border-radius: 8px; display: flex; flex-direction: column; gap: 3px; padding: 6px 5px; box-shadow: 0 3px 8px rgba(0,0,0,0.2); }
+      .th[data-shape='soft'] .th-sheet { border-radius: 5px; }
+      .th[data-shape='sharp'] .th-sheet { border-radius: 1px; }
+      .th-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--b); }
+      .th-line { width: 50%; height: 3px; background: #1c1b19; border-radius: 2px; }
+      .th-field { height: 6px; background: #efeae0; border-radius: 4px; }
+      .th-btn { height: 7px; background: #1c1b19; border-radius: 5px; margin-top: auto; }
+
+      .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-dark); cursor: pointer; padding: 0; }
+      .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
+      .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
+      .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
+      .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
+      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-dark); }
+
+      details.advanced { border-top: 1px solid var(--border-dark); padding-top: var(--spacing-md); }
+      details.advanced summary { cursor: pointer; font-weight: 600; font-size: 0.875rem; }
+
+      .kind-toggle { display: inline-flex; gap: 0.25rem; }
+
+      .preview { position: sticky; top: var(--spacing-md); }
+      .preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--spacing-md); margin-bottom: var(--spacing-md); }
+      .preview-stage { background: rgba(0,0,0,0.2); border: 1px solid var(--border-dark); border-radius: var(--radius-md); padding: var(--spacing-sm); display: flex; justify-content: center; overflow: auto; }
+      .preview-iframe { border: 0; border-radius: var(--radius-md); background: #fff; height: 40rem; max-width: 100%; }
+      .render-error { color: var(--danger); font-size: 0.8125rem; margin-bottom: var(--spacing-sm); }
     `,
   ];
+
+  // ─── data ───────────────────────────────────────────────────────────────────
+
+  private get basePreset(): ThemePreset | undefined {
+    return this.presets.find(p => p.id === this.base);
+  }
+
+  /** Every token with its value: the base's, with this theme's overrides laid over it. */
+  private get resolved(): ResolvedThemeTokens | undefined {
+    const base = this.basePreset?.tokens;
+    if (!base) return undefined;
+    return {
+      brand: this.overrides.brand ?? base.brand,
+      shape: this.overrides.shape ?? base.shape,
+      surface: this.overrides.surface ?? base.surface,
+      mode: this.overrides.mode ?? base.mode,
+    };
+  }
+
+  /** The active version of each form, which is what a preview renders. */
+  private get previewable(): FormRecord[] {
+    return this.forms.filter(f => f.active && f.jsCompiled);
+  }
+
+  private get brandInvalid(): boolean {
+    return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
+  }
+
+  private get overrideCount(): number {
+    return Object.keys(this.overrides).length;
+  }
+
+  private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
+    const next = { ...this.overrides };
+    const base = this.basePreset?.tokens[key];
+    // A value equal to the base's is not an override: the theme then follows the base when it changes.
+    if (value === undefined || value === base) delete next[key];
+    else next[key] = value;
+    this.overrides = next;
+    this.scheduleRender();
+  }
+
+  private pickBase(id: string) {
+    this.base = id;
+    this.scheduleRender();
+  }
+
+  private scheduleRender() {
+    clearTimeout(this.renderTimer);
+    if (this.kind !== 'tokens' || !this.base) {
+      this.renderedCss = this.editCss;
+      this.renderError = '';
+      return;
+    }
+    this.renderTimer = setTimeout(() => void this.renderNow(), 200);
+  }
+
+  private async renderNow() {
+    const seq = ++this.renderSeq;
+    try {
+      const rendered = await renderTheme({ base: this.base, overrides: this.overrides }, this.editCss);
+      if (seq !== this.renderSeq) return;
+      this.renderedCss = rendered.css;
+      this.renderError = '';
+    } catch (error) {
+      if (seq !== this.renderSeq) return;
+      this.renderError = error instanceof Error ? error.message : 'Could not render the theme';
+    }
+  }
+
+  // ─── actions ────────────────────────────────────────────────────────────────
+
+  private get tokens() {
+    return this.kind === 'tokens' ? { base: this.base, ...(this.overrideCount > 0 ? { overrides: this.overrides } : {}) } : null;
+  }
 
   private async handleSave() {
     this.saving = true;
@@ -61,13 +253,14 @@ export class VersolaThemeEdit extends LitElement {
         id: this.editId.trim(),
         css: this.editCss,
         tenantId,
+        tokens: this.tokens,
       };
       if (isNew) {
         await createTheme(record);
       } else {
         await updateTheme(record);
       }
-      this.saveSuccess = this.theme.id === '' ? 'Created' : 'Saved';
+      this.saveSuccess = isNew ? 'Created' : 'Saved';
       setTimeout(() => { this.saveSuccess = ''; }, 2000);
       this.dispatchEvent(new CustomEvent('submit', { detail: { theme: record }, bubbles: true, composed: true }));
     } catch (error) {
@@ -90,9 +283,192 @@ export class VersolaThemeEdit extends LitElement {
     this.dispatchEvent(new CustomEvent('cancel', { bubbles: true, composed: true }));
   }
 
+  private setKind(kind: 'tokens' | 'css') {
+    this.kind = kind;
+    this.scheduleRender();
+  }
+
+  // ─── preview ────────────────────────────────────────────────────────────────
+
+  private get previewForm(): FormRecord | undefined {
+    return this.previewable.find(f => f.id === this.previewFormId);
+  }
+
+  private get scenarios() {
+    return this.previews.find(p => p.formId === this.previewFormId)?.scenarios ?? [];
+  }
+
+  private previewSrcdoc(): string {
+    const form = this.previewForm;
+    if (!form) return '';
+    const scheme = this.previewDark && (this.resolved?.mode ?? 'auto') === 'auto' ? ':root{color-scheme:dark}' : '';
+    return buildPreviewSrcdoc({
+      formId: form.id,
+      properties: form.properties,
+      getValue: prop => (prop.type === 'StringArrayProperty' ? prop.allowedValues : prop.type === 'NumberProperty' ? prop.default : false),
+      scenario: pickScenario(this.scenarios, this.previewScenarioId),
+      localizations: form.localizations,
+      locale: this.locales[0]?.code ?? 'en',
+      locales: this.locales.map(l => l.code),
+      themeCss: `${this.renderedCss}\n${scheme}`,
+      style: form.style,
+      jsCompiled: form.jsCompiled ?? '',
+    });
+  }
+
+  // ─── render ─────────────────────────────────────────────────────────────────
+
+  private overriddenBadge(key: keyof ThemeOverrides, baseValue: string) {
+    if (this.overrides[key] === undefined) return nothing;
+    return html`
+      <span>
+        <span class="badge-overridden">Overridden · base: ${baseValue}</span>
+        <button class="reset" aria-label=${`Reset ${key} to the base`} @click=${() => { this.setOverride(key, undefined); if (key === 'brand') this.brandText = ''; }}>Reset</button>
+      </span>
+    `;
+  }
+
+  private renderPresets() {
+    return html`
+      <section class="card">
+        <div class="field-label">Base theme</div>
+        <div class="hint">Start from a built-in theme. What you change below is kept as overrides, so switching the base keeps them.</div>
+        <div class="presets" role="group" aria-label="Base theme">
+          ${this.presets.map(p => html`
+            <button class="preset ${this.base === p.id ? 'sel' : ''}" aria-pressed=${this.base === p.id ? 'true' : 'false'}
+              @click=${() => this.pickBase(p.id)}>
+              <span class="th" style=${`--b:${p.tokens.brand}`} data-surface=${p.tokens.surface} data-shape=${p.tokens.shape}>
+                <i class="th-sheet"><i class="th-dot"></i><i class="th-line"></i><i class="th-field"></i><i class="th-field"></i><i class="th-btn"></i></i>
+              </span>
+              <b>${p.title.en ?? p.id}</b>
+            </button>
+          `)}
+        </div>
+      </section>
+    `;
+  }
+
+  private renderTokens() {
+    const resolved = this.resolved;
+    const base = this.basePreset?.tokens;
+    if (!resolved || !base) return nothing;
+    return html`
+      <section class="card">
+        <div class="summary" style="margin-bottom: var(--spacing-md)">
+          <span>${this.overrideCount === 0 ? 'No overrides: this theme is the base theme.' : `${this.overrideCount} ${this.overrideCount === 1 ? 'override' : 'overrides'} on ${this.basePreset?.title.en ?? this.base}`}</span>
+          ${this.overrideCount > 0 ? html`<button class="reset" @click=${() => { this.overrides = {}; this.brandText = ''; this.scheduleRender(); }}>Clear overrides</button>` : nothing}
+        </div>
+
+        <div>
+          <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base.brand)}</div>
+          <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
+          <div class="swatches" role="group" aria-label="Brand colour">
+            ${SWATCHES.map(c => html`
+              <button class="swatch ${resolved.brand === c ? 'sel' : ''}" style=${`background:${c}`} aria-label=${c}
+                @click=${() => { this.brandText = c; this.setOverride('brand', c); }}></button>
+            `)}
+          </div>
+          <div class="hex-row">
+            <span class="chip" style=${`background:${resolved.brand}`}></span>
+            <input class="kv-value" aria-label="Brand colour, #rrggbb" placeholder=${resolved.brand} spellcheck="false" maxlength="7"
+              .value=${this.brandText}
+              @input=${(e: Event) => {
+                this.brandText = (e.target as HTMLInputElement).value;
+                const text = this.brandText.trim();
+                if (text === '') this.setOverride('brand', undefined);
+                else if (HEX.test(text)) this.setOverride('brand', normalize(text));
+              }} />
+            ${this.brandInvalid ? html`<span class="bad" role="alert">Use #rrggbb</span>` : nothing}
+          </div>
+        </div>
+
+        <div style="margin-top: var(--spacing-lg)">
+          <div class="group-title"><div class="field-label">Page background</div>${this.overriddenBadge('surface', base.surface)}</div>
+          <div class="seg-control" role="group" aria-label="Page background">
+            ${SURFACES.map(([value, label]) => html`
+              <button class="seg-btn ${resolved.surface === value ? 'seg-active' : ''}" aria-pressed=${resolved.surface === value ? 'true' : 'false'}
+                @click=${() => this.setOverride('surface', value)}>${label}</button>
+            `)}
+          </div>
+          <div class="hint" style="margin-top: 0.5rem">${SURFACES.find(s => s[0] === resolved.surface)?.[2]}</div>
+        </div>
+
+        <div style="margin-top: var(--spacing-lg)">
+          <div class="group-title"><div class="field-label">Shape</div>${this.overriddenBadge('shape', base.shape)}</div>
+          <div class="seg-control" role="group" aria-label="Shape">
+            ${SHAPES.map(([value, label]) => html`
+              <button class="seg-btn ${resolved.shape === value ? 'seg-active' : ''}" aria-pressed=${resolved.shape === value ? 'true' : 'false'}
+                @click=${() => this.setOverride('shape', value)}>${label}</button>
+            `)}
+          </div>
+        </div>
+
+        <div style="margin-top: var(--spacing-lg)">
+          <div class="group-title"><div class="field-label">Colour scheme</div>${this.overriddenBadge('mode', base.mode)}</div>
+          <div class="seg-control" role="group" aria-label="Colour scheme">
+            ${MODES.map(([value, label]) => html`
+              <button class="seg-btn ${resolved.mode === value ? 'seg-active' : ''}" aria-pressed=${resolved.mode === value ? 'true' : 'false'}
+                @click=${() => this.setOverride('mode', value)}>${label}</button>
+            `)}
+          </div>
+          <div class="hint" style="margin-top: 0.5rem">Auto follows the visitor's device.</div>
+        </div>
+      </section>
+
+      <details class="advanced" ?open=${this.advancedOpen} @toggle=${(e: Event) => { this.advancedOpen = (e.target as HTMLDetailsElement).open; }}>
+        <summary>Custom CSS (optional)</summary>
+        <div class="hint" style="margin-top: 0.5rem">Added after the generated styles. Leave it empty unless a token cannot do what you need.</div>
+        <versola-code-editor language="css" rows="8" .value=${this.editCss}
+          @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}
+        ></versola-code-editor>
+      </details>
+    `;
+  }
+
+  private renderPreview() {
+    const forms = this.previewable;
+    if (forms.length === 0) return html`<div class="hint">No form has an active version to preview yet.</div>`;
+    return html`
+      <div class="preview">
+        <div class="preview-bar">
+          <div class="ctrl-group">
+            <label class="ctrl-label" for="preview-form">Form</label>
+            <select id="preview-form" class="kv-value" style="width:auto"
+              @change=${(e: Event) => { this.previewFormId = (e.target as HTMLSelectElement).value; this.previewScenarioId = ''; }}>
+              ${forms.map(f => html`<option value=${f.id} ?selected=${f.id === this.previewFormId}>${f.id}</option>`)}
+            </select>
+          </div>
+          ${renderScenarioControl(this.scenarios, pickScenario(this.scenarios, this.previewScenarioId)?.id ?? '', id => { this.previewScenarioId = id; })}
+          <div class="ctrl-group">
+            <span class="ctrl-label">Width</span>
+            <div class="seg-control" role="group" aria-label="Preview width">
+              ${[['Mobile', 390], ['Desktop', 1000]].map(([label, width]) => html`
+                <button class="seg-btn ${this.previewWidth === width ? 'seg-active' : ''}" @click=${() => { this.previewWidth = width as number; }}>${label}</button>
+              `)}
+            </div>
+          </div>
+          <div class="ctrl-group">
+            <span class="ctrl-label">Scheme</span>
+            <div class="seg-control" role="group" aria-label="Preview scheme">
+              <button class="seg-btn ${!this.previewDark ? 'seg-active' : ''}" @click=${() => { this.previewDark = false; }}>Light</button>
+              <button class="seg-btn ${this.previewDark ? 'seg-active' : ''}" ?disabled=${this.kind === 'tokens' && (this.resolved?.mode ?? 'auto') !== 'auto'}
+                @click=${() => { this.previewDark = true; }}>Dark</button>
+            </div>
+          </div>
+        </div>
+        ${this.renderError ? html`<div class="render-error" role="alert">${this.renderError}</div>` : nothing}
+        <div class="preview-stage">
+          <iframe class="preview-iframe" title="Preview" style=${`width:${this.previewWidth}px`}
+            .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
     const isNew = this.theme?.id === '';
-    const canSave = this.editId.trim().length > 0;
+    const tokensKind = this.kind === 'tokens';
+    const canSave = this.editId.trim().length > 0 && !this.brandInvalid && (!tokensKind || this.base !== '');
     return html`
       <div class="title-stack" style="margin-bottom: var(--spacing-lg)">
         <div class="form-header-lead">
@@ -122,29 +498,41 @@ export class VersolaThemeEdit extends LitElement {
             <div class="kv-value" style="max-width:20rem">${this.theme.tenantId ? `This tenant (${this.theme.tenantId})` : 'Global'}</div>
           `}
         </div>
+        ${isNew && this.presets.length > 0 ? html`
+          <div>
+            <label class="field-label">Built as</label>
+            <div class="kind-toggle seg-control" role="group" aria-label="Built as">
+              <button class="seg-btn ${tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('tokens')}>Visual</button>
+              <button class="seg-btn ${!tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('css')}>Custom CSS</button>
+            </div>
+          </div>
+        ` : nothing}
       </div>
-      <div class="card">
-        <div class="field-label">CSS</div>
-        <div class="hint">Applied to all forms using this theme.</div>
-        <versola-code-editor language="css" rows="20" .value=${this.editCss}
-          @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; }}
-        ></versola-code-editor>
-        <div class="form-actions">
-          ${!isNew && this.theme.id !== 'default' ? html`<div class="form-actions-left"><button class="btn btn-danger" ?disabled=${this.saving} @click=${() => this.handleDelete()}>Delete</button></div>` : nothing}
-          <button class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.handleCancel()}>Cancel</button>
-          <button class="btn btn-primary" ?disabled=${this.saving || !canSave} @click=${() => this.handleSave()}>
-            ${this.saving ? 'Saving…' : isNew ? 'Create' : 'Save'}
-          </button>
-          ${this.saveSuccess ? html`<span class="save-msg success">${this.saveSuccess}</span>` : nothing}
-          ${this.saveError ? html`<span class="save-msg error">${this.saveError}</span>` : nothing}
+
+      ${tokensKind ? html`
+        <div class="editor">
+          <div class="controls">${this.renderPresets()}${this.renderTokens()}</div>
+          ${this.renderPreview()}
         </div>
+      ` : html`
+        <div class="card">
+          <div class="field-label">CSS</div>
+          <div class="hint">Applied to all forms using this theme. A theme written as CSS replaces the default stylesheet entirely.</div>
+          <versola-code-editor language="css" rows="20" .value=${this.editCss}
+            @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}
+          ></versola-code-editor>
+        </div>
+      `}
+
+      <div class="form-actions">
+        ${!isNew && this.theme.id !== 'default' ? html`<div class="form-actions-left"><button class="btn btn-danger" ?disabled=${this.saving} @click=${() => this.handleDelete()}>Delete</button></div>` : nothing}
+        <button class="btn btn-secondary" ?disabled=${this.saving} @click=${() => this.handleCancel()}>Cancel</button>
+        <button class="btn btn-primary" ?disabled=${this.saving || !canSave} @click=${() => this.handleSave()}>
+          ${this.saving ? 'Saving…' : isNew ? 'Create' : 'Save'}
+        </button>
+        ${this.saveSuccess ? html`<span class="save-msg success">${this.saveSuccess}</span>` : nothing}
+        ${this.saveError ? html`<span class="save-msg error">${this.saveError}</span>` : nothing}
       </div>
     `;
-  }
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    'versola-theme-edit': VersolaThemeEdit;
   }
 }
