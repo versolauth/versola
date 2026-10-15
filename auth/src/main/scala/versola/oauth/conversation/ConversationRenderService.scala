@@ -5,7 +5,7 @@ import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.authorize.model.ResponseTypeEntry
 import versola.oauth.authorize.{AuthorizationResponseService, AuthorizeRedirect}
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{ClientId, FormRecord, PhoneRegion, PrimaryCredential, ScopeToken}
+import versola.oauth.client.model.{ClientId, FormRecord, Locales, OAuthClientRecord, PhoneRegion, PrimaryCredential, ScopeToken}
 import versola.oauth.consent.ConsentService
 import versola.oauth.conversation.model.{ConversationRecord, ConversationStep}
 import versola.oauth.jwks.JwksService
@@ -15,7 +15,7 @@ import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
 import versola.util.theme.{ThemeCss, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
-import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
+import zio.http.{Body, Header, Headers, MediaType, Path, Response, Scheme, Status, URL}
 import zio.json.*
 import zio.json.ast.Json
 import zio.json.{jsonDiscriminator, jsonHint}
@@ -112,6 +112,15 @@ object ConversationRenderService:
         deselectable: Boolean,
     ) derives JsonCodec
 
+    /** Who is signed in, shown on the consent card so the user sees whose account is being shared. */
+    case class ConsentUser(
+        name: Option[String],
+        /** The email or phone number, masked. */
+        identifier: Option[String],
+        /** An https URL, from the user's `picture` claim. */
+        picture: Option[String],
+    ) derives JsonCodec
+
     @jsonHint("consent")
     case class Consent(
         clientName: Option[String],
@@ -121,6 +130,7 @@ object ConversationRenderService:
         scopes: List[ConsentScope],
         allowPartial: Boolean,
         denyUri: String,
+        user: Option[ConsentUser] = None,
     ) extends StepView
 
     /** One active session of the user, as rendered on the account page. `id` is the
@@ -172,6 +182,19 @@ object ConversationRenderService:
       error: Option[String],
       csrf: String,
       logo: Option[String] = None,
+      /** The client the user is signing in to; forms show it inside the card for a partner's app. */
+      client: Option[ClientBrand] = None,
+      /** The language each code is shown as in the switcher, as configured under Locales. */
+      localeNames: Map[String, String] = Map.empty,
+  ) derives JsonCodec
+
+  /** What a form shows of the client: its name and logo, and whether it is a partner's (third-party) app, which has
+    * a consent flow; the identity provider's own apps are not announced inside the card.
+    */
+  case class ClientBrand(
+      name: Option[String],
+      logo: Option[String],
+      partner: Boolean,
   ) derives JsonCodec
 
   case class LogoutConfirm(
@@ -217,6 +240,7 @@ object ConversationRenderService:
             record.state,
             record.csrfToken,
             availableClaims = availableClaimNames(record),
+            consentUser = consentUser(record),
             errorOverride = errorKey,
             responseMode = record.responseMode,
           )
@@ -308,6 +332,8 @@ object ConversationRenderService:
               allT = form.localizations,
               error = None,
               csrf = "",
+              client = clientBrand(client, uiLocales, locales.default),
+              localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
             ),
             version = form.version,
           )
@@ -510,6 +536,7 @@ object ConversationRenderService:
         state: Option[State],
         csrfToken: String,
         availableClaims: Set[String],
+        consentUser: Option[StepView.ConsentUser] = None,
         errorOverride: Option[String] = None,
         responseMode: ResponseMode = ResponseMode.Query,
     ): Task[Option[FormRenderInfo]] =
@@ -522,7 +549,8 @@ object ConversationRenderService:
         case _: ConversationStep.Consent => "consent"
         case ConversationStep.AccessDenied => "access-denied"
       for
-        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, responseMode)
+        view <- stepView(step, credential, clientId, locale, redirectUri, state, availableClaims, consentUser, responseMode)
+        client <- configuration.find(clientId)
         formOpt <- configuration.getForm(formId)
         locales <- configuration.getLocales
         errorMessage = errorOverride.orElse(stepErrorKey(step))
@@ -544,6 +572,8 @@ object ConversationRenderService:
             allT = form.localizations,
             error = errorMessage,
             csrf = csrfToken,
+            client = clientBrand(client, locale, locales.default),
+            localeNames = localeNames(locales, allLocales),
           ),
           version = form.version,
         )
@@ -617,6 +647,7 @@ object ConversationRenderService:
         redirectUri: URL,
         state: Option[State],
         availableClaims: Set[String],
+        consentUser: Option[StepView.ConsentUser],
         responseMode: ResponseMode,
     ): Task[StepView] =
       step match
@@ -697,11 +728,45 @@ object ConversationRenderService:
             scopes = rows,
             allowPartial = s.allowPartial,
             denyUri = denyUri.getOrElse(redirectUri.encode),
+            user = consentUser,
           )
 
         case ConversationStep.AccessDenied =>
           returnUri(clientId, redirectUri.encode, state, "access_denied", responseMode)
             .map(uri => StepView.AccessDenied(redirectUri = uri.getOrElse(redirectUri.encode)))
+
+    /** The client's name in the user's language and its logo, and whether it is a partner's app. */
+    private def clientBrand(
+        client: Option[OAuthClientRecord],
+        uiLocales: Option[List[String]],
+        default: String,
+    ): Option[ClientBrand] =
+      client.map: c =>
+        ClientBrand(
+          name = pickLocalized(c.clientName, uiLocales, default),
+          logo = c.logoUri,
+          partner = c.consentFlow.isDefined,
+        )
+
+    /** The language names an administrator gave the locales, for the languages this form is offered in. */
+    private def localeNames(locales: Locales, offered: List[String]): Map[String, String] =
+      locales.locales.collect { case locale if offered.contains(locale.code) && locale.name.nonEmpty => locale.code -> locale.name }.toMap
+
+    /** Who is signed in, for the consent card: their name, a masked email or phone number, and their picture.
+      * A name and a picture are the user's own `name` / `picture` claims, so they are bounded, and a picture
+      * is used only when it is an https URL: it is loaded by the browser from whatever host the claim names.
+      */
+    private def consentUser(record: ConversationRecord): Option[StepView.ConsentUser] =
+      def text(claim: String, limit: Int): Option[String] =
+        record.userClaims.flatMap(_.get(claim)).collect { case Json.Str(value) if value.trim.nonEmpty => value.trim.take(limit) }
+      val name = text("name", 200).orElse:
+        Some(List(text("given_name", 100), text("family_name", 100)).flatten.mkString(" ")).filter(_.nonEmpty)
+      val picture = text("picture", 2048).filter(isHttpsUrl)
+      val identifier = record.userEmail.map(Email.mask).orElse(record.userPhone.map(Phone.mask))
+      Option.when(name.isDefined || identifier.isDefined)(StepView.ConsentUser(name, identifier, picture))
+
+    private def isHttpsUrl(value: String): Boolean =
+      URL.decode(value).toOption.exists(url => url.scheme.contains(Scheme.HTTPS) && url.host.exists(_.nonEmpty))
 
     private def availableClaimNames(record: ConversationRecord): Set[String] =
       val customClaims = record.userClaims.toList

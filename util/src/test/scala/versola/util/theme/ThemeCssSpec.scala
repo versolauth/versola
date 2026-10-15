@@ -16,7 +16,8 @@ object ThemeCssSpec extends ZIOSpecDefault:
         assertTrue(BrandColor.parse("#FF6B4A") == BrandColor.parse("#ff6b4a"), BrandColor.parse("#ff6b4a").map(_.value) == Right("#ff6b4a"))
       },
       test("refuses anything that is not a six-digit hex colour, so a value cannot open a declaration") {
-        val refused = List("red", "#fff", "#12345", "#1234567", "ff6b4a", "#ff6b4a;}body{display:none", "url(https://x)", "#ff6b4a ", "", "var(--x)", "#gggggg")
+        val refused =
+          List("red", "#fff", "#12345", "#1234567", "ff6b4a", "#ff6b4a;}body{display:none", "url(https://x)", "#ff6b4a ", "", "var(--x)", "#gggggg")
         assertTrue(refused.forall(BrandColor.parse(_).isLeft))
       },
       test("is validated when read from JSON") {

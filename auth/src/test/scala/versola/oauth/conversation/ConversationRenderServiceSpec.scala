@@ -155,6 +155,28 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       body <- response.body.asString
     yield body
 
+  // The page for a step, rendered with the given client record, locales and conversation record.
+  private def page(
+      record: ConversationRecord,
+      client: Option[OAuthClientRecord] = Some(clientRecord),
+      locales: Locales = locales,
+      formId: String = "credential",
+      form: FormRecord = formRecord,
+  ) =
+    val env = Env()
+    for
+      _ <- env.configuration.find.succeedsWith(client)
+      _ <- env.configuration.getTheme.succeedsWith(Some(theme))
+      _ <- env.configuration.getForm.succeedsWith(Some(form.copy(id = formId)))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+      _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
+      _ <- env.configuration.getScopes.succeedsWith(Vector.empty)
+      response <- env.service.renderStep(record, None)
+      body <- response.body.asString
+    yield body
+
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
       test("renders HTML with theme and form") {
@@ -241,6 +263,79 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
       },
+      suite("what the form is told about the client, the languages and the signed-in user")(
+        test("a partner's app is announced with its name and logo") {
+          val partner = clientRecord.copy(
+            logoUri = Some("https://acme.test/app.svg"),
+            consentFlow = Some(ConsentFlow(allowPartial = true, rememberDuration = None)),
+          )
+          page(conversationRecord, client = Some(partner)).map: body =>
+            assertTrue(body.contains(""""client":{"name":"Test Client","logo":"https://acme.test/app.svg","partner":true}"""))
+        },
+        test("an app of the identity provider's own, which has no consent flow, is not a partner") {
+          page(conversationRecord).map(body => assertTrue(body.contains(""""client":{"name":"Test Client","partner":false}""")))
+        },
+        test("a client that cannot be found is not announced") {
+          page(conversationRecord, client = None).map(body => assertTrue(!body.contains("\"client\":")))
+        },
+        test("the languages the form is offered in carry the names configured under Locales") {
+          val both =
+            Locales(default = "en", locales = Vector(LocaleRecord("en", "English"), LocaleRecord("de", "Deutsch"), LocaleRecord("fr", "Français")))
+          val twoLanguages =
+            formRecord.copy(localizations = Map("en" -> Map("page_title" -> "Sign In Test"), "de" -> Map("page_title" -> "Anmelden")))
+          page(conversationRecord, locales = both, form = twoLanguages).map: body =>
+            assertTrue(
+              body.contains(""""localeNames":{"en":"English","de":"Deutsch"}""") || body.contains(
+                """"localeNames":{"de":"Deutsch","en":"English"}""",
+              ),
+              !body.contains("Français"),
+            )
+        },
+        test("the consent card is told who is signed in: a name, a masked address and an https picture") {
+          val record = consentRecord.copy(
+            userEmail = Some(Email("anna@example.com")),
+            userClaims = Some(Json.Obj("name" -> Json.Str("Anna Petrova"), "picture" -> Json.Str("https://cdn.example/anna.png"))),
+          )
+          page(record, formId = "consent").map: body =>
+            assertTrue(
+              body.contains(""""user":{"name":"Anna Petrova","identifier":"a•••a@example.com","picture":"https://cdn.example/anna.png"}"""),
+              !body.contains("anna@example.com"),
+            )
+        },
+        test("a picture that is not an https URL is left out, since the browser would load it from wherever it points") {
+          val pictures =
+            List("http://cdn.example/a.png", "javascript:alert(1)", "data:image/png;base64,AAAA", "//cdn.example/a.png", "/a.png", "not a url")
+          ZIO.foreach(pictures): picture =>
+            val record = consentRecord.copy(
+              userEmail = Some(Email("anna@example.com")),
+              userClaims = Some(Json.Obj("picture" -> Json.Str(picture))),
+            )
+            page(record, formId = "consent").map(body => body.contains("\"picture\"")).map(!_)
+          .map(results => assertTrue(results.forall(identity)))
+        },
+        test("a name is built from the given and family names when there is none, and cut to a sane length") {
+          val fromParts = consentRecord.copy(
+            userClaims = Some(Json.Obj("given_name" -> Json.Str("Anna"), "family_name" -> Json.Str("Petrova"))),
+            userPhone = Some(Phone("+77001234567")),
+          )
+          val long = consentRecord.copy(userClaims = Some(Json.Obj("name" -> Json.Str("x" * 500))), userEmail = Some(Email("a@example.com")))
+          for
+            first <- page(fromParts, formId = "consent")
+            second <- page(long, formId = "consent")
+          yield assertTrue(
+            first.contains(""""name":"Anna Petrova""""),
+            second.contains("\"name\":\"" + "x" * 200 + "\""),
+            !second.contains("x" * 201),
+          )
+        },
+        test("with nothing to name the user by, the consent card is told nobody") {
+          page(consentRecord, formId = "consent").map(body => assertTrue(!body.contains("\"user\":")))
+        },
+        test("only a form that is the consent step carries the user") {
+          val record = conversationRecord.copy(userEmail = Some(Email("anna@example.com")))
+          page(record).map(body => assertTrue(!body.contains("\"user\":")))
+        },
+      ),
       suite("a theme built from tokens")(
         test("is the current default stylesheet, then what its tokens set, then its own CSS") {
           val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio")))
