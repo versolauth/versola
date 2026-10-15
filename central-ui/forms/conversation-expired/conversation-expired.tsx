@@ -32,7 +32,8 @@ function PageBrand(props: { logo?: string }) {
 }
 
 // The language's own name ("English", "Русский"); falls back to the bare code where Intl lacks it.
-const languageName = (code: string) => {
+const languageName = (code: string, names?: Record<string, string>) => {
+  if (names?.[code]) return names[code];
   try {
     const name = new Intl.DisplayNames([code], { type: 'language' }).of(code) ?? code;
     return name.charAt(0).toLocaleUpperCase(code) + name.slice(1);
@@ -49,7 +50,7 @@ function LocaleDropdown(props: { locales: string[]; current: string; onChange: (
         <svg class="locale-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
           <circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/>
         </svg>
-        {languageName(props.current)}
+        {languageName(props.current, props.names)}
       </button>
       <Show when={open()}>
         <div class="locale-options">
@@ -94,7 +95,7 @@ function ConversationExpiredForm(props: { config: FormConfig }) {
       <PageBrand logo={props.config.logo} />
     <div class="container">
       <Show when={locales.length > 1}>
-        <div class="locale-selector"><LocaleDropdown locales={locales} current={currentLocale()} onChange={changeLocale} /></div>
+        <div class="locale-selector"><LocaleDropdown locales={locales} current={currentLocale()} names={props.config.localeNames} onChange={changeLocale} /></div>
       </Show>
       <div class="conversation-expired-icon" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
