@@ -2,6 +2,7 @@ package versola.oauth.client
 
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.ThemeRecord
+import versola.util.theme.{Mode, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -31,5 +32,20 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
         request.url.path.encode.contains("configuration/themes/sync"),
         themes == Vector(theme),
       )
+    },
+    test("reads a theme built from tokens, and a theme from a central that sends none") {
+      val tokenTheme = ThemeRecord("studio-dark", "", None, Some(ThemeTokens("studio", ThemeOverrides(mode = Some(Mode.dark)))))
+      // What a central from before tokens sends: no `tokens` key at all.
+      val oldCentral = """{"themes":[{"id":"default","css":"body {}"}]}"""
+      def sync(body: String) =
+        for
+          _ <- TestClient.addRoutes(Handler.fromFunction[Request](_ => Response.json(body)).toRoutes)
+          client <- ZIO.service[Client]
+          themes <- ThemeSyncClient.Impl(TestEnvConfig.coreConfig, tokenService(client)).getAll
+        yield themes
+      for
+        withTokens <- sync(ThemeSyncClient.ThemesResponse(Vector(tokenTheme)).toJson)
+        withoutTokens <- sync(oldCentral)
+      yield assertTrue(withTokens == Vector(tokenTheme), withoutTokens == Vector(ThemeRecord("default", "body {}", None, None)))
     },
   ).provide(TestClient.layer) @@ TestAspect.silentLogging

@@ -13,6 +13,7 @@ import versola.oauth.model.State
 import versola.oauth.model.{ConversationCookie, SessionCookie, UserAgentCookie}
 import versola.oauth.session.model.SessionInfo
 import versola.util.http.Observability
+import versola.util.theme.{ThemeCss, ThemePresets}
 import versola.util.{Base64, Base64Url, CoreConfig, Email, JWT, Phone, encodeQueryParam, escapeCssForStyle, escapeHtml}
 import zio.http.{Body, Header, Headers, MediaType, Path, Response, Status, URL}
 import zio.json.*
@@ -579,11 +580,20 @@ object ConversationRenderService:
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
+    // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
+    // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
+    // rather than a broken page.
     private def themeCss(themeId: String): UIO[String] =
       configuration.getTheme(themeId).flatMap {
+        case Some(theme) if theme.tokens.isDefined =>
+          defaultCss.map: default =>
+            theme.tokens.flatMap(ThemePresets.resolve(_).toOption).fold(default)(ThemeCss.compose(default, _, theme.css))
         case Some(theme) if theme.css.nonEmpty => ZIO.succeed(theme.css)
-        case _ => configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
+        case _ => defaultCss
       }
+
+    private def defaultCss: UIO[String] =
+      configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
 
     /** Resolves one localized configuration string the same way form translations are resolved:
       * the first requested locale that has a value, then the tenant default. Falls back to `None`
