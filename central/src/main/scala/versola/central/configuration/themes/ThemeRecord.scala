@@ -39,7 +39,7 @@ case class RenderThemeRequest(
 ) derives Schema, JsonCodec
 
 case class RenderThemeResponse(
-    /** The whole stylesheet: the current default, what the tokens set, then the theme's own CSS. */
+    /** The whole stylesheet: the base stylesheet, what the tokens set, then the theme's own CSS. */
     css: String,
     /** Only what the tokens set. */
     generated: String,

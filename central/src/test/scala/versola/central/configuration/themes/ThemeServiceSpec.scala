@@ -1,7 +1,7 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
-import versola.util.theme.{BrandColor, Mode, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{BrandColor, Mode, ThemeCss, ThemeOverrides, ThemeTokens}
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -114,10 +114,13 @@ object ThemeServiceSpec extends UnitSpecBase:
           env.repository.update.calls.isEmpty,
         )
       },
-      test("cannot be the default theme, which every token theme is laid over") {
+      test("may be the default theme: it is an ordinary visual theme, the base stylesheet is not stored in it") {
         val env = Env()
-        for result <- env.service.updateTheme(ThemeRecord(ThemeService.DefaultThemeId, "", None, Some(ThemeTokens("studio")))).either
-        yield assertTrue(result.left.exists(_.isInstanceOf[IllegalArgumentException]), env.repository.update.calls.isEmpty)
+        val record = ThemeRecord(ThemeService.DefaultThemeId, "", None, Some(ThemeTokens("studio")))
+        for
+          _ <- env.repository.update.succeedsWith(())
+          _ <- env.service.updateTheme(record)
+        yield assertTrue(env.repository.update.calls == List(record))
       },
       test("a theme without tokens is stored as before, whatever its CSS") {
         val env = Env()
@@ -128,14 +131,17 @@ object ThemeServiceSpec extends UnitSpecBase:
       },
     ),
     suite("render")(
-      test("lays the default stylesheet, what the tokens set and the theme's own CSS in that order") {
-        val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "DEFAULT-CSS", None)))
+      test("lays the base stylesheet, what the tokens set and the theme's own CSS in that order") {
+        // The stored default theme is a token theme with no CSS (or, in an older store, a stylesheet): neither is the foundation.
+        val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "STORED-DEFAULT-CSS", None)))
         for rendered <- env.service.render(RenderThemeRequest(ThemeTokens("studio"), "CUSTOM-CSS"))
         yield assertTrue(
-          rendered.css.indexOf("DEFAULT-CSS") < rendered.css.indexOf("--brand:#ff6b4a"),
-          rendered.css.indexOf("--brand:#ff6b4a") < rendered.css.indexOf("CUSTOM-CSS"),
+          rendered.css.startsWith(ThemeCss.baseStylesheet),
+          !rendered.css.contains("STORED-DEFAULT-CSS"),
+          rendered.css.indexOf("--brand:#ff6b4a", ThemeCss.baseStylesheet.length) >= 0,
+          rendered.css.indexOf("--brand:#ff6b4a", ThemeCss.baseStylesheet.length) < rendered.css.indexOf("CUSTOM-CSS"),
           rendered.generated.contains("--brand:#ff6b4a"),
-          !rendered.generated.contains("DEFAULT-CSS"),
+          !rendered.generated.contains(ThemeCss.baseStylesheet),
         )
       },
       test("applies the overrides over the base") {

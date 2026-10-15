@@ -4,7 +4,7 @@ import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
 import type { BackendProperty, Locale, FormPreview, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
 import { updateForm } from '../utils/central-api';
-import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf, previewStylesheets } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
@@ -27,6 +27,8 @@ export class VersolaFormEdit extends LitElement {
   @state() private previewOpen = false;
   @state() private previewWidth = 0;
   @state() private previewTheme = '';
+  // What each theme gives a page: a visual theme's is composed by central, so it arrives after the themes do.
+  @state() private themeStylesheets: Record<string, string> = {};
   @state() private previewScenarioId = '';
   @state() private editStyle = '';
   @state() private editJsSource = '';
@@ -53,6 +55,7 @@ export class VersolaFormEdit extends LitElement {
   }
 
   willUpdate(changed: Map<string, unknown>) {
+    if (changed.has('themes')) void previewStylesheets(this.themes).then(sheets => { this.themeStylesheets = sheets; });
     if (changed.has('form') && this.form) {
       this.editId = this.form.id;
       this.editStyle = this.form.style;
@@ -184,7 +187,7 @@ export class VersolaFormEdit extends LitElement {
       locale: this.previewLocale || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
       localeNames: localeNamesOf(this.locales),
-      themeCss: this.themes.find(t => t.id === themeId)?.css ?? '',
+      themeCss: this.themeStylesheets[themeId] ?? this.themes.find(t => t.id === themeId)?.css ?? '',
       style: this.editStyle,
       jsCompiled: this.editJsCompiled || '',
     });

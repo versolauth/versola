@@ -68,7 +68,7 @@ The script first asks for the environment **Name** (default `local`):
 4. ```bash
     cd central-ui
     npm install
-    npm run build:forms   # compile auth forms into central/src/main/resources/forms
+    npm run build:forms   # compile auth forms into central/src/main/resources/forms, and copy common.css to util/src/main/resources/versola/forms (auth, central and util need it)
     npm run dev           # run admin dashboard on port 3000
     ```
 5. Start server locally
@@ -154,7 +154,8 @@ docker build -t versola-edge -f docker/Dockerfile.edge .
 ```
 
 (`central` additionally expects `central-ui`'s forms already built into
-`central/src/main/resources` -- see the `npm run build:forms` step above --
+`central/src/main/resources` (and `auth` and `central` the base stylesheet in
+`util/src/main/resources/versola/forms`, written by the same step) -- see the `npm run build:forms` step above --
 before staging, same as CI's `build` job.)
 
 You can override the config path via `CONFIG_PATH` environment variable:

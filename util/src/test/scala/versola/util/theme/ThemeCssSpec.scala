@@ -167,6 +167,11 @@ object ThemeCssSpec extends ZIOSpecDefault:
         assertTrue(css.count(_ == '{') == 1, css.count(_ == '}') == 1, css.endsWith("}"))
       },
     ),
+    suite("baseStylesheet")(
+      test("loads the foundation stylesheet from the classpath: non-empty and defining the :root variables") {
+        assertTrue(ThemeCss.baseStylesheet.nonEmpty, ThemeCss.baseStylesheet.contains(":root"), ThemeCss.baseStylesheet.contains("--glow"))
+      },
+    ),
     suite("compose")(
       test("puts the default first, then the tokens, then the theme's own CSS") {
         val css = ThemeCss.compose("DEFAULT", resolved("#155e75"), "CUSTOM")

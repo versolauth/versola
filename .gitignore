@@ -29,6 +29,7 @@ playwright/.cache/
 
 # Generated forms (built from central-ui/forms via npm run build:forms)
 central/src/main/resources/forms/
+util/src/main/resources/versola/forms/
 
 develop.txt
 .scala-semantic/

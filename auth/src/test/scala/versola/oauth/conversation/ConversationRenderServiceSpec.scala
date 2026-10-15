@@ -12,7 +12,7 @@ import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMetho
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
-import versola.util.theme.{BrandColor, Mode, Surface, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -62,7 +62,9 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
   )
 
   private val theme = ThemeRecord("custom-theme", ".body { color: red; }", Some(tenantId))
-  private val defaultTheme = ThemeRecord("default", ".body { color: black; }", None)
+  // The default theme is an ordinary token theme; the foundation stylesheet comes from ThemeCss.baseStylesheet, not from it.
+  private val defaultTheme = ThemeRecord("default", "", None, Some(ThemeTokens("versola")))
+  private val base = ThemeCss.baseStylesheet
 
   private val locales = Locales(default = "en", locales = Vector(LocaleRecord("en", "English")))
 
@@ -259,12 +261,12 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         },
         test(s"$name shows the theme as it is when the configuration does not know the client") {
           pageOf(formId, None, Some(clientId))(render).map: (status, body) =>
-            assertTrue(status == Status.Ok, !body.contains("--brand:"), body.contains(".body { color: black; }"))
+            assertTrue(status == Status.Ok, !body.contains("--brand:#112233;"), body.contains(base))
         },
       )
     } :+ test("renderLogout shows the theme as it is when no client is known") {
       pageOf("signed-out", Some(withOverrides), None)((service, id) => service.renderLogout(Nil, None, None, None, id)).map: (status, body) =>
-        assertTrue(status == Status.Ok, !body.contains("--brand:"))
+        assertTrue(status == Status.Ok, !body.contains("--brand:#112233;"))
     }
 
   // Every <style> the page opens is closed once and by the page itself: injected text that closed one early would add a closer.
@@ -507,14 +509,14 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         },
       ),
       suite("a theme built from tokens")(
-        test("is the current default stylesheet, then what its tokens set, then its own CSS") {
+        test("is the base stylesheet, then what its tokens set, then its own CSS") {
           val tokenTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("studio")))
           rendered(tokenTheme).map: body =>
             assertTrue(
-              body.contains(".body { color: black; }"),
+              body.contains(base),
               body.contains("--brand:#ff6b4a;"),
               body.contains(".extra { top: 0; }"),
-              body.indexOf(".body { color: black; }") < body.indexOf("--brand:#ff6b4a;"),
+              body.indexOf(base) < body.indexOf("--brand:#ff6b4a;"),
               body.indexOf("--brand:#ff6b4a;") < body.indexOf(".extra { top: 0; }"),
               !body.contains(".body { color: red; }"),
             )
@@ -528,13 +530,13 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           rendered(theme.copy(css = "", tokens = Some(tokens))).map: body =>
             assertTrue(body.contains("--brand:#112233;"), !body.contains("--brand:#ff6b4a;"))
         },
-        test("falls back to the default stylesheet when its base is not one this service knows") {
+        test("falls back to the base stylesheet when its base is not one this service knows") {
           rendered(theme.copy(css = "", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
-            assertTrue(body.contains(".body { color: black; }"), !body.contains("--brand:"))
+            assertTrue(body.contains(base), !body.contains("--brand:#112233;"))
         },
-        test("keeps its own CSS on the default stylesheet when its base is not one this service knows") {
+        test("keeps its own CSS on the base stylesheet when its base is not one this service knows") {
           rendered(theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("from-the-future")))).map: body =>
-            assertTrue(body.contains(".body { color: black; }"), body.contains(".extra { top: 0; }"), !body.contains("--brand:"))
+            assertTrue(body.contains(base), body.contains(".extra { top: 0; }"), !body.contains("--brand:#112233;"))
         },
         test("has its own CSS escaped like any other, so it cannot end the style element") {
           val tokenTheme = theme.copy(css = ".x{}</style><script>alert(1)</script>", tokens = Some(ThemeTokens("studio")))
@@ -571,7 +573,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             end > ".body { color: red; }".length,
             over.take(end) == plain.take(end),
             over.sliding(".body { color: red; }".length).count(_ == ".body { color: red; }") == 1,
-            !plain.contains("--brand:"),
+            !plain.contains("--brand:#112233;"),
             over.contains("--brand:#112233;"),
           )
         },
@@ -611,7 +613,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
-        yield assertTrue(body.contains(".body { color: black; }"))
+        yield assertTrue(body.contains(base), body.contains("--brand:#155e75;"))
       },
       test("renders 404 if form not found") {
         val env = Env()
@@ -1519,7 +1521,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           assertTrue(body.contains(logoutUri1.encode)) &&
           assertTrue(body.contains(logoutUri2.encode)) &&
           assertTrue(body.contains(redirectUri.addQueryParam("state", "st-1").encode)) &&
-          assertTrue(body.contains(".body { color: black; }"))
+          assertTrue(body.contains(base))
       },
       test("renders the signed-out page in the locale the user chose") {
         val env = Env()

@@ -63,6 +63,7 @@ import versola.central.configuration.{
 }
 import versola.central.users.{Login, UserConflict, UserId, UserRepository}
 import versola.util.SequentialLayers.*
+import versola.util.theme.{ThemeOverrides, ThemePresets, ThemeTokens}
 import versola.util.{EnvName, JsonWebKeySet, Patch, Phone, PrivateClientCertificate, RedirectUri, Secret, SecureRandom, SecurityService}
 import zio.json.DecoderOps
 import zio.json.ast.Json
@@ -918,6 +919,24 @@ object BootstrapService:
     * `users:read` and `users:manage` -- `loadgen provision` creates no users, and the resource
     * secret this client replaces could read every one of them.
     */
+  /** `default` is a visual theme: the built-in `versola` base, no overrides, no CSS of its own. The foundation stylesheet
+    * every token theme is composed on is not stored in it (it is a resource of `util`, see `ThemeCss.baseStylesheet`).
+    * A stylesheet `default` row is what earlier versions seeded from `common.css` at every start, so it is converted
+    * and nothing is lost; a token row is the administrator's and is left alone.
+    */
+  private[versola] def seedDefaultTheme(themeRepo: ThemeRepository): Task[Unit] =
+    val tokens = Some(ThemeTokens(base = ThemePresets.DefaultId, overrides = ThemeOverrides()))
+    for
+      _ <- ZIO.logInfo("Seeding default theme...")
+      themes <- themeRepo.getAll
+      _ <- themes.find(_.id == defaultThemeId) match
+        case None => themeRepo.create(ThemeRecord(defaultThemeId, "", None, tokens))
+        case Some(theme) if theme.tokens.isEmpty =>
+          ZIO.logInfo("Converting the default theme from a stylesheet to a visual theme (base versola)") *>
+            themeRepo.update(ThemeRecord(defaultThemeId, "", theme.tenantId, tokens))
+        case Some(_) => ZIO.unit
+    yield ()
+
   private[versola] val utilityClientPermissions: Set[Permission] = Set(
     Permission("oauth:read"),
     Permission("oauth:manage"),
@@ -1100,17 +1119,7 @@ object BootstrapService:
       systemSettingsRepo.getAll.unit.catchAll: _ =>
         systemSettingsRepo.upsert(SystemSettingsRecord.default)
 
-    private def seedTheme(): Task[Unit] =
-      for
-        _ <- ZIO.logInfo("Seeding default theme from resources...")
-        themes <- themeRepo.getAll
-        current = themes.find(_.id == defaultThemeId)
-        css <- readResource("forms/common.css")
-        _ <- current match
-          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
-          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
-          case Some(_) => ZIO.unit
-      yield ()
+    private def seedTheme(): Task[Unit] = seedDefaultTheme(themeRepo)
 
     private def seedLocales(): Task[Unit] =
       for
