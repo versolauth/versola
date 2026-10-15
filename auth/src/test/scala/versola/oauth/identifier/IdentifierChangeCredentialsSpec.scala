@@ -1,12 +1,15 @@
 package versola.oauth.identifier
 
+import versola.oauth.client.model.PhoneRegion
 import versola.util.{Email, Phone, UnitSpecBase}
 import zio.test.*
 
 object IdentifierChangeCredentialsSpec extends UnitSpecBase:
 
-  private def parse(kind: IdentifierChangeKind, raw: String, prefixes: List[String] = Nil) =
-    IdentifierChangeCredentials.parse(kind, raw, prefixes)
+  private val kz = PhoneRegion("KZ", "+7", 10, "7\\d{9}", false)
+
+  private def parse(kind: IdentifierChangeKind, raw: String, regions: List[PhoneRegion] = Nil) =
+    IdentifierChangeCredentials.parse(kind, raw, regions)
 
   val spec = suite("IdentifierChangeCredentials")(
     test("accepts a phone written in E.164 and nothing but E.164") {
@@ -25,10 +28,10 @@ object IdentifierChangeCredentialsSpec extends UnitSpecBase:
         parse(IdentifierChangeKind.Phone, "someone@example.com").isEmpty,
       )
     },
-    test("applies the tenant's phone prefixes, when it has any") {
+    test("applies the tenant's phone regions, when it has any") {
       assertTrue(
-        parse(IdentifierChangeKind.Phone, "+77011234567", List("+7")).isDefined,
-        parse(IdentifierChangeKind.Phone, "+12025551234", List("+7")).isEmpty,
+        parse(IdentifierChangeKind.Phone, "+77011234567", List(kz)).isDefined,
+        parse(IdentifierChangeKind.Phone, "+12025551234", List(kz)).isEmpty,
         parse(IdentifierChangeKind.Phone, "+12025551234", Nil).isDefined,
       )
     },
@@ -37,8 +40,8 @@ object IdentifierChangeCredentialsSpec extends UnitSpecBase:
         parse(IdentifierChangeKind.Email, "new@example.com") == Some(Left(Email("new@example.com"))),
         parse(IdentifierChangeKind.Email, "+77011234567").isEmpty,
         parse(IdentifierChangeKind.Email, "not an email").isEmpty,
-        // Prefixes belong to phones only.
-        parse(IdentifierChangeKind.Email, "new@example.com", List("+7")).isDefined,
+        // Regions belong to phones only.
+        parse(IdentifierChangeKind.Email, "new@example.com", List(kz)).isDefined,
       )
     },
   )

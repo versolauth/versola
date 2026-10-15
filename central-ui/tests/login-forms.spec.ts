@@ -228,41 +228,123 @@ test.describe('credential', () => {
     expect(submitted[0].path).toBe('/challenge/email-password');
   });
 
-  test('phone: only numbers with an allowed prefix are sent', async ({ page }) => {
-    const { submitted, t } = await renderForm(page, 'credential', {
-      step: { type: 'credential', primaryCredentials: ['phone'], allowedPhonePrefixes: ['+7'] },
-    });
-    const phone = page.getByPlaceholder(t.phone_placeholder);
+  const kz = { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}' };
+  const ru = { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}' };
+  const uz = { region: 'UZ', dialCode: '+998', length: 9, regex: '\\d{9}' };
+  const kg = { region: 'KG', dialCode: '+996', length: 9, regex: '[2-7]\\d{8}' };
+  const phoneStep = (phoneRegions: unknown[]) => ({ type: 'credential', primaryCredentials: ['phone'], phoneRegions });
 
-    await phone.fill('+12025551234');
+  test('phone: one dial code is locked and a region sharing it widens what is accepted', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([kz, ru]) });
+    const phone = page.getByLabel(t.phone_placeholder);
+
+    await expect(page.getByRole('button', { name: new RegExp(t.phone_country_code) })).toHaveCount(0);
+    await expect(page.locator('.phone-code-locked')).toContainText('+7');
+
+    await phone.fill('1012345678');
     await page.getByRole('button', { name: t.continue }).click();
-    await expect(page.getByText(t.phone_not_allowed)).toBeVisible();
+    await expect(phone).toHaveAttribute('aria-invalid', 'true');
     expect(submitted).toHaveLength(0);
 
-    await phone.fill('+77001234567');
-    await expect(page.getByText(t.phone_not_allowed)).toHaveCount(0);
+    await phone.fill('9012345678');
+    await expect(phone).toHaveAttribute('aria-invalid', 'false');
+    await expect(phone).toHaveValue('901 234 56 78');
     await page.getByRole('button', { name: t.continue }).click();
 
     await expectSubmissions(submitted, 1);
     expect(submitted[0].path).toBe('/challenge/phone');
-    expect(submitted[0].fields.get('phone')).toBe('+77001234567');
+    expect(submitted[0].fields.get('phone')).toBe('+79012345678');
   });
 
-  test('phone: is sent in E.164 whatever was typed, and a non-number is not sent', async ({ page }) => {
-    const { submitted, t } = await renderForm(page, 'credential', { step: { type: 'credential', primaryCredentials: ['phone'] } });
-    const phone = page.getByPlaceholder(t.phone_placeholder);
+  test('phone: with only one region the other region\'s numbers are refused', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([ru]) });
+    const phone = page.getByLabel(t.phone_placeholder);
 
-    await phone.fill('12345');
+    await phone.fill('7012345678');
     await page.getByRole('button', { name: t.continue }).click();
-    await expect(page.getByText(t.phone_invalid)).toBeVisible();
+    await expect(phone).toHaveAttribute('aria-invalid', 'true');
     expect(submitted).toHaveLength(0);
 
-    await phone.fill('+7 (700) 123-45-67');
-    await expect(page.getByText(t.phone_invalid)).toHaveCount(0);
+    await phone.fill('9012345678');
     await page.getByRole('button', { name: t.continue }).click();
-
     await expectSubmissions(submitted, 1);
-    expect(submitted[0].fields.get('phone')).toBe('+77001234567');
+    expect(submitted[0].fields.get('phone')).toBe('+79012345678');
+  });
+
+  test('phone: a code is picked from the selector and the number is sent with it', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([kz, ru, uz, kg]) });
+    const phone = page.getByLabel(t.phone_placeholder);
+
+    await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
+    await expect(page.getByRole('option')).toHaveCount(3);
+    await expect(page.getByRole('searchbox')).toHaveCount(0);
+    await page.getByRole('option', { name: /\+998/ }).click();
+
+    await phone.fill('901234567');
+    await page.getByRole('button', { name: t.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('phone')).toBe('+998901234567');
+  });
+
+  test('phone: a pasted number with a plus switches the code', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([kz, ru, uz, kg]) });
+    const phone = page.getByLabel(t.phone_placeholder);
+
+    await phone.fill('+996 700 123 456');
+    await expect(page.getByRole('button', { name: new RegExp(t.phone_country_code) })).toContainText('+996');
+    await expect(phone).toHaveValue('700 123 456');
+    await page.getByRole('button', { name: t.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('phone')).toBe('+996700123456');
+  });
+
+  test('phone: a long list of codes gets a search box', async ({ page }) => {
+    const more = ['AM:+374', 'GE:+995', 'TJ:+992'].map((entry) => {
+      const [region, dialCode] = entry.split(':');
+      return { region, dialCode, length: 8, regex: '\\d{8}' };
+    });
+    const { t } = await renderForm(page, 'credential', { step: phoneStep([kz, uz, kg, ...more]) });
+
+    await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
+    const search = page.getByRole('searchbox');
+    await expect(search).toBeFocused();
+    await expect(page.getByRole('option')).toHaveCount(6);
+
+    await search.fill('99');
+    await expect(page.getByRole('option')).toHaveCount(4);
+    await search.fill('zzz');
+    await expect(page.getByText(t.phone_no_results)).toBeVisible();
+
+    await search.fill('+374');
+    await search.press('Enter');
+    await expect(page.getByRole('button', { name: new RegExp(t.phone_country_code) })).toContainText('+374');
+  });
+
+  test('phone: the selector works from the keyboard', async ({ page }) => {
+    const { t } = await renderForm(page, 'credential', { step: phoneStep([kz, uz, kg]) });
+    const trigger = page.getByRole('button', { name: new RegExp(t.phone_country_code) });
+
+    await trigger.focus();
+    await trigger.press('Enter');
+    await expect(page.getByRole('option', { name: /\+7/ })).toBeFocused();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(trigger).toContainText('+998');
+    await expect(page.getByLabel(t.phone_placeholder)).toBeFocused();
+
+    await trigger.press('Enter');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
+  test('phone: a tenant with no regions gets the plain E.164 field', async ({ page }) => {
+    const { submitted, t } = await renderForm(page, 'credential', { step: phoneStep([]) });
+
+    await page.getByPlaceholder(t.phone_placeholder).fill('+4915112345678');
+    await page.getByRole('button', { name: t.continue }).click();
+    await expectSubmissions(submitted, 1);
+    expect(submitted[0].fields.get('phone')).toBe('+4915112345678');
   });
 
   test('several first factors share one field named for all of them', async ({ page }) => {
@@ -525,3 +607,18 @@ for (const [id, config] of accessibilityCases) {
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
   });
 }
+
+test('credential phone selector has no axe violations, closed or open', async ({ page }) => {
+  // axe reads the colours as painted, so a transition still running would be scanned half way.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  const region = (code: string, dialCode: string) => ({ region: code, dialCode, length: 9, regex: '\\d{9}' });
+  const { t } = await renderForm(page, 'credential', {
+    step: { type: 'credential', primaryCredentials: ['phone'], phoneRegions: ['AM:+374', 'GE:+995', 'UZ:+998', 'KG:+996', 'TJ:+992', 'AZ:+994'].map(e => region(...(e.split(':') as [string, string]))) },
+  });
+  const scan = () => new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+
+  expect((await scan()).violations.map(v => v.id)).toEqual([]);
+  await page.getByRole('button', { name: new RegExp(t.phone_country_code) }).click();
+  await expect(page.getByRole('searchbox')).toBeVisible();
+  expect((await scan()).violations.map(v => v.id)).toEqual([]);
+});

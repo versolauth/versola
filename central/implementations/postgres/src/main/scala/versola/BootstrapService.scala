@@ -5,6 +5,7 @@ import versola.central.configuration.challenges.{
   ChallengeSettingsRecord,
   ChallengeSettingsRepository,
   ChallengeSettingsService,
+  EmailRegistration,
   MtlsCertificateEncoding,
   OtpChallengeRepository,
   OtpTemplateChannel,
@@ -34,7 +35,6 @@ import versola.central.configuration.clients.{
   PresetId,
   PrimaryAuthFlow,
   PrimaryCredential,
-  RegistrationFlow,
   ResponseType,
 }
 import versola.central.configuration.edges.{EdgeId, EdgeRecord, EdgeRepository}
@@ -745,7 +745,9 @@ object BootstrapService:
   ): ChallengeSettingsRecord =
     ChallengeSettingsRecord(
       tenantId = tenantId,
-      allowedPrefixes = List.empty,
+      phoneRegions = List.empty,
+      emailRegistration = EmailRegistration.Closed,
+      defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
       submissionLimits = SubmissionLimits.recommended,
       otpLength = 6,
       otpResendAfter = 60,
@@ -1035,12 +1037,12 @@ object BootstrapService:
       * revokes) later survive a restart.
       */
     private def seedRegistrationRole(tenantId: TenantId): Task[Unit] =
-      roleRepo.findRole(tenantId, RegistrationFlow.defaultRoleId).flatMap:
+      roleRepo.findRole(tenantId, ChallengeSettingsRecord.DefaultRoleId).flatMap:
         case Some(_) => ZIO.unit
         case None =>
           roleRepo.upsertRole(
             tenantId,
-            RegistrationFlow.defaultRoleId,
+            ChallengeSettingsRecord.DefaultRoleId,
             localized("User", "Пользователь"),
             List(accountPermission),
           )
@@ -1204,7 +1206,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = Some(authFlow),
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = config.frontChannelLogoutUri,
         frontChannelLogoutSessionRequired = true,
@@ -1253,7 +1254,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = Some(Patch.Modified(authFlow)),
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,
@@ -1320,7 +1320,6 @@ object BootstrapService:
         refreshTokenTtl = None,
         theme = "default",
         authFlow = None,
-        registrationFlow = None,
         otpTemplateId = "default",
         frontChannelLogoutUri = None,
         frontChannelLogoutSessionRequired = false,
@@ -1375,7 +1374,6 @@ object BootstrapService:
                 refreshTokenTtl = None,
                 theme = None,
                 authFlow = None,
-                registrationFlow = None,
                 otpTemplateId = None,
                 frontChannelLogoutUri = None,
                 frontChannelLogoutSessionRequired = None,

@@ -40,6 +40,23 @@ object RegistrationFlowSpec extends E2ESpec:
         denied <- auth.getChallenge(cookie).assertStep(ConversationStep.AccessDenied)
       yield assertTrue(denied.step.contains(ConversationStep.AccessDenied))
     },
+    test("registration asks for a password when the client's sign-in requires one") {
+      val phone = unusedPhone
+      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
+      for
+        (s, auth) <- setup(Flows.Id.PhoneRegistrationWithPassword)
+        authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
+          .assertChallengeRedirect
+        cookie = authorize.conversationCookie.get
+        c1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
+        _ <- auth.submitPhone(cookie, phone, c1.csrf)
+        c2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
+        _ <- auth.submitOtp(cookie, fixedOtp, c2.csrf)
+        // The client's sign-in has a password factor, so the new account is given a password now.
+        c3 <- auth.getChallenge(cookie).assertStep(ConversationStep.SetPassword)
+        code <- auth.submitSetPassword(cookie, password, c3.csrf).assertRedirect(auth, cookie)
+      yield assertTrue(code.nonEmpty)
+    },
     test("a failed OTP does not reserve the credential") {
       val phone = unusedPhone
       for
@@ -61,18 +78,16 @@ object RegistrationFlowSpec extends E2ESpec:
         c3 <- auth.getChallenge(retriedCookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitPhone(retriedCookie, phone, c3.csrf)
         c4 <- auth.getChallenge(retriedCookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(retriedCookie, fixedOtp, c4.csrf)
-        c5 <- auth.getChallenge(retriedCookie).assertStep(ConversationStep.SetPassword)
+        code <- auth.submitOtp(retriedCookie, fixedOtp, c4.csrf).assertRedirect(auth, retriedCookie)
       yield assertTrue(
         beforeOtp == false,
         afterFailedOtp == false,
-        c5.step.contains(ConversationStep.SetPassword),
+        code.nonEmpty,
       )
         .label("an unverified attempt must not create or reserve the account")
     },
-    test("a new phone number registers, sets a password, and completes the flow") {
+    test("a new phone number registers and completes the flow") {
       val phone = unusedPhone
-      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
@@ -82,11 +97,9 @@ object RegistrationFlowSpec extends E2ESpec:
         beforeOtp <- auth.userExistsByPhone(phone)
         _ <- auth.submitPhone(cookie, phone, challenge1.csrf)
         challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf)
+        // The tenant's registration is the one-time code: the account is created and the flow completes.
+        code <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf).assertRedirect(auth, cookie)
         afterOtp <- auth.awaitUserByPhone(phone)
-        // The registration flow continues past the OTP rather than completing the sign-in.
-        challenge3 <- auth.getChallenge(cookie).assertStep(ConversationStep.SetPassword)
-        code <- auth.submitSetPassword(cookie, password, challenge3.csrf).assertRedirect(auth, cookie)
         token <- auth.token(
           code,
           authorize.verifier,
@@ -104,8 +117,7 @@ object RegistrationFlowSpec extends E2ESpec:
       )
         .label("registration must end in a usable access token whose id matches Central's index")
     },
-    test("a new email address registers, sets a password, and completes the flow") {
-      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
+    test("a new email address registers and completes the flow") {
       for
         (s, auth) <- setup(Flows.Id.EmailRegistration)
         authorize <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
@@ -114,9 +126,7 @@ object RegistrationFlowSpec extends E2ESpec:
         challenge1 <- auth.getChallenge(cookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitEmail(cookie, s.email.get, challenge1.csrf)
         challenge2 <- auth.getChallenge(cookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf)
-        challenge3 <- auth.getChallenge(cookie).assertStep(ConversationStep.SetPassword)
-        code <- auth.submitSetPassword(cookie, password, challenge3.csrf).assertRedirect(auth, cookie)
+        code <- auth.submitOtp(cookie, fixedOtp, challenge2.csrf).assertRedirect(auth, cookie)
         token <- auth.token(
           code,
           authorize.verifier,
@@ -127,9 +137,8 @@ object RegistrationFlowSpec extends E2ESpec:
       yield assertTrue(token.accessToken.nonEmpty)
         .label("email registration must end in a usable access token")
     },
-    test("the registered account signs in afterwards with the password it chose") {
+    test("the registered account signs in afterwards") {
       val phone = unusedPhone
-      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
         // Register first, so the account exists for the sign-in below.
@@ -139,9 +148,7 @@ object RegistrationFlowSpec extends E2ESpec:
         c1 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitPhone(firstCookie, phone, c1.csrf)
         c2 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(firstCookie, fixedOtp, c2.csrf)
-        c3 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.SetPassword)
-        _ <- auth.submitSetPassword(firstCookie, password, c3.csrf).assertRedirect(auth, firstCookie)
+        _ <- auth.submitOtp(firstCookie, fixedOtp, c2.csrf).assertRedirect(auth, firstCookie)
 
         second <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
@@ -162,7 +169,6 @@ object RegistrationFlowSpec extends E2ESpec:
     },
     test("registering a number that already exists is indistinguishable from signing in") {
       val phone = unusedPhone
-      val password = s"Pass-${UUID.randomUUID().toString.take(8)}-1!"
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
         first <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
@@ -171,12 +177,10 @@ object RegistrationFlowSpec extends E2ESpec:
         c1 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Credential)
         _ <- auth.submitPhone(firstCookie, phone, c1.csrf)
         c2 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.Otp)
-        _ <- auth.submitOtp(firstCookie, fixedOtp, c2.csrf)
-        c3 <- auth.getChallenge(firstCookie).assertStep(ConversationStep.SetPassword)
-        _ <- auth.submitSetPassword(firstCookie, password, c3.csrf).assertRedirect(auth, firstCookie)
+        _ <- auth.submitOtp(firstCookie, fixedOtp, c2.csrf).assertRedirect(auth, firstCookie)
 
         // Registering the same number again must not reveal that it is taken: the user is
-        // silently moved to the ordinary OTP sign-in and never sees the set-password step.
+        // silently moved to the ordinary OTP sign-in.
         second <- auth.authorize(clientId = Some(s.clientId), redirectUri = Some(s.redirectUri))
           .assertChallengeRedirect
         secondCookie = second.conversationCookie.get

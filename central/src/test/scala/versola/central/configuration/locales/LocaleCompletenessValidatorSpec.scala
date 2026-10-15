@@ -29,7 +29,6 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     permissions = Set.empty,
     theme = "",
     authFlow = None,
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,

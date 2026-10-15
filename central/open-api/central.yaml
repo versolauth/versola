@@ -62,7 +62,7 @@ tags:
   - name: Tenants
     description: Isolation boundaries that own clients, resources, scopes, permissions and roles.
   - name: Clients
-    description: OAuth clients, their secrets and their login/registration flows.
+    description: OAuth clients, their secrets and their sign-in flows.
   - name: Authorization presets
     description: Named, server-side authorization request templates for a client.
   - name: Resources
@@ -211,7 +211,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
+            consent URI that is not an absolute HTTPS URL.
           content:
             text/plain:
               schema:
@@ -277,7 +277,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
+            consent URI that is not an absolute HTTPS URL.
           content:
             text/plain:
               schema:
@@ -343,7 +343,7 @@ paths:
           description: |
             The request carries a member this kind does not have, or the registration was
             rejected: a method or setting the kind does not allow (named in the body), or any
-            consent URI that is not an absolute HTTPS URL, or a registration flow auth cannot run.
+            consent URI that is not an absolute HTTPS URL.
           content:
             text/plain:
               schema:
@@ -2232,13 +2232,10 @@ components:
             - type: 'null'
       required: [id, description]
 
-    # ───────────────────────── Auth & registration flows ─────────────────────────
+    # ───────────────────────── Auth flows ─────────────────────────
     PrimaryCredential:
       type: string
       enum: [email, phone, login]
-    RegistrationCredential:
-      type: string
-      enum: [email, phone]
     OtpType:
       type: string
       enum: [sms, email]
@@ -2302,62 +2299,6 @@ components:
         otpType:
           $ref: '#/components/schemas/OtpType'
       required: [primary, equivalents, otpType]
-    RegistrationStep:
-      type: object
-      description: A step the user passes to create an account.
-      discriminator:
-        propertyName: type
-      oneOf:
-        - $ref: '#/components/schemas/RegistrationStepOtp'
-        - $ref: '#/components/schemas/RegistrationStepSetPassword'
-        - $ref: '#/components/schemas/RegistrationStepPasskeyEnroll'
-    RegistrationStepOtp:
-      type: object
-      title: otp
-      description: Proves ownership of the entry credential with a one-time code.
-      properties:
-        type:
-          type: string
-          const: otp
-      required: [type]
-    RegistrationStepSetPassword:
-      type: object
-      title: setPassword
-      description: Asks the new user to choose a password.
-      properties:
-        type:
-          type: string
-          const: setPassword
-      required: [type]
-    RegistrationStepPasskeyEnroll:
-      type: object
-      title: passkeyEnroll
-      description: Asks the new user to enroll a passkey.
-      properties:
-        type:
-          type: string
-          const: passkeyEnroll
-      required: [type]
-    RegistrationFlow:
-      type: object
-      description: |
-        Self-service account creation. Allowed only alongside an `authFlow` whose primary
-        credentials are phone or email. OTP must be the first step; the account is created
-        once OTP succeeds, before any password or passkey step.
-      properties:
-        credential:
-          $ref: '#/components/schemas/RegistrationCredential'
-        steps:
-          type: array
-          items:
-            $ref: '#/components/schemas/RegistrationStep'
-        roleIds:
-          type: array
-          uniqueItems: true
-          description: Roles granted to the account on creation.
-          items:
-            $ref: '#/components/schemas/RoleId'
-      required: [credential, steps, roleIds]
     ConsentFlowDto:
       type: object
       description: Whether and how the consent screen is shown before a grant is issued.
@@ -2461,10 +2402,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: string
@@ -2627,10 +2564,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: string
@@ -2797,10 +2730,6 @@ components:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
             - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
-            - type: 'null'
         otpTemplateId:
           type: string
         frontChannelLogoutUri:
@@ -2882,7 +2811,7 @@ components:
         Code calling an API on its own behalf, with no user present. `authMethod` is `client_secret`,
         `private_key_jwt`, `tls_client_auth` or `self_signed_tls_client_auth` -- never `none`.
 
-        It has no redirect URIs, sign-in or registration flow, consent, logout or branding members, no
+        It has no redirect URIs, sign-in flow, consent, logout or branding members, no
         refresh token lifetime, and no pushed or signed authorization request. Recorded as a
         `service` client.
         Members that are not listed here are refused, not ignored.
@@ -2978,7 +2907,7 @@ components:
       additionalProperties: false
       description: |
         `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
-        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
@@ -3013,10 +2942,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: [string, 'null']
@@ -3100,7 +3025,7 @@ components:
       additionalProperties: false
       description: |
         `redirectUris`, `scope` and `permissions` are add/remove patches (see their schemas).
-        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
@@ -3137,10 +3062,6 @@ components:
         authFlow:
           oneOf:
             - $ref: '#/components/schemas/AuthFlow'
-            - type: 'null'
-        registrationFlow:
-          oneOf:
-            - $ref: '#/components/schemas/RegistrationFlow'
             - type: 'null'
         otpTemplateId:
           type: [string, 'null']
@@ -3187,7 +3108,7 @@ components:
       additionalProperties: false
       description: |
         `scope` and `permissions` are add/remove patches (see their schemas).
-        `authFlow`, `registrationFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
+        `authFlow`, `frontChannelLogoutUri`, `backChannelLogoutUri`,
         `logoUri`, `policyUri`, `tosUri` and `consentFlow` follow merge-patch semantics: absent
         leaves the value unchanged, `null` clears it, a value sets it. Every other member is a
         plain optional overwrite: absent or `null` leaves the value, a value sets it.
@@ -4242,6 +4163,75 @@ components:
         - passwordSubmit
         - passkeyAssertion
         - banDurationSeconds
+    PhoneRegion:
+      type: object
+      description: |
+        One country a tenant's phone sign-in accepts. Several regions may share a `dialCode` (`KZ` and `RU`
+        both use `+7`); a number is accepted when it fits the `length` and `regex` of at least one of them.
+      properties:
+        region:
+          type: string
+          pattern: '^[A-Z]{2}$'
+          description: ISO 3166-1 alpha-2 code. Unique within the list.
+        dialCode:
+          type: string
+          pattern: '^\+[1-9][0-9]{0,3}$'
+        length:
+          type: integer
+          minimum: 4
+          maximum: 14
+          description: Number of digits after the dial code. `dialCode` plus `length` digits is at most 15 (E.164).
+        regex:
+          type: string
+          description: Java regular expression the digits after the dial code must match in full.
+        registration:
+          type: boolean
+          description: |
+            Whether a number of this region may create an account on its own. Self-registration by phone is
+            decided by the country, not by the client: a client that signs in by phone registers a new user
+            only when the number's region says `true`. A tenant that lists no regions registers no phone number.
+            Email is decided the same way for the whole tenant by `emailRegistration`.
+      required: [region, dialCode, length, regex, registration]
+    EmailRegistrationMode:
+      type: string
+      enum: [closed, open, allowlist]
+      description: |
+        Who may create an account with an email address.
+        - `closed`: nobody. Existing accounts still sign in with their email.
+        - `open`: any domain, except the ones listed in `domains`.
+        - `allowlist`: only the domains listed in `domains`.
+    EmailRegistration:
+      type: object
+      description: |
+        Whether an email address may create an account, decided by the tenant for every client that
+        signs in by email. The same rules apply when an existing user changes their address. The user
+        always proves ownership of the address with a one-time code before the account is created.
+      properties:
+        mode:
+          $ref: '#/components/schemas/EmailRegistrationMode'
+        domains:
+          type: array
+          maxItems: 500
+          items:
+            type: string
+          description: |
+            A blocklist in `open` mode and an allowlist in `allowlist` mode; stored but ignored when
+            `closed`. An entry is a domain (`example.com`, which matches that domain only) or
+            `*.example.com`, which matches its subdomains and not `example.com` itself. Entries are
+            lower-cased and internationalized labels converted to punycode when stored; an entry that
+            is not a domain, or that appears twice, is refused with `400`.
+        blockSubaddress:
+          type: boolean
+          description: Refuse a local part containing `+`, `=` or `#` (`user+tag@example.com`).
+      required: [mode, domains, blockSubaddress]
+    PhoneRegions:
+      type: array
+      description: |
+        Phone regions the login form offers, in the order the form lists them. Empty means any number in
+        E.164 is accepted and the form shows a single free-form field. When every region shares one
+        `dialCode` the form locks it; otherwise it offers a selector of the distinct dial codes.
+      items:
+        $ref: '#/components/schemas/PhoneRegion'
     PasskeySettings:
       type: object
       properties:
@@ -4263,11 +4253,21 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
           type: array
-          description: Phone country prefixes accepted on the login form, matched against the number in canonical E.164.
+          uniqueItems: true
+          minItems: 1
+          description: |
+            Roles granted to every self-registered account, whichever credential it registers with. At
+            least one. While any credential can register (an email mode other than `closed`, or a phone
+            region with `registration: true`) every role must exist in the tenant, or the request is
+            refused with `400`.
           items:
-            type: string
+            $ref: '#/components/schemas/RoleId'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -4331,7 +4331,9 @@ components:
           $ref: '#/components/schemas/SecurityProfile'
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
+        - emailRegistration
+        - defaultRoles
         - submissionLimits
         - otpLength
         - otpResendAfter
@@ -4359,10 +4361,21 @@ components:
       properties:
         tenantId:
           $ref: '#/components/schemas/TenantId'
-        allowedPrefixes:
+        phoneRegions:
+          $ref: '#/components/schemas/PhoneRegions'
+        emailRegistration:
+          $ref: '#/components/schemas/EmailRegistration'
+        defaultRoles:
           type: array
+          uniqueItems: true
+          minItems: 1
+          description: |
+            Roles granted to every self-registered account, whichever credential it registers with. At
+            least one. While any credential can register (an email mode other than `closed`, or a phone
+            region with `registration: true`) every role must exist in the tenant, or the request is
+            refused with `400`.
           items:
-            type: string
+            $ref: '#/components/schemas/RoleId'
         submissionLimits:
           $ref: '#/components/schemas/SubmissionLimits'
         otpLength:
@@ -4429,7 +4442,9 @@ components:
             the assertion carrying it.
       required:
         - tenantId
-        - allowedPrefixes
+        - phoneRegions
+        - emailRegistration
+        - defaultRoles
         - submissionLimits
         - otpLength
         - otpResendAfter

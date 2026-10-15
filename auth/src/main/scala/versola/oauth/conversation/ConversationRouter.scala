@@ -2,7 +2,17 @@ package versola.oauth.conversation
 
 import versola.oauth.AuthMetrics
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFactor, AuthFactorType, OtpType, PassedAuthFactor, PrimaryCredential, RegistrationCredential, RegistrationStep}
+import versola.oauth.client.model.{
+  AuthFactor,
+  AuthFactorType,
+  ClientId,
+  OtpType,
+  PassedAuthFactor,
+  PhoneRegion,
+  PrimaryCredential,
+  RegistrationCredential,
+  RegistrationStep,
+}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.identifier.IdentifierChangeStage
 import versola.user.UserRepository
@@ -296,31 +306,30 @@ object ConversationRouter:
         conversation: ConversationRecord,
         credential: Either[Email, Phone],
     ): Task[ConversationResult.Render] =
-      userRepository.findByCredential(credential).flatMap: user =>
-        (user, conversation.registrationFlow) match
-          case (Some(user), _) =>
-            val identified = conversation.copy(
-              userId = Some(user.id),
-              credential = Some(credential),
-              userEmail = user.email,
-              userPhone = user.phone,
-              userLogin = user.login,
-              userClaims = Some(user.claims),
-            )
-            afterAuthenticationCredential(authId, identified, credential)
+      userRepository.findByCredential(credential).flatMap:
+        case Some(user) =>
+          val identified = conversation.copy(
+            userId = Some(user.id),
+            credential = Some(credential),
+            userEmail = user.email,
+            userPhone = user.phone,
+            userLogin = user.login,
+            userClaims = Some(user.claims),
+          )
+          afterAuthenticationCredential(authId, identified, credential)
 
-          case (None, Some(flow)) if flow.credential == RegistrationCredential.from(credential) =>
-            conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
-              case RegistrationEntry.Registering(updated) =>
-                runRegistrationStep(authId, updated)
-              case ConversationResult.WriteConflict =>
-                ZIO.succeed(ConversationResult.WriteConflict)
-
-          case (None, Some(_)) =>
-            afterAuthenticationCredential(authId, conversation, credential)
-
-          case (None, None) =>
-            afterAuthenticationCredential(authId, conversation, credential)
+        // A new user: the tenant decides whether this address may create an account. When it may
+        // not, the ordinary sign-in path runs, indistinguishable from any other unknown credential.
+        case None =>
+          configService.registrationFor(conversation.clientId, credential).flatMap:
+            case Some(flow) =>
+              conversationService.startRegistration(authId, conversation, flow, credential).flatMap:
+                case RegistrationEntry.Registering(updated) =>
+                  runRegistrationStep(authId, updated)
+                case ConversationResult.WriteConflict =>
+                  ZIO.succeed(ConversationResult.WriteConflict)
+            case None =>
+              afterAuthenticationCredential(authId, conversation, credential)
 
     private def afterAuthenticationCredential(
         authId: AuthId,

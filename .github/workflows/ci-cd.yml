@@ -142,7 +142,7 @@ jobs:
       - uses: sbt/setup-sbt@6158cb0903b8ceeae04f830055f3155e1b6a5ad7 # v1
       - name: Set up Scala CLI
         if: github.event_name != 'release'
-        uses: VirtusLab/scala-cli-setup@c33dfbf1a5f16ee60efff453b7f9a987d2b6955b # v1
+        uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
       - name: Enforce measured DB access in production code
         shell: bash
         run: |
@@ -312,7 +312,7 @@ jobs:
 
       - name: Upload auth stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
@@ -320,7 +320,7 @@ jobs:
 
       - name: Upload central stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
@@ -328,7 +328,7 @@ jobs:
 
       - name: Upload edge stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: edge-stage
           path: edge/implementations/postgres/target/universal/stage
@@ -336,7 +336,7 @@ jobs:
 
       - name: Upload tools stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tools-stage
           path: scripts/target/universal/stage
@@ -344,7 +344,7 @@ jobs:
 
       - name: Upload migrate-tool stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
@@ -357,7 +357,7 @@ jobs:
       # exactly the schema drift `SutSchemaGuard` exists to catch.
       - name: Upload loadgen stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loadgen-stage
           path: loadgen/target/universal/stage
@@ -365,7 +365,7 @@ jobs:
 
       - name: Upload mockapi stage artifact
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mockapi-stage
           path: mockapi/target/universal/stage
@@ -539,7 +539,7 @@ jobs:
       # Dockerfile.auth copies straight from this instead of installing
       # sbt and rebuilding auth-postgres-impl again inside the image.
       - name: Download auth stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: auth-stage
           path: auth/implementations/postgres/target/universal/stage
@@ -674,7 +674,7 @@ jobs:
       # sbt and rebuilding central-postgres-impl (and central-ui's forms)
       # again inside the image.
       - name: Download central stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: central-stage
           path: central/implementations/postgres/target/universal/stage
@@ -768,7 +768,7 @@ jobs:
       # Dockerfile.edge copies straight from this instead of installing
       # sbt and rebuilding edge-postgres-impl again inside the image.
       - name: Download edge stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: edge-stage
           path: edge/implementations/postgres/target/universal/stage
@@ -869,7 +869,7 @@ jobs:
       # Dockerfile.tools compiles gen-env.scala ahead of time via this
       # instead of shipping scala-cli and compiling it inside the image.
       - name: Download tools stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: tools-stage
           path: scripts/target/universal/stage
@@ -878,7 +878,7 @@ jobs:
       # comment) -- same reasoning as the tools stage download just above:
       # a pre-built jar, not a rebuild-inside-the-image step.
       - name: Download migrate-tool stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: migrate-tool-stage
           path: migrate-tool/target/universal/stage
@@ -1012,7 +1012,7 @@ jobs:
       # Dockerfile.loadgen copies straight from this instead of installing
       # sbt and rebuilding loadgen inside the image.
       - name: Download loadgen stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: loadgen-stage
           path: loadgen/target/universal/stage
@@ -1107,7 +1107,7 @@ jobs:
       # the plainest image in docker/ (no config file, no migrations) and
       # does nothing but copy this staged tree.
       - name: Download mockapi stage artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: mockapi-stage
           path: mockapi/target/universal/stage
@@ -1224,7 +1224,7 @@ jobs:
           version: v3.16.3
 
       - name: Set up Scala CLI
-        uses: VirtusLab/scala-cli-setup@c33dfbf1a5f16ee60efff453b7f9a987d2b6955b # v1
+        uses: VirtusLab/scala-cli-setup@3f5bf11a33bb88343238780c18257c8fa43789e1 # v1
 
       - name: Check chart secret vars match gen-env
         run: .github/scripts/check-chart-secret-vars.sh
@@ -1353,7 +1353,7 @@ jobs:
 
       - name: Upload Playwright report on failure
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-ui-test-results
           path: central-ui/test-results

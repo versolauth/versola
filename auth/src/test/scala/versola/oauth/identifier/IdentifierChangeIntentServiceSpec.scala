@@ -1,7 +1,7 @@
 package versola.oauth.identifier
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.user.model.{UserId, UserRecord}
 import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import versola.util.{Email, Phone, UnitSpecBase}
@@ -18,6 +18,9 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
   private val currentEmail = Email("me@example.com")
   private val user = UserRecord.empty(userId).copy(email = Some(currentEmail), phone = Some(currentPhone))
 
+  private val usRegion = PhoneRegion("US", "+1", 10, "\\d{10}", false)
+  private val kzRegion = PhoneRegion("KZ", "+7", 10, "7\\d{9}", false)
+
   class Env:
     val intents = stub[UserIntentRepository]
     val userRepository = stub[UserRepository]
@@ -28,7 +31,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     test("records an intent for the new phone, for five minutes") {
       val env = Env()
       for
-        _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+        _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())
@@ -44,7 +47,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
         _ <- env.intents.create.succeedsWith(())
         _ <- env.service.create(userId, clientId, IdentifierChangeKind.Email, "new@example.com")
         calls = env.intents.create.calls
-        prefixLookups = env.configuration.getAllowedPhonePrefixes.calls
+        prefixLookups = env.configuration.getPhoneRegions.calls
       yield assertTrue(
         calls == List((userId, clientId, UserIntent.ChangeEmail(Email("new@example.com")), 5.minutes)),
         prefixLookups.isEmpty,
@@ -53,7 +56,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     test("refuses a value that is not an identifier of the kind, or that the tenant does not allow") {
       val env = Env()
       for
-        _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+7"))
+        _ <- env.configuration.getPhoneRegions.succeedsWith(List(kzRegion))
         garbage <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "not-a-phone").flip
         foreign <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+12025551234").flip
         email <- env.service.create(userId, clientId, IdentifierChangeKind.Email, "+77011234567").flip
@@ -68,7 +71,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     test("refuses an identifier that is already in use, the user's own or another's, before anything is recorded") {
       val env = Env()
       for
-        _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+        _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(user))
         _ <- env.userRepository.findByCredential.succeedsWith(Some(UserRecord.empty(UserId(UUID.randomUUID()))))
         phone <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, currentPhone).flip
@@ -83,7 +86,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     test("refuses an unknown user") {
       val env = Env()
       for
-        _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+        _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(None)
         error <- env.service.create(userId, clientId, IdentifierChangeKind.Phone, "+77011234568").flip
         created = env.intents.create.calls
@@ -92,7 +95,7 @@ object IdentifierChangeIntentServiceSpec extends UnitSpecBase:
     test("a user without any phone can add one") {
       val env = Env()
       for
-        _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+        _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
         _ <- env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(email = Some(currentEmail))))
         _ <- env.userRepository.findByCredential.succeedsWith(None)
         _ <- env.intents.create.succeedsWith(())

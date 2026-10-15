@@ -7,9 +7,6 @@ import zio.schema.*
 enum PrimaryCredential derives JsonCodec, Schema, Equal:
   case email, phone, login
 
-enum RegistrationCredential derives JsonCodec, Schema, Equal:
-  case email, phone
-
 enum OtpType derives JsonCodec, Schema, Equal:
   case sms, email
 

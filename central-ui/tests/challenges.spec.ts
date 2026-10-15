@@ -22,7 +22,10 @@ const authorizationDetailType = {
 
 const settingsWithoutPasskey = {
   tenantId: 'tenant-alpha',
-  allowedPrefixes: ['+77'],
+  phoneRegions: [
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
+  ],
   passwordRegex: null,
   submissionLimits: { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 },
   otpLength: 6,
@@ -48,7 +51,12 @@ test('renders OTP templates and challenge settings sections', async ({ page }) =
   await expect(page.locator('.template-id').filter({ hasText: 'login-otp' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Challenge Settings', exact: true })).toBeVisible();
   await expect(page.locator('.template-text').filter({ hasText: '6 digits' })).toBeVisible();
-  await expect(page.locator('.prefix-tag').filter({ hasText: '+77' })).toBeVisible();
+  const chips = page.locator('.region-chip');
+  await expect(chips).toHaveCount(2);
+  await expect(chips.nth(0)).toHaveText('KZ +7 · 10 digits · 7\\d{9}sign-up');
+  await expect(chips.nth(1)).toHaveText('RU +7 · 10 digits · 9\\d{9}');
+  await expect(chips.nth(0).locator('.signup-mark')).toHaveCount(1);
+  await expect(chips.nth(1).locator('.signup-mark')).toHaveCount(0);
 
   const headerButtonSizes = await page.locator('.section-header .btn').evaluateAll(buttons =>
     buttons.map(button => {
@@ -421,4 +429,298 @@ test('deletes an OTP template through the shared confirm dialog', async ({ page 
 
   (await findRequest(api.requests, 'DELETE', '/configuration/challenges/otp-templates'));
   await expect(page.locator('.template-id').filter({ hasText: 'login-otp' })).toHaveCount(0);
+});
+
+test('edits phone regions: add, reorder, validate, and sends phoneRegions in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows).toHaveCount(2);
+
+  await page.getByRole('button', { name: '+ Add Region', exact: true }).click();
+  await expect(rows).toHaveCount(3);
+  await rows.nth(2).getByLabel('Region').fill('us');
+  await rows.nth(2).getByLabel('Dial code').fill('+1');
+  await rows.nth(2).getByLabel('Length').fill('3');
+  await rows.nth(2).getByLabel('Regex').fill('\\d{10}');
+
+  // Invalid length is refused client-side with an inline error, and nothing is sent.
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(rows.nth(2).locator('.region-error')).toContainText('between 4 and 14');
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === '/configuration/challenges/challenge-settings')).toBe(false);
+
+  // A duplicate region is refused too.
+  await rows.nth(2).getByLabel('Length').fill('10');
+  await rows.nth(2).getByLabel('Region').fill('KZ');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(rows.nth(2).locator('.region-error')).toContainText('more than once');
+  await rows.nth(2).getByLabel('Region').fill('US');
+
+  // Move US to the top.
+  await rows.nth(2).getByRole('button', { name: 'Move up' }).click();
+  await rows.nth(1).getByRole('button', { name: 'Move up' }).click();
+  await expect(rows.nth(0).getByLabel('Region')).toHaveValue('US');
+
+  // Passkeys are required by the form regardless of phone regions.
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: unknown[];
+  };
+  expect(body.phoneRegions).toEqual([
+    { region: 'US', dialCode: '+1', length: 10, regex: '\\d{10}', registration: false },
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
+  ]);
+  expect(body).not.toHaveProperty('allowedPrefixes');
+});
+
+test('ticks Registration per region and sends it in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows.nth(0).getByLabel('Registration')).toBeChecked();
+  await expect(rows.nth(1).getByLabel('Registration')).not.toBeChecked();
+
+  await rows.nth(0).getByLabel('Registration').uncheck();
+  await rows.nth(1).getByLabel('Registration').check();
+
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: Array<{ region: string; registration: boolean }>;
+  };
+  expect(body.phoneRegions.map(r => [r.region, r.registration])).toEqual([['KZ', false], ['RU', true]]);
+});
+
+test('adds countries from presets with registration on and skips ones already listed', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: baseState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const rows = page.getByTestId('region-row');
+  await expect(rows).toHaveCount(2);
+
+  await page.getByRole('button', { name: 'Add from presets', exact: true }).click();
+  const picker = page.getByRole('dialog', { name: 'Add from presets' });
+  await expect(picker).toBeVisible();
+  await expect(picker.getByRole('button', { name: 'Add selected' })).toBeDisabled();
+
+  // KZ is already in the list, so it cannot be picked again.
+  await expect(picker.getByRole('checkbox', { name: 'Kazakhstan' })).toBeDisabled();
+
+  await picker.getByRole('searchbox', { name: 'Search presets' }).fill('uz');
+  await picker.getByRole('checkbox', { name: 'Uzbekistan' }).check();
+  await picker.getByRole('searchbox', { name: 'Search presets' }).fill('');
+  await picker.getByRole('checkbox', { name: 'Georgia' }).check();
+  await picker.getByRole('button', { name: 'Add 2 selected' }).click();
+
+  await expect(picker).toHaveCount(0);
+  await expect(rows).toHaveCount(4);
+  await expect(rows.nth(2).getByLabel('Region')).toHaveValue('UZ');
+  await expect(rows.nth(3).getByLabel('Region')).toHaveValue('GE');
+  await expect(rows.nth(2).getByLabel('Registration')).toBeChecked();
+
+  // Registration can still be unticked per row.
+  await rows.nth(3).getByLabel('Registration').uncheck();
+
+  await page.getByPlaceholder('example.com', { exact: true }).fill('example.com');
+  await page.getByPlaceholder('Example Inc.', { exact: true }).fill('Example Inc.');
+  await page.getByRole('button', { name: '+ Add Origin', exact: true }).click();
+  await page.getByPlaceholder('https://example.com', { exact: true }).fill('https://example.com');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/challenges/challenge-settings')).body as {
+    phoneRegions: unknown[];
+  };
+  expect(body.phoneRegions).toEqual([
+    { region: 'KZ', dialCode: '+7', length: 10, regex: '7\\d{9}', registration: true },
+    { region: 'RU', dialCode: '+7', length: 10, regex: '9\\d{9}', registration: false },
+    { region: 'UZ', dialCode: '+998', length: 9, regex: '\\d{9}', registration: true },
+    { region: 'GE', dialCode: '+995', length: 9, regex: '5\\d{8}', registration: false },
+  ]);
+});
+
+const registrationState: Partial<MockConfigState> = {
+  ...baseState,
+  roles: {
+    'tenant-alpha': [
+      { id: 'user', description: { en: 'User' }, permissions: [], active: true },
+      { id: 'member', description: { en: 'Member' }, permissions: [], active: true },
+    ],
+  },
+  challengeSettings: {
+    'tenant-alpha': {
+      ...settingsWithoutPasskey,
+      passkeySettings: { rpId: 'example.com', rpName: 'Example Inc.', origins: ['https://example.com'], userVerification: 'preferred' },
+    },
+  },
+};
+
+const challengeSettingsPath = '/configuration/challenges/challenge-settings';
+
+async function putBody(api: Awaited<ReturnType<typeof loadAdminApp>>) {
+  return (await findRequest(api.requests, 'PUT', challengeSettingsPath)).body as {
+    emailRegistration: { mode: string; domains: string[]; blockSubaddress: boolean };
+    defaultRoles: string[];
+  };
+}
+
+test('shows email registration as closed with the user role when the tenant has not set it', async ({ page }) => {
+  await loadAdminApp(page, { path: challengesPath, state: registrationState });
+
+  const view = page.getByTestId('email-registration-view');
+  await expect(view).toContainText('Closed');
+  await expect(view).toContainText('Nobody can create an account with an email address');
+  await expect(view.locator('.prefix-tag')).toHaveText(['user']);
+});
+
+test('saving unchanged settings sends the closed default and the user role', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByLabel('Email registration', { exact: true })).toHaveValue('closed');
+  // Closed mode has no domain list to edit.
+  await expect(page.getByLabel('Blocked domains')).toHaveCount(0);
+  await expect(page.getByLabel('Allowed domains')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({ mode: 'closed', domains: [], blockSubaddress: false });
+  expect(body.defaultRoles).toEqual(['user']);
+});
+
+test('explains the registration modes in an info popover that closes with Escape or a click outside', async ({ page }) => {
+  await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const info = page.getByRole('button', { name: 'About email registration modes', exact: true });
+  const tooltip = page.getByRole('tooltip').filter({ hasText: 'Allowlist.' });
+  await expect(info).toHaveAttribute('aria-expanded', 'false');
+  await expect(tooltip).toBeHidden();
+
+  await info.focus();
+  await page.keyboard.press('Enter');
+  await expect(info).toHaveAttribute('aria-expanded', 'true');
+  await expect(tooltip).toBeVisible();
+  await expect(tooltip).toContainText('Nobody can create an account with an email address. Users who already have an account still sign in.');
+  await expect(tooltip).toContainText('Anyone can register with an email address, except from the domains you list');
+  await expect(tooltip).toContainText('Only addresses from the domains you list can register.');
+  await expect(tooltip).toContainText('also applied when an existing user changes their email address');
+
+  await page.keyboard.press('Escape');
+  await expect(tooltip).toBeHidden();
+  await expect(info).toHaveAttribute('aria-expanded', 'false');
+  await expect(info).toBeFocused();
+
+  await info.click();
+  await expect(tooltip).toBeVisible();
+  await page.getByRole('heading', { name: 'Registration', exact: true }).click();
+  await expect(tooltip).toBeHidden();
+});
+
+test('labels the domain list by mode and sends the registration policy in the PUT body', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const mode = page.getByLabel('Email registration', { exact: true });
+  await mode.selectOption('open');
+  await expect(page.getByLabel('Blocked domains')).toBeVisible();
+  await mode.selectOption('allowlist');
+  await expect(page.getByLabel('Allowed domains')).toBeVisible();
+  await expect(page.getByLabel('Blocked domains')).toHaveCount(0);
+
+  await page.getByLabel('Allowed domains').fill('Example.com\n\n  *.corp.example  \n');
+  await page.getByLabel('Block addresses with + = # (sub-addresses)').check();
+  const defaultRoles = page.getByRole('group', { name: 'Default roles' });
+  await defaultRoles.getByRole('checkbox', { name: 'member', exact: true }).check();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({
+    mode: 'allowlist',
+    domains: ['Example.com', '*.corp.example'],
+    blockSubaddress: true,
+  });
+  expect(body.defaultRoles).toEqual(['user', 'member']);
+
+  const view = page.getByTestId('email-registration-view');
+  await expect(view).toContainText('Allowlist');
+  await expect(view.locator('.prefix-tag')).toHaveText(['Example.com', '*.corp.example', 'user', 'member']);
+});
+
+test('refuses a malformed or repeated registration domain and sends nothing', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await page.getByLabel('Email registration', { exact: true }).selectOption('open');
+
+  const domains = page.getByLabel('Blocked domains');
+  await domains.fill('example.com\nnodot');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'nodot' })).toBeVisible();
+
+  await domains.fill('Example.com\nexample.COM');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByRole('alert').filter({ hasText: 'more than once' })).toBeVisible();
+
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === challengeSettingsPath)).toBe(false);
+
+  await domains.fill('example.com\n*.example.org');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  expect((await putBody(api)).emailRegistration).toMatchObject({ mode: 'open', domains: ['example.com', '*.example.org'] });
+});
+
+test('requires at least one default role', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: challengesPath, state: registrationState });
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+
+  const defaultRoles = page.getByRole('group', { name: 'Default roles' });
+  await expect(defaultRoles.getByRole('checkbox', { name: 'user', exact: true })).toBeChecked();
+  await defaultRoles.getByRole('checkbox', { name: 'user', exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  await expect(page.getByRole('alert').filter({ hasText: 'Select at least one default role' })).toBeVisible();
+  expect(api.requests.some(r => r.method === 'PUT' && r.pathname === challengeSettingsPath)).toBe(false);
+
+  await defaultRoles.getByRole('checkbox', { name: 'member', exact: true }).check();
+  await expect(page.getByRole('alert').filter({ hasText: 'Select at least one default role' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  expect((await putBody(api)).defaultRoles).toEqual(['member']);
+});
+
+test('keeps the stored domains when the mode is closed', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: challengesPath,
+    state: {
+      ...registrationState,
+      challengeSettings: {
+        'tenant-alpha': {
+          ...registrationState.challengeSettings!['tenant-alpha'],
+          emailRegistration: { mode: 'closed', domains: ['example.com'], blockSubaddress: false },
+          defaultRoles: ['member'],
+        },
+      },
+    },
+  });
+
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(page.getByLabel('Allowed domains')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+
+  const body = await putBody(api);
+  expect(body.emailRegistration).toEqual({ mode: 'closed', domains: ['example.com'], blockSubaddress: false });
+  expect(body.defaultRoles).toEqual(['member']);
 });

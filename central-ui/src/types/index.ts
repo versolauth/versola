@@ -21,9 +21,20 @@ export interface AuthorizationPreset {
   cookiePath?: string;
 }
 
+export type EmailRegistrationMode = 'closed' | 'open' | 'allowlist';
+
+/**
+ * `domains` is a blocklist in `open` mode and an allowlist in `allowlist` mode; `closed` stores
+ * it but ignores it.
+ */
+export interface EmailRegistration {
+  mode: EmailRegistrationMode;
+  domains: string[];
+  blockSubaddress: boolean;
+}
+
 // Authentication flow (cards: credential -> factor -> factor)
 export type PrimaryCredential = 'email' | 'phone' | 'login';
-export type RegistrationCredential = 'email' | 'phone';
 export type OtpType = 'sms' | 'email';
 export type AuthFactorType = 'otp' | 'password' | 'passkeyEnroll';
 
@@ -46,18 +57,6 @@ export interface AuthFlow {
 }
 
 // Registration flow (self-service account creation)
-export type RegistrationStepType = 'otp' | 'setPassword' | 'passkeyEnroll';
-
-export interface RegistrationStep {
-  type: RegistrationStepType;
-}
-
-export interface RegistrationFlow {
-  credential: RegistrationCredential;     // entry credential whose ownership is verified
-  steps: RegistrationStep[];  // ordered steps the user passes before the account is created
-  roleIds: string[];          // roles granted to the account on creation
-}
-
 // Consent screen shown before an authorization code is issued. Absent for first-party
 // clients, which never prompt.
 export interface ConsentFlow {
@@ -115,7 +114,6 @@ export interface OAuthClient {
   theme: string;
   otpTemplateId?: string | null;
   authFlow: AuthFlow | null;
-  registrationFlow: RegistrationFlow | null;
   frontChannelLogoutUri?: string | null;
   frontChannelLogoutSessionRequired: boolean;
   backChannelLogoutUri?: string | null;
@@ -201,11 +199,29 @@ export interface PasskeySettings {
 // headers again), so `auth` has to be told which shape to expect.
 export type MtlsCertificateEncoding = 'urlEncodedPem' | 'base64Der';
 
+export interface PhoneRegion {
+  /** ISO 3166-1 alpha-2, unique within the list. */
+  region: string;
+  /** '+' and 1-4 digits; several regions may share one. */
+  dialCode: string;
+  /** Digits after the dial code, 4..14; dial code digits + length <= 15. */
+  length: number;
+  /** Java regex matched in full against those digits. */
+  regex: string;
+  /** A number from this region may create an account by phone; no region listed means nobody can. */
+  registration: boolean;
+}
+
 export interface ChallengeSettingsRecord {
   tenantId: string;
   /** The profile the tenant's clients are held to; fixed when the tenant is created. */
   securityProfile?: SecurityProfile;
-  allowedPrefixes: string[];
+  /** Order is the order the login form lists the codes; empty accepts any E.164 number. */
+  phoneRegions: PhoneRegion[];
+  /** Who may create an account by email; `closed` unless the tenant opted in. */
+  emailRegistration?: EmailRegistration;
+  /** Role ids granted to every self-registered account; at least one. */
+  defaultRoles?: string[];
   submissionLimits: SubmissionLimits;
   otpLength: number;
   otpResendAfter: number;

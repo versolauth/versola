@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, MtlsCertificateEncoding, JwksKeySummary } from '../types';
+import type { EmailRegistration, EmailRegistrationMode, OtpTemplateRecord, Locale, SubmissionLimits, RateLimit, PasskeySettings, PhoneRegion, MtlsCertificateEncoding, JwksKeySummary } from '../types';
 import {
   fetchOtpTemplates,
   upsertOtpTemplate,
@@ -11,9 +11,11 @@ import {
   fetchChallengeSettings,
   upsertChallengeSettings,
   fetchJwksKeys,
+  getRoles,
 } from '../utils/central-api';
 import { confirmDestructiveAction } from '../utils/confirm-dialog';
-import { validateRedirectUri } from '../utils/validators';
+import { validateRedirectUri, validatePhoneRegions, validateRegistrationDomains } from '../utils/validators';
+import { PHONE_REGION_PRESETS, appendPresets } from '../utils/phone-region-presets';
 import './content-header';
 import './code-editor';
 import './authorization-detail-types-list';
@@ -28,6 +30,11 @@ const PASSWORD_EXPIRY_PLACEHOLDER = '{{expiresHours}}';
 type TemplatePurpose = 'otp' | 'password';
 type TemplateChannel = 'sms' | 'email';
 type TemplateViewSelection = { purpose: TemplatePurpose; channel: TemplateChannel };
+
+const DEFAULT_EMAIL_REGISTRATION: EmailRegistration = { mode: 'closed', domains: [], blockSubaddress: false };
+const DEFAULT_ROLES = ['user'];
+
+const EMAIL_MODE_LABELS: Record<EmailRegistrationMode, string> = { closed: 'Closed', open: 'Open', allowlist: 'Allowlist' };
 
 @customElement('versola-challenges-list')
 export class VersolaChallengesList extends LitElement {
@@ -56,10 +63,14 @@ export class VersolaChallengesList extends LitElement {
   @state() private saving = false;
   @state() private editError = '';
 
-  @state() private phonePrefixes: string[] = [];
+  @state() private phoneRegions: PhoneRegion[] = [];
   @state() private hasChallengeSettings = false;
   @state() private editingSettings = false;
-  @state() private editPrefixes: Array<{ value: string }> = [];
+  @state() private editRegions: PhoneRegion[] = [];
+  @state() private regionErrors: Array<string | undefined> = [];
+  @state() private presetsOpen = false;
+  @state() private presetSearch = '';
+  @state() private presetChosen = new Set<string>();
   @state() private isSavingSettings = false;
   @state() private settingsError = '';
 
@@ -124,6 +135,17 @@ export class VersolaChallengesList extends LitElement {
   @state() private requireDpopNonce = false;
   @state() private editRequireDpopNonce = false;
   @state() private openInfoKey: string | null = null;
+
+  // Self-registration policy: who may create an account by email, and the roles they get.
+  @state() private emailRegistration: EmailRegistration = { ...DEFAULT_EMAIL_REGISTRATION };
+  @state() private defaultRoles: string[] = [...DEFAULT_ROLES];
+  @state() private availableRoleIds: string[] = [];
+  @state() private editEmailMode: EmailRegistrationMode = 'closed';
+  @state() private editEmailDomainsText = '';
+  @state() private editBlockSubaddress = false;
+  @state() private editDefaultRoles: string[] = [];
+  @state() private emailDomainsError = '';
+  @state() private defaultRolesError = '';
 
   static styles = [
     theme,
@@ -398,6 +420,59 @@ export class VersolaChallengesList extends LitElement {
         min-width: 0;
         overflow-wrap: anywhere;
       }
+      .region-editor { display: flex; flex-direction: column; gap: var(--spacing-sm); margin-bottom: var(--spacing-md); }
+      .region-row {
+        display: grid;
+        grid-template-columns: 5rem 6rem 5rem minmax(8rem, 1fr) auto auto;
+        gap: var(--spacing-sm);
+        align-items: center;
+      }
+      .region-head { font-size: 0.75rem; color: var(--text-secondary); text-transform: uppercase; }
+      .region-row .compact-input { width: 100%; min-width: 0; }
+      .region-actions { display: flex; gap: var(--spacing-xs); }
+      .region-error { grid-column: 1 / -1; margin-top: 0; }
+      .region-chip { white-space: normal; }
+      .region-chip .signup-mark {
+        margin-left: var(--spacing-xs);
+        font-family: var(--font-family);
+        font-size: 0.6875rem;
+        font-weight: 600;
+        color: var(--success);
+        border: 1px solid var(--success);
+        border-radius: 999px;
+        padding: 0 0.4rem;
+        white-space: nowrap;
+      }
+      .region-reg { display: inline-flex; align-items: center; justify-content: center; margin: 0; text-transform: none; letter-spacing: normal; font-size: 0.8125rem; color: var(--text-secondary); white-space: nowrap; }
+      .region-reg input { width: 1rem; height: 1rem; accent-color: var(--accent); }
+      .preset-picker {
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+        background: var(--surface-overlay);
+        box-shadow: var(--surface-overlay-shadow);
+        padding: var(--spacing-md);
+        margin-bottom: var(--spacing-md);
+      }
+      .preset-title { font-size: 0.875rem; font-weight: 600; color: var(--text-primary); margin-bottom: var(--spacing-xs); }
+      .preset-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+        gap: var(--spacing-xs) var(--spacing-md);
+        max-height: 16rem;
+        overflow-y: auto;
+        margin: var(--spacing-sm) 0 var(--spacing-md);
+      }
+      .preset-item { text-transform: none; letter-spacing: normal; margin: 0; display: flex; align-items: center; gap: var(--spacing-sm); padding: var(--spacing-xs) 0; font-size: 0.8125rem; color: var(--text-primary); cursor: pointer; min-height: 1.5rem; }
+      .preset-item input { width: 1rem; height: 1rem; accent-color: var(--accent); flex: none; }
+      .preset-item .iso { font-family: var(--font-mono); font-weight: 600; color: var(--accent); }
+      .preset-item .meta { white-space: nowrap; color: var(--text-secondary); font-size: 0.75rem; }
+      .preset-item.present { opacity: 0.55; cursor: default; }
+      .preset-actions { display: flex; gap: var(--spacing-sm); justify-content: flex-end; }
+      .region-actions-bar { display: flex; flex-wrap: wrap; gap: var(--spacing-sm); }
+      @media (max-width: 720px) {
+        .region-row { grid-template-columns: 1fr 1fr; }
+        .region-head { display: none; }
+      }
       .limit-row {
         display: flex;
         gap: var(--spacing-md);
@@ -521,13 +596,23 @@ export class VersolaChallengesList extends LitElement {
     this.openInfoKey = null;
   };
 
+  private handleDocumentKeydown = (e: KeyboardEvent) => {
+    if (e.key !== 'Escape' || this.openInfoKey === null) return;
+    const key = this.openInfoKey;
+    this.openInfoKey = null;
+    // Hand focus back to the button that opened the popover, so keyboard users keep their place.
+    void this.updateComplete.then(() => this.renderRoot.querySelector<HTMLElement>(`[data-info-key="${key}"]`)?.focus());
+  };
+
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this.handleDocumentClick);
+    document.addEventListener('keydown', this.handleDocumentKeydown);
   }
 
   disconnectedCallback() {
     document.removeEventListener('click', this.handleDocumentClick);
+    document.removeEventListener('keydown', this.handleDocumentKeydown);
     super.disconnectedCallback();
   }
 
@@ -542,7 +627,7 @@ export class VersolaChallengesList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [templates, locales, challengeSettings, jwksKeys] = await Promise.all([
+      const [templates, locales, challengeSettings, jwksKeys, roles] = await Promise.all([
         fetchOtpTemplates(this.tenantId),
         fetchLocales(),
         fetchChallengeSettings(this.tenantId),
@@ -550,7 +635,10 @@ export class VersolaChallengesList extends LitElement {
         // published for verification and can sign nothing. RS256 keys are listed only for a
         // tenant that may sign under one (see below).
         fetchJwksKeys().catch(() => [] as JwksKeySummary[]),
+        // Only offers the checkboxes for default roles; a failed load leaves the current ones editable.
+        getRoles(this.tenantId).catch(() => []),
       ]);
+      this.availableRoleIds = roles.map(role => role.id);
       this.templates = templates;
       this.viewSelection = {};
       this.availableLocales = locales;
@@ -562,7 +650,11 @@ export class VersolaChallengesList extends LitElement {
       this.signingKeysIncludeRs256 = allowsRs256;
       this.hasChallengeSettings = challengeSettings !== null;
       if (challengeSettings) {
-        this.phonePrefixes = challengeSettings.allowedPrefixes;
+        this.phoneRegions = challengeSettings.phoneRegions ?? [];
+        this.emailRegistration = challengeSettings.emailRegistration
+          ? { ...challengeSettings.emailRegistration, domains: [...challengeSettings.emailRegistration.domains] }
+          : { ...DEFAULT_EMAIL_REGISTRATION };
+        this.defaultRoles = challengeSettings.defaultRoles?.length ? [...challengeSettings.defaultRoles] : [...DEFAULT_ROLES];
         this.submissionLimits = challengeSettings.submissionLimits;
         this.otpLength = challengeSettings.otpLength;
         this.otpResendAfter = challengeSettings.otpResendAfter;
@@ -580,7 +672,9 @@ export class VersolaChallengesList extends LitElement {
         this.signingKeyId = challengeSettings.signingKeyId ?? null;
         this.clientAssertionMaxLifetimeSeconds = challengeSettings.clientAssertionMaxLifetimeSeconds ?? 300;
       } else {
-        this.phonePrefixes = [];
+        this.phoneRegions = [];
+        this.emailRegistration = { ...DEFAULT_EMAIL_REGISTRATION };
+        this.defaultRoles = [...DEFAULT_ROLES];
         this.submissionLimits = { otpRequest: [], otpSubmit: [], passwordSubmit: [], passkeyAssertion: [], banDurationSeconds: 0 };
         this.otpLength = 6;
         this.otpResendAfter = 60;
@@ -780,6 +874,7 @@ export class VersolaChallengesList extends LitElement {
         <button
           type="button"
           class="option-info-button"
+          data-info-key=${key}
           aria-label=${ariaLabel}
           aria-expanded=${this.openInfoKey === key ? 'true' : 'false'}
           @click=${() => this.toggleInfo(key)}
@@ -806,6 +901,78 @@ export class VersolaChallengesList extends LitElement {
       `,
       'DPoP nonce requirement info',
     );
+  }
+
+  private renderEmailRegistrationEditor() {
+    const mode = this.editEmailMode;
+    const roleIds = [...new Set([...this.availableRoleIds, ...this.editDefaultRoles])];
+    return html`
+      <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Registration</h3>
+
+      <div style="display: flex; align-items: center; gap: var(--spacing-xs);">
+        <label for="email-registration-mode" style="margin: 0;">Email registration</label>
+        ${this.renderOptionInfo(
+          'email-registration',
+          'Email registration',
+          html`
+            <div class="option-tooltip-item"><strong>Closed.</strong> Nobody can create an account with an email address. Users who already have an account still sign in.</div>
+            <div class="option-tooltip-item"><strong>Open.</strong> Anyone can register with an email address, except from the domains you list and .</div>
+            <div class="option-tooltip-item"><strong>Allowlist.</strong> Only addresses from the domains you list can register.</div>
+            <div class="option-tooltip-item">These rules are also applied when an existing user changes their email address.</div>
+          `,
+          'About email registration modes',
+        )}
+      </div>
+      <div class="hint">Who may create an account with an email address. Also applied when an address is changed.</div>
+      <select id="email-registration-mode" class="form-control compact-input" style="max-width: 16rem;" .value=${mode}
+        @change=${(e: Event) => { this.editEmailMode = (e.target as HTMLSelectElement).value as EmailRegistrationMode; this.emailDomainsError = ''; }}>
+        ${(['closed', 'open', 'allowlist'] as const).map(m => html`<option value=${m} ?selected=${mode === m}>${EMAIL_MODE_LABELS[m]}</option>`)}
+      </select>
+
+      ${mode === 'closed' ? nothing : html`
+        <label for="email-registration-domains" style="margin-top: var(--spacing-lg);">${mode === 'open' ? 'Blocked domains' : 'Allowed domains'}</label>
+        <div class="hint">
+          One per line, lower-case: <code>example.com</code> matches that domain only, <code>*.example.com</code> matches its subdomains, not <code>example.com</code> itself.
+          Internationalised names may be typed in Unicode.
+          ${mode === 'open' ? 'Anyone may register except from these domains.' : 'Only addresses from these domains may register; with none listed, nobody can.'}
+        </div>
+        <textarea id="email-registration-domains" class="form-control edit-loc-textarea" rows="5" spellcheck="false"
+          aria-invalid=${this.emailDomainsError ? 'true' : 'false'}
+          aria-describedby=${this.emailDomainsError ? 'email-domains-error' : nothing}
+          .value=${this.editEmailDomainsText}
+          @input=${(e: Event) => { this.editEmailDomainsText = (e.target as HTMLTextAreaElement).value; }}
+          placeholder=${'example.com\n*.corp.example'}></textarea>
+        ${this.emailDomainsError ? html`<div class="error-msg" id="email-domains-error" role="alert">${this.emailDomainsError}</div>` : nothing}
+      `}
+
+      <div style="margin-top: var(--spacing-lg);">
+        <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm); margin-top: var(--spacing-sm);">
+          <input type="checkbox" .checked=${this.editBlockSubaddress}
+            @change=${(e: Event) => { this.editBlockSubaddress = (e.target as HTMLInputElement).checked; }} />
+          Block addresses with + = # (sub-addresses)
+        </label>
+      </div>
+
+      <label style="margin-top: var(--spacing-lg);" id="default-roles-label">Default roles *</label>
+      <div class="hint">Granted to every self-registered account. At least one.</div>
+      <div role="group" aria-labelledby="default-roles-label" data-testid="default-roles">
+        ${roleIds.map(id => html`
+          <label class="region-reg" style="justify-content: flex-start; gap: var(--spacing-sm); margin-bottom: var(--spacing-xs);">
+            <input type="checkbox" .checked=${this.editDefaultRoles.includes(id)}
+              @change=${(e: Event) => this.toggleDefaultRole(id, (e.target as HTMLInputElement).checked)} />
+            ${id}
+          </label>
+        `)}
+      </div>
+      ${this.defaultRolesError ? html`<div class="error-msg" role="alert">${this.defaultRolesError}</div>` : nothing}
+    `;
+  }
+
+  private toggleDefaultRole(id: string, checked: boolean) {
+    this.editDefaultRoles = checked
+      ? [...this.editDefaultRoles.filter(r => r !== id), id]
+      : this.editDefaultRoles.filter(r => r !== id);
+    if (this.editDefaultRoles.length > 0) this.defaultRolesError = '';
   }
 
   private formatDuration(seconds: number): string {
@@ -986,9 +1153,53 @@ export class VersolaChallengesList extends LitElement {
     }
   }
 
+  private renderPresetPicker() {
+    const q = this.presetSearch.trim().toLowerCase();
+    const present = new Set(this.editRegions.map(r => r.region.trim().toUpperCase()));
+    const shown = PHONE_REGION_PRESETS.filter(p =>
+      q === '' || p.region.toLowerCase().includes(q) || p.name.toLowerCase().includes(q) || p.dialCode.includes(q));
+    const count = this.presetChosen.size;
+    return html`
+      <div class="preset-picker" role="dialog" aria-label="Add from presets" data-testid="preset-picker"
+        @keydown=${(e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); this.closePresets(); } }}>
+        <div class="preset-title">Add countries</div>
+        <div class="hint" style="margin-bottom: var(--spacing-sm);">
+          Each is added with registration on; untick it per row afterwards. Patterns are loose on purpose: the real number is also checked against libphonenumber.
+        </div>
+        ${PHONE_REGION_PRESETS.length > 8 ? html`
+          <input type="search" class="form-control compact-input" aria-label="Search presets" placeholder="Search country, code or dial code"
+            .value=${this.presetSearch} @input=${(e: Event) => { this.presetSearch = (e.target as HTMLInputElement).value; }} />` : nothing}
+        <div class="preset-list">
+          ${shown.length === 0 ? html`<div class="hint">No country matches.</div>` : shown.map(p => html`
+            <label class="preset-item ${present.has(p.region) ? 'present' : ''}">
+              <input type="checkbox" aria-label="${p.name}" ?disabled=${present.has(p.region)}
+                .checked=${present.has(p.region) || this.presetChosen.has(p.region)}
+                @change=${(e: Event) => this.togglePreset(p.region, (e.target as HTMLInputElement).checked)} />
+              <span class="iso">${p.region}</span>
+              <span>${p.name}</span>
+              <span class="meta">${p.dialCode} · ${p.length} digits${present.has(p.region) ? ' · already listed' : ''}</span>
+            </label>`)}
+        </div>
+        <div class="preset-actions">
+          <button class="btn btn-secondary" @click=${() => this.closePresets()}>Cancel</button>
+          <button class="btn btn-secondary" ?disabled=${count === 0} @click=${() => this.confirmPresets()}>
+            ${count === 0 ? 'Add selected' : `Add ${count} selected`}
+          </button>
+        </div>
+      </div>`;
+  }
+
   private startEditSettings() {
     this.editingSettings = true;
-    this.editPrefixes = this.phonePrefixes.map(value => ({ value }));
+    this.editRegions = this.phoneRegions.map(r => ({ ...r }));
+    this.regionErrors = [];
+    this.editEmailMode = this.emailRegistration.mode;
+    this.editEmailDomainsText = this.emailRegistration.domains.join('\n');
+    this.editBlockSubaddress = this.emailRegistration.blockSubaddress;
+    this.editDefaultRoles = [...this.defaultRoles];
+    this.emailDomainsError = '';
+    this.defaultRolesError = '';
+    this.closePresets();
     this.editSubmissionLimits = JSON.parse(JSON.stringify(this.submissionLimits));
     this.editOtpLength = this.otpLength;
     this.editOtpResendAfter = this.otpResendAfter;
@@ -1018,12 +1229,51 @@ export class VersolaChallengesList extends LitElement {
     this.settingsError = '';
   }
 
-  private addPrefix() {
-    this.editPrefixes = [...this.editPrefixes, { value: '' }];
+  private openPresets() {
+    this.presetChosen = new Set();
+    this.presetSearch = '';
+    this.presetsOpen = true;
   }
 
-  private removePrefix(index: number) {
-    this.editPrefixes = this.editPrefixes.filter((_, i) => i !== index);
+  private closePresets() {
+    this.presetsOpen = false;
+    this.presetSearch = '';
+    this.presetChosen = new Set();
+  }
+
+  private togglePreset(region: string, on: boolean) {
+    const next = new Set(this.presetChosen);
+    if (on) next.add(region); else next.delete(region);
+    this.presetChosen = next;
+  }
+
+  private confirmPresets() {
+    this.editRegions = appendPresets(this.editRegions, this.presetChosen);
+    this.regionErrors = [];
+    this.closePresets();
+  }
+
+  private addRegion() {
+    this.editRegions = [...this.editRegions, { region: '', dialCode: '', length: 10, regex: '', registration: false }];
+    this.regionErrors = [];
+  }
+
+  private removeRegion(index: number) {
+    this.editRegions = this.editRegions.filter((_, i) => i !== index);
+    this.regionErrors = [];
+  }
+
+  private moveRegion(index: number, delta: -1 | 1) {
+    const target = index + delta;
+    if (target < 0 || target >= this.editRegions.length) return;
+    const next = [...this.editRegions];
+    [next[index], next[target]] = [next[target], next[index]];
+    this.editRegions = next;
+    this.regionErrors = [];
+  }
+
+  private updateRegion(index: number, patch: Partial<PhoneRegion>) {
+    this.editRegions = this.editRegions.map((r, i) => (i === index ? { ...r, ...patch } : r));
   }
 
   private addPasskeyOrigin() {
@@ -1062,11 +1312,36 @@ export class VersolaChallengesList extends LitElement {
 
   private async saveSettings() {
     if (!this.tenantId) return;
-    const prefixes = this.editPrefixes.map(p => p.value.trim()).filter(p => p.length > 0);
-    if (prefixes.some(p => !/^\+\d+$/.test(p))) {
-      this.settingsError = 'Each prefix must start with + followed by digits (e.g. +77).';
+    const regions = this.editRegions.map(r => ({
+      region: r.region.trim().toUpperCase(),
+      dialCode: r.dialCode.trim(),
+      length: Number(r.length),
+      regex: r.regex.trim(),
+      registration: r.registration === true,
+    }));
+    const regionErrors = validatePhoneRegions(regions);
+    this.regionErrors = regionErrors;
+    if (regionErrors.some(e => e !== undefined)) {
+      this.settingsError = 'Fix the highlighted phone regions.';
       return;
     }
+    const parsedDomains = this.editEmailDomainsText.split('\n').map(d => d.trim()).filter(d => d.length > 0);
+    const domainsError = validateRegistrationDomains(parsedDomains);
+    // In closed mode the domains editor is hidden and the list is ignored by the server, so an
+    // invalid draft must not block the save: the stored list is sent back unchanged instead.
+    const closed = this.editEmailMode === 'closed';
+    this.emailDomainsError = closed ? '' : domainsError ?? '';
+    const defaultRoles = [...new Set(this.editDefaultRoles)];
+    this.defaultRolesError = defaultRoles.length === 0 ? 'Select at least one default role.' : '';
+    if (this.emailDomainsError || this.defaultRolesError) {
+      this.settingsError = 'Fix the highlighted registration settings.';
+      return;
+    }
+    const emailRegistration: EmailRegistration = {
+      mode: this.editEmailMode,
+      domains: closed && domainsError ? [...this.emailRegistration.domains] : parsedDomains,
+      blockSubaddress: this.editBlockSubaddress,
+    };
     const rpId = this.editPasskeyRpId.trim();
     const rpName = this.editPasskeyRpName.trim();
     const origins = this.editPasskeyOrigins.map(o => o.value.trim()).filter(o => o.length > 0);
@@ -1122,7 +1397,7 @@ export class VersolaChallengesList extends LitElement {
     try {
       await upsertChallengeSettings(
         this.tenantId,
-        prefixes,
+        regions,
         this.editSubmissionLimits,
         this.editOtpLength,
         this.editOtpResendAfter,
@@ -1139,8 +1414,12 @@ export class VersolaChallengesList extends LitElement {
         mtlsCertificateEncoding,
         this.editSigningKeyId,
         clientAssertionMaxLifetimeSeconds,
+        emailRegistration,
+        defaultRoles,
       );
-      this.phonePrefixes = prefixes;
+      this.phoneRegions = regions;
+      this.emailRegistration = emailRegistration;
+      this.defaultRoles = defaultRoles;
       this.submissionLimits = JSON.parse(JSON.stringify(this.editSubmissionLimits));
       this.otpLength = this.editOtpLength;
       this.otpResendAfter = this.editOtpResendAfter;
@@ -1440,13 +1719,32 @@ export class VersolaChallengesList extends LitElement {
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
           <label>Allowed Phones</label>
-          ${this.phonePrefixes.length === 0
-            ? html`<div class="hint">No prefixes configured. Any phone number is accepted.</div>`
+          ${this.phoneRegions.length === 0
+            ? html`<div class="hint">No regions configured. Any E.164 phone number is accepted.</div>`
             : html`
               <div class="prefix-tags">
-                ${this.phonePrefixes.map(prefix => html`<span class="prefix-tag">${prefix}</span>`)}
+                ${this.phoneRegions.map(r => html`<span class="prefix-tag region-chip">${r.region} ${r.dialCode} · ${r.length} digits · ${r.regex}${r.registration ? html`<span class="signup-mark" title="Numbers from this region can register">sign-up</span>` : nothing}</span>`)}
               </div>
             `}
+        </div>
+
+        <div class="card" style="margin-bottom: var(--spacing-lg);" data-testid="email-registration-view">
+          <label>Email registration</label>
+          <div class="template-text">${EMAIL_MODE_LABELS[this.emailRegistration.mode]}</div>
+          ${this.emailRegistration.mode === 'closed'
+            ? html`<div class="hint">Nobody can create an account with an email address. Existing accounts still sign in.</div>`
+            : html`
+              <label style="margin-top: var(--spacing-lg);">${this.emailRegistration.mode === 'open' ? 'Blocked domains' : 'Allowed domains'}</label>
+              ${this.emailRegistration.domains.length === 0
+                ? html`<div class="hint">${this.emailRegistration.mode === 'open' ? 'No domains blocked.' : 'No domains listed, so no address can register.'}</div>`
+                : html`<div class="prefix-tags">${this.emailRegistration.domains.map(d => html`<span class="prefix-tag">${d}</span>`)}</div>`}
+              <div class="template-text" style="margin-top: var(--spacing-md);">Sub-addresses (+ = #): ${this.emailRegistration.blockSubaddress ? 'blocked' : 'allowed'}</div>
+            `}
+
+          <label style="margin-top: var(--spacing-lg);">Default roles</label>
+          <div class="prefix-tags">
+            ${this.defaultRoles.map(r => html`<span class="prefix-tag">${r}</span>`)}
+          </div>
         </div>
 
         <div class="card" style="margin-bottom: var(--spacing-lg);">
@@ -1635,20 +1933,53 @@ export class VersolaChallengesList extends LitElement {
         </div>
 
         <label style="margin-top: var(--spacing-lg);">Allowed Phones</label>
-        <div class="hint">Each prefix must start with + followed by digits (e.g. +77). Leave empty to accept any phone number.</div>
+        <div class="hint">
+          Regions in the order the login form lists them. Region is an ISO 3166-1 alpha-2 code; length is the digits after the dial code;
+          the regex is matched in full against those digits. Several regions may share a dial code. Leave empty to accept any E.164 number.
+          Registration decides whether a number from that region may create an account; with no region ticked, nobody can register by phone.
+        </div>
 
-        ${this.editPrefixes.length === 0
-          ? html`<div class="hint">No prefixes configured.</div>`
-          : this.editPrefixes.map((entry, i) => html`
-            <div class="locale-bar settings-input-row">
-              <input type="text" class="form-control settings-list-input settings-prefix-input" .value=${entry.value}
-                @input=${(e: Event) => { entry.value = (e.target as HTMLInputElement).value; }}
-                placeholder="+77" />
-              <button class="icon-action danger" @click=${() => this.removePrefix(i)} title="Remove">✕</button>
+        ${this.editRegions.length === 0
+          ? html`<div class="hint">No regions configured.</div>`
+          : html`
+            <div class="region-editor">
+              <div class="region-row region-head">
+                <span>Region</span><span>Dial code</span><span>Length</span><span>Regex</span><span>Registration</span><span></span>
+              </div>
+              ${this.editRegions.map((r, i) => html`
+                <div class="region-row" data-testid="region-row">
+                  <input type="text" class="form-control compact-input" aria-label="Region" .value=${r.region} placeholder="KZ" maxlength="2"
+                    @input=${(e: Event) => this.updateRegion(i, { region: (e.target as HTMLInputElement).value })} />
+                  <input type="text" class="form-control compact-input" aria-label="Dial code" .value=${r.dialCode} placeholder="+7"
+                    @input=${(e: Event) => this.updateRegion(i, { dialCode: (e.target as HTMLInputElement).value })} />
+                  <input type="number" class="form-control compact-input" aria-label="Length" .value=${String(r.length)} min="4" max="14"
+                    @input=${(e: Event) => this.updateRegion(i, { length: parseInt((e.target as HTMLInputElement).value) })} />
+                  <input type="text" class="form-control compact-input" aria-label="Regex" .value=${r.regex} placeholder="7\\d{9}"
+                    @input=${(e: Event) => this.updateRegion(i, { regex: (e.target as HTMLInputElement).value })} />
+                  <label class="region-reg">
+                    <input type="checkbox" aria-label="Registration" .checked=${r.registration === true}
+                      @change=${(e: Event) => this.updateRegion(i, { registration: (e.target as HTMLInputElement).checked })} />
+                  </label>
+                  <span class="region-actions">
+                    <button class="icon-action" ?disabled=${i === 0} @click=${() => this.moveRegion(i, -1)} title="Move up" aria-label="Move up">↑</button>
+                    <button class="icon-action" ?disabled=${i === this.editRegions.length - 1} @click=${() => this.moveRegion(i, 1)} title="Move down" aria-label="Move down">↓</button>
+                    <button class="icon-action danger" @click=${() => this.removeRegion(i)} title="Remove" aria-label="Remove row">✕</button>
+                  </span>
+                  ${this.regionErrors[i] ? html`<div class="error-msg region-error">${this.regionErrors[i]}</div>` : nothing}
+                </div>
+              `)}
             </div>
-          `)}
+          `}
 
-        <button class="btn btn-secondary" @click=${() => this.addPrefix()}>+ Add Prefix</button>
+        ${this.presetsOpen ? this.renderPresetPicker() : nothing}
+
+        <div class="region-actions-bar">
+          <button class="btn btn-secondary" @click=${() => this.addRegion()}>+ Add Region</button>
+          <button class="btn btn-secondary" aria-haspopup="dialog" aria-expanded=${this.presetsOpen ? 'true' : 'false'}
+            @click=${() => (this.presetsOpen ? this.closePresets() : this.openPresets())}>Add from presets</button>
+        </div>
+
+        ${this.renderEmailRegistrationEditor()}
 
         <h3 style="margin-top: var(--spacing-xl); margin-bottom: var(--spacing-md);">Sessions</h3>
 

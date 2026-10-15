@@ -15,7 +15,9 @@ object ChallengeSettingsServiceSpec extends UnitSpecBase:
   private val otherTenantId = TenantId("tenant-b")
   private val settings = ChallengeSettingsRecord(
     tenantId = tenantId,
-    allowedPrefixes = List.empty,
+    phoneRegions = List.empty,
+    emailRegistration = EmailRegistration.Closed,
+    defaultRoles = Set(ChallengeSettingsRecord.DefaultRoleId),
     submissionLimits = SubmissionLimits.empty,
     otpLength = 6,
     otpResendAfter = 60,

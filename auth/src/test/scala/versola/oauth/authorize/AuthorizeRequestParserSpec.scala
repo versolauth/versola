@@ -50,7 +50,6 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
     theme = "default",
     authFlow =
       Some(AuthFlow.default.copy(primary = AuthFlow.default.primary.copy(credentials = List(PrimaryCredential.email, PrimaryCredential.phone)))),
-    registrationFlow = None,
     otpTemplateId = "default",
     frontChannelLogoutUri = None,
     frontChannelLogoutSessionRequired = false,
@@ -73,6 +72,9 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
   /** A tenant ACR vocabulary defining each of `acrs` as satisfied by a password. */
   private def acrVocabulary(acrs: String*): Map[Acr, NonEmptyList[PassedAuthFactor]] =
     acrs.map(acr => Acr(acr) -> NonEmptyList(PassedAuthFactor.password)).toMap
+
+  private val usRegion = PhoneRegion("US", "+1", 10, "\\d{10}", false)
+  private val kzRegion = PhoneRegion("KZ", "+7", 10, "7\\d{9}", false)
 
   private def changeRequest(acr: String, hint: Option[String], extra: Map[String, String] = Map.empty) =
     Request.get(URL.root.addQueryParams(validParams ++ Map("acr_values" -> acr) ++ hint.map("login_hint" -> _) ++ extra))
@@ -905,7 +907,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
@@ -914,7 +916,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+787011234567")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+770"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)))
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint.isEmpty)
       },
@@ -945,7 +947,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+7"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("KZ", "+7", 10, "7\\d{9}", true)))
           result <- env.parser.parse(request).either
         yield assertTrue(result.map(_.loginHint) == Right(None))
       },
@@ -954,7 +956,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+12025551234")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           result <- env.parser.parse(request)
         yield assertTrue(result.loginHint == Some(Right(Phone("+12025551234"))))
       },
@@ -971,7 +973,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val request = Request.get(URL.root.addQueryParams(validParams ++ Map("login_hint" -> "+1202")))
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           result <- env.parser.parse(request).either
         yield assertTrue(result.map(_.loginHint) == Right(None))
       },
@@ -1728,7 +1730,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+1"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(usRegion))
           result <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("+12025551234")))
         yield assertTrue(
           result.identifierChange == Some(IdentifierChangeKind.Phone),
@@ -1753,7 +1755,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
           _ <- env.configuration.getAcrVocabulary.succeedsWith(acrVocabulary("urn:mfa"))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           result <- env.parser.parse(changeRequest("urn:mfa urn:versola:acr:phone-change", Some("+12025551234")))
         yield assertTrue(
           result.identifierChange == Some(IdentifierChangeKind.Phone),
@@ -1779,7 +1781,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(Nil)
+          _ <- env.configuration.getPhoneRegions.succeedsWith(Nil)
           emailForPhone <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("new@example.com"))).either
           phoneForEmail <- env.parser.parse(changeRequest("urn:versola:acr:email-change", Some("+12025551234"))).either
           garbage <- env.parser.parse(changeRequest("urn:versola:acr:email-change", Some("not an email"))).either
@@ -1789,7 +1791,7 @@ object AuthorizeRequestParserSpec extends UnitSpecBase:
         val env = Env()
         for
           _ <- env.configuration.find.succeedsWith(Some(clientRecord))
-          _ <- env.configuration.getAllowedPhonePrefixes.succeedsWith(List("+7"))
+          _ <- env.configuration.getPhoneRegions.succeedsWith(List(kzRegion))
           result <- env.parser.parse(changeRequest("urn:versola:acr:phone-change", Some("+12025551234"))).either
         yield assertTrue(result == Left(invalid))
       },

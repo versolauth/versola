@@ -6,7 +6,7 @@ import versola.auth.model.{OtpCode, PasskeyName, Password}
 import versola.oauth.authorize.AuthorizationResponseService
 import versola.oauth.authorize.model.ResponseMode
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.{AuthFlow, ClientId, ScopeToken}
+import versola.oauth.client.model.{AuthFlow, ClientId, PhoneRegion, ScopeToken}
 import versola.oauth.conversation.model.{AuthId, ConversationRecord, ConversationStep, Error}
 import versola.oauth.jwks.JwksService
 import versola.oauth.model.{CodeChallenge, CodeChallengeMethod, ConversationCookie}
@@ -144,7 +144,7 @@ object ConversationControllerSpec extends UnitSpecBase:
               ),
           ),
         )
-        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List.empty)
+        _ <- configuration.getPhoneRegions.succeedsWith(List.empty)
         _ <- configuration.getPasswordRegex.succeedsWith(".*")
         _ <- configuration.getIpHeader.succeedsWith(ipHeader)
         _ <- router.submit.succeedsWith((conversationResult, record))
@@ -851,7 +851,7 @@ object ConversationControllerSpec extends UnitSpecBase:
           ),
         )
         _ <- configuration.getIpHeader.succeedsWith("X-Real-IP")
-        _ <- configuration.getAllowedPhonePrefixes.succeedsWith(List("+44"))
+        _ <- configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("GB", "+44", 10, "7\\d{9}", true)))
 
         response <- client.batched(
           Request.post(

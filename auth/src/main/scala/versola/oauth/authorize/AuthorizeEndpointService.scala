@@ -77,7 +77,7 @@ object AuthorizeEndpointService:
         _ <- ZIO.foreachDiscard(request.userAgentCookie)(cookie => Observability.setUserAgentId(cookie.id.toString))
         client <- configurationService.find(request.clientId)
         authFlow = client.flatMap(_.authFlow)
-        registrationFlow = client.flatMap(_.registrationFlow)
+        registrationAvailable <- ZIO.foreach(client)(configurationService.registrationAvailable).map(_.contains(true))
         flow <- ZIO
           .fromOption(authFlow)
           .orElseFail(Error.AuthFlowMissing(request.clientId, request.redirectUri, request.state, responseMode = request.responseMode))
@@ -119,7 +119,7 @@ object AuthorizeEndpointService:
                       authId,
                       request,
                       flow,
-                      registrationFlow,
+                      registrationAvailable,
                       uiLocales,
                       Map.empty,
                       applyHint = false,
@@ -132,7 +132,7 @@ object AuthorizeEndpointService:
                   authId,
                   request,
                   flow,
-                  registrationFlow,
+                  registrationAvailable,
                   uiLocales,
                   Map.empty,
                   knownUserId = Some(userId),
@@ -142,7 +142,7 @@ object AuthorizeEndpointService:
           case (None, None) =>
             // ACR is voluntary (OIDC Core §3.1.2.1): without a known user we cannot verify
             // achievability, so we proceed with normal auth and omit the acr claim.
-            createConversation(authId, request, flow, registrationFlow, uiLocales, Map.empty)
+            createConversation(authId, request, flow, registrationAvailable, uiLocales, Map.empty)
 
           case (Some(SessionInfo(id, session)), _) =>
             for
@@ -193,7 +193,7 @@ object AuthorizeEndpointService:
                             authId,
                             request,
                             flow,
-                            registrationFlow,
+                            registrationAvailable,
                             uiLocales,
                             Map.empty,
                             applyHint = false,
@@ -226,7 +226,7 @@ object AuthorizeEndpointService:
                           authId,
                           request,
                           flow,
-                          registrationFlow,
+                          registrationAvailable,
                           uiLocales,
                           Map.empty,
                           // A re-authentication must not take a `login_hint` as the user's answer: when the
@@ -267,7 +267,7 @@ object AuthorizeEndpointService:
                             authId,
                             request,
                             flow,
-                            registrationFlow,
+                            registrationAvailable,
                             uiLocales,
                             session.amr,
                             applyHint = false,
@@ -282,7 +282,7 @@ object AuthorizeEndpointService:
                     authId,
                     request,
                     flow,
-                    registrationFlow,
+                    registrationAvailable,
                     uiLocales,
                     session.amr,
                     applyHint = false,
@@ -310,7 +310,7 @@ object AuthorizeEndpointService:
                         authId,
                         request,
                         flow,
-                        registrationFlow,
+                        registrationAvailable,
                         uiLocales,
                         session.amr,
                         applyHint = false,
@@ -377,7 +377,7 @@ object AuthorizeEndpointService:
         authId: AuthId,
         request: AuthorizeRequest,
         flow: AuthFlow,
-        registrationFlow: Option[RegistrationFlow],
+        registrationAvailable: Boolean,
         uiLocales: Option[List[String]],
         amr: Map[PassedAuthFactor, PassedFactorRecord],
         applyHint: Boolean = true,
@@ -424,7 +424,7 @@ object AuthorizeEndpointService:
             passkey = flow.passkey.isDefined,
             // Offering registration on a card that already knows the user would let them create a
             // second account for an identity they are in the middle of proving.
-            registration = registrationFlow.isDefined && effectiveUserId.isEmpty,
+            registration = registrationAvailable && effectiveUserId.isEmpty,
           ),
           requestedClaims = request.requestedClaims,
           uiLocales = uiLocales,
@@ -436,7 +436,7 @@ object AuthorizeEndpointService:
           userLogin = userOpt.flatMap(_.login),
           userClaims = userOpt.map(_.claims),
           authFlow = flow,
-          registrationFlow = registrationFlow,
+          registrationFlow = None,
           registrationStep = None,
           // Strip non-printable ASCII (0x20–0x7E); does not escape HTML — always escape at render time
           userAgent = request.userAgent.map(_.filter(c => c >= ' ' && c <= '~')),

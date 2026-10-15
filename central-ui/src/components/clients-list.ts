@@ -1806,8 +1806,7 @@ export class VersolaClientsList extends LitElement {
         </div>
       `, '') : ''}
 
-      ${signsUsersIn ? this.viewSection('Registration and consent', '', 'registration', client, html`
-        ${this.viewRow('Self-registration', client.registrationFlow ? 'On' : 'Off')}
+      ${signsUsersIn ? this.viewSection('Consent', '', 'registration', client, html`
         ${this.viewRow('Consent screen', client.consentFlow ? 'On (partner, cannot be turned off)' : 'Off')}
       `) : ''}
 

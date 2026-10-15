@@ -1,7 +1,7 @@
 package versola.oauth.identifier
 
 import versola.oauth.client.OAuthConfigurationService
-import versola.oauth.client.model.ClientId
+import versola.oauth.client.model.{ClientId, PhoneRegion}
 import versola.user.model.UserId
 import versola.user.{UserIntent, UserIntentRepository, UserRepository}
 import zio.{IO, ZIO, ZLayer, durationInt}
@@ -46,10 +46,10 @@ object IdentifierChangeIntentService:
         value: String,
     ): IO[IdentifierChangeIntentError | Throwable, Unit] =
       for
-        prefixes <- kind match
-          case IdentifierChangeKind.Phone => configuration.getAllowedPhonePrefixes(clientId)
-          case IdentifierChangeKind.Email => ZIO.succeed(List.empty[String])
-        credential <- ZIO.fromOption(IdentifierChangeCredentials.parse(kind, value, prefixes))
+        regions <- kind match
+          case IdentifierChangeKind.Phone => configuration.getPhoneRegions(clientId)
+          case IdentifierChangeKind.Email => ZIO.succeed(List.empty[PhoneRegion])
+        credential <- ZIO.fromOption(IdentifierChangeCredentials.parse(kind, value, regions))
           .orElseFail(IdentifierChangeIntentError.InvalidValue)
         _ <- userRepository.find(userId).someOrFail(IdentifierChangeIntentError.UserNotFound)
         // Asked here, before the browser is sent through /authorize, so the user hears about a taken

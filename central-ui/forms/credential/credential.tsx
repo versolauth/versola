@@ -1,6 +1,7 @@
 import { render } from 'solid-js/web';
 import { createSignal, Show } from 'solid-js';
-import { toE164 } from '../phone';
+import { PhoneField, type PhoneFieldApi } from './phone-field';
+import type { PhoneRegion } from './phone';
 import { getAssertionResponse, isPasskeyCancellation, passkeysSupported, submitViaForm } from '../passkey/webauthn';
 
 function LocaleDropdown(props: { locales: string[]; current: string; onChange: (l: string) => void }) {
@@ -41,7 +42,7 @@ type CredentialStep = {
   primaryCredentials: PrimaryCredential[];
   inlinePassword: boolean;
   passkey: boolean;
-  allowedPhonePrefixes?: string[];
+  phoneRegions?: PhoneRegion[];
   passwordRegex?: string;
 };
 
@@ -83,7 +84,8 @@ function CredentialForm(props: { config: FormConfig }) {
   const single = primaries.length === 1 ? primaries[0] : null;
   const challengeKind = single ?? 'credential';
   const combinedPlaceholder = () => primaries.map((p) => t()[`${p}_placeholder`] ?? p).join(' / ');
-  const allowedPhonePrefixes = step.allowedPhonePrefixes ?? [];
+  const phoneRegions = step.phoneRegions ?? [];
+  let phoneField: PhoneFieldApi | undefined;
 
   // login always carries a password; email/phone show it only when inlinePassword is set
   const showPassword = () => isLoginFlow || !!step.inlinePassword;
@@ -91,8 +93,6 @@ function CredentialForm(props: { config: FormConfig }) {
   const formAction = () =>
     `${showPassword() ? `/challenge/${challengeKind}-password` : `/challenge/${challengeKind}`}?ui_locale=${currentLocale()}`;
 
-  const [phoneNotAllowed, setPhoneNotAllowed] = createSignal(false);
-  const [phoneInvalid, setPhoneInvalid] = createSignal(false);
   const [passwordNotAllowed, setPasswordNotAllowed] = createSignal(false);
   const [passkeyBusy, setPasskeyBusy] = createSignal(false);
   const [logoLoadFailed, setLogoLoadFailed] = createSignal(false);
@@ -148,20 +148,9 @@ function CredentialForm(props: { config: FormConfig }) {
 
   const handleSubmit = (e: SubmitEvent) => {
     const form = e.currentTarget as HTMLFormElement;
-    if (single === 'phone') {
-      const input = form.elements.namedItem('phone') as HTMLInputElement | null;
-      // The server only validates a phone, so it is sent in E.164 whatever the person typed.
-      const phone = toE164(input?.value ?? '');
-      if (!input || phone === null) {
-        e.preventDefault();
-        setPhoneInvalid(true);
-      } else {
-        input.value = phone;
-        if (allowedPhonePrefixes.length > 0 && !allowedPhonePrefixes.some((prefix) => phone.startsWith(prefix))) {
-          e.preventDefault();
-          setPhoneNotAllowed(true);
-        }
-      }
+    if (single === 'phone' && phoneField && !phoneField.validate()) {
+      e.preventDefault();
+      return;
     }
     if (showPassword() && passwordRegex) {
       const password = (form.elements.namedItem('password') as HTMLInputElement | null)?.value ?? '';
@@ -212,19 +201,20 @@ function CredentialForm(props: { config: FormConfig }) {
           <input type="email" name="email" class="input-field" placeholder={t().email_placeholder} required />
         </Show>
         <Show when={single === 'phone'}>
-          <input
-            type="tel"
-            name="phone"
-            class="input-field"
-            placeholder={t().phone_placeholder}
-            required
-            onInput={() => { setPhoneNotAllowed(false); setPhoneInvalid(false); }}
-          />
-          <Show when={phoneInvalid()}>
-            <div class="phone-error-message error-text">{t().phone_invalid}</div>
-          </Show>
-          <Show when={phoneNotAllowed()}>
-            <div class="phone-error-message error-text">{t().phone_not_allowed}</div>
+          <Show
+            when={phoneRegions.length > 0}
+            fallback={
+              <input
+                type="tel"
+                name="phone"
+                class="input-field"
+                placeholder={t().phone_placeholder}
+                pattern="^\+[1-9]\d{6,14}$"
+                required
+              />
+            }
+          >
+            <PhoneField regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />
           </Show>
         </Show>
         <Show when={single === 'login'}>

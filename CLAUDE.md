@@ -44,8 +44,9 @@ reporting the change as finished.
    (OpenAPI under `*/open-api/`, `develop.md`/`deploy.md` when run or deploy steps change). The
    product documentation lives in `versolauth/versola-website`: a change to an admin console
    screen needs retaken screenshots, a change to behaviour a standard defines needs its `rfc/`
-   page updated or created. The PR has a **Docs** line (a link, `none: <reason>` or
-   `follow-up: <issue>`); see `.claude/rules/documentation.md`.
+   page updated or created. The `versola-website` pull request is opened together with the code
+   change, never deferred to a follow-up issue. The PR has a **Docs** line (a link to it, or
+   `none: <reason>`); see `.claude/rules/documentation.md`.
 4. Nothing was reported as tested that was not run. When `sbt e2e/test` cannot run locally,
    say so.
 

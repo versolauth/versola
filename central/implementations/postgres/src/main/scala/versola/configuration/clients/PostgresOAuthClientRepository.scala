@@ -15,7 +15,6 @@ import versola.central.configuration.clients.{
   OAuthClientPatch,
   OAuthClientRecord,
   OAuthClientRepository,
-  RegistrationFlow,
 }
 import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
@@ -41,7 +40,6 @@ class PostgresOAuthClientRepository(
   given DbCodec[Duration] = DbCodec.LongCodec.biMap(Duration.fromSeconds, _.toSeconds)
   given DbCodec[URL] = DbCodec.StringCodec.biMap(URL.decode(_).fold(throw _, identity), _.encode)
   given DbCodec[AuthFlow] = jsonBCodec[AuthFlow]
-  given DbCodec[RegistrationFlow] = jsonBCodec[RegistrationFlow]
   given DbCodec[ConsentFlow] = jsonBCodec[ConsentFlow]
   given DbCodec[MutualTlsAuth] = jsonBCodec[MutualTlsAuth]
   given DbCodec[Dpop.Algorithm] = DbCodec.StringCodec.biMap(decodeDpopAlgorithm, _.toString)
@@ -76,7 +74,7 @@ class PostgresOAuthClientRepository(
 
   private def findClient(clientId: ClientId) =
     sql"""
-      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
+      SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
       FROM oauth_clients
       WHERE id = $clientId
     """
@@ -84,7 +82,7 @@ class PostgresOAuthClientRepository(
   override def getAll: Task[Vector[OAuthClientRecord]] =
     xa.connectMeasured("get-all-clients"):
       sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
         FROM oauth_clients
       """
         .query[OAuthClientRecord].run()
@@ -96,9 +94,9 @@ class PostgresOAuthClientRepository(
   override def createClient(client: OAuthClientRecord): IO[ClientAlreadyExists | Throwable, Unit] =
     xa.connectMeasured("create-client"):
       sql"""
-        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type)
+        INSERT INTO oauth_clients (id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type)
         VALUES (${client.id}, ${client.tenantId}, ${client.clientName}, ${client.redirectUris}, ${client.scope},
-                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.registrationFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.dpopSigningAlgs}, ${client.dpopMinRsaKeySize}, ${client.authMethod}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens}, ${client.jwks}, ${client.requireSignedRequestObject}, ${client.requirePushedAuthorizationRequests}, ${client.edgeSigningKey}, ${client.edgeClientCertificate}, ${client.template}, ${client.createdAt}, ${client.applicationType})
+                ${client.secret}, ${client.previousSecret}, ${client.accessTokenTtl}, ${client.refreshTokenTtl}, ${client.permissions}, ${client.theme}, ${client.authFlow}, ${client.otpTemplateId}, ${client.frontChannelLogoutUri}, ${client.frontChannelLogoutSessionRequired}, ${client.backChannelLogoutUri}, ${client.logoUri}, ${client.policyUri}, ${client.tosUri}, ${client.consentFlow}, ${client.dpopBoundAccessTokens}, ${client.dpopSigningAlgs}, ${client.dpopMinRsaKeySize}, ${client.authMethod}, ${client.mtlsAuth}, ${client.certificateBoundAccessTokens}, ${client.jwks}, ${client.requireSignedRequestObject}, ${client.requirePushedAuthorizationRequests}, ${client.edgeSigningKey}, ${client.edgeClientCertificate}, ${client.template}, ${client.createdAt}, ${client.applicationType})
       """.update.run()
     .unit
       .mapError {
@@ -111,7 +109,7 @@ class PostgresOAuthClientRepository(
       // Lock the row (READ_COMMITTED + FOR UPDATE) to prevent lost updates from concurrent writers.
       val client =
         sql"""
-        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, registration_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
+        SELECT id, tenant_id, client_name, redirect_uris, scope, secret, previous_secret, access_token_ttl, refresh_token_ttl, permissions, theme, auth_flow, otp_template_id, front_channel_logout_uri, front_channel_logout_session_required, back_channel_logout_uri, logo_uri, policy_uri, tos_uri, consent_flow, dpop_bound_access_tokens, dpop_signing_algs, dpop_min_rsa_key_size, auth_method, mtls_auth, certificate_bound_access_tokens, jwks, require_signed_request_object, require_pushed_authorization_requests, edge_signing_key, edge_client_certificate, template, created_at, application_type
         FROM oauth_clients
         WHERE id = $clientId
         FOR UPDATE
@@ -124,7 +122,6 @@ class PostgresOAuthClientRepository(
       val newRefreshTokenTtl = patch.refreshTokenTtl.getOrElse(client.refreshTokenTtl)
       val newTheme = patch.theme.getOrElse(client.theme)
       val newAuthFlow = patch.authFlow.applyTo(client.authFlow)
-      val newRegistrationFlow = patch.registrationFlow.applyTo(client.registrationFlow)
       val newOtpTemplateId = patch.otpTemplateId.getOrElse(client.otpTemplateId)
       val newFrontChannelLogoutUri = patch.frontChannelLogoutUri.applyTo(client.frontChannelLogoutUri)
       val newFrontChannelLogoutSessionRequired = patch.frontChannelLogoutSessionRequired.getOrElse(client.frontChannelLogoutSessionRequired)
@@ -155,7 +152,6 @@ class PostgresOAuthClientRepository(
           refresh_token_ttl = $newRefreshTokenTtl,
           theme = $newTheme,
           auth_flow = $newAuthFlow,
-          registration_flow = $newRegistrationFlow,
           otp_template_id = $newOtpTemplateId,
           front_channel_logout_uri = $newFrontChannelLogoutUri,
           front_channel_logout_session_required = $newFrontChannelLogoutSessionRequired,

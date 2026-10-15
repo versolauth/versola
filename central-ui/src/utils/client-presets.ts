@@ -128,7 +128,6 @@ const SERVICE_PATCH: Partial<OAuthClient> = {
   redirectUris: [],
   scope: [],
   authFlow: null,
-  registrationFlow: null,
   consentFlow: null,
   requirePushedAuthorizationRequests: false,
   requireSignedRequestObject: false,

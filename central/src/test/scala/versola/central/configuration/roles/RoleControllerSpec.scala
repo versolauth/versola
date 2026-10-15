@@ -193,4 +193,14 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       verify = (_, service) =>
         ZIO.succeed(assertTrue(service.deleteRole.calls == List((tenantId, adminRole)))),
     ),
+    controllerTestCase(
+      description = "delete role returns 409 Conflict when it is a default role",
+      request = Request(
+        method = Method.DELETE,
+        url = (URL.empty / "configuration" / "roles")
+          .addQueryParams(Map("tenantId" -> tenantId.toString, "roleId" -> adminRole.toString)),
+      ),
+      expectedStatus = Status.Conflict,
+      setup = service => service.deleteRole.failsWith(new RoleService.RoleInUseError(adminRole)),
+    ),
   )

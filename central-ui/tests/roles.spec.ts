@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test';
 import { INVALID_FIELD_BORDER, findRequest, loadAdminApp } from './fixtures';
+import { defaultChallengeSettings } from './mocks';
 
 const rolesPath = '/?view=roles&tenant=tenant-alpha';
 const alphaRead = { permission: 'alpha.read', description: { en: 'Read alpha resources' }, endpointIds: [101] };
@@ -85,4 +86,18 @@ test('deletes a role through the shared confirm dialog', async ({ page }) => {
   expect((await findRequest(api.requests, 'DELETE', '/configuration/roles')).searchParams).toEqual({ tenantId: 'tenant-alpha', roleId: 'alpha_admin' });
   await expect(page.locator('.role-card')).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'No roles yet', exact: true })).toBeVisible();
+});
+
+test('does not let a default role for new registrations be deleted', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: rolesPath,
+    state: {
+      roles: { 'tenant-alpha': [alphaAdmin, supportTeam] },
+      challengeSettings: { 'tenant-alpha': { ...defaultChallengeSettings('tenant-alpha'), defaultRoles: ['alpha_admin'] } },
+    },
+  });
+
+  await expect(roleCard(page, 'Alpha admin').getByRole('button', { name: 'Delete role alpha_admin' })).toBeDisabled();
+  await expect(roleCard(page, 'Support team').getByRole('button', { name: 'Delete role support_team' })).toBeEnabled();
+  expect(api.requests.some(request => request.method === 'DELETE')).toBe(false);
 });
