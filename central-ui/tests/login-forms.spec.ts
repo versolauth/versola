@@ -443,6 +443,15 @@ test.describe('credential', () => {
     await expect(broken.locator('.page-wordmark')).toHaveCount(1);
   });
 
+  test('the terminal screens carry an icon, so the card is not a bare title', async ({ page }) => {
+    const out = await renderForm(page, 'signed-out', { step: { type: 'signed-out', logoutUris: [], redirectUri: 'https://app.example' } });
+    await expect(page.locator('.signed-out-icon svg')).toBeVisible();
+    expect(out.t.title).toBeTruthy();
+    const confirm = await page.context().newPage();
+    await renderForm(confirm, 'confirm-logout', { step: { type: 'confirm-logout', csrfToken: 'x' } });
+    await expect(confirm.locator('.logout-icon svg')).toBeVisible();
+  });
+
   test('the brand zone is shared by every step, not only the first', async ({ page }) => {
     for (const [id, step] of [
       ['otp', { type: 'otp', length: 6, resendAfter: 0, destination: 'u***@example.com' }],
@@ -592,21 +601,30 @@ test.describe('consent, with the seeded scope catalog', () => {
 
   const logo = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="120" height="40"><rect width="120" height="40" fill="%23c33"/></svg>';
 
-  test('shows the client\'s logo, and its initial on a tile when there is none or it does not load', async ({ page }) => {
+  test('shows the partner\'s icon inside the card, its initial when there is none, and never a text logo there', async ({ page }) => {
     await renderForm(page, 'consent', { step: { ...step, logoUri: logo } });
-    await expect(page.locator('.page-brand-icon img')).toBeVisible();
-    await expect(page.locator('.page-wordmark')).toHaveCount(0);
+    await expect(page.locator('.container .consent-icon img')).toBeVisible();
 
-    // Only the partner's icon: with no logo it is the partner's initial, never the Versola wordmark.
     const bare = await page.context().newPage();
     await renderForm(bare, 'consent', { step });
-    await expect(bare.locator('.page-brand-initial')).toHaveText('A');
-    await expect(bare.locator('.page-wordmark')).toHaveCount(0);
+    await expect(bare.locator('.container .consent-icon-initial')).toHaveText('A');
 
     const broken = await page.context().newPage();
     await renderForm(broken, 'consent', { step: { ...step, logoUri: '/missing-logo.png' } });
-    await expect(broken.locator('.page-brand-initial')).toHaveText('A');
-    await expect(broken.locator('.page-wordmark')).toHaveCount(0);
+    await expect(broken.locator('.container .consent-icon-initial')).toHaveText('A');
+
+    // The brand above the card is the identity provider's, never the partner's.
+    for (const p of [page, bare, broken]) {
+      await expect(p.locator('.container .page-wordmark')).toHaveCount(0);
+      await expect(p.locator('.page-brand .consent-icon, .page-brand-initial')).toHaveCount(0);
+    }
+  });
+
+  test('puts the identity provider\'s logo, not the partner\'s, in the brand zone', async ({ page }) => {
+    const idp = 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="%2336c"/></svg>';
+    await renderForm(page, 'consent', { step: { ...step, logoUri: logo }, logo: idp });
+    await expect(page.locator('.page-brand img')).toHaveAttribute('src', idp);
+    await expect(page.locator('.page-wordmark')).toHaveCount(0);
   });
 
   test('names the signed-in user, with a picture when there is one', async ({ page }) => {

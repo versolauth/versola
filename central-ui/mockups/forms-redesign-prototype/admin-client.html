@@ -1,0 +1,19 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="mock.css"><link rel="stylesheet" href="admin.css"><title>Client · sign-in and branding</title>
+<style>.pick{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;padding:0 20px 16px}.pick .preset{padding:8px}.tag{float:right}.logo-row{display:flex;gap:14px;align-items:center}.lg{width:56px;height:56px;border-radius:12px;background:#ff6b4a;color:#1c1b19;display:grid;place-items:center;font-weight:700;font-size:22px;flex:none}.gl{display:grid;grid-template-columns:1fr 1fr;gap:20px;padding:20px}.page{max-width:820px}</style></head><body>
+<script src="admin.js"></script>
+<script>
+const T=[{id:'default',name:'Versola default',hint:'Neutral',brand:'155e75',shape:'soft',surface:'neutral'},PRESETS[0],{...PRESETS[1],name:'Danceliker',hint:'Used by 2 clients'},{id:'legacy',name:'acme-2024',hint:'Custom CSS',brand:'888888',shape:'soft',surface:'neutral'}];
+T[1]={...PRESETS[0],name:'Studio',hint:'Preset'};let sel=2;
+function draw(){document.getElementById('pick').innerHTML=T.map((p,i)=>`<button class="preset ${i===sel?'sel':''}" data-i="${i}">${thumb(p)}<b>${p.name}</b><small>${p.hint}</small></button>`).join('');}
+document.body.innerHTML=shell('clients',`<div class="page"><div class="crumb">Clients <svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg> Danceliker web</div>
+<div class="head"><div><h1>Danceliker web</h1><p class="sub mono">danceliker-web</p></div></div>
+<section class="card sec" style="border:2px solid var(--ac)"><div class="sh"><h2>Sign-in and branding <span class="chip ac" style="margin-left:8px">Editing</span></h2></div>
+<div class="gl"><div><label class="l">Display name</label><input style="width:100%" value="Danceliker"><div class="hint">Shown as “Sign in to Danceliker” and on the consent screen. Localisable.</div></div>
+<div><label class="l">Logo</label><div class="logo-row"><span class="lg">D</span><div style="flex:1"><input style="width:100%" value="https://danceliker.kz/logo.png"><div class="hint">Square, 256×256+, PNG or SVG</div></div></div></div></div>
+<div style="padding:4px 20px 10px"><label class="l" style="display:flex;justify-content:space-between">Forms theme <a href="#" style="color:var(--ac);text-decoration:none;font-weight:500">Edit “Danceliker” theme →</a></label></div>
+<div class="pick" id="pick"></div>
+<div style="padding:0 20px 16px"><div class="lock" style="margin:0"><svg class="i" viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.01"/><circle cx="12" cy="12" r="9"/></svg>Changing a theme affects every client that uses it. <a href="#" style="color:var(--ac)">Duplicate it</a> to change this client only.</div></div>
+<div class="gl" style="border-top:1px solid var(--bd2)"><div><label class="l">Privacy policy URL</label><input style="width:100%" value="https://danceliker.kz/privacy"></div><div><label class="l">Terms of service URL</label><input style="width:100%" value="https://danceliker.kz/terms"></div></div>
+<div class="bar"><button class="btn sm">Preview sign-in as this client ↗</button><div class="row"><button class="btn">Cancel</button><button class="btn p">Save</button></div></div></section></div>`);
+draw();document.getElementById('pick').onclick=e=>{const b=e.target.closest('.preset');if(b){sel=+b.dataset.i;draw()}};
+</script></body></html>

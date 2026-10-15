@@ -1,0 +1,65 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="mock.css"><link rel="stylesheet" href="admin.css"><title>Theme editor</title></head><body>
+<script src="admin.js"></script>
+<script>
+const SW=['ff6b4a','e5484d','b4348a','5b5bd6','2563eb','0e9f8e','2f9e63','f5c518','14130f'];
+let S={...PRESETS[0],preset:'studio',mode:'auto',pdark:false,screen:'signin',device:'desktop'};
+document.body.innerHTML = shell('themes', `<div class="page">
+<div class="crumb">Themes <svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg> Danceliker</div>
+<div class="head"><div><h1>Danceliker <span class="chip ac" style="vertical-align:middle;margin-left:6px">Used by 2 clients</span></h1><p class="sub">How sign-in, verification and consent screens look. Names, logos and links come from each client.</p></div>
+<div class="row"><button class="btn">Discard</button><button class="btn p">Save theme</button></div></div>
+<div class="edit"><div>
+ <section class="card sec"><div class="sh"><h2>Start from a preset<small>One click sets colour, shape and background. Tweak anything after.</small></h2></div><div class="presets" id="presets"></div></section>
+ <section class="card sec">
+  <div class="ctl"><label class="l">Brand colour<span class="mu" style="font-weight:400">Logo tile, checkmarks, accents</span></label>
+   <div class="sw" id="sw"></div>
+   <div class="row" style="margin-top:12px"><div class="hex" style="margin-left:0"><span>#</span><input id="hex" maxlength="6" spellcheck="false"></div><button class="btn sm">Pick from logo</button></div>
+   <div class="guard" id="guard"></div></div>
+  <div class="ctl"><label class="l">Page background<span class="mu" style="font-weight:400" id="surfHint"></span></label><div class="seg" id="surface"></div></div>
+  <div class="ctl"><label class="l">Shape<span class="mu" style="font-weight:400">Corners of fields, buttons and card</span></label><div class="seg" id="shape"></div></div>
+  <div class="ctl"><label class="l">Colour mode<span class="mu" style="font-weight:400">Auto follows the visitor’s device</span></label><div class="seg" id="mode"></div></div>
+ </section>
+ <section class="card sec"><details><summary>Advanced: custom CSS <span class="chip">optional</span></summary>
+  <p class="hint" style="margin-top:8px">Appended after the generated styles. Themes created before this editor open here as custom CSS, and keep working unchanged.</p>
+  <textarea spellcheck="false" placeholder="/* e.g. .container { max-width: 480px } */"></textarea></details></section>
+</div>
+<div class="preview"><div class="card"><div class="pv-bar">
+  <div class="seg" id="screen"></div>
+  <div class="row"><div class="seg" id="pdark"></div><div class="seg" id="device"></div></div></div>
+ <div class="pv-frame"><iframe id="pv" title="Preview"></iframe></div>
+ <div class="pv-bar" style="border-top:1px solid var(--bd2);border-bottom:0"><span class="mu">Previewing with client</span><select id="client"><option>Danceliker web</option><option>Danceliker mobile</option></select></div></div></div>
+</div></div>`);
+const $=id=>document.getElementById(id);
+const lum=h=>{const c=[0,2,4].map(i=>parseInt(h.slice(i,i+2),16)/255).map(v=>v<=.03928?v/12.92:((v+.055)/1.055)**2.4);return .2126*c[0]+.7152*c[1]+.0722*c[2]};
+const ratio=(a,b)=>{const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p);return (x+.05)/(y+.05)};
+const seg=(id,opts,key,after)=>{$(id).innerHTML=opts.map(([v,l])=>`<span class="${S[key]===v?'on':''}" data-v="${v}">${l}</span>`).join('');$(id).onclick=e=>{const v=e.target.dataset.v;if(v==null)return;S[key]=v==='true'?true:v==='false'?false:v;S.preset=null;(after||render)()}};
+function render(){
+ $('presets').innerHTML=PRESETS.map(p=>`<button class="preset ${S.preset===p.id?'sel':''}" data-id="${p.id}">${thumb(p)}<b>${p.name}</b><small>${p.hint}</small></button>`).join('');
+ $('presets').onclick=e=>{const b=e.target.closest('.preset');if(!b)return;const p=PRESETS.find(x=>x.id===b.dataset.id);Object.assign(S,p,{preset:p.id});render()};
+ $('sw').innerHTML=SW.map(c=>`<button class="${c===S.brand?'sel':''}" style="background:#${c}" data-c="${c}" aria-label="#${c}"></button>`).join('');
+ $('sw').onclick=e=>{const c=e.target.dataset.c;if(c){S.brand=c;S.preset=null;render()}};
+ $('hex').value=S.brand;$('hex').oninput=e=>{const v=e.target.value.replace(/[^0-9a-f]/gi,'');if(v.length===6){S.brand=v.toLowerCase();S.preset=null;render()}};
+ const W=ratio(S.brand,'ffffff'),K=ratio(S.brand,'1c1b19'),onB=W>=K?'ffffff':'1c1b19', r=Math.max(W,K);
+ $('guard').className='guard'+(r<4.5?' wn':'');
+ $('guard').innerHTML=`<svg class="i" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg><span><b>Readable by default.</b> Text on the brand colour is set to ${onB==='ffffff'?'white':'dark'} automatically (${r.toFixed(1)}:1). Buttons stay neutral, and the brand colour is never used for body text.</span>`;
+ seg('surface',[['bold','Bold'],['soft','Soft'],['neutral','Neutral']],'surface');
+ $('surfHint').textContent={bold:'Brand colour fills the page',soft:'A pale tint of the brand',neutral:'Plain grey, brand only in accents'}[S.surface];
+ seg('shape',[['round','Round'],['soft','Soft'],['sharp','Sharp']],'shape');
+ seg('mode',[['auto','Auto'],['light','Light'],['dark','Dark']],'mode');
+ seg('screen',[['signin','Sign in'],['otp','Code'],['consent','Consent'],['set-password','Password'],['access-denied','Error']],'screen',load);
+ seg('pdark',[['false','☀'],['true','☾']],'pdark');
+ seg('device',[['desktop','Desktop'],['mobile','Mobile']],'device',load);
+ S.preset=PRESETS.some(p=>p.id===S.preset)?S.preset:(PRESETS.find(p=>p.brand===S.brand&&p.shape===S.shape&&p.surface===S.surface)||{}).id||null;
+ document.querySelectorAll('.preset').forEach(b=>b.classList.toggle('sel',b.dataset.id===S.preset));
+ const dark=S.mode==='dark'||(S.mode==='auto'&&S.pdark);
+ $('pdark').style.opacity=S.mode==='auto'?1:.45;
+ const msg={theme:{brand:S.brand,shape:S.shape,surface:S.surface,dark}};
+ $('pv').contentWindow&&$('pv').contentWindow.postMessage(msg,'*');S.last=msg;
+}
+function fit(){ const box=$('pv').parentElement, [W,H]=S.device==='mobile'?[390,700]:[720,640];
+ const k=Math.min((box.clientWidth-28)/W,(box.clientHeight-28)/H);
+ Object.assign($('pv').style,{width:W+'px',height:H+'px',transform:`scale(${k})`,transformOrigin:'top left',position:'absolute',left:Math.max(14,(box.clientWidth-W*k)/2)+'px',top:'14px'}); }
+function load(){ fit(); $('pv').src=`d.html?t=${Date.now()}#${S.screen}`; render0(); }
+addEventListener('resize',fit);
+function render0(){ $('pv').onload=()=>$('pv').contentWindow.postMessage(S.last,'*'); render(); }
+load();
+</script></body></html>

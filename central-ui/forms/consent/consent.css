@@ -6,6 +6,16 @@
 .consent-user-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
 .consent-user-label { font-size: 0.78rem; color: var(--text-muted); }
 .consent-user-name { font-weight: 650; overflow-wrap: anywhere; }
+.consent-icon {
+  align-self: flex-start; display: flex; align-items: center; justify-content: center; width: 56px; height: 56px; margin: 0 0 22px; padding: 8px;
+  border-radius: var(--radius); background: var(--field-bg);
+}
+@supports (color: light-dark(#000, #fff)) {
+  /* a dark logo must not vanish on the dark card, whatever its colours */
+  .consent-icon { background: light-dark(var(--field-bg), rgba(255, 255, 255, 0.94)); }
+}
+.consent-icon img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.consent-icon-initial { padding: 0; background: var(--brand, var(--accent)); color: var(--on-brand, #fff); font-size: 1.5rem; font-weight: 750; }
 .consent-description { color: var(--text-muted); line-height: 1.55; margin: -14px 0 22px; }
 .consent-client { color: var(--text); font-weight: 700; }
 /* The whole card grows with the list: a scroll box inside it hides requested access on screens
