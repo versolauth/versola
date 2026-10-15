@@ -37,6 +37,9 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
 
   given Tag[Dependencies] = scala.compiletime.deferred
 
+  // Before anything can ask the JCA for an algorithm; accp-required refuses the start here.
+  private val cryptoProvider = versola.util.CryptoProvider.installFromEnv()
+
   override type Environment =
     ContextStorage & ConfigProvider & LogFormats & api.OpenTelemetry & Tracing & EnvName & Client
 
@@ -176,6 +179,7 @@ trait VersolaApp(serviceName: String) extends ZIOApp:
       envName <- ZIO.service[EnvName]
       scope <- ZIO.scope
       readinessService <- ReadinessService.make
+      _ <- zio.metrics.Metric.gauge("crypto_provider_native").set(if cryptoProvider.native then 1.0 else 0.0)
       client <- ZIO.service[Client]
 
       // Before `dependencies.build`, deliberately. Building them is what waits on everything
