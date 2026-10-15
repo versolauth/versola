@@ -47,7 +47,8 @@ export class VersolaThemeEdit extends LitElement {
   @state() private previewFormId = '';
   @state() private previewScenarioId = '';
   @state() private previewWidth = 390;
-  @state() private previewDark = false;
+  // Starts from the operator's device, so the preview shows what they see on real pages (the page glow exists only in the dark scheme).
+  @state() private previewDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   @state() private saving = false;
   @state() private saveError = '';

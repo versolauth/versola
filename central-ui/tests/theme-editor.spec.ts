@@ -160,6 +160,24 @@ test('the dark preview is available for the device\'s scheme only, not for a sch
   await expect(dark).toBeDisabled();
 });
 
+test('the preview starts in the scheme of the operator\'s device, light on a light one', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
+  await expect.poll(() => srcdoc(page)).not.toContain('color-scheme:dark');
+});
+
+test('the preview starts dark on a dark device, so it shows what real pages show there', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await expect(scheme.getByRole('button', { name: 'Dark' })).toHaveClass(/seg-active/);
+  await expect.poll(() => srcdoc(page)).toContain('color-scheme:dark');
+});
+
 test('opens a stored token theme on its base with its overrides, and saves it back as tokens', async ({ page }) => {
   const api = await loadAdminApp(page, { path: themesPath, state });
   await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
