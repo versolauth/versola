@@ -32,7 +32,11 @@ export interface OverridesChange {
 @customElement('versola-theme-token-controls')
 export class VersolaThemeTokenControls extends LitElement {
   /** What the tokens are without any override: the values shown as inherited. */
-  @property({ attribute: false }) base!: ResolvedThemeTokens;
+  @property({ attribute: false }) base?: ResolvedThemeTokens;
+  /** The base is a stylesheet, whose values are not known here (`base` is then not used). Nothing is shown as
+   *  inherited, and every choice is written as an override even when it matches some preset: an override equal to
+   *  a value the stylesheet may not have would otherwise be dropped. */
+  @property({ type: Boolean }) stylesheet = false;
   @property({ attribute: false }) overrides: ThemeOverrides = {};
   /** Said on a token that is not overridden, e.g. where it comes from. Nothing when empty. */
   @property({ type: String }) inheritedNote = '';
@@ -53,6 +57,11 @@ export class VersolaThemeTokenControls extends LitElement {
       // it is no override, but it is what the operator typed.
       this.brandText = '';
     }
+  }
+
+  /** Empties the colour field, for a "Clear overrides" kept outside the controls (it would leave unparsable text). */
+  clearBrandText() {
+    this.brandText = '';
   }
 
   static styles = [
@@ -103,12 +112,14 @@ export class VersolaThemeTokenControls extends LitElement {
     return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
   }
 
-  private get resolved(): ResolvedThemeTokens {
+  /** The value each token shows; `undefined` for one a stylesheet sets and the operator has not overridden. */
+  private get resolved(): Partial<ResolvedThemeTokens> {
+    const base = this.stylesheet ? undefined : this.base;
     return {
-      brand: this.overrides.brand ?? this.base.brand,
-      shape: this.overrides.shape ?? this.base.shape,
-      surface: this.overrides.surface ?? this.base.surface,
-      mode: this.overrides.mode ?? this.base.mode,
+      brand: this.overrides.brand ?? base?.brand,
+      shape: this.overrides.shape ?? base?.shape,
+      surface: this.overrides.surface ?? base?.surface,
+      mode: this.overrides.mode ?? base?.mode,
     };
   }
 
@@ -122,8 +133,9 @@ export class VersolaThemeTokenControls extends LitElement {
 
   private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
     const next = { ...this.overrides };
-    // A value equal to the base's is not an override: the theme then follows the base when it changes.
-    if (value === undefined || value === this.base[key]) delete next[key];
+    // A value equal to the base's is not an override: the theme then follows the base when it changes. Not so over
+    // a stylesheet, whose own values are unknown: the choice is the only record of what the operator wants.
+    if (value === undefined || (!this.stylesheet && value === this.base?.[key])) delete next[key];
     else next[key] = value;
     this.emit(next);
   }
@@ -133,31 +145,32 @@ export class VersolaThemeTokenControls extends LitElement {
     this.setOverride(key, undefined);
   }
 
-  private overriddenBadge(key: keyof ThemeOverrides, baseValue: string) {
+  private overriddenBadge(key: keyof ThemeOverrides, baseValue: string | undefined) {
     if (this.overrides[key] === undefined) {
+      if (this.stylesheet) return html`<span class="note-inherited">Set by the stylesheet</span>`;
       return this.inheritedNote ? html`<span class="note-inherited">${this.inheritedNote}</span>` : nothing;
     }
     return html`
       <span>
-        <span class="badge-overridden">Overridden · base: ${baseValue}</span>
-        <button class="reset" aria-label=${`Reset ${key} to the base`} @click=${() => this.reset(key)}>Reset</button>
+        <span class="badge-overridden">${this.stylesheet ? 'Overridden' : `Overridden · base: ${baseValue}`}</span>
+        <button class="reset" aria-label=${`Reset ${key} to ${this.stylesheet ? 'the stylesheet' : 'the base'}`} @click=${() => this.reset(key)}>Reset</button>
       </span>
     `;
   }
 
   render() {
-    if (!this.base) return nothing;
+    if (!this.base && !this.stylesheet) return nothing;
     const resolved = this.resolved;
     const base = this.base;
     return html`
-      ${this.preview ? html`
+      ${this.preview && resolved.brand && resolved.surface && resolved.shape && resolved.mode ? html`
         <div class="sketch" style=${`--b:${resolved.brand}`} data-surface=${resolved.surface} data-shape=${resolved.shape} data-mode=${resolved.mode}
           role="img" aria-label=${`Sketch of the sign-in page: ${resolved.brand}, ${resolved.surface} page, ${resolved.shape} corners, ${resolved.mode} scheme`}>
           <i class="sketch-card"><i class="sketch-dot"></i><i class="sketch-field"></i><i class="sketch-field"></i><i class="sketch-btn"></i></i>
         </div>
       ` : nothing}
       <div class="group">
-        <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base.brand)}</div>
+        <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base?.brand)}</div>
         <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
         <div class="swatches" role="group" aria-label="Brand colour">
           ${SWATCHES.map(c => html`
@@ -166,8 +179,8 @@ export class VersolaThemeTokenControls extends LitElement {
           `)}
         </div>
         <div class="hex-row">
-          <span class="chip" style=${`background:${resolved.brand}`}></span>
-          <input class="kv-value" aria-label="Brand colour, #rrggbb" placeholder=${resolved.brand} spellcheck="false" maxlength="7"
+          <span class="chip" style=${`background:${resolved.brand ?? 'transparent'}`}></span>
+          <input class="kv-value" aria-label="Brand colour, #rrggbb" placeholder=${resolved.brand ?? '#rrggbb'} spellcheck="false" maxlength="7"
             .value=${this.brandText}
             @input=${(e: Event) => {
               this.brandText = (e.target as HTMLInputElement).value;
@@ -181,7 +194,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Page background</div>${this.overriddenBadge('surface', base.surface)}</div>
+        <div class="group-title"><div class="field-label">Page background</div>${this.overriddenBadge('surface', base?.surface)}</div>
         <div class="seg-control" role="group" aria-label="Page background">
           ${SURFACES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.surface === value ? 'seg-active' : ''}" aria-pressed=${resolved.surface === value ? 'true' : 'false'}
@@ -192,7 +205,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Shape</div>${this.overriddenBadge('shape', base.shape)}</div>
+        <div class="group-title"><div class="field-label">Shape</div>${this.overriddenBadge('shape', base?.shape)}</div>
         <div class="seg-control" role="group" aria-label="Shape">
           ${SHAPES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.shape === value ? 'seg-active' : ''}" aria-pressed=${resolved.shape === value ? 'true' : 'false'}
@@ -202,7 +215,7 @@ export class VersolaThemeTokenControls extends LitElement {
       </div>
 
       <div class="group">
-        <div class="group-title"><div class="field-label">Colour scheme</div>${this.overriddenBadge('mode', base.mode)}</div>
+        <div class="group-title"><div class="field-label">Colour scheme</div>${this.overriddenBadge('mode', base?.mode)}</div>
         <div class="seg-control" role="group" aria-label="Colour scheme">
           ${MODES.map(([value, label]) => html`
             <button class="seg-btn ${resolved.mode === value ? 'seg-active' : ''}" aria-pressed=${resolved.mode === value ? 'true' : 'false'}

@@ -2170,10 +2170,73 @@ test('says that overrides apply on top of a stylesheet theme, and sends nothing 
   await openClientPage(page, 'acme-app');
   await openEditSection(page, 'Branding and logout');
   await expect(appearanceBlock(page).getByText('The theme is a stylesheet')).toBeVisible();
-  await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#155e75');
+  // Its values are not known, so none is claimed: no preset's values stand in for them.
+  await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
+  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(4);
+  await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"]')).toHaveCount(0);
 
   await saveEdit(page);
   expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');
+});
+
+test('over a stylesheet theme, a choice equal to the default theme is still saved as an override', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'legacy' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  // Soft is the default theme's shape: over a token theme that would be no override, over a stylesheet it is one.
+  await block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' }).click();
+  await block.getByLabel('Brand colour, #rrggbb').fill('155e75');
+  await expect(block.getByRole('group', { name: 'Shape' }).getByRole('button', { name: 'Soft' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(block.getByText('2 values differ')).toBeVisible();
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#155e75', shape: 'soft' });
+});
+
+test('does not save while the brand colour of the appearance is not a #rrggbb colour', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(block.getByText('Use #rrggbb')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await expect(page.getByText('Fix the brand colour')).toBeVisible();
+
+  await block.getByLabel('Brand colour, #rrggbb').fill('112233');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233' });
+});
+
+test('clearing the overrides drops an unparsable brand colour too, and saving is possible again', async ({ page }) => {
+  await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, themeOverrides: { shape: 'round' } }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  await block.getByLabel('Brand colour, #rrggbb').fill('zzz');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+  await block.getByRole('button', { name: 'Clear overrides' }).click();
+  await expect(block.getByLabel('Brand colour, #rrggbb')).toHaveValue('');
+  await expect(page.getByRole('button', { name: /^Save/ })).toBeEnabled();
+});
+
+test('clears the stored overrides of an app that does not ask for consent when it is saved', async ({ page }) => {
+  const api = await loadAdminApp(page, {
+    path: clientsPath,
+    state: { ...appearanceState({ ...alphaClient, themeOverrides: { brand: '#112233' } }), clients: { 'tenant-alpha': [{ ...alphaClient, themeOverrides: { brand: '#112233' } }] } },
+  });
+
+  await openClientPage(page, 'alpha-web');
+  await openEditSection(page, 'Branding and logout');
+  await expect(appearanceBlock(page)).toHaveCount(0);
+  await saveEdit(page);
+
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({});
 });
 
 test('leaves the appearance out when central has no built-in themes to show it against', async ({ page }) => {

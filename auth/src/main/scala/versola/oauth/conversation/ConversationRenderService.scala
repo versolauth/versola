@@ -53,11 +53,13 @@ trait ConversationRenderService:
       uiLocale: Option[String],
   ): Task[Response]
 
+  /** `clientId` is the app the session was last used by, when known: its theme and appearance overrides dress the page. */
   def renderLogout(
       logoutUris: List[URL],
       postLogoutRedirectUri: Option[URL],
       state: Option[String],
       uiLocales: Option[List[String]],
+      clientId: Option[ClientId],
   ): Task[Response]
 
   def renderLogoutConfirm(
@@ -443,11 +445,13 @@ object ConversationRenderService:
         postLogoutRedirectUri: Option[URL],
         state: Option[String],
         uiLocales: Option[List[String]],
+        clientId: Option[ClientId],
     ): Task[Response] =
       val redirectUri = postLogoutRedirectUri
         .map(url => state.fold(url)(url.addQueryParam("state", _)).encode)
       for
-        css <- themeCss(ThemeDefault)
+        client <- clientId.fold(ZIO.succeed(None))(configuration.find)
+        css <- themeCss(client.map(_.theme).getOrElse(ThemeDefault), client.flatMap(_.themeOverrides))
         logo <- configuration.getIdentityProviderLogo
         formOpt <- configuration.getForm("signed-out")
         locales <- configuration.getLocales

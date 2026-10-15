@@ -2775,6 +2775,8 @@ components:
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
             nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateNativeClientRequest:
       type: object
@@ -2898,6 +2900,8 @@ components:
             sign-in pages: a partner app with its own brand colour, corners, page or colour scheme.
             Each value left out is the theme's own. An empty object, or leaving it out, changes
             nothing. Over a theme that is a whole stylesheet, the overrides apply on top of it.
+            Only a client that asks for consent (a `consentFlow`, a partner app) has them: a
+            non-empty value on a client without one is refused with 400.
       required: [tenantId, id, clientName, redirectUris, allowedScopes, accessTokenTtl, authMethod, issueEdgeClientCertificate, enrollEdgeClientCertificate]
     CreateServiceClientRequest:
       type: object
@@ -3119,7 +3123,9 @@ components:
           description: |
             Replaces the client's theme overrides: absent leaves them unchanged, an empty object
             `{}` clears them, any other value replaces them as a whole (a value left out of it is
-            the theme's own again).
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
       required: [clientId]
     UpdateNativeClientRequest:
       type: object
@@ -3208,7 +3214,9 @@ components:
           description: |
             Replaces the client's theme overrides: absent leaves them unchanged, an empty object
             `{}` clears them, any other value replaces them as a whole (a value left out of it is
-            the theme's own again).
+            the theme's own again). A non-empty value is refused with 400 unless the client asks
+            for consent after the update (it has a `consentFlow`, or this request gives it one);
+            an empty object is always accepted.
       required: [clientId]
     UpdateServiceClientRequest:
       type: object

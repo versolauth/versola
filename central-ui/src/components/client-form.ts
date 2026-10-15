@@ -49,7 +49,7 @@ import {
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
 import './theme-token-controls';
-import type { OverridesChange } from './theme-token-controls';
+import type { OverridesChange, VersolaThemeTokenControls } from './theme-token-controls';
 
 
 /** The groups of settings the client page offers an Edit button for. */
@@ -1684,7 +1684,7 @@ export class VersolaClientForm extends LitElement {
       }
     }
 
-    if (this.isAccessTokenTtlInvalid) {
+    if (this.isAccessTokenTtlInvalid || this.themeBrandInvalid) {
       return;
     }
 
@@ -1795,7 +1795,8 @@ export class VersolaClientForm extends LitElement {
       template: this.client?.template ?? (this.kind ? { kind: this.kind } : null),
       edgeFronted: !this.client && this.clientCredentialMode === 'edge',
       createdAt: this.client?.createdAt ?? null,
-      themeOverrides: authFlow ? this.formData.themeOverrides ?? null : null,
+      // Only an app that asks for consent has an appearance of its own (central refuses overrides otherwise).
+      themeOverrides: authFlow && this.formData.consentFlow ? this.formData.themeOverrides ?? null : null,
     };
 
     this.dispatchEvent(new CustomEvent('submit', {
@@ -2497,7 +2498,9 @@ export class VersolaClientForm extends LitElement {
   private toggleConsentEnabled() {
     if (this.consentLocked) return;
     const consentFlow = this.hasConsentFlow ? null : createDefaultConsentFlow();
-    this.formData = { ...this.formData, consentFlow };
+    // The appearance block goes with the consent flow, and so must what was set in it.
+    this.formData = { ...this.formData, consentFlow, ...(consentFlow ? {} : { themeOverrides: null }) };
+    if (!consentFlow) this.themeBrandInvalid = false;
     this.syncPartnerTemplate();
   }
 
@@ -3845,7 +3848,8 @@ export class VersolaClientForm extends LitElement {
 
           <div class="form-actions">
             <button type="button" class="btn btn-secondary" @click=${this.handleClose}>Cancel</button>
-            <button type="submit" class="btn btn-primary">Save ${title.toLowerCase()}</button>
+            ${this.themeBrandInvalid ? html`<span class="error-message" role="alert">Fix the brand colour (#rrggbb) before saving.</span>` : ''}
+            <button type="submit" class="btn btn-primary" ?disabled=${this.themeBrandInvalid}>Save ${title.toLowerCase()}</button>
           </div>
         </form>
       </div>
@@ -4798,21 +4802,32 @@ export class VersolaClientForm extends LitElement {
   }
 
   /** The tokens of the theme the client uses, which its own overrides are laid over. A stylesheet theme has no
-   *  tokens to read, so the default preset stands in for it. */
-  private get themeBase(): { tokens: ResolvedThemeTokens; stylesheet: boolean } | null {
+   *  tokens to read: the block then shows nothing as inherited and writes every choice as an override. */
+  private get themeBase(): { tokens?: ResolvedThemeTokens; stylesheet: boolean } | null {
     const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
     const preset = (id: string) => this.availableThemePresets.find(p => p.id === id)?.tokens;
     const own = record?.tokens ? preset(record.tokens.base) : undefined;
     if (record?.tokens && own) {
       return { tokens: { ...own, ...definedOverrides(record.tokens.overrides) }, stylesheet: false };
     }
+    // A stylesheet's values are not known, so none are claimed; a theme not found yet falls back to the default preset.
+    if (record && !record.tokens) return { stylesheet: true };
     const fallback = preset('versola');
-    return fallback ? { tokens: fallback, stylesheet: !record?.tokens && record !== undefined } : null;
+    return fallback ? { tokens: fallback, stylesheet: false } : null;
   }
 
+  /** The brand colour field of the appearance block holds text that is not a #rrggbb colour. */
+  @state() private themeBrandInvalid = false;
+
   private setThemeOverrides(change: OverridesChange) {
+    this.themeBrandInvalid = change.brandInvalid;
     const empty = Object.keys(change.overrides).length === 0;
     this.formData = { ...this.formData, themeOverrides: empty ? null : change.overrides };
+  }
+
+  private clearThemeOverrides() {
+    this.renderRoot.querySelector<VersolaThemeTokenControls>('versola-theme-token-controls')?.clearBrandText();
+    this.setThemeOverrides({ overrides: {}, brandInvalid: false });
   }
 
   private renderAppearance() {
@@ -4824,16 +4839,16 @@ export class VersolaClientForm extends LitElement {
       <section class="appearance" aria-labelledby="client-appearance-title">
         <div class="appearance-head">
           <h3 id="client-appearance-title">Appearance for this app</h3>
-          ${count > 0 ? html`<button type="button" class="link-button" @click=${() => this.setThemeOverrides({ overrides: {}, brandInvalid: false })}>Clear overrides</button>` : ''}
+          ${count > 0 ? html`<button type="button" class="link-button" @click=${() => this.clearThemeOverrides()}>Clear overrides</button>` : ''}
         </div>
         <div class="appearance-sub">
           ${count === 0
             ? 'This app uses the theme as it is.'
             : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
-          ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and the values shown are the default theme\'s.' : ''}
+          ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and its own values are not shown.' : ''}
         </div>
         <versola-theme-token-controls preview inheritedNote="From the theme"
-          .base=${base.tokens} .overrides=${overrides}
+          .base=${base.tokens} ?stylesheet=${base.stylesheet} .overrides=${overrides}
           @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
       </section>
     `;

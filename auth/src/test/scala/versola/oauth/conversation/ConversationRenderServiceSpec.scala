@@ -181,6 +181,92 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
   private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
   private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech")))
 
+  // The same rule on each caller of the theme: the client the page is for, when it is known, brings its overrides;
+  // when it is not (removed since, or never named) the page is the theme's own and nothing fails.
+  private val pages: List[(String, String, (ConversationRenderService, Option[ClientId]) => Task[Response])] = List(
+    ("renderStep", "credential", (service, _) => service.renderStep(conversationRecord, None)),
+    (
+      "renderExpired",
+      "conversation-expired",
+      (service, id) =>
+        service.renderExpired(id.getOrElse(clientId), redirectUri.encode, None, ResponseMode.Query, None),
+    ),
+    (
+      "renderServiceUnavailable",
+      "service-unavailable",
+      (service, id) =>
+        service.renderServiceUnavailable(id.getOrElse(clientId), redirectUri.encode, None, ResponseMode.Query, None),
+    ),
+    (
+      "renderAccount",
+      "auth-settings",
+      (service, id) =>
+        service.renderAccount(id.getOrElse(clientId), StepView.AccountSettings(Nil, Nil), None),
+    ),
+    (
+      "renderLogoutConfirm",
+      "confirm-logout",
+      (service, id) =>
+        service.renderLogoutConfirm(
+          SessionInfo(
+            MAC(Array.fill(32)(1.toByte)),
+            SessionRecord(
+              userId = UserId(UUID.randomUUID()),
+              clients = id.toList.map(ClientEntry(_, Instant.EPOCH)),
+              userAgentId = testUserAgentId,
+              createdAt = Instant.EPOCH,
+              amr = Map.empty,
+              publicId = PublicSessionId("public-session-3"),
+              expiresAt = Instant.EPOCH,
+            ),
+          ),
+          "csrf-token",
+          None,
+          None,
+          None,
+        ),
+    ),
+    ("renderLogout", "signed-out", (service, id) => service.renderLogout(Nil, None, None, None, id)),
+  )
+
+  // What the page says, with `client` as what the configuration knows of the client (None: nothing).
+  private def pageOf(formId: String, client: Option[OAuthClientRecord], knownId: Option[ClientId])(
+      render: (ConversationRenderService, Option[ClientId]) => Task[Response],
+  ) =
+    val env = Env()
+    for
+      _ <- env.configuration.find.succeedsWith(client)
+      _ = env.configuration.getTheme.returns(id => ZIO.succeed(if id == "default" then Some(defaultTheme) else Some(theme)))
+      _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = formId)))
+      _ <- env.configuration.getLocales.succeedsWith(locales)
+      _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
+      _ <- env.configuration.getPasswordRegex.succeedsWith(".*")
+      _ <- env.configuration.getPhoneRegions.succeedsWith(List(PhoneRegion("US", "+1", 10, "\\d{10}", true)))
+      response <- render(env.service, knownId)
+      body <- response.body.asString
+    yield (response.status, body)
+
+  private val themedPageTests: List[Spec[Any, Any]] =
+    pages.flatMap { (name, formId, render) =>
+      List(
+        test(s"$name puts them after the theme's CSS") {
+          pageOf(formId, Some(withOverrides), Some(clientId))(render).map: (status, body) =>
+            assertTrue(
+              status == Status.Ok,
+              body.contains("--brand:#112233;"),
+              body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
+            )
+        },
+        test(s"$name shows the theme as it is when the configuration does not know the client") {
+          pageOf(formId, None, Some(clientId))(render).map: (status, body) =>
+            assertTrue(status == Status.Ok, !body.contains("--brand:"), body.contains(".body { color: black; }"))
+        },
+      )
+    } :+ test("renderLogout shows the theme as it is when no client is known") {
+      pageOf("signed-out", Some(withOverrides), None)((service, id) => service.renderLogout(Nil, None, None, None, id)).map: (status, body) =>
+        assertTrue(status == Status.Ok, !body.contains("--brand:"))
+    }
+
   def spec = suite("ConversationRenderService")(
     suite("renderStep")(
       test("renders HTML with theme and form") {
@@ -388,13 +474,26 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               body.indexOf("--page-light:#ecebe7;") < body.lastIndexOf("--page-light:color-mix(in oklab,var(--brand) 22%"),
             )
         },
-        test("go on top of a stylesheet theme, with nothing else changed in it") {
+        test("go after the CSS of a stylesheet theme") {
           rendered(theme, withOverrides).map: body =>
             assertTrue(
               body.contains(".body { color: red; }"),
               body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
-              !body.contains(".body { color: black; }"),
             )
+        },
+        test("go on top of a stylesheet theme, with nothing else changed in it") {
+          for
+            plain <- rendered(theme)
+            over <- rendered(theme, withOverrides)
+            // everything up to the end of the theme's own CSS is the page it was, and its CSS is written once
+            end = plain.indexOf(".body { color: red; }") + ".body { color: red; }".length
+          yield assertTrue(
+            end > ".body { color: red; }".length,
+            over.take(end) == plain.take(end),
+            over.sliding(".body { color: red; }".length).count(_ == ".body { color: red; }") == 1,
+            !plain.contains("--brand:"),
+            over.contains("--brand:#112233;"),
+          )
         },
         test("leave the page exactly as it was when empty or absent") {
           for
@@ -1301,6 +1400,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         )
       },
     ),
+    suite("a client's theme overrides on every page that wears a theme")(themedPageTests*),
     suite("renderLogout")(
       test("renders SignedOut view with encoded logout URIs and redirect URI including state") {
         val env = Env()
@@ -1311,7 +1411,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None)
+          response <- env.service.renderLogout(List(logoutUri1, logoutUri2), Some(redirectUri), Some("st-1"), None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(response.header(Header.ContentType).exists(_.mediaType == MediaType.text.html)) &&
@@ -1330,7 +1430,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(consentLocales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, None, None, Some(List("fr")))
+          response <- env.service.renderLogout(Nil, None, None, Some(List("fr")), None)
           body <- response.body.asString
         yield assertTrue(body.contains("<title>Connexion</title>"))
       },
@@ -1341,7 +1441,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(Some(formRecord.copy(id = "signed-out")))
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, None, None, None)
+          response <- env.service.renderLogout(Nil, None, None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.Ok) &&
           assertTrue(!body.contains("\"redirectUri\"")) &&
@@ -1354,7 +1454,7 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getForm.succeedsWith(None)
           _ <- env.configuration.getLocales.succeedsWith(locales)
           _ <- env.configuration.getIdentityProviderLogo.succeedsWith(None)
-          response <- env.service.renderLogout(Nil, Some(redirectUri), None, None)
+          response <- env.service.renderLogout(Nil, Some(redirectUri), None, None, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
           assertTrue(body.contains("Page not found"))

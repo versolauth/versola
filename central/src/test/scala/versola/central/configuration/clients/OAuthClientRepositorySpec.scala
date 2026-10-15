@@ -235,13 +235,15 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           created <- env.repository.find(clientId)
           _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(replaced)))
           replacedFound <- env.repository.find(clientId)
-          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(theme = Some("default")))
+          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(clientName = Some(Map("en" -> "patched"))))
           untouched <- env.repository.find(clientId)
           _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(ThemeOverrides())))
           cleared <- env.repository.find(clientId)
         yield assertTrue(
           created === Some(branded),
           replacedFound.flatMap(_.themeOverrides) == Some(replaced),
+          // a patch of something else changed the row, and left the overrides as they were
+          untouched.map(_.clientName) == Some(Map("en" -> "patched")),
           untouched.flatMap(_.themeOverrides) == Some(replaced),
           cleared.map(_.themeOverrides) == Some(None),
         )

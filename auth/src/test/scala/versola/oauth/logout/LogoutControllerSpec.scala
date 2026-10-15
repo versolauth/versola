@@ -192,7 +192,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       expectedStatus = Status.Ok,
       setup = (_, renderService, _) => renderService.renderLogout.succeedsWith(Response.text("<html>logout</html>")),
       verify = (_, _, renderService, _) =>
-        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru", "kk", "de", "fr")))))),
+        ZIO.succeed(assertTrue(renderService.renderLogout.calls === List((Nil, None, None, Some(List("ru", "kk", "de", "fr")), None)))),
     ),
     controllerTestCase(
       description = "GET /logout with a session cookie for an unknown session renders the generic logout page",
@@ -204,7 +204,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -300,7 +300,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -312,7 +312,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -324,7 +324,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
         )),
     ),
     controllerTestCase(
@@ -486,7 +486,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (response, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls === List((Nil, None, None, None)),
+          renderService.renderLogout.calls === List((Nil, None, None, None, None)),
           response.headers.get(Header.SetCookie).isEmpty,
         )),
     ),
@@ -508,7 +508,7 @@ object LogoutControllerSpec extends UnitSpecBase:
       verify = (_, logoutService, renderService, _) =>
         ZIO.succeed(assertTrue(
           logoutService.logout.calls.isEmpty,
-          renderService.renderLogout.calls == List((Nil, None, None, None)),
+          renderService.renderLogout.calls == List((Nil, None, None, None, None)),
         )),
     ),
   )
