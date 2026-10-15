@@ -55,7 +55,7 @@ export async function translations(id: string): Promise<Translations> {
 /** What a form config needs besides its `step`; anything given overrides the defaults. */
 export type FormConfig = { step: Record<string, unknown> } & Record<string, unknown>;
 
-export async function renderForm(page: Page, id: string, config: FormConfig, options: { commonCss?: string } = {}) {
+export async function renderForm(page: Page, id: string, config: FormConfig, options: { commonCss?: string; extraCss?: string } = {}) {
   const [all, commonCss, formCss, script] = await Promise.all([
     translations(id),
     options.commonCss ? read(options.commonCss) : read('../forms/common.css'),
@@ -85,7 +85,7 @@ export async function renderForm(page: Page, id: string, config: FormConfig, opt
   await page.setContent(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${all.en.page_title.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</title>
-<style>${commonCss}\n${formCss}</style></head><body>
+<style>${commonCss}\n${options.extraCss ?? ''}\n${formCss}</style></head><body>
 <script>window.__VERSOLA_FORM__ = ${JSON.stringify(full).replace(/</g, '\\u003c')};</script>
 <div id="versola-form-root"></div>
 <script>${script}</script>

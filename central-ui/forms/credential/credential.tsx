@@ -237,11 +237,11 @@ function CredentialForm(props: { config: FormConfig }) {
             fallback={
               <svg viewBox="0 0 64 64" fill="none">
                 <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="var(--accent)" fill-opacity="0.06"/>
+                      fill="currentColor" fill-opacity="0.08"/>
                 <path d="M32 6 C32 6 52 10 54 12 L54 30 Q54 48 32 58 Q10 48 10 30 L10 12 C12 10 32 6 32 6Z"
-                      fill="none" stroke="var(--accent)" stroke-width="2.2"/>
+                      fill="none" stroke="currentColor" stroke-width="2.2"/>
                 <text x="32" y="41" font-family="-apple-system, Inter, sans-serif" font-weight="800"
-                      font-size="26" fill="var(--accent)" text-anchor="middle">V</text>
+                      font-size="26" fill="currentColor" text-anchor="middle">V</text>
               </svg>
             }
           >
@@ -269,16 +269,20 @@ function CredentialForm(props: { config: FormConfig }) {
             <Show
               when={phoneRegions.length > 0}
               fallback={
-                <input
-                  id="credential-phone"
-                  type="tel"
-                  name="phone"
-                  class="input-field"
-                  placeholder=" "
-                  autocomplete="tel"
-                  pattern="^\+[1-9]\d{6,14}$"
-                  required
-                />
+                <>
+                  <input
+                    id="credential-phone"
+                    type="tel"
+                    name="phone"
+                    class="input-field"
+                    placeholder=" "
+                    autocomplete="tel"
+                    pattern="^\+[1-9]\d{6,14}$"
+                    required
+                    aria-describedby="credential-phone-hint"
+                  />
+                  <div id="credential-phone-hint" class="field-hint">{t().phone_hint}</div>
+                </>
               }
             >
               <PhoneField id="credential-phone" regions={phoneRegions} t={t} locale={currentLocale} apiRef={(api) => (phoneField = api)} />

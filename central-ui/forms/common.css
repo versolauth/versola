@@ -118,6 +118,17 @@ body {
   object-fit: contain;
   object-position: left center;
 }
+/* A customer's logo is an unknown image: a dark mark would vanish on the dark card, so it gets a
+ * light tile there. Browsers without light-dark() drop the declaration and show it bare. */
+.brand-mark img,
+.consent-logo {
+  background: light-dark(transparent, rgba(255, 255, 255, 0.94));
+  padding: 5px;
+  border-radius: var(--rf);
+}
+.brand-mark {
+  color: var(--ink);
+}
 h1 {
   font-size: 1.9rem;
   line-height: 1.15;
@@ -325,6 +336,7 @@ a {
   .container {
     width: 100%;
     min-height: min(82dvh, 640px);
+    justify-content: flex-start;
     border-radius: var(--rs) var(--rs) 0 0;
     padding: 56px 22px 24px;
   }
