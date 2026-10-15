@@ -379,7 +379,7 @@ case class OAuthClientResponse(
       * and the settings for a client registered before the kinds had endpoints. */
     kind: ClientKind,
     /** What this client changes in the theme it uses; absent when it changes nothing. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 case class ConsentFlowDto(
@@ -499,7 +499,7 @@ case class CreateClientRequest(
       * [[issueEdgeClientCertificate]] and with supplying [[edgeClientCertificate]]. */
     enrollEdgeClientCertificate: Boolean,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 /** `secret` is absent for a native client - there is none to hand back. */
@@ -555,7 +555,7 @@ case class UpdateClientRequest(
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
     applicationType: Option[ApplicationType],
     /** Replaces the client's theme overrides; an empty value clears them, absent leaves them. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec
 
 case class AuthorizationPresetInput(
@@ -768,7 +768,7 @@ case class SyncOAuthClientRecord(
       * exactly this, and central refuses a request that says anything else. */
     edgeCertificateSubject: Option[CertificateSubject],
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives JsonCodec, Schema
 
 /** An edge's request for a certificate for a client it holds the key of (#463). */

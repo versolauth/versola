@@ -127,14 +127,14 @@ object ConversationRenderService:
     case class Consent(
         clientName: Option[String],
         /** The client's name in every language, see [[ClientBrand]]. */
-        clientNames: Map[String, String] = Map.empty,
+        clientNames: Map[String, String],
         logoUri: Option[String],
         policyUri: Option[String],
         tosUri: Option[String],
         scopes: List[ConsentScope],
         allowPartial: Boolean,
         denyUri: String,
-        user: Option[ConsentUser] = None,
+        user: Option[ConsentUser],
     ) extends StepView
 
     /** One active session of the user, as rendered on the account page. `id` is the
@@ -185,11 +185,11 @@ object ConversationRenderService:
       allT: Map[String, Map[String, String]],
       error: Option[String],
       csrf: String,
-      logo: Option[String] = None,
+      logo: Option[String],
       /** The client the user is signing in to; forms show it inside the card for a partner's app. */
-      client: Option[ClientBrand] = None,
+      client: Option[ClientBrand],
       /** The language each code is shown as in the switcher, as configured under Locales. */
-      localeNames: Map[String, String] = Map.empty,
+      localeNames: Map[String, String],
   ) derives JsonCodec
 
   /** What a form shows of the client: its name and logo, and whether it is a partner's (third-party) app, which has
@@ -203,7 +203,7 @@ object ConversationRenderService:
     */
   case class ClientBrand(
       name: Option[String],
-      names: Map[String, String] = Map.empty,
+      names: Map[String, String],
       logo: Option[String],
       partner: Boolean,
   ) derives JsonCodec
@@ -346,6 +346,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -381,6 +383,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -484,6 +488,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -525,6 +531,8 @@ object ConversationRenderService:
               None,
               csrfToken,
               localeNames = localeNames(locales, (value.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             value.version,
           )
@@ -591,6 +599,7 @@ object ConversationRenderService:
             csrf = csrfToken,
             client = clientBrand(client, locale, locales.default),
             localeNames = localeNames(locales, allLocales),
+            logo = None,
           ),
           version = form.version,
         )

@@ -76,6 +76,7 @@ object BootstrapServiceSpec extends ZIOSpecDefault, ZIOStubs:
       edgeClientCertificate = None,
       template = None,
       createdAt = Instant.EPOCH,
+      themeOverrides = None,
     )
 
   private val utilityKey = ECKeyGenerator(Curve.P_256).keyID("utils-1").algorithm(JWSAlgorithm.ES256).generate()

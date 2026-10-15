@@ -45,6 +45,7 @@ object AuthorizationResponseServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val params = List("code" -> "the-code", "iss" -> config.jwt.issuer, "state" -> "test-state")

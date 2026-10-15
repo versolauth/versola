@@ -64,6 +64,7 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
 
   /** Applies a patch to the nullable fields, leaving every other field of the client alone. */
@@ -227,8 +228,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
         )
       },
       test("create and find a client with theme overrides, then replace and clear them") {
-        val branded = client.copy(themeOverrides = Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))))
-        val replaced = ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark))
+        val branded = client.copy(themeOverrides =
+          Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None)),
+        )
+        val replaced = ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark), brand = None, shape = None)
 
         for
           _ <- env.repository.createClient(branded)
@@ -237,7 +240,10 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           replacedFound <- env.repository.find(clientId)
           _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(clientName = Some(Map("en" -> "patched"))))
           untouched <- env.repository.find(clientId)
-          _ <- env.repository.updateClient(clientId, OAuthClientPatch.empty.copy(themeOverrides = Some(ThemeOverrides())))
+          _ <- env.repository.updateClient(
+            clientId,
+            OAuthClientPatch.empty.copy(themeOverrides = Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None))),
+          )
           cleared <- env.repository.find(clientId)
         yield assertTrue(
           created === Some(branded),

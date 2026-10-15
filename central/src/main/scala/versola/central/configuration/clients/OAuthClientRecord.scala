@@ -119,7 +119,7 @@ case class OAuthClientRecord(
     applicationType: ApplicationType = ApplicationType.web,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages (a partner app that
       * brings its own brand colour). `None`, never an empty value, when it changes nothing. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, CanEqual, Equal:
 
   /** A native app whose client authentication is done by the edge fronting it (#420/#421):
