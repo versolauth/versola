@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
 import {accessSectionTitle} from '../utils/client-presets';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -13,6 +13,7 @@ import {
   fetchChallengeSettings,
   fetchLocales,
   fetchOtpTemplates,
+  fetchThemePresets,
   fetchThemes,
   getPermissions,
   getResources,
@@ -43,6 +44,17 @@ import './preset-form';
 
 /** What the create banner says instead of offering a secret, for a client whose secret is
  *  not the credential it authenticates with. `null` for one whose secret is. */
+/** What the client changes in its theme, in a line: `brand #112233, sharp corners`; "Same as the theme" when nothing. */
+function themeOverridesSummary(overrides: ThemeOverrides | null | undefined): string {
+  const parts = [
+    overrides?.brand && `brand ${overrides.brand}`,
+    overrides?.surface && `${overrides.surface} page`,
+    overrides?.shape && `${overrides.shape} corners`,
+    overrides?.mode && `${overrides.mode} scheme`,
+  ].filter(Boolean);
+  return parts.length ? parts.join(', ') : 'Same as the theme';
+}
+
 function secretlessText(credential: ClientCredentialKind | undefined): string | null {
   switch (credential) {
     case 'public':
@@ -78,6 +90,7 @@ export class VersolaClientsList extends LitElement {
   @state() private availablePermissions: Permission[] = [];
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
+  @state() private availableThemePresets: ThemePreset[] = [];
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
@@ -1110,11 +1123,13 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
+    const [scopes, permissions, resources, themes, themePresets, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
+      // A central that has no built-in themes answers with an error: the client's own appearance is then not offered.
+      fetchThemePresets().catch(() => [] as ThemePreset[]),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
       getRoles(tenantId),
@@ -1126,6 +1141,7 @@ export class VersolaClientsList extends LitElement {
       this.availablePermissions = permissions;
       this.availableResources = resources;
       this.availableThemes = themes;
+      this.availableThemePresets = themePresets;
       this.availableOtpTemplates = otpTemplates;
       this.availableRoles = roles;
       this.availableLocales = locales;
@@ -1439,6 +1455,7 @@ export class VersolaClientsList extends LitElement {
           .availablePermissions=${this.availablePermissions}
           .availableResources=${this.availableResources}
           .availableThemes=${this.availableThemes}
+          .availableThemePresets=${this.availableThemePresets}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
           .locales=${this.availableLocales}
@@ -1812,6 +1829,7 @@ export class VersolaClientsList extends LitElement {
 
       ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`
         ${this.viewRow('Forms theme', client.theme ?? 'default')}
+        ${client.consentFlow ? this.viewRow('Appearance for this app', themeOverridesSummary(client.themeOverrides)) : ''}
         ${this.viewRow('Logout', logoutUris.length
           ? html`<div class="uri-list">${logoutUris.map(uri => html`<div class="uri-item">${uri}</div>`)}</div>` : 'None')}
       `) : ''}

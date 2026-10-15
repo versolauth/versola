@@ -7,31 +7,17 @@ import type {
   FormRecord,
   Locale,
   ResolvedThemeTokens,
-  ThemeMode,
   ThemeOverrides,
   ThemePreset,
   ThemeRecord,
-  ThemeShape,
-  ThemeSurface,
 } from '../types';
 import { createTheme, updateTheme, deleteTheme, renderTheme } from '../utils/central-api';
 import { buildPreviewSrcdoc } from '../utils/preview';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './code-editor';
+import './theme-token-controls';
+import type { OverridesChange } from './theme-token-controls';
 import './nav-toggle';
-
-const HEX = /^#?[0-9a-fA-F]{6}$/;
-// Colours to start from; any #rrggbb can be typed.
-const SWATCHES = ['#ff6b4a', '#e5484d', '#b4348a', '#5b5bd6', '#2563eb', '#0e9f8e', '#2f9e63', '#f5c518', '#14130f'];
-const SHAPES: Array<[ThemeShape, string]> = [['round', 'Round'], ['soft', 'Soft'], ['sharp', 'Sharp']];
-const SURFACES: Array<[ThemeSurface, string, string]> = [
-  ['bold', 'Bold', 'A deep shade of the brand colour behind the card'],
-  ['soft', 'Soft', 'A pale tint of the brand colour'],
-  ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
-];
-const MODES: Array<[ThemeMode, string]> = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
-
-const normalize = (hex: string) => (hex.startsWith('#') ? hex : `#${hex}`).toLowerCase();
 
 @customElement('versola-theme-edit')
 export class VersolaThemeEdit extends LitElement {
@@ -50,7 +36,8 @@ export class VersolaThemeEdit extends LitElement {
   @state() private kind: 'tokens' | 'css' = 'css';
   @state() private base = '';
   @state() private overrides: ThemeOverrides = {};
-  @state() private brandText = '';
+  // The colour field holds text that is not a #rrggbb colour (reported by the token controls).
+  @state() private brandInvalid = false;
   @state() private advancedOpen = false;
 
   @state() private renderedCss = '';
@@ -78,7 +65,7 @@ export class VersolaThemeEdit extends LitElement {
       this.kind = this.theme.tokens || (isNew && this.presets.length > 0) ? 'tokens' : 'css';
       this.base = this.theme.tokens?.base ?? this.presets.find(p => p.id === 'versola')?.id ?? this.presets[0]?.id ?? '';
       this.overrides = { ...(this.theme.tokens?.overrides ?? {}) };
-      this.brandText = this.overrides.brand ?? '';
+      this.brandInvalid = false;
       this.advancedOpen = this.kind === 'tokens' && this.editCss.trim() !== '';
       this.scheduleRender();
     }
@@ -116,8 +103,6 @@ export class VersolaThemeEdit extends LitElement {
       .editor { display: grid; grid-template-columns: minmax(0, 30rem) minmax(0, 1fr); gap: var(--spacing-lg); align-items: start; margin-top: var(--spacing-lg); }
       @media (max-width: 1100px) { .editor { grid-template-columns: minmax(0, 1fr); } }
       .controls { display: flex; flex-direction: column; gap: var(--spacing-lg); }
-      .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
       .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
       .summary { display: flex; align-items: center; justify-content: space-between; gap: var(--spacing-sm); font-size: 0.8125rem; color: var(--text-secondary); }
 
@@ -145,14 +130,6 @@ export class VersolaThemeEdit extends LitElement {
       .th-line { width: 50%; height: 3px; background: #1c1b19; border-radius: 2px; }
       .th-field { height: 6px; background: #efeae0; border-radius: 4px; }
       .th-btn { height: 7px; background: #1c1b19; border-radius: 5px; margin-top: auto; }
-
-      .swatches { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
-      .swatch { width: 1.75rem; height: 1.75rem; border-radius: 50%; border: 2px solid var(--bg-card, transparent); box-shadow: 0 0 0 1px var(--border-dark); cursor: pointer; padding: 0; }
-      .swatch.sel { box-shadow: 0 0 0 2px var(--text-primary); }
-      .hex-row { display: flex; align-items: center; gap: var(--spacing-sm); margin-top: 0.5rem; }
-      .hex-row input { width: 7.5rem; font-family: var(--font-mono); }
-      .hex-row .bad { color: var(--danger); font-size: 0.75rem; }
-      .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-dark); }
 
       details.advanced { border-top: 1px solid var(--border-dark); padding-top: var(--spacing-md); }
       details.advanced summary { cursor: pointer; font-weight: 600; font-size: 0.875rem; }
@@ -190,21 +167,13 @@ export class VersolaThemeEdit extends LitElement {
     return this.forms.filter(f => f.active && f.jsCompiled);
   }
 
-  private get brandInvalid(): boolean {
-    return this.brandText.trim() !== '' && !HEX.test(this.brandText.trim());
-  }
-
   private get overrideCount(): number {
     return Object.keys(this.overrides).length;
   }
 
-  private setOverride<K extends keyof ThemeOverrides>(key: K, value: ThemeOverrides[K] | undefined) {
-    const next = { ...this.overrides };
-    const base = this.basePreset?.tokens[key];
-    // A value equal to the base's is not an override: the theme then follows the base when it changes.
-    if (value === undefined || value === base) delete next[key];
-    else next[key] = value;
-    this.overrides = next;
+  private onOverridesChange(change: OverridesChange) {
+    this.overrides = change.overrides;
+    this.brandInvalid = change.brandInvalid;
     this.scheduleRender();
   }
 
@@ -324,16 +293,6 @@ export class VersolaThemeEdit extends LitElement {
 
   // ─── render ─────────────────────────────────────────────────────────────────
 
-  private overriddenBadge(key: keyof ThemeOverrides, baseValue: string) {
-    if (this.overrides[key] === undefined) return nothing;
-    return html`
-      <span>
-        <span class="badge-overridden">Overridden · base: ${baseValue}</span>
-        <button class="reset" aria-label=${`Reset ${key} to the base`} @click=${() => { this.setOverride(key, undefined); if (key === 'brand') this.brandText = ''; }}>Reset</button>
-      </span>
-    `;
-  }
-
   private renderPresets() {
     return html`
       <section class="card">
@@ -362,63 +321,11 @@ export class VersolaThemeEdit extends LitElement {
       <section class="card">
         <div class="summary" style="margin-bottom: var(--spacing-md)">
           <span>${this.overrideCount === 0 ? 'No overrides: this theme is the base theme.' : `${this.overrideCount} ${this.overrideCount === 1 ? 'override' : 'overrides'} on ${this.basePreset?.title.en ?? this.base}`}</span>
-          ${this.overrideCount > 0 ? html`<button class="reset" @click=${() => { this.overrides = {}; this.brandText = ''; this.scheduleRender(); }}>Clear overrides</button>` : nothing}
+          ${this.overrideCount > 0 ? html`<button class="reset" @click=${() => { this.overrides = {}; this.brandInvalid = false; this.scheduleRender(); }}>Clear overrides</button>` : nothing}
         </div>
 
-        <div>
-          <div class="group-title"><div class="field-label">Brand colour</div>${this.overriddenBadge('brand', base.brand)}</div>
-          <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
-          <div class="swatches" role="group" aria-label="Brand colour">
-            ${SWATCHES.map(c => html`
-              <button class="swatch ${resolved.brand === c ? 'sel' : ''}" style=${`background:${c}`} aria-label=${c} aria-pressed=${resolved.brand === c ? 'true' : 'false'}
-                @click=${() => { this.brandText = c; this.setOverride('brand', c); }}></button>
-            `)}
-          </div>
-          <div class="hex-row">
-            <span class="chip" style=${`background:${resolved.brand}`}></span>
-            <input class="kv-value" aria-label="Brand colour, #rrggbb" placeholder=${resolved.brand} spellcheck="false" maxlength="7"
-              .value=${this.brandText}
-              @input=${(e: Event) => {
-                this.brandText = (e.target as HTMLInputElement).value;
-                const text = this.brandText.trim();
-                if (text === '') this.setOverride('brand', undefined);
-                else if (HEX.test(text)) this.setOverride('brand', normalize(text));
-              }} />
-            ${this.brandInvalid ? html`<span class="bad" role="alert">Use #rrggbb</span>` : nothing}
-          </div>
-        </div>
-
-        <div style="margin-top: var(--spacing-lg)">
-          <div class="group-title"><div class="field-label">Page background</div>${this.overriddenBadge('surface', base.surface)}</div>
-          <div class="seg-control" role="group" aria-label="Page background">
-            ${SURFACES.map(([value, label]) => html`
-              <button class="seg-btn ${resolved.surface === value ? 'seg-active' : ''}" aria-pressed=${resolved.surface === value ? 'true' : 'false'}
-                @click=${() => this.setOverride('surface', value)}>${label}</button>
-            `)}
-          </div>
-          <div class="hint" style="margin-top: 0.5rem">${SURFACES.find(s => s[0] === resolved.surface)?.[2]}</div>
-        </div>
-
-        <div style="margin-top: var(--spacing-lg)">
-          <div class="group-title"><div class="field-label">Shape</div>${this.overriddenBadge('shape', base.shape)}</div>
-          <div class="seg-control" role="group" aria-label="Shape">
-            ${SHAPES.map(([value, label]) => html`
-              <button class="seg-btn ${resolved.shape === value ? 'seg-active' : ''}" aria-pressed=${resolved.shape === value ? 'true' : 'false'}
-                @click=${() => this.setOverride('shape', value)}>${label}</button>
-            `)}
-          </div>
-        </div>
-
-        <div style="margin-top: var(--spacing-lg)">
-          <div class="group-title"><div class="field-label">Colour scheme</div>${this.overriddenBadge('mode', base.mode)}</div>
-          <div class="seg-control" role="group" aria-label="Colour scheme">
-            ${MODES.map(([value, label]) => html`
-              <button class="seg-btn ${resolved.mode === value ? 'seg-active' : ''}" aria-pressed=${resolved.mode === value ? 'true' : 'false'}
-                @click=${() => this.setOverride('mode', value)}>${label}</button>
-            `)}
-          </div>
-          <div class="hint" style="margin-top: 0.5rem">Auto follows the visitor's device.</div>
-        </div>
+        <versola-theme-token-controls .base=${base} .overrides=${this.overrides}
+          @overrides-change=${(e: CustomEvent<OverridesChange>) => this.onOverridesChange(e.detail)}></versola-theme-token-controls>
       </section>
 
       <details class="advanced" ?open=${this.advancedOpen} @toggle=${(e: Event) => { this.advancedOpen = (e.target as HTMLDetailsElement).open; }}>

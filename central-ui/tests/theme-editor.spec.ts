@@ -113,7 +113,7 @@ test('refuses a brand colour that is not #rrggbb and lower-cases a valid one', a
 test('switching the base keeps the overrides, and they can be cleared at once', async ({ page }) => {
   await newTheme(page);
   await page.getByRole('button', { name: 'Sharp' }).click();
-  await page.getByRole('button', { name: 'Dark', exact: true }).first().click();
+  await page.getByRole('group', { name: 'Colour scheme' }).getByRole('button', { name: 'Dark' }).click();
   await expect(page.getByText('2 overrides on Versola')).toBeVisible();
 
   await page.getByRole('button', { name: 'Fintech' }).click();

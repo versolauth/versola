@@ -3,7 +3,7 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeRecord } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ResolvedThemeTokens } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
@@ -48,6 +48,8 @@ import {
   describeJwks,
 } from '../utils/validators';
 import { fetchServerMetadata } from '../utils/central-api';
+import './theme-token-controls';
+import type { OverridesChange } from './theme-token-controls';
 
 
 /** The groups of settings the client page offers an Edit button for. */
@@ -64,6 +66,11 @@ export const CLIENT_EDIT_SECTION_TITLES: Record<ClientEditSection, string> = {
   branding: 'Branding and logout',
 };
 
+/** The overrides without absent members, so a spread of them does not blank a value with `undefined`. */
+function definedOverrides(overrides: ThemeOverrides | undefined): ThemeOverrides {
+  return Object.fromEntries(Object.entries(overrides ?? {}).filter(([, value]) => value !== undefined));
+}
+
 @customElement('versola-client-form')
 export class VersolaClientForm extends LitElement {
   @property({ type: Object }) client: OAuthClient | null = null;
@@ -75,6 +82,9 @@ export class VersolaClientForm extends LitElement {
   @property({ attribute: false }) availablePermissions: Permission[] = [];
   @property({ attribute: false }) availableResources: Resource[] = [];
   @property({ attribute: false }) availableThemes: ThemeRecord[] = [];
+  /** The built-in themes a theme is built on; empty from a central that has none, which hides the
+   *  client's own appearance, since there is then nothing to show it against. */
+  @property({ attribute: false }) availableThemePresets: ThemePreset[] = [];
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   /** The profile the tenant's clients are held to; decides what a kind sets. */
   @property({ attribute: false }) securityProfile: SecurityProfile = 'fapi2';
@@ -848,6 +858,23 @@ export class VersolaClientForm extends LitElement {
         border-color: var(--accent);
         background: rgba(var(--accent-tint), 0.12);
       }
+
+      .appearance {
+        margin-top: var(--spacing-lg);
+        padding: var(--spacing-md);
+        border: 1px solid var(--border-dark);
+        border-radius: var(--radius-md);
+      }
+      .appearance-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-xs, 0.25rem);
+      }
+      .appearance-head h3 { margin: 0; font-size: 0.9375rem; }
+      .appearance-sub { font-size: 0.8125rem; color: var(--text-secondary); margin-bottom: var(--spacing-md); }
+      .appearance .link-button { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
       .cred-options {
         margin-top: 0.75rem;
@@ -4765,6 +4792,49 @@ export class VersolaClientForm extends LitElement {
               </select>
             </div>
             ` : ''}
+            ${this.hasAuthFlow && this.hasConsentFlow ? this.renderAppearance() : ''}
+    `;
+  }
+
+  /** The tokens of the theme the client uses, which its own overrides are laid over. A stylesheet theme has no
+   *  tokens to read, so the default preset stands in for it. */
+  private get themeBase(): { tokens: ResolvedThemeTokens; stylesheet: boolean } | null {
+    const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
+    const preset = (id: string) => this.availableThemePresets.find(p => p.id === id)?.tokens;
+    const own = record?.tokens ? preset(record.tokens.base) : undefined;
+    if (record?.tokens && own) {
+      return { tokens: { ...own, ...definedOverrides(record.tokens.overrides) }, stylesheet: false };
+    }
+    const fallback = preset('versola');
+    return fallback ? { tokens: fallback, stylesheet: !record?.tokens && record !== undefined } : null;
+  }
+
+  private setThemeOverrides(change: OverridesChange) {
+    const empty = Object.keys(change.overrides).length === 0;
+    this.formData = { ...this.formData, themeOverrides: empty ? null : change.overrides };
+  }
+
+  private renderAppearance() {
+    const base = this.themeBase;
+    if (!base) return '';
+    const overrides: ThemeOverrides = this.formData.themeOverrides ?? {};
+    const count = Object.keys(overrides).length;
+    return html`
+      <section class="appearance" aria-labelledby="client-appearance-title">
+        <div class="appearance-head">
+          <h3 id="client-appearance-title">Appearance for this app</h3>
+          ${count > 0 ? html`<button type="button" class="link-button" @click=${() => this.setThemeOverrides({ overrides: {}, brandInvalid: false })}>Clear overrides</button>` : ''}
+        </div>
+        <div class="appearance-sub">
+          ${count === 0
+            ? 'This app uses the theme as it is.'
+            : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
+          ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and the values shown are the default theme\'s.' : ''}
+        </div>
+        <versola-theme-token-controls preview inheritedNote="From the theme"
+          .base=${base.tokens} .overrides=${overrides}
+          @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
+      </section>
     `;
   }
 
