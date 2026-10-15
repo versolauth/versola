@@ -160,6 +160,13 @@ test('the dark preview is available for the device\'s scheme only, not for a sch
   await expect(dark).toBeDisabled();
 });
 
+test('the fields of the editor are as light as the other forms of the console in the light theme', async ({ page }) => {
+  await newTheme(page);
+
+  await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+  await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+});
+
 test('opens a stored token theme on its base with its overrides, and saves it back as tokens', async ({ page }) => {
   const api = await loadAdminApp(page, { path: themesPath, state });
   await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
