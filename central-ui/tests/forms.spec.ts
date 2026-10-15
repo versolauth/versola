@@ -47,15 +47,11 @@ async function expandCredential(page: Page) {
   await formHeader(page, 'credential').click();
 }
 
-async function expandThemes(page: Page) {
-  await formHeader(page, 'Themes').click();
-}
-
-test('renders forms and themes sections', async ({ page }) => {
+test('renders the forms, and no Themes section: themes have a page of their own', async ({ page }) => {
   await loadAdminApp(page, { path: formsPath, state: fullState });
 
   await expect(page.locator('.form-id').filter({ hasText: 'credential' })).toBeVisible();
-  await expect(page.locator('.form-id').filter({ hasText: 'Themes' })).toBeVisible();
+  await expect(page.locator('.form-id').filter({ hasText: 'Themes' })).toHaveCount(0);
 });
 
 test('expands a form and shows versions with active badge', async ({ page }) => {
@@ -182,46 +178,6 @@ test('shows missing localized fields when locale activation is rejected', async 
     add: Array<{ code: string; active: boolean }>;
   };
   expect(body.add.find(locale => locale.code === 'ru')).toMatchObject({ code: 'ru', active: true });
-});
-
-test('creates a global theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'New Theme', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'New Theme', exact: true })).toBeVisible();
-  await page.getByPlaceholder('e.g. default').fill('brand');
-  await page.getByRole('button', { name: 'Create', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  expect((await findRequest(api.requests, 'POST', '/configuration/themes')).body).toMatchObject({
-    id: 'brand',
-    tenantId: null,
-  });
-});
-
-test('edits a theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'Edit theme dark', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Edit Theme', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  expect((await findRequest(api.requests, 'PUT', '/configuration/themes')).body).toMatchObject({ id: 'dark' });
-});
-
-test('deletes a non-default theme', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state: fullState });
-
-  await expandThemes(page);
-  await page.getByRole('button', { name: 'Edit theme dark', exact: true }).click();
-  await page.getByRole('button', { name: 'Delete', exact: true }).click();
-  await page.waitForTimeout(300);
-
-  const req = await findRequest(api.requests, 'DELETE', '/configuration/themes');
-  expect(req.searchParams['id']).toBe('dark');
 });
 
 test('renders a live preview iframe', async ({ page }) => {

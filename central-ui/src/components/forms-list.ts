@@ -2,12 +2,11 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { BackendProperty, Locale, FormRecord, FormPreview, ThemePreset, ThemeRecord } from '../types';
+import type { BackendProperty, Locale, FormRecord, FormPreview, ThemeRecord } from '../types';
 import {
   fetchFormPreviews,
   fetchForms,
   fetchLocales,
-  fetchThemePresets,
   fetchThemes,
   setActiveFormVersion,
 } from '../utils/central-api';
@@ -19,7 +18,6 @@ import './loading-cards';
 import './code-editor';
 import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './form-edit';
-import './theme-edit';
 
 @customElement('versola-forms-list')
 export class VersolaFormsList extends LitElement {
@@ -31,8 +29,6 @@ export class VersolaFormsList extends LitElement {
   @state() private themes: ThemeRecord[] = [];
   // The states central lists for the built-in forms; empty from a central that does not list them.
   @state() private previews: FormPreview[] = [];
-  // The built-in themes a theme can be based on; empty from a central that has none.
-  @state() private themePresets: ThemePreset[] = [];
 
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -53,9 +49,6 @@ export class VersolaFormsList extends LitElement {
   ];
 
   @state() private formsExpanded = true;
-  @state() private themesExpanded = false;
-
-  @state() private editingTheme: ThemeRecord | null = null;
 
   private readonly handleIframeMessage = (e: MessageEvent) => {
     if (
@@ -431,7 +424,6 @@ export class VersolaFormsList extends LitElement {
         appearance: textfield;
       }
 
-      .theme-kind { font-size: 0.6875rem; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--border-dark); border-radius: 999px; padding: 0.0625rem 0.5rem; margin-left: var(--spacing-sm); }
       .new-theme-card {
         background: var(--bg-dark-card);
         border: 1px solid var(--border-dark);
@@ -496,19 +488,17 @@ export class VersolaFormsList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [forms, locales, themes, previews, themePresets] = await Promise.all([
+      const [forms, locales, themes, previews] = await Promise.all([
         fetchForms(),
         fetchLocales(),
         this.tenantId ? fetchThemes(this.tenantId) : Promise.resolve([]),
         fetchFormPreviews(),
-        fetchThemePresets(),
       ]);
       // Sort by id and version desc
       this.forms = forms.sort((a, b) => a.id.localeCompare(b.id) || b.version - a.version);
       this.locales = locales;
       this.themes = themes;
       this.previews = previews;
-      this.themePresets = themePresets;
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to load forms';
     } finally {
@@ -732,84 +722,8 @@ export class VersolaFormsList extends LitElement {
     await this.loadData();
   }
 
-  private toggleThemesExpand() {
-    this.themesExpanded = !this.themesExpanded;
-  }
-
   private toggleFormsExpand() {
     this.formsExpanded = !this.formsExpanded;
-  }
-
-  private handleCreateTheme() {
-    this.editingTheme = { id: '', css: '', tenantId: null };
-  }
-
-  private handleThemeEdit(t: ThemeRecord) {
-    this.editingTheme = { ...t };
-  }
-
-  private handleThemeEditCancel() {
-    this.editingTheme = null;
-  }
-
-  private handleThemeEditSubmit(e: CustomEvent<{ theme: ThemeRecord }>) {
-    const updated = e.detail.theme;
-    if (this.themes.some(t => t.id === updated.id)) {
-      this.themes = this.themes.map(t => t.id === updated.id ? updated : t);
-    } else {
-      this.themes = [...this.themes, updated];
-    }
-    this.editingTheme = null;
-  }
-
-  private handleThemeDelete(e: CustomEvent<{ id: string }>) {
-    this.themes = this.themes.filter(t => t.id !== e.detail.id);
-    this.editingTheme = null;
-  }
-
-  private renderThemesSection() {
-    const globalThemes = this.themes.filter(t => !t.tenantId);
-    const tenantThemes = this.themes.filter(t => !!t.tenantId);
-    const renderThemeRow = (t: ThemeRecord) => html`
-      <div class="locale-row">
-        <span class="form-id" style="font-size:0.9375rem">${t.id}</span>
-        ${t.tokens ? html`<span class="theme-kind" title="Built from a base theme and overrides">${t.tokens.base}${t.tokens.overrides && Object.keys(t.tokens.overrides).length > 0 ? ` +${Object.keys(t.tokens.overrides).length}` : ''}</span>` : html`<span class="theme-kind" title="A stylesheet">CSS</span>`}
-        <span style="margin-left:auto">
-          <button class="icon-action" title="Edit theme" aria-label=${`Edit theme ${t.id}`}
-            @click=${() => this.handleThemeEdit(t)}>✎</button>
-        </span>
-      </div>
-    `;
-    return html`
-      <div class="form-card">
-        <div class="form-header" @click=${() => this.toggleThemesExpand()}>
-          <div class="form-id">Themes</div>
-          <div style="display:flex;align-items:center;gap:var(--spacing-sm)" @click=${(e: Event) => e.stopPropagation()}>
-            ${this.themesExpanded && this.canManage ? html`
-              <button class="icon-action" title="New Theme" aria-label="New Theme"
-                @click=${() => this.handleCreateTheme()}>＋</button>
-            ` : nothing}
-            <span style="color:var(--text-secondary)">${this.themesExpanded ? '▲' : '▼'}</span>
-          </div>
-        </div>
-        ${this.themesExpanded ? html`
-          <div class="form-body">
-            ${this.themes.length === 0 ? html`<div class="hint">No themes configured yet.</div>` : html`
-              <div class="locale-list">
-                ${globalThemes.length > 0 ? html`
-                  <div class="locale-row" style="font-size:0.8125rem;color:var(--text-secondary);font-weight:600;padding-bottom:0">Global</div>
-                  ${globalThemes.map(renderThemeRow)}
-                ` : nothing}
-                ${tenantThemes.length > 0 ? html`
-                  <div class="locale-row" style="font-size:0.8125rem;color:var(--text-secondary);font-weight:600;padding-bottom:0;margin-top:var(--spacing-sm)">This tenant</div>
-                  ${tenantThemes.map(renderThemeRow)}
-                ` : nothing}
-              </div>
-            `}
-          </div>
-        ` : nothing}
-      </div>
-    `;
   }
 
   render() {
@@ -823,22 +737,6 @@ export class VersolaFormsList extends LitElement {
           @cancel=${() => this.handleFormEditCancel()}
           @submit=${(e: CustomEvent<{ form: FormRecord }>) => this.handleFormEditSubmit(e)}
         ></versola-form-edit>
-      `;
-    }
-
-    if (this.editingTheme !== null) {
-      return html`
-        <versola-theme-edit
-          .theme=${this.editingTheme}
-          .tenantId=${this.tenantId}
-          .presets=${this.themePresets}
-          .forms=${this.forms}
-          .previews=${this.previews}
-          .locales=${this.locales}
-          @cancel=${() => this.handleThemeEditCancel()}
-          @submit=${(e: CustomEvent<{ theme: ThemeRecord }>) => this.handleThemeEditSubmit(e)}
-          @delete=${(e: CustomEvent<{ id: string }>) => this.handleThemeDelete(e)}
-        ></versola-theme-edit>
       `;
     }
 
@@ -891,7 +789,6 @@ export class VersolaFormsList extends LitElement {
           ` : nothing}
         </div>
 
-        ${this.renderThemesSection()}
       `}
     `;
   }

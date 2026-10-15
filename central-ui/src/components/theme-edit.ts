@@ -416,7 +416,7 @@ export class VersolaThemeEdit extends LitElement {
       </section>
 
       <details class="advanced" ?open=${this.advancedOpen} @toggle=${(e: Event) => { this.advancedOpen = (e.target as HTMLDetailsElement).open; }}>
-        <summary>Custom CSS (optional)</summary>
+        <summary>Extra CSS (optional)</summary>
         <div class="hint" style="margin-top: 0.5rem">Added after the generated styles. Leave it empty unless a token cannot do what you need.</div>
         <versola-code-editor language="css" rows="8" .value=${this.editCss}
           @code-input=${(e: CustomEvent<{ value: string }>) => { this.editCss = e.detail.value; this.scheduleRender(); }}
@@ -477,8 +477,8 @@ export class VersolaThemeEdit extends LitElement {
         </div>
         ${isNew ? html`
           <div>
-            <label class="field-label">Theme ID</label>
-            <input class="kv-value" style="max-width:20rem" placeholder="e.g. default"
+            <label class="field-label" for="theme-id">Theme ID</label>
+            <input id="theme-id" class="kv-value" style="max-width:20rem" placeholder="e.g. default"
               .value=${this.editId}
               @input=${(e: Event) => { this.editId = (e.target as HTMLInputElement).value.trim(); }} />
           </div>
@@ -486,9 +486,9 @@ export class VersolaThemeEdit extends LitElement {
           <div style="font-family: var(--font-mono); color: var(--accent); font-size: 1rem">${this.theme?.id}</div>
         `}
         <div>
-          <label class="field-label">Scope</label>
+          <label class="field-label" for="theme-scope">Scope</label>
           ${isNew ? html`
-            <select class="kv-value" style="max-width:20rem"
+            <select id="theme-scope" class="kv-value" style="max-width:20rem"
               .value=${this.scope}
               @change=${(e: Event) => { this.scope = (e.target as HTMLSelectElement).value as 'global' | 'tenant'; }}>
               <option value="global" ?selected=${this.scope === 'global'}>Global</option>
@@ -503,7 +503,7 @@ export class VersolaThemeEdit extends LitElement {
             <label class="field-label">Built as</label>
             <div class="kind-toggle seg-control" role="group" aria-label="Built as">
               <button class="seg-btn ${tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('tokens')}>Visual</button>
-              <button class="seg-btn ${!tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('css')}>Custom CSS</button>
+              <button class="seg-btn ${!tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('css')}>Stylesheet</button>
             </div>
           </div>
         ` : nothing}

@@ -5,7 +5,7 @@ import { getStoredTheme, toggleTheme, type ThemeName } from '../utils/theme';
 import './versola-logo';
 import './tenant-selector';
 
-export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
+export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'themes' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
 
 @customElement('versola-navigation')
 export class VersolaNavigation extends LitElement {
@@ -362,6 +362,7 @@ export class VersolaNavigation extends LitElement {
       case 'users':
         return p.has('users:read');
       case 'forms':
+      case 'themes':
         return p.has('forms:read');
       case 'locales':
         return p.has('locales:read');
@@ -419,6 +420,7 @@ export class VersolaNavigation extends LitElement {
               <div class="nav-section-title">Global</div>
               ${this.navItem('edges', 'Edges')}
               ${this.navItem('forms', 'Forms')}
+              ${this.navItem('themes', 'Themes')}
               ${this.navItem('locales', 'Locales')}
               ${this.navItem('system-settings', 'System Settings')}
               ${this.navItem('tenants', 'Tenants')}

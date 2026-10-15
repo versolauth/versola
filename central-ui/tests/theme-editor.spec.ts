@@ -2,7 +2,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
 import type { MockConfigState } from './mocks';
 
-const formsPath = '/?view=forms&tenant=tenant-alpha';
+const themesPath = '/?view=themes&tenant=tenant-alpha';
+const formsPath = () => '/?view=forms&tenant=tenant-alpha';
 
 const presets = [
   { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
@@ -45,9 +46,8 @@ const state: Partial<MockConfigState> = {
 };
 
 async function newTheme(page: Page, overrides: Partial<MockConfigState> = {}) {
-  const api = await loadAdminApp(page, { path: formsPath, state: { ...state, ...overrides } });
-  await page.locator('.form-header').filter({ hasText: 'Themes' }).click();
-  await page.getByRole('button', { name: 'New Theme', exact: true }).click();
+  const api = await loadAdminApp(page, { path: themesPath, state: { ...state, ...overrides } });
+  await page.getByRole('button', { name: '+ New Theme', exact: true }).click();
   return api;
 }
 
@@ -126,7 +126,7 @@ test('switching the base keeps the overrides, and they can be cleared at once', 
 test('keeps the theme\'s own CSS next to its tokens', async ({ page }) => {
   const api = await newTheme(page);
   await page.getByPlaceholder('e.g. default').fill('mine');
-  await page.getByText('Custom CSS (optional)').click();
+  await page.getByText('Extra CSS (optional)').click();
   await page.locator('versola-code-editor').evaluate((editor: HTMLElement) => {
     editor.dispatchEvent(new CustomEvent('code-input', { detail: { value: '.x { top: 0; }' } }));
   });
@@ -161,8 +161,7 @@ test('the dark preview is available for the device\'s scheme only, not for a sch
 });
 
 test('opens a stored token theme on its base with its overrides, and saves it back as tokens', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state });
-  await page.locator('.form-header').filter({ hasText: 'Themes' }).click();
+  const api = await loadAdminApp(page, { path: themesPath, state });
   await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
 
   await expect(page.getByRole('button', { name: 'Fintech' })).toHaveAttribute('aria-pressed', 'true');
@@ -179,8 +178,7 @@ test('opens a stored token theme on its base with its overrides, and saves it ba
 });
 
 test('a theme written as CSS opens in the CSS editor and is saved without tokens', async ({ page }) => {
-  const api = await loadAdminApp(page, { path: formsPath, state });
-  await page.locator('.form-header').filter({ hasText: 'Themes' }).click();
+  const api = await loadAdminApp(page, { path: themesPath, state });
   await page.getByRole('button', { name: 'Edit theme legacy', exact: true }).click();
 
   await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
@@ -192,11 +190,10 @@ test('a theme written as CSS opens in the CSS editor and is saved without tokens
 });
 
 test('the theme list says which themes are built from a base and which are stylesheets', async ({ page }) => {
-  await loadAdminApp(page, { path: formsPath, state });
-  await page.locator('.form-header').filter({ hasText: 'Themes' }).click();
+  await loadAdminApp(page, { path: themesPath, state });
 
-  await expect(page.locator('.locale-row').filter({ hasText: 'brand' }).locator('.theme-kind')).toHaveText('fintech +2');
-  await expect(page.locator('.locale-row').filter({ hasText: 'legacy' }).locator('.theme-kind')).toHaveText('CSS');
+  await expect(page.locator('.theme-card').filter({ hasText: 'brand' }).locator('.theme-kind')).toHaveText('fintech +2');
+  await expect(page.locator('.theme-card').filter({ hasText: 'legacy' }).locator('.theme-kind')).toHaveText('CSS');
 });
 
 test('offers only CSS themes when central has no built-in themes', async ({ page }) => {
@@ -212,8 +209,77 @@ test('offers only CSS themes when central has no built-in themes', async ({ page
 test('a new theme can still be written as CSS', async ({ page }) => {
   const api = await newTheme(page);
   await page.getByPlaceholder('e.g. default').fill('plain');
-  await page.getByRole('group', { name: 'Built as' }).getByRole('button', { name: 'Custom CSS' }).click();
+  await page.getByRole('group', { name: 'Built as' }).getByRole('button', { name: 'Stylesheet' }).click();
 
   await expect(page.getByRole('button', { name: 'Studio' })).toHaveCount(0);
   expect(await save(page, api)).toEqual({ id: 'plain', css: '', tenantId: null });
+});
+
+test('Themes is a page of its own in the side panel, after Forms', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath(), state });
+
+  const nav = page.locator('versola-navigation');
+  await expect(nav.getByText('Themes', { exact: true })).toBeVisible();
+  await nav.getByText('Themes', { exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Themes', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Edit theme legacy', exact: true })).toBeVisible();
+});
+
+test('lists the global themes apart from the tenant\'s own', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: themesPath,
+    state: { ...state, themes: [...themes, { id: 'tenant-only', css: 'x{}', tenantId: 'tenant-alpha' }] },
+  });
+
+  const groups = page.locator('versola-themes-list .group-title');
+  await expect(groups).toHaveText(['Global', 'This tenant']);
+  await expect(page.locator('.theme-card')).toHaveCount(4);
+});
+
+test('shows the brand colour of a visual theme, its own override or its base\'s', async ({ page }) => {
+  await loadAdminApp(page, { path: themesPath, state: { ...state, themes: [...themes, { id: 'plain-base', css: '', tenantId: null, tokens: { base: 'studio' } }] } });
+
+  await expect(page.locator('.theme-card').filter({ hasText: 'brand' }).locator('.swatch')).toHaveCSS('background-color', 'rgb(17, 34, 51)');
+  await expect(page.locator('.theme-card').filter({ hasText: 'plain-base' }).locator('.swatch')).toHaveCSS('background-color', 'rgb(255, 107, 74)');
+  await expect(page.locator('.theme-card').filter({ hasText: 'legacy' }).locator('.swatch')).toHaveCount(0);
+});
+
+test('creates a theme written as a stylesheet from the page', async ({ page }) => {
+  const api = await newTheme(page, { themePresets: null });
+  await page.getByPlaceholder('e.g. default').fill('plain');
+  await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+  expect((await findRequest(api.requests, 'POST', '/configuration/themes')).body).toMatchObject({ id: 'plain', tenantId: null });
+  await expect(page.getByRole('button', { name: 'Edit theme plain', exact: true })).toBeVisible();
+});
+
+test('edits and deletes a theme from the page, but not the default one', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: themesPath, state });
+
+  await page.getByRole('button', { name: 'Edit theme default', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+
+  await page.getByRole('button', { name: 'Edit theme legacy', exact: true }).click();
+  await page.getByRole('button', { name: 'Delete', exact: true }).click();
+  expect((await findRequest(api.requests, 'DELETE', '/configuration/themes')).searchParams['id']).toBe('legacy');
+  await expect(page.getByRole('button', { name: 'Edit theme legacy', exact: true })).toHaveCount(0);
+});
+
+test('without the manage permission the page lists themes but offers no way to change them', async ({ page }) => {
+  await loadAdminApp(page, {
+    path: themesPath,
+    state: { ...state, myPermissions: { resources: { central: { permissions: ['forms:read'] } }, isProd: false } },
+  });
+
+  await expect(page.getByRole('button', { name: 'Edit theme legacy', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '+ New Theme', exact: true })).toHaveCount(0);
+});
+
+test('the dialog says Stylesheet for a theme written as CSS and Extra CSS for the addition to a visual one', async ({ page }) => {
+  await newTheme(page);
+
+  await expect(page.getByRole('group', { name: 'Built as' }).getByRole('button', { name: 'Stylesheet' })).toBeVisible();
+  await expect(page.getByText('Extra CSS (optional)')).toBeVisible();
+  await expect(page.getByText('Custom CSS')).toHaveCount(0);
 });
