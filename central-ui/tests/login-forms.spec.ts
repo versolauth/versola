@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 import { CSRF, expectSubmissions, renderForm, type FormConfig } from './form-harness';
 
 /**
@@ -862,5 +863,44 @@ test.describe('over a theme forked from the previous common.css', () => {
     expect(toggle!.x).toBeGreaterThan(field!.x + field!.width / 2);
     expect(toggle!.y).toBeGreaterThanOrEqual(field!.y);
     expect(toggle!.y + toggle!.height).toBeLessThanOrEqual(field!.y + field!.height);
+  });
+});
+
+/**
+ * A form version stored before the redesign keeps running over the current common.css (the version
+ * was never replaced, or it is previewed in the console). Its markup is reproduced here as stored.
+ */
+test.describe('older form versions over the current common.css', () => {
+  const render = async (page: import('@playwright/test').Page, body: string) => {
+    await page.setViewportSize({ width: 375, height: 760 });
+    await page.setContent(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>${await readFile(new URL('../forms/common.css', import.meta.url), 'utf8')}</style><div id="versola-form-root">${body}</div>`);
+  };
+
+  test('centres the label of a link button that sets display:block itself', async ({ page }) => {
+    await render(page, '<div class="container"><h1>Access Denied</h1><a href="#" class="btn btn-primary" style="display:block;text-align:center;text-decoration:none;">Return</a></div>');
+
+    const link = page.getByRole('link', { name: 'Return' });
+    await expect(link).toHaveCSS('display', 'flex');
+    const [box, text] = await link.evaluate(el => {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      return [el.getBoundingClientRect().toJSON(), range.getBoundingClientRect().toJSON()];
+    });
+    expect(Math.abs((text.y + text.height / 2) - (box.y + box.height / 2))).toBeLessThanOrEqual(2);
+  });
+
+  test('keeps the logo mark an older sign-in form drew inside the card at its own size', async ({ page }) => {
+    await render(page, '<div class="container"><div class="brand-mark"><svg viewBox="0 0 64 64"><path d="M32 6 54 12v18Q54 48 32 58 10 48 10 30V12z" stroke="currentColor" fill="none"/></svg></div><h1>Sign In</h1></div>');
+
+    const box = await page.locator('.brand-mark svg').boundingBox();
+    expect(box!.width).toBeLessThanOrEqual(48);
+    expect(box!.height).toBeLessThanOrEqual(48);
+  });
+
+  test('fills the width of a phone, however little the card holds', async ({ page }) => {
+    await render(page, '<div class="container"><h1>Hi</h1></div>');
+
+    const width = await page.locator('.container').evaluate(el => el.getBoundingClientRect().width);
+    expect(width).toBe(375);
   });
 });

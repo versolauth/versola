@@ -102,6 +102,33 @@ body {
   width: min(460px, calc(100vw - 48px));
   min-height: min(520px, calc(100dvh - 48px));
 }
+/* Older stored versions of a form still run over this stylesheet (a version that was never replaced,
+ * a preview of an old version). They set display:block on their link buttons, which would pin the
+ * label to the top of the taller button, and draw their own logo mark inside the card. Keep both
+ * laid out; current forms need neither. */
+.btn {
+  display: flex !important;
+}
+.brand-mark {
+  height: 40px;
+  max-width: 200px;
+  margin: 0 0 22px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+}
+.brand-mark svg {
+  width: 40px;
+  height: 40px;
+  display: block;
+}
+.brand-mark img {
+  height: 100%;
+  width: auto;
+  max-width: 100%;
+  display: block;
+  object-fit: contain;
+}
 /* The brand zone: above the card on a desktop, and on a phone the brand-coloured space over the
  * sheet. It lives on the page, not in the card, so the logo never competes with the title. */
 :root {
