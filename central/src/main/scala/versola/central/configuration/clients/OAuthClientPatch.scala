@@ -47,7 +47,7 @@ case class OAuthClientPatch(
     edgeClientCertificate: Option[Patch[Secret]],
     applicationType: Option[ApplicationType],
     /** `Some(empty)` clears the overrides. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 )
 
 object OAuthClientPatch:
@@ -79,4 +79,5 @@ object OAuthClientPatch:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )

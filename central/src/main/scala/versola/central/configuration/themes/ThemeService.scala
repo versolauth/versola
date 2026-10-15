@@ -61,7 +61,7 @@ object ThemeService:
         resolved <- ZIO.fromEither(ThemePresets.resolve(request.tokens)).mapError(IllegalArgumentException(_))
         defaultCss <- cache.get.map(_.find(_.id == DefaultThemeId).fold("")(_.css))
       yield RenderThemeResponse(
-        css = ThemeCss.compose(defaultCss, resolved, request.css),
+        css = ThemeCss.compose(defaultCss, resolved, request.css.getOrElse("")),
         generated = ThemeCss.generate(resolved),
       )
 

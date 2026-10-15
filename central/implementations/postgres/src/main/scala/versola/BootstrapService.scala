@@ -1107,8 +1107,8 @@ object BootstrapService:
         current = themes.find(_.id == defaultThemeId)
         css <- readResource("forms/common.css")
         _ <- current match
-          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None))
-          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId))
+          case None => themeRepo.create(ThemeRecord(defaultThemeId, css, None, tokens = None))
+          case Some(theme) if theme.css != css => themeRepo.update(ThemeRecord(defaultThemeId, css, theme.tenantId, tokens = None))
           case Some(_) => ZIO.unit
       yield ()
 
@@ -1235,6 +1235,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = credential.issueEdgeClientCertificate,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // Issued by central: `register` takes the profile enforcement as it is, which for the one
       // credential that issues (tls_client_auth) is the enforcement `conformant` asks for anyway.
@@ -1289,6 +1290,7 @@ object BootstrapService:
                   if credential.issueEdgeClientCertificate then None
                   else Some(credential.edgeClientCertificate.fold(Patch.Deleted)(Patch.Modified(_))),
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)
@@ -1349,6 +1351,7 @@ object BootstrapService:
         applicationType = None,
         issueEdgeClientCertificate = false,
         enrollEdgeClientCertificate = false,
+        themeOverrides = None,
       )
       // #353: a `client_secret` service client, which the default tenant's FAPI 2.0 profile
       // does not admit, is still seeded for a deployment that configured no key for it.
@@ -1399,6 +1402,7 @@ object BootstrapService:
                 edgeSigningKey = None,
                 edgeClientCertificate = None,
                 applicationType = None,
+                themeOverrides = None,
               ),
               enforceSecurityProfile = credential.conformant,
             ).mapError(registrationConfigurationError)

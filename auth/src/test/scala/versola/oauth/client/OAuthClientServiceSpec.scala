@@ -78,6 +78,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val privateClient2 = OAuthClientRecord(
     id = clientId2,
@@ -108,6 +109,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val publicClient = OAuthClientRecord(
     id = publicClientId,
@@ -138,6 +140,7 @@ object OAuthClientServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
   val testClients = Map(clientId1 -> privateClient1, clientId2 -> privateClient2, publicClientId -> publicClient)
   val testScopes = Vector(

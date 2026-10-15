@@ -113,6 +113,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     applicationType = Some(ApplicationType.native),
     issueEdgeClientCertificate = true,
     enrollEdgeClientCertificate = false,
+    themeOverrides = None,
   )
 
   private def record =
@@ -151,6 +152,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
       template = None,
       createdAt = registeredAt,
       applicationType = ApplicationType.native,
+      themeOverrides = None,
     )
 
   private val config =
@@ -193,6 +195,7 @@ object ClientCertificateServiceSpec extends ZIOSpecDefault, ZIOStubs:
     edgeSigningKey = None,
     edgeClientCertificate = None,
     applicationType = None,
+    themeOverrides = None,
   )
 
   def spec = suite("ClientCertificateService")(
