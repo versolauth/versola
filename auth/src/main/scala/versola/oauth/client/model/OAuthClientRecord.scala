@@ -84,7 +84,7 @@ case class OAuthClientRecord(
       * before central sent the field. */
     applicationType: ApplicationType = ApplicationType.web,
     /** What this client changes in the theme it uses, laid over it on its sign-in pages. */
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives CanEqual, Equal:
 
   /** Whether this client's credential card can lead to account creation: it asks for an email or

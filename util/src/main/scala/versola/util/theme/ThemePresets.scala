@@ -38,9 +38,10 @@ object ThemePresets:
     find(tokens.base)
       .toRight(s"The base is not a built-in theme (${all.map(_.id).mkString(", ")})")
       .map: base =>
+        val overrides = tokens.overrides.getOrElse(ThemeOverrides.empty)
         ResolvedTokens(
-          brand = tokens.overrides.brand.getOrElse(base.tokens.brand),
-          shape = tokens.overrides.shape.getOrElse(base.tokens.shape),
-          surface = tokens.overrides.surface.getOrElse(base.tokens.surface),
-          mode = tokens.overrides.mode.getOrElse(base.tokens.mode),
+          brand = overrides.brand.getOrElse(base.tokens.brand),
+          shape = overrides.shape.getOrElse(base.tokens.shape),
+          surface = overrides.surface.getOrElse(base.tokens.surface),
+          mode = overrides.mode.getOrElse(base.tokens.mode),
         )

@@ -66,6 +66,7 @@ object LogoutServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val clientNoLogoutUri = baseClient
@@ -104,7 +105,7 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.sessionService.invalidate.succeedsWith(None)
           result <- env.service.logout(Right(rawSessionId), Some(redirectUri), Some("st-1"))
         yield assertTrue(
-          result == LogoutService.LogoutResult(Nil, None, Some("st-1")),
+          result == LogoutService.LogoutResult(Nil, None, Some("st-1"), clientId = None),
           env.configuration.find.calls.isEmpty,
         )
       },

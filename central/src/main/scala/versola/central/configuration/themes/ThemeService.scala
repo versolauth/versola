@@ -60,7 +60,7 @@ object ThemeService:
       for
         resolved <- ZIO.fromEither(ThemePresets.resolve(request.tokens)).mapError(IllegalArgumentException(_))
       yield RenderThemeResponse(
-        css = ThemeCss.compose(ThemeCss.baseStylesheet, resolved, request.css),
+        css = ThemeCss.compose(ThemeCss.baseStylesheet, resolved, request.css.getOrElse("")),
         generated = ThemeCss.generate(resolved),
       )
 

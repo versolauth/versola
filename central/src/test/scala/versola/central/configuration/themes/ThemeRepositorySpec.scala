@@ -22,14 +22,14 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         yield assertTrue(all.isEmpty)
       },
       test("create stores a global theme with no tenant") {
-        val theme = ThemeRecord("dark", "body { color: white; }", None)
+        val theme = ThemeRecord("dark", "body { color: white; }", None, tokens = None)
         for
           _ <- env.repository.create(theme)
           all <- env.repository.getAll
         yield assertTrue(all == Vector(theme))
       },
       test("create stores a theme scoped to a tenant") {
-        val theme = ThemeRecord("brand", "body { color: blue; }", Some(tenantId))
+        val theme = ThemeRecord("brand", "body { color: blue; }", Some(tenantId), tokens = None)
         for
           _ <- env.repository.create(theme)
           all <- env.repository.getAll
@@ -37,13 +37,13 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
       },
       test("getAll orders by id and includes every theme") {
         for
-          _ <- env.repository.create(ThemeRecord("zeta", "a", None))
-          _ <- env.repository.create(ThemeRecord("alpha", "b", None))
+          _ <- env.repository.create(ThemeRecord("zeta", "a", None, tokens = None))
+          _ <- env.repository.create(ThemeRecord("alpha", "b", None, tokens = None))
           all <- env.repository.getAll
         yield assertTrue(all.map(_.id) == Vector("alpha", "zeta"))
       },
       test("update replaces the css but leaves the original tenant untouched") {
-        val theme = ThemeRecord("dark", "body { color: white; }", Some(tenantId))
+        val theme = ThemeRecord("dark", "body { color: white; }", Some(tenantId), tokens = None)
         for
           _ <- env.repository.create(theme)
           _ <- env.repository.update(theme.copy(css = "body { color: black; }", tenantId = None))
@@ -51,7 +51,7 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         yield assertTrue(all == Vector(theme.copy(css = "body { color: black; }")))
       },
       test("create stores the tokens of a theme built from them, and reads them back whole") {
-        val tokens = ThemeTokens("studio", ThemeOverrides(BrandColor.parse("#112233").toOption, Some(Shape.sharp), None, Some(Mode.dark)))
+        val tokens = ThemeTokens("studio", Some(ThemeOverrides(BrandColor.parse("#112233").toOption, Some(Shape.sharp), None, Some(Mode.dark))))
         val theme = ThemeRecord("studio-dark", "a { color: red; }", Some(tenantId), Some(tokens))
         for
           _ <- env.repository.create(theme)
@@ -59,15 +59,15 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         yield assertTrue(all == Vector(theme))
       },
       test("a theme stored without tokens reads back without them") {
-        val theme = ThemeRecord("plain", "body {}", None)
+        val theme = ThemeRecord("plain", "body {}", None, tokens = None)
         for
           _ <- env.repository.create(theme)
           all <- env.repository.getAll
         yield assertTrue(all.map(_.tokens) == Vector(None))
       },
       test("update changes the tokens, and can turn a token theme back into a plain stylesheet") {
-        val theme = ThemeRecord("brand", "", None, Some(ThemeTokens("fintech")))
-        val retokened = ThemeTokens("berry", ThemeOverrides(mode = Some(Mode.light)))
+        val theme = ThemeRecord("brand", "", None, Some(ThemeTokens("fintech", overrides = None)))
+        val retokened = ThemeTokens("berry", Some(ThemeOverrides(mode = Some(Mode.light), brand = None, shape = None, surface = None)))
         for
           _ <- env.repository.create(theme)
           _ <- env.repository.update(theme.copy(tokens = Some(retokened)))
@@ -80,7 +80,7 @@ trait ThemeRepositorySpec extends DatabaseSpecBase[ThemeRepositorySpec.Env]:
         )
       },
       test("delete removes the theme") {
-        val theme = ThemeRecord("dark", "body { color: white; }", None)
+        val theme = ThemeRecord("dark", "body { color: white; }", None, tokens = None)
         for
           _ <- env.repository.create(theme)
           _ <- env.repository.delete("dark")

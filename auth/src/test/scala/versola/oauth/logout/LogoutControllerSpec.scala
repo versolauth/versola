@@ -53,6 +53,7 @@ object LogoutControllerSpec extends UnitSpecBase:
     logoutUris = List(logoutUri),
     postLogoutRedirectUri = Some(redirectUri),
     state = Some("st-1"),
+    clientId = None,
   )
 
   private def sessionCookieHeader(id: SessionId = rawSessionId): Header.Cookie =

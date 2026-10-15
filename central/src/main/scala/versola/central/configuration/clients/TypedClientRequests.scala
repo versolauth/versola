@@ -61,7 +61,7 @@ case class CreateWebClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -136,7 +136,7 @@ case class CreateNativeClientRequest(
     edgeClientCertificate: Option[PrivateClientCertificate] = None,
     issueEdgeClientCertificate: Boolean,
     enrollEdgeClientCertificate: Boolean,
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toCreateClientRequest: CreateClientRequest =
     CreateClientRequest(
@@ -235,6 +235,7 @@ case class CreateServiceClientRequest(
       applicationType = Some(ApplicationType.web),
       issueEdgeClientCertificate = false,
       enrollEdgeClientCertificate = false,
+      themeOverrides = None,
     )
 
 // An update names the client and what changes. The client's kind, its `authMethod` and what a
@@ -268,7 +269,7 @@ case class UpdateWebClientRequest(
     requirePushedAuthorizationRequests: Option[Boolean],
     edgeSigningKey: Option[Patch[PrivateJsonWebKey]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -332,6 +333,7 @@ object UpdateWebClientRequest:
       requirePushedAuthorizationRequests = None,
       edgeSigningKey = None,
       edgeClientCertificate = None,
+      themeOverrides = None,
     )
 
 @jsonNoExtraFields
@@ -356,7 +358,7 @@ case class UpdateNativeClientRequest(
     dpopSigningAlgs: Option[Set[Dpop.Algorithm]],
     dpopMinRsaKeySize: Option[Patch[Int]],
     edgeClientCertificate: Option[Patch[PrivateClientCertificate]],
-    themeOverrides: Option[ThemeOverrides] = None,
+    themeOverrides: Option[ThemeOverrides],
 ) derives Schema, JsonCodec:
   def toUpdateClientRequest: UpdateClientRequest =
     UpdateClientRequest(
@@ -414,6 +416,7 @@ object UpdateNativeClientRequest:
       dpopSigningAlgs = None,
       dpopMinRsaKeySize = None,
       edgeClientCertificate = None,
+      themeOverrides = None,
     )
 
 @jsonNoExtraFields
@@ -461,6 +464,7 @@ case class UpdateServiceClientRequest(
       edgeSigningKey = None,
       edgeClientCertificate = None,
       applicationType = None,
+      themeOverrides = None,
     )
 
 object UpdateServiceClientRequest:

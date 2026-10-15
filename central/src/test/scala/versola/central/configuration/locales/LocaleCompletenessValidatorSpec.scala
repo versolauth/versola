@@ -50,6 +50,7 @@ object LocaleCompletenessValidatorSpec extends ZIOSpecDefault, ZIOStubs:
     edgeClientCertificate = None,
     template = None,
     createdAt = Instant.EPOCH,
+    themeOverrides = None,
   )
   private val scope = ScopeRecord(
     tenantId,

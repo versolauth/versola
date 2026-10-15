@@ -305,7 +305,12 @@ export class VersolaThemeEdit extends LitElement {
   private previewSrcdoc(): string {
     const form = this.previewForm;
     if (!form) return '';
-    const scheme = this.previewDark && (this.resolved?.mode ?? 'auto') === 'auto' ? ':root{color-scheme:dark}' : '';
+    // The preview frame follows the operator's own device scheme unless told otherwise, so Light has to be forced too: on a dark
+    // device it would otherwise show the dark card. A theme with a fixed scheme keeps it, and a stylesheet theme decides for itself.
+    const auto = this.kind === 'tokens' && (this.resolved?.mode ?? 'auto') === 'auto';
+    const scheme = auto ? `:root{color-scheme:${this.previewDark ? 'dark' : 'light'}}` : this.previewDark ? ':root{color-scheme:dark}' : '';
+    // Until central has answered there is no stylesheet: a frame drawn now would flash unstyled.
+    if (this.kind === 'tokens' && this.renderedCss === '') return '';
     return buildPreviewSrcdoc({
       formId: form.id,
       properties: form.properties,
