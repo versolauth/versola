@@ -2,9 +2,10 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles } from '../styles/components';
-import type { BackendProperty, Locale, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
+import type { BackendProperty, Locale, FormPreview, FormRecord, StringArrayProperty, ThemeRecord } from '../types';
 import { updateForm } from '../utils/central-api';
 import { buildPreviewSrcdoc } from '../utils/preview';
+import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
 import './code-editor';
@@ -15,6 +16,8 @@ export class VersolaFormEdit extends LitElement {
   @property({ type: Object }) form!: FormRecord;
   @property({ type: Array }) locales: Locale[] = [];
   @property({ type: Array }) themes: ThemeRecord[] = [];
+  // The states central lists for the built-in forms (all forms; this one's are picked by its id).
+  @property({ type: Array }) previews: FormPreview[] = [];
 
   @state() private editId = '';
   @state() private activeLocale = '';
@@ -24,6 +27,7 @@ export class VersolaFormEdit extends LitElement {
   @state() private previewOpen = false;
   @state() private previewWidth = 0;
   @state() private previewTheme = '';
+  @state() private previewScenarioId = '';
   @state() private editStyle = '';
   @state() private editJsSource = '';
   @state() private editJsCompiled = '';
@@ -163,12 +167,19 @@ export class VersolaFormEdit extends LitElement {
     return false;
   }
 
+  // A built-in form is previewed from central's list of its states; a custom form has none and is
+  // previewed from the backend properties its author defines below.
+  private get scenarios() {
+    return this.previews.find(p => p.formId === this.editId)?.scenarios ?? [];
+  }
+
   private buildPreviewSrcdoc(): string {
     const themeId = this.previewTheme || this.themes.find(t => t.id === 'default')?.id || this.themes[0]?.id || '';
     return buildPreviewSrcdoc({
       formId: this.editId,
       properties: this.editProperties,
       getValue: p => this.effectivePropValue(p),
+      scenario: pickScenario(this.scenarios, this.previewScenarioId),
       localizations: this.editLocalizations,
       locale: this.previewLocale || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
@@ -360,7 +371,7 @@ export class VersolaFormEdit extends LitElement {
           </div>
 
           <div>
-            ${this.renderPropertyEditor()}
+            ${this.scenarios.length > 0 ? nothing : this.renderPropertyEditor()}
           </div>
         </div>
 
@@ -379,7 +390,13 @@ export class VersolaFormEdit extends LitElement {
             </div>
           ` : nothing}
 
-          ${this.editProperties.map(prop => {
+          ${renderScenarioControl(
+            this.scenarios,
+            pickScenario(this.scenarios, this.previewScenarioId)?.id ?? '',
+            id => { this.previewScenarioId = id; },
+          )}
+
+          ${this.scenarios.length > 0 ? nothing : this.editProperties.map(prop => {
             const val = this.effectivePropValue(prop);
             if (prop.type === 'BooleanProperty') {
               return html`

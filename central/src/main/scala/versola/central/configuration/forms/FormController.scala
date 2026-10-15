@@ -13,6 +13,7 @@ object FormController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(
     getAllFormsEndpoint,
+    getFormPreviewsEndpoint,
     syncFormsEndpoint,
     updateFormEndpoint,
     setActiveVersionEndpoint,
@@ -25,6 +26,13 @@ object FormController extends Controller:
         service <- ZIO.service[FormService]
         forms <- service.getAllForms
       yield Response.json(GetAllFormsResponse(forms).toJson)
+    }
+
+  /** The states of the built-in forms the console previews, with realistic data; see [[FormPreviews]]. */
+  val getFormPreviewsEndpoint =
+    Method.GET / "configuration" / "forms" / "previews" -> handler { (request: Request) =>
+      for _ <- authorizeBasic(request)
+      yield Response.json(FormPreviews.response.toJson)
     }
 
   val syncFormsEndpoint =

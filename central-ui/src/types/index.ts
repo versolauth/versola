@@ -429,6 +429,20 @@ export interface NumberProperty {
 
 export type BackendProperty = BooleanProperty | StringArrayProperty | NumberProperty;
 
+// One state of a built-in form, as central lists it: the `step` the form receives (shaped like the
+// step auth serialises) and the error key shown above it. Fixed by the central build.
+export interface FormPreviewScenario {
+  id: string;
+  title: Record<string, string>;
+  step: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface FormPreview {
+  formId: string;
+  scenarios: FormPreviewScenario[];
+}
+
 // Auth Forms
 export interface FormRecord {
   id: string;

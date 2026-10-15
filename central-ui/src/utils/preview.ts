@@ -1,4 +1,4 @@
-import type { BackendProperty } from '../types';
+import type { BackendProperty, FormPreviewScenario } from '../types';
 
 // Builds the `step` object injected into a form preview generically from the
 // form's `properties`. Each property name becomes a step field, matching the
@@ -20,6 +20,9 @@ export interface PreviewSrcdocParams {
   formId: string;
   properties: BackendProperty[];
   getValue: (prop: BackendProperty) => string | boolean | number | string[];
+  /** A scenario listed by central for this form: its step and error are used as they are, and the
+   *  form's backend properties are not consulted. */
+  scenario?: FormPreviewScenario;
   localizations: Record<string, Record<string, string>>;
   locale: string;
   locales: string[];
@@ -29,12 +32,18 @@ export interface PreviewSrcdocParams {
   previewId?: string;
 }
 
+/** A scenario's name in the given language, else English, else its id. */
+export function scenarioTitle(scenario: FormPreviewScenario, locale = 'en'): string {
+  return scenario.title[locale] ?? scenario.title.en ?? scenario.id;
+}
+
 // Builds the full iframe `srcdoc` HTML for a form preview. Shared by the form
 // edit screen and the forms list version cards so both render previews
 // identically.
 export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
   const configJson = JSON.stringify({
-    step: buildPreviewStep(params.formId, params.properties, params.getValue),
+    step: params.scenario?.step ?? buildPreviewStep(params.formId, params.properties, params.getValue),
+    error: params.scenario?.error ?? undefined,
     t: params.localizations[params.locale] ?? {},
     locale: params.locale,
     locales: params.locales,
