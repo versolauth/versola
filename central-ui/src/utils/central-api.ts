@@ -1397,8 +1397,8 @@ export async function fetchForms(): Promise<FormRecord[]> {
   return response.forms;
 }
 
-// The states of the built-in forms that central previews. A central without this endpoint answers
-// with an error; the console then previews every form from its backend properties, as before.
+// The states of the built-in forms that central previews. A failure here fails the screen's load
+// and is shown as its error; there is no fallback that guesses the states.
 export async function fetchFormPreviews(): Promise<FormPreview[]> {
   const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
   return response.previews;
@@ -1465,8 +1465,8 @@ export async function updateTheme(theme: ThemeRecord): Promise<void> {
   });
 }
 
-// The built-in themes a theme can be based on. A central that has none answers with an error; the
-// console then offers only themes written as CSS, as before.
+// The built-in themes a theme can be based on; a failure fails the screen's load and is shown
+// as its error; there is no reduced editor.
 export async function fetchThemePresets(): Promise<ThemePreset[]> {
   const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
   return response.presets;

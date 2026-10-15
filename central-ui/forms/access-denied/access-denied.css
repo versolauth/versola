@@ -2,7 +2,7 @@
   width: 64px;
   height: 64px;
   border-radius: 50%;
-  background: color-mix(in oklab, var(--danger) 16%, var(--card-bg));
+  background: color-mix(in oklab, var(--danger) 16%, var(--sheet));
   display: flex;
   align-items: center;
   justify-content: center;
@@ -20,4 +20,4 @@
   color: var(--text-muted);
   margin: -14px 0 28px;
   line-height: 1.6;
-  }
+}

@@ -255,7 +255,7 @@ test('the preview names languages as configured under Locales, not by their code
   const trigger = page.frameLocator('iframe.preview-iframe').locator('.locale-trigger');
   await expect(trigger).toHaveText('English (US)');
   await trigger.click();
-  await expect(page.frameLocator('iframe.preview-iframe').getByRole('button', { name: 'Русский язык', exact: true })).toBeVisible();
+  await expect(page.frameLocator('iframe.preview-iframe').getByRole('option', { name: 'Русский язык', exact: true })).toBeVisible();
 });
 
 test('previews a form central lists nothing for from its own backend properties', async ({ page }) => {
