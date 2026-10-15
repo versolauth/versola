@@ -66,6 +66,10 @@ type FormDto = {
   localizations: Record<string, Record<string, string>>;
   properties: FormPropertyDto[];
 };
+type FormPreviewDto = {
+  formId: string;
+  scenarios: Array<{ id: string; title: Record<string, string>; step: Record<string, unknown>; error?: string }>;
+};
 type FormLocaleDto = { code: string; name: string };
 type ThemeDto = { id: string; css: string; tenantId: string | null };
 type SystemSettingsDto = { passwordRegex: string; passwordHistorySize: number; passwordNumDifferent: number; identityProviderLogo?: string | null };
@@ -281,6 +285,8 @@ export type MockConfigState = {
   authorizationPresets: Record<string, AuthorizationPresetDto[]>; // keyed by clientId
   users: UserDto[];
   forms: FormDto[];
+  // The states central lists for the built-in forms; null stands for a central that has no such endpoint.
+  formPreviews: FormPreviewDto[] | null;
   formLocales: FormLocaleDto[];
   themes: ThemeDto[];
   systemSettings: SystemSettingsDto;
@@ -349,6 +355,7 @@ const defaultState: MockConfigState = {
   authorizationPresets: {},
   users: [],
   forms: [],
+  formPreviews: [],
   formLocales: [],
   themes: [],
   systemSettings: {
@@ -382,6 +389,7 @@ function mergeState(overrides: Partial<MockConfigState> = {}): MockConfigState {
     roles: clone({ ...defaultState.roles, ...overrides.roles }),
     users: clone(overrides.users ?? defaultState.users),
     forms: clone(overrides.forms ?? defaultState.forms),
+    formPreviews: clone(overrides.formPreviews === undefined ? defaultState.formPreviews : overrides.formPreviews),
     formLocales: clone(overrides.formLocales ?? defaultState.formLocales),
     themes: clone(overrides.themes ?? defaultState.themes),
     systemSettings: clone(overrides.systemSettings ?? defaultState.systemSettings),
@@ -1149,6 +1157,15 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
 
       edge.hasOldKey = false;
       await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+
+    if (pathname === '/configuration/forms/previews' && method === 'GET') {
+      if (state.formPreviews === null) {
+        await route.fulfill({ status: 404, body: '' });
+        return;
+      }
+      await route.fulfill(json({ previews: state.formPreviews }));
       return;
     }
 

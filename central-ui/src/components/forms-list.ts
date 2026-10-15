@@ -2,8 +2,9 @@ import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import type { BackendProperty, Locale, FormRecord, ThemeRecord } from '../types';
+import type { BackendProperty, Locale, FormRecord, FormPreview, ThemeRecord } from '../types';
 import {
+  fetchFormPreviews,
   fetchForms,
   fetchLocales,
   fetchThemes,
@@ -15,6 +16,7 @@ import './content-header';
 import './error-card';
 import './loading-cards';
 import './code-editor';
+import { pickScenario, renderScenarioControl } from './preview-scenarios';
 import './form-edit';
 import './theme-edit';
 
@@ -26,6 +28,8 @@ export class VersolaFormsList extends LitElement {
   @state() private forms: FormRecord[] = [];
   @state() private locales: Locale[] = [];
   @state() private themes: ThemeRecord[] = [];
+  // The states central lists for the built-in forms; empty from a central that does not list them.
+  @state() private previews: FormPreview[] = [];
 
   @state() private isLoading = false;
   @state() private errorMessage = '';
@@ -38,6 +42,7 @@ export class VersolaFormsList extends LitElement {
   @state() private previewProps: Record<string, Record<string, string | boolean | number | string[]>> = {};
   @state() private previewWidth: Record<string, number> = {};
   @state() private previewTheme: Record<string, string> = {};
+  @state() private previewScenario: Record<string, string> = {};
 
   private static readonly WIDTH_PRESETS = [
     { label: 'Mobile', width: 390 },
@@ -487,15 +492,17 @@ export class VersolaFormsList extends LitElement {
     this.isLoading = true;
     this.errorMessage = '';
     try {
-      const [forms, locales, themes] = await Promise.all([
+      const [forms, locales, themes, previews] = await Promise.all([
         fetchForms(),
         fetchLocales(),
         this.tenantId ? fetchThemes(this.tenantId) : Promise.resolve([]),
+        fetchFormPreviews(),
       ]);
       // Sort by id and version desc
       this.forms = forms.sort((a, b) => a.id.localeCompare(b.id) || b.version - a.version);
       this.locales = locales;
       this.themes = themes;
+      this.previews = previews;
     } catch (error) {
       this.errorMessage = error instanceof Error ? error.message : 'Failed to load forms';
     } finally {
@@ -557,6 +564,14 @@ export class VersolaFormsList extends LitElement {
     this.previewWidth = { ...this.previewWidth, [key]: width };
   }
 
+  private scenariosFor(formId: string) {
+    return this.previews.find(p => p.formId === formId)?.scenarios ?? [];
+  }
+
+  private setPreviewScenario(key: string, scenarioId: string) {
+    this.previewScenario = { ...this.previewScenario, [key]: scenarioId };
+  }
+
   private setPreviewTheme(key: string, themeId: string) {
     this.previewTheme = { ...this.previewTheme, [key]: themeId };
   }
@@ -575,6 +590,7 @@ export class VersolaFormsList extends LitElement {
       formId: form.id,
       properties: form.properties,
       getValue: p => this.effectivePropValue(key, p),
+      scenario: pickScenario(this.scenariosFor(form.id), this.previewScenario[key]),
       localizations: form.localizations,
       locale: this.previewLocale[key] || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
@@ -625,7 +641,13 @@ export class VersolaFormsList extends LitElement {
                 </div>
               ` : nothing}
 
-              ${form.properties.map(prop => {
+              ${renderScenarioControl(
+                this.scenariosFor(form.id),
+                pickScenario(this.scenariosFor(form.id), this.previewScenario[key])?.id ?? '',
+                id => this.setPreviewScenario(key, id),
+              )}
+
+              ${this.scenariosFor(form.id).length > 0 ? nothing : form.properties.map(prop => {
                 const val = this.effectivePropValue(key, prop);
                 if (prop.type === 'BooleanProperty') {
                   return html`
@@ -790,6 +812,7 @@ export class VersolaFormsList extends LitElement {
           .form=${this.editingForm}
           .locales=${this.locales}
           .themes=${this.themes}
+          .previews=${this.previews}
           @cancel=${() => this.handleFormEditCancel()}
           @submit=${(e: CustomEvent<{ form: FormRecord }>) => this.handleFormEditSubmit(e)}
         ></versola-form-edit>

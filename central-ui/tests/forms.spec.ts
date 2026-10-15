@@ -249,3 +249,81 @@ test('keeps authorization form cards vertical', async ({ page }) => {
   expect(dimensions.display).toBe('flex');
   expect(dimensions.justifyContent).toBe('center');
 });
+
+const credentialStates = {
+  formId: 'credential',
+  scenarios: [
+    { id: 'email-password', title: { en: 'Email and password', ru: 'Email и пароль' }, step: { type: 'credential', primaryCredentials: ['email'], inlinePassword: true, passkey: false, registration: false } },
+    { id: 'wrong-password', title: { en: 'Wrong password' }, step: { type: 'credential', primaryCredentials: ['login'], inlinePassword: false, passkey: false, registration: false }, error: 'login_failed' },
+  ],
+};
+
+const previewSrcdoc = (page: Page) => page.locator('iframe.preview-iframe').evaluate((frame: HTMLIFrameElement) => frame.srcdoc);
+
+test('previews a built-in form from the states central lists, not from backend properties', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: [credentialStates] } });
+  await expandCredential(page);
+  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
+
+  await expect(page.getByRole('group', { name: 'Preview state' }).getByRole('button')).toHaveText(['Email and password', 'Wrong password']);
+  // Its backend properties no longer drive the preview, so their controls are gone.
+  await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  expect(await previewSrcdoc(page)).toContain('"primaryCredentials":["email"]');
+
+  await page.getByRole('button', { name: 'Wrong password' }).click();
+  const srcdoc = await previewSrcdoc(page);
+  expect(srcdoc).toContain('"primaryCredentials":["login"]');
+  expect(srcdoc).toContain('"error":"login_failed"');
+});
+
+test('previews a form central lists nothing for from its own backend properties', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: [{ formId: 'consent', scenarios: [] }] } });
+  await expandCredential(page);
+  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
+
+  await expect(page.getByRole('group', { name: 'Preview state' })).toHaveCount(0);
+  await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
+});
+
+test('keeps previewing from backend properties when central has no list of states', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: null } });
+  await expandCredential(page);
+  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
+
+  await expect(page.getByRole('group', { name: 'Preview state' })).toHaveCount(0);
+  await expect(page.locator('.ctrl-label', { hasText: 'Show Remember' })).toBeVisible();
+});
+
+test('the new-version editor previews a built-in form from the listed states and hides its property authoring', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: [credentialStates] } });
+  await expandCredential(page);
+  await page.getByRole('button', { name: 'New Version', exact: true }).click();
+
+  await expect(page.getByRole('group', { name: 'Preview state' }).getByRole('button')).toHaveText(['Email and password', 'Wrong password']);
+  await expect(page.getByText('Backend Properties', { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await page.getByRole('button', { name: 'Wrong password' }).click();
+  expect(await previewSrcdoc(page)).toContain('"error":"login_failed"');
+});
+
+test('the new-version editor keeps the property authoring for a form with no listed states', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: fullState });
+  await expandCredential(page);
+  await page.getByRole('button', { name: 'New Version', exact: true }).click();
+
+  await expect(page.getByText('Backend Properties', { exact: true })).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Preview state' })).toHaveCount(0);
+});
+
+test('saving a new version of a built-in form keeps its stored backend properties', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: formsPath, state: { ...fullState, formPreviews: [credentialStates] } });
+  await expandCredential(page);
+  await page.getByRole('button', { name: 'New Version', exact: true }).click();
+  await page.getByRole('button', { name: 'Save as new version', exact: true }).click();
+  await page.waitForTimeout(300);
+
+  expect((await findRequest(api.requests, 'PUT', '/configuration/forms')).body).toMatchObject({ properties: credentialV1.properties });
+});

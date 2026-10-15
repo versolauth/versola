@@ -7,6 +7,7 @@ import type {
   BackendProperty,
   Edge,
   Locale,
+  FormPreview,
   FormRecord,
   OtpTemplateRecord,
   ChallengeSettingsRecord,
@@ -1378,6 +1379,17 @@ export async function deleteEdge(edgeId: string): Promise<void> {
 export async function fetchForms(): Promise<FormRecord[]> {
   const response = await request<{ forms: FormRecord[] }>('/configuration/forms');
   return response.forms;
+}
+
+// The states of the built-in forms that central previews. A central without this endpoint answers
+// with an error; the console then previews every form from its backend properties, as before.
+export async function fetchFormPreviews(): Promise<FormPreview[]> {
+  try {
+    const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
+    return response.previews;
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchLocales(): Promise<Locale[]> {

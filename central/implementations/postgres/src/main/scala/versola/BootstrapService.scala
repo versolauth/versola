@@ -422,6 +422,7 @@ object BootstrapService:
       localized("View forms", "Просмотр форм"),
       Set(
         endpointId("GET", "/configuration/forms"),
+        endpointId("GET", "/configuration/forms/previews"),
       ),
     ),
     (
@@ -847,6 +848,7 @@ object BootstrapService:
     "POST" -> "/configuration/edges/rotate-key",
     "DELETE" -> "/configuration/edges/old-key",
     "GET" -> "/configuration/forms",
+    "GET" -> "/configuration/forms/previews",
     "PUT" -> "/configuration/forms",
     "PUT" -> "/configuration/forms/active",
     "GET" -> "/configuration/jwks",
