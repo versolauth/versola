@@ -525,6 +525,62 @@ test.describe('consent', () => {
   });
 });
 
+test.describe('consent, with the seeded scope catalog', () => {
+  // Shaped as ConversationRenderService builds it from BootstrapService.scopeCatalog.
+  const row = (scope: string, description: string, claims: string[], deselectable: boolean) => ({
+    scope, description, descriptionLocalizations: { en: description }, claims, claimLocalizations: claims.map(en => ({ en })), deselectable,
+  });
+  const scopes = [
+    row('openid', 'OpenID Connect authentication', ['Unique identifier of the user'], false),
+    row('address', 'Postal address', ['Postal address'], true),
+    row('email', 'Email address', ['Email address', 'Email address verification status'], true),
+    row('offline_access', 'Long-lived access', [], false),
+    row('phone', 'Phone number', ['Phone number', 'Phone number verification status'], true),
+    row('profile', 'Basic profile information', ['Full name', 'Family name', 'Given name', 'Profile picture URL', 'Locale', 'Time zone', 'Gender', 'Date of birth'], true),
+  ];
+  const step = { type: 'consent', clientName: 'Acme', allowPartial: true, denyUri: '/d', scopes };
+
+  test('shows every requested scope instead of hiding some behind a scroll box', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 640 });
+    await renderForm(page, 'consent', { step });
+
+    const box = page.locator('.consent-scopes-container');
+    expect(await box.evaluate(el => el.scrollHeight - el.clientHeight)).toBeLessThanOrEqual(0);
+    await expect(page.locator('.consent-scope')).toHaveCount(6);
+    await page.getByLabel('Basic profile information').scrollIntoViewIfNeeded();
+    await expect(page.getByLabel('Basic profile information')).toBeInViewport();
+  });
+
+  test('does not repeat a scope\'s own name as its claim', async ({ page }) => {
+    await renderForm(page, 'consent', { step });
+
+    await expect(page.locator('.consent-scope', { hasText: 'Postal address' }).locator('.consent-scope-claims')).toHaveCount(0);
+    await expect(page.locator('.consent-scope', { hasText: 'Phone number' }).locator('.consent-scope-claims'))
+      .toHaveText('Phone number verification status');
+  });
+
+  test('says which scopes are required when the user may drop the others', async ({ page }) => {
+    const { t } = await renderForm(page, 'consent', { step });
+
+    await expect(page.locator('.consent-scope-required')).toHaveCount(2);
+    await expect(page.locator('.consent-scope', { hasText: 'Long-lived access' }).locator('.consent-scope-required')).toHaveText(t.required);
+
+    const all = await page.context().newPage();
+    await renderForm(all, 'consent', { step: { ...step, allowPartial: false, scopes: scopes.map(s => ({ ...s, deselectable: false })) } });
+    await expect(all.locator('.consent-scope-required')).toHaveCount(0);
+  });
+
+  for (const scheme of ['light', 'dark'] as const) {
+    test(`has no axe violations in the ${scheme} scheme`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: scheme });
+      await renderForm(page, 'consent', { step });
+
+      const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+      expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
+    });
+  }
+});
+
 test.describe('passkey-enroll', () => {
   const step = { type: 'passkey-enroll', publicKeyOptions: '{}' };
 

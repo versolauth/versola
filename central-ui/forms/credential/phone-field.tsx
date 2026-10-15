@@ -25,7 +25,7 @@ const Chevron = () => (
 
 const Check = () => (
   <svg viewBox="0 0 14 14" fill="none" aria-hidden="true">
-    <path d="M2.5 7.5l3 3 6-6.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M2.5 7.5l3 3 6-6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
   </svg>
 );
 

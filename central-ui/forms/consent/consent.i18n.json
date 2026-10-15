@@ -10,7 +10,8 @@
     "policy_link": "Privacy policy",
     "tos_link": "Terms of service",
     "invalid_consent": "That selection is not allowed. Please review the permissions and try again.",
-    "service_unavailable": "Service temporarily unavailable. Please try again later"
+    "service_unavailable": "Service temporarily unavailable. Please try again later",
+    "required": "Required"
   },
   "ru": {
     "page_title": "Авторизация",
@@ -23,6 +24,7 @@
     "policy_link": "Политика конфиденциальности",
     "tos_link": "Условия использования",
     "invalid_consent": "Такой выбор недопустим. Проверьте разрешения и попробуйте ещё раз.",
-    "service_unavailable": "Сервис временно недоступен. Попробуйте позже"
+    "service_unavailable": "Сервис временно недоступен. Попробуйте позже",
+    "required": "Обязательно"
   }
 }

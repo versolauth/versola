@@ -115,10 +115,11 @@ function ConsentForm(props: { config: FormConfig }) {
   const grantedScope = () => scopes.filter(s => selected().has(s.scope)).map(s => s.scope).join(' ');
   const scopeDescription = (scope: ConsentScope) =>
     scope.descriptionLocalizations?.[currentLocale()] || scope.description || scope.scope;
+  // A claim worded like its scope ("Postal address" under "Postal address") says nothing new.
   const claimDescriptions = (scope: ConsentScope) =>
     (scope.claimLocalizations ?? []).map((localizations, index) =>
       localizations[currentLocale()] || scope.claims[index] || '',
-    ).filter(Boolean);
+    ).filter(claim => claim && claim.trim().toLowerCase() !== scopeDescription(scope).trim().toLowerCase());
 
   return (
     <div class="container">
@@ -140,13 +141,8 @@ function ConsentForm(props: { config: FormConfig }) {
       <form method="post">
         <input type="hidden" name="csrf" value={props.config.csrf ?? ''} />
         <input type="hidden" name="scope" value={grantedScope()} />
-        <div
-          class="consent-scopes-container"
-          role="region"
-          aria-label={t().scopes_label ?? 'Requested scopes'}
-          tabindex="0"
-        >
-          <ul class="consent-scopes">
+        <div class="consent-scopes-container">
+          <ul class="consent-scopes" aria-label={t().scopes_label ?? 'Requested scopes'}>
             {scopes.map(s => (
               <li class="consent-scope">
                 <label class="consent-scope-label">
@@ -162,6 +158,9 @@ function ConsentForm(props: { config: FormConfig }) {
                       <span class="consent-scope-claims">{claimDescriptions(s).join(', ')}</span>
                     </Show>
                   </span>
+                  <Show when={step.allowPartial && !s.deselectable}>
+                    <span class="consent-scope-required">{t().required ?? 'Required'}</span>
+                  </Show>
                 </label>
               </li>
             ))}
