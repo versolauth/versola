@@ -370,6 +370,7 @@ object OAuthClientService:
         )
         _ <- validateSecurityProfile(client).when(enforceSecurityProfile)
         _ <- clientRepository.createClient(client)
+        _ <- refreshCached(request.id, SyncEvent.Op.INSERT)
       yield RegisteredClient(secret, registeredAt, generatedKey.map(_.privateKey))
 
     override def updateClient(
@@ -502,6 +503,7 @@ object OAuthClientService:
             themeOverrides = request.themeOverrides,
           ),
         )
+        _ <- refreshCached(request.clientId, SyncEvent.Op.UPDATE)
       yield ()
 
     override def findClient(clientId: ClientId): Task[Option[OAuthClientRecord]] =
@@ -552,7 +554,15 @@ object OAuthClientService:
         ZIO.fail(ClientHasNoSecret(clientId)).when(client.exists(!_.usesSecret)).unit
 
     override def deleteClient(clientId: ClientId): Task[Unit] =
-      clientRepository.deleteClient(clientId)
+      clientRepository.deleteClient(clientId) *> refreshCached(clientId, SyncEvent.Op.DELETE)
+
+    /** Applies a committed write to this cache right away. The `client_change` notification does
+      * the same, but asynchronously: a `/configuration/clients/sync` request that arrives in
+      * between would answer from the old list and auth would keep it until its next refresh.
+      * The write is already committed, so a failure here is logged and left to that notification. */
+    private def refreshCached(clientId: ClientId, op: SyncEvent.Op): UIO[Unit] =
+      sync(SyncEvent.ClientsUpdated(clientId, op)).catchAll: error =>
+        ZIO.logWarningCause("Client was written but its cache entry could not be refreshed", Cause.fail(error))
 
     override def sync(event: SyncEvent.ClientsUpdated): Task[Unit] =
       SyncOps.syncCache(event)(
