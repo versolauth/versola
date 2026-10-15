@@ -34,6 +34,34 @@ object ThemeCssSpec extends ZIOSpecDefault:
         )
       },
     ),
+    suite("indicator")(
+      test("keeps every built-in brand visible (3:1) on the light and on the dark card") {
+        def lum(colour: String) =
+          def part(from: Int) =
+            val unit = Integer.parseInt(colour.substring(from, from + 2), 16) / 255.0
+            if unit <= 0.03928 then unit / 12.92 else math.pow((unit + 0.055) / 1.055, 2.4)
+          0.2126 * part(1) + 0.7152 * part(3) + 0.0722 * part(5)
+        def ratio(a: Double, b: Double) = (math.max(a, b) + 0.05) / (math.min(a, b) + 0.05)
+        val darkCard = lum("#1f1f20")
+        val weak =
+          for
+            preset <- ThemePresets.all
+            isDark <- List(false, true)
+            shown = ThemeCss.indicator(preset.tokens.brand, isDark)
+            if ratio(lum(shown), if isDark then darkCard else 1.0) < 3.0
+          yield s"${preset.id}/${if isDark then "dark" else "light"}"
+        assertTrue(weak.isEmpty)
+      },
+      test("leaves a brand that is already visible alone") {
+        assertTrue(ThemeCss.indicator(colour("#155e75"), dark = false) == "#155e75")
+      },
+      test("darkens yellow on the light card and lightens near-black on the dark one") {
+        assertTrue(ThemeCss.indicator(colour("#f5c518"), dark = false) != "#f5c518", ThemeCss.indicator(colour("#14130f"), dark = true) != "#14130f")
+      },
+      test("is written as --focus for both schemes") {
+        assertTrue(ThemeCss.generate(resolved("#f5c518")).contains("--focus:light-dark("))
+      },
+    ),
     suite("generate")(
       test("writes the brand, the text on it and the corners") {
         val css = ThemeCss.generate(resolved("#ff6b4a", Shape.round))

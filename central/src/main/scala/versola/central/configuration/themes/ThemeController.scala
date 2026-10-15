@@ -94,8 +94,7 @@ object ThemeController extends Controller:
               Response
                 .json("""{"message":"Theme is in use by one or more clients and cannot be deleted"}""")
                 .status(Status.Conflict)
-          case e: IllegalArgumentException =>
-            ZIO.succeed(Response.json(s"""{"message":"${e.getMessage}"}""").status(Status.BadRequest))
+          case e: IllegalArgumentException => badRequest(e)
     }
 
   // What a refused theme answers: the reason, as a 400. The message is ours (a known base, a fixed sentence), never

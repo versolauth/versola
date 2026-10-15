@@ -197,7 +197,7 @@ test('the theme list says which themes are built from a base and which are style
 });
 
 test('offers only CSS themes when central has no built-in themes', async ({ page }) => {
-  const api = await newTheme(page, { themePresets: null });
+  const api = await newTheme(page, { themePresets: [] });
   await page.getByPlaceholder('e.g. default').fill('plain');
 
   await expect(page.getByRole('group', { name: 'Built as' })).toHaveCount(0);
@@ -245,7 +245,7 @@ test('shows the brand colour of a visual theme, its own override or its base\'s'
 });
 
 test('creates a theme written as a stylesheet from the page', async ({ page }) => {
-  const api = await newTheme(page, { themePresets: null });
+  const api = await newTheme(page, { themePresets: [] });
   await page.getByPlaceholder('e.g. default').fill('plain');
   await page.getByRole('button', { name: 'Create', exact: true }).click();
 

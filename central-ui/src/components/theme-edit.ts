@@ -25,7 +25,7 @@ const HEX = /^#?[0-9a-fA-F]{6}$/;
 const SWATCHES = ['#ff6b4a', '#e5484d', '#b4348a', '#5b5bd6', '#2563eb', '#0e9f8e', '#2f9e63', '#f5c518', '#14130f'];
 const SHAPES: Array<[ThemeShape, string]> = [['round', 'Round'], ['soft', 'Soft'], ['sharp', 'Sharp']];
 const SURFACES: Array<[ThemeSurface, string, string]> = [
-  ['bold', 'Bold', 'The brand colour fills the page'],
+  ['bold', 'Bold', 'A deep shade of the brand colour behind the card'],
   ['soft', 'Soft', 'A pale tint of the brand colour'],
   ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
 ];
@@ -55,6 +55,8 @@ export class VersolaThemeEdit extends LitElement {
 
   @state() private renderedCss = '';
   @state() private renderError = '';
+  // True from an edit until central answers with the stylesheet, so the preview is not mistaken for the current one.
+  @state() private rendering = false;
   @state() private previewFormId = '';
   @state() private previewScenarioId = '';
   @state() private previewWidth = 390;
@@ -216,8 +218,10 @@ export class VersolaThemeEdit extends LitElement {
     if (this.kind !== 'tokens' || !this.base) {
       this.renderedCss = this.editCss;
       this.renderError = '';
+      this.rendering = false;
       return;
     }
+    this.rendering = true;
     this.renderTimer = setTimeout(() => void this.renderNow(), 200);
   }
 
@@ -228,9 +232,11 @@ export class VersolaThemeEdit extends LitElement {
       if (seq !== this.renderSeq) return;
       this.renderedCss = rendered.css;
       this.renderError = '';
+      this.rendering = false;
     } catch (error) {
       if (seq !== this.renderSeq) return;
       this.renderError = error instanceof Error ? error.message : 'Could not render the theme';
+      this.rendering = false;
     }
   }
 
@@ -364,7 +370,7 @@ export class VersolaThemeEdit extends LitElement {
           <div class="hint">The accent: ticks, links, focus rings and the page tint. Text on it is chosen to stay readable.</div>
           <div class="swatches" role="group" aria-label="Brand colour">
             ${SWATCHES.map(c => html`
-              <button class="swatch ${resolved.brand === c ? 'sel' : ''}" style=${`background:${c}`} aria-label=${c}
+              <button class="swatch ${resolved.brand === c ? 'sel' : ''}" style=${`background:${c}`} aria-label=${c} aria-pressed=${resolved.brand === c ? 'true' : 'false'}
                 @click=${() => { this.brandText = c; this.setOverride('brand', c); }}></button>
             `)}
           </div>
@@ -457,7 +463,7 @@ export class VersolaThemeEdit extends LitElement {
           </div>
         </div>
         ${this.renderError ? html`<div class="render-error" role="alert">${this.renderError}</div>` : nothing}
-        <div class="preview-stage">
+        <div class="preview-stage" aria-busy=${this.rendering ? 'true' : 'false'} style=${this.rendering ? 'opacity:0.55;transition:opacity 0.15s' : 'transition:opacity 0.15s'}>
           <iframe class="preview-iframe" title="Preview" style=${`width:${this.previewWidth}px`}
             .srcdoc=${this.previewSrcdoc()} sandbox="allow-same-origin allow-scripts"></iframe>
         </div>
@@ -501,6 +507,7 @@ export class VersolaThemeEdit extends LitElement {
         ${isNew && this.presets.length > 0 ? html`
           <div>
             <label class="field-label">Built as</label>
+            <div class="hint">Chosen when the theme is created; it cannot be switched afterwards.</div>
             <div class="kind-toggle seg-control" role="group" aria-label="Built as">
               <button class="seg-btn ${tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('tokens')}>Visual</button>
               <button class="seg-btn ${!tokensKind ? 'seg-active' : ''}" @click=${() => this.setKind('css')}>Stylesheet</button>

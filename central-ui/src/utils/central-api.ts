@@ -1386,12 +1386,8 @@ export async function fetchForms(): Promise<FormRecord[]> {
 // The states of the built-in forms that central previews. A central without this endpoint answers
 // with an error; the console then previews every form from its backend properties, as before.
 export async function fetchFormPreviews(): Promise<FormPreview[]> {
-  try {
-    const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
-    return response.previews;
-  } catch {
-    return [];
-  }
+  const response = await request<{ previews: FormPreview[] }>('/configuration/forms/previews');
+  return response.previews;
 }
 
 export async function fetchLocales(): Promise<Locale[]> {
@@ -1458,12 +1454,8 @@ export async function updateTheme(theme: ThemeRecord): Promise<void> {
 // The built-in themes a theme can be based on. A central that has none answers with an error; the
 // console then offers only themes written as CSS, as before.
 export async function fetchThemePresets(): Promise<ThemePreset[]> {
-  try {
-    const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
-    return response.presets;
-  } catch {
-    return [];
-  }
+  const response = await request<{ presets: ThemePreset[] }>('/configuration/themes/presets');
+  return response.presets;
 }
 
 // The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
