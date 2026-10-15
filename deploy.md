@@ -547,7 +547,7 @@ version keeps running on the new schema. Two things to know when upgrading:
 form, `login_hint`) now accept a phone only when it is already written in E.164. Before, `auth` and the
 `phone` lookup rewrote a valid number (`+787011234567` became `+77011234567`) and `central`'s JSON
 endpoints stored whatever they were given. A valid number in another spelling now gets `400` from `central`,
-a form error from the login page, and is ignored as a `login_hint`. The login page, the Security page and
+a form error from the login page, and is ignored as a `login_hint`. The login page composes the number in E.164 from its country selector, and the Security page and
 the admin console normalise with libphonenumber before they send, so people are not affected; a client that
 calls these endpoints directly, or passes a `login_hint` with a trunk prefix, has to send E.164. Numbers
 already stored are not touched.
