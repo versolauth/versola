@@ -1824,8 +1824,8 @@ export class VersolaClientsList extends LitElement {
         </div>
       `, '') : ''}
 
-      ${signsUsersIn ? this.viewSection('Consent', '', 'registration', client, html`
-        ${this.viewRow('Consent screen', client.consentFlow ? 'On (partner, cannot be turned off)' : 'Off')}
+      ${signsUsersIn ? this.viewSection('Ownership', '', 'registration', client, html`
+        ${this.viewRow('Ownership', client.consentFlow ? 'Partner app (users are asked for consent, cannot be turned off)' : 'First party app (no consent prompt)')}
       `) : ''}
 
       ${signsUsersIn ? this.viewSection('Branding and logout', '', 'branding', client, html`

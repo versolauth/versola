@@ -11,6 +11,12 @@ describe('isPartnerClient', () => {
   });
 });
 
+describe('createDefaultConsentFlow', () => {
+  it('remembers a grant for 90 days, one of the presets the wizard offers', () => {
+    expect(createDefaultConsentFlow().rememberDurationDays).toBe(90);
+  });
+});
+
 describe('otpTemplateForConsent', () => {
   it('moves a partner from the default SMS template to the partner one', () => {
     expect(otpTemplateForConsent('default', true, 'sms', WITH_PARTNER)).toBe('partner');
