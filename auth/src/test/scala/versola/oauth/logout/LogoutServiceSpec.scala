@@ -4,7 +4,7 @@ import versola.auth.TestEnvConfig
 import versola.oauth.client.OAuthConfigurationService
 import versola.oauth.client.model.{AuthMethod, ClientId, OAuthClientRecord, ScopeToken, TenantId}
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentId}
+import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, SessionUnderUserAgent, UserAgentId}
 import versola.user.model.UserId
 import versola.util.{MAC, UnitSpecBase}
 import zio.*
@@ -229,6 +229,32 @@ object LogoutServiceSpec extends UnitSpecBase:
           _ <- env.configuration.getPostLogoutRedirectUris.succeedsWith(Nil)
           _ <- env.service.logout(Right(rawSessionId), None, None)
         yield assertTrue(env.outbox.submit.calls.isEmpty)
+      },
+    ),
+    suite("invalidateSession")(
+      test("refuses a session that is not the user's, ending nothing") {
+        val env = Env()
+        for
+          _ <- env.sessionService.listByUser.succeedsWith(Nil)
+          ended <- env.service.invalidateSession(publicSessionId1, userId)
+        yield assertTrue(!ended, env.sessionService.invalidate.calls.isEmpty)
+          .label("a session id travels in front-channel logout URLs, so knowing one proves nothing")
+      },
+      test("ends the user's own session the way a logout does, relying parties told") {
+        val env = Env()
+        val withBackChannel = clientA.copy(backChannelLogoutUri = Some(URL.decode("https://rp-a.example/backchannel").toOption.get))
+        val listed = SessionUnderUserAgent(publicSessionId1, record1.clients, Instant.EPOCH, None, None, None, None, Instant.EPOCH)
+        for
+          _ <- env.sessionService.listByUser.succeedsWith(List(listed))
+          _ <- env.sessionService.invalidate.succeedsWith(Some(sessionInfo1))
+          _ <- env.configuration.find.succeedsWith(Some(withBackChannel))
+          _ <- env.outbox.submit.succeedsWith(())
+          ended <- env.service.invalidateSession(publicSessionId1, userId)
+        yield assertTrue(
+          ended,
+          env.sessionService.invalidate.calls == List(Left(publicSessionId1)),
+          env.outbox.submit.calls.map(_.audience.toList) == List(List(withBackChannel.id)),
+        )
       },
     ),
     suite("invalidateAllSessions")(

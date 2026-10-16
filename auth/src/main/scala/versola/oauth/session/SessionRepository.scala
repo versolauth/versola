@@ -68,6 +68,15 @@ trait SessionRepository:
       userId: UserId,
   ): Task[List[SessionRecord]]
 
+  /** Expires in place every live refresh token `clientId` holds for the user -- the client's
+    * offline access, revoked by an administrator. Sessions are left alone: the user stays
+    * signed in, and the client can obtain a new grant by sending them through `/authorize`
+    * again. Returns how many tokens were live. */
+  def revokeRefreshTokensByUserAndClient(
+      userId: UserId,
+      clientId: ClientId,
+  ): Task[Int]
+
   def invalidate(id: MAC.Of[SessionId]): Task[Option[SessionRecord]]
 
   def invalidateByPublicId(publicId: PublicSessionId): Task[Option[(MAC.Of[SessionId], SessionRecord)]]

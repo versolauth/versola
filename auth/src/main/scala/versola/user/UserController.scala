@@ -5,15 +5,15 @@ import versola.auth.model.Password
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
 import versola.oauth.challenge.password.model.PasswordReuseError
-import versola.oauth.client.model.TenantId
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
 import versola.oauth.session.SessionService
-import versola.oauth.session.model.SessionId
+import versola.oauth.session.model.{PublicSessionId, SessionId}
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.CoreConfig
-import versola.util.http.Controller
+import versola.util.http.{Controller, Observability}
 import versola.util.{Email, Phone}
 import zio.*
 import zio.http.{Method, Request, Response, Routes, Status, handler}
@@ -27,6 +27,7 @@ object UserController extends Controller:
 
   def routes: Routes[Env, Throwable] = Routes(
     upsertUserEndpoint,
+    deleteUserEndpoint,
     patchClaimsEndpoint,
     patchRolesEndpoint,
     findClaimsEndpoint,
@@ -34,6 +35,7 @@ object UserController extends Controller:
     findSessionsEndpoint,
     invalidateSessionEndpoint,
     findRefreshTokensEndpoint,
+    revokeRefreshTokensEndpoint,
     resetLimitsEndpoint,
     listPasskeysEndpoint,
     renamePasskeyEndpoint,
@@ -49,6 +51,23 @@ object UserController extends Controller:
         repo <- ZIO.service[UserRepository]
         body <- request.body.asJsonFromCodec[UpsertUserPayload]
         _ <- repo.upsert(body.id, body.version, body.email, body.phone, body.login)
+      yield Response.status(Status.NoContent)
+    }
+
+  /** Everything the account can still act with goes in one purge, and the relying parties of
+    * its sessions are told first: a back-channel logout is sent while the sessions are
+    * still readable, since the purge takes them with it. Idempotent -- central's outbox may
+    * deliver it again behind an upsert that was already in flight. */
+  val deleteUserEndpoint =
+    Method.DELETE / "users" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        repo <- ZIO.service[UserRepository]
+        logoutService <- ZIO.service[LogoutService]
+        id <- request.url.queryZIO[UserId]("id")
+        _ <- Observability.setUserId(id.toString)
+        _ <- logoutService.invalidateAllSessions(id)
+        _ <- repo.delete(id)
       yield Response.status(Status.NoContent)
     }
 
@@ -116,13 +135,36 @@ object UserController extends Controller:
       yield Response.json(SessionListResponse(responses).toJson)
     }
 
+  /** With `sessionId` ends that one session of the user; without it, every session. A
+    * session that is not the user's answers 404 rather than being ended: a session id on its
+    * own is not proof of anything, since it travels in front-channel logout URLs. */
   val invalidateSessionEndpoint =
     Method.DELETE / "users" / "sessions" -> handler { (request: Request) =>
       for
         _ <- authorizeInternal(request)
         logoutService <- ZIO.service[LogoutService]
         userId <- request.queryZIO[UserId]("userId")
-        _ <- logoutService.invalidateAllSessions(userId)
+        sessionId <- request.queryZIO[Option[PublicSessionId]]("sessionId")
+        response <- sessionId match
+          case None => logoutService.invalidateAllSessions(userId).as(Response.status(Status.NoContent))
+          case Some(publicId) =>
+            logoutService.invalidateSession(publicId, userId).flatMap:
+              case true => ZIO.succeed(Response.status(Status.NoContent))
+              case false => Observability.setError("session_not_found").as(Response.status(Status.NotFound))
+      yield response
+    }
+
+  /** Revokes the offline access one client holds for the user: its live refresh tokens expire
+    * now, the user's sessions stay, and access tokens already issued run out on their own. */
+  val revokeRefreshTokensEndpoint =
+    Method.DELETE / "users" / "refresh-tokens" -> handler { (request: Request) =>
+      for
+        _ <- authorizeInternal(request)
+        sessionService <- ZIO.service[SessionService]
+        userId <- request.queryZIO[UserId]("userId")
+        clientId <- request.queryZIO[ClientId]("clientId")
+        _ <- Observability.setUserId(userId.toString)
+        _ <- sessionService.revokeRefreshTokensByUserAndClient(userId, clientId)
       yield Response.status(Status.NoContent)
     }
 

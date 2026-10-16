@@ -5,10 +5,11 @@ import versola.auth.TestEnvConfig
 import versola.auth.model.{AuthenticatorTransport, CredentialDeviceType, CredentialId, PasskeyName, PasskeyRecord, Password}
 import versola.oauth.challenge.passkey.PasskeyRepository
 import versola.oauth.challenge.password.PasswordService
-import versola.oauth.client.model.TenantId
+import versola.oauth.client.model.{ClientId, TenantId}
 import versola.oauth.conversation.limit.ChallengeThrottleRepository
 import versola.oauth.logout.LogoutService
 import versola.oauth.session.SessionService
+import versola.oauth.session.model.PublicSessionId
 import versola.role.model.RoleId
 import versola.user.model.*
 import versola.util.http.{NoopTracing, Observability}
@@ -117,6 +118,70 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
             .addHeader(Header.ContentType(MediaType.application.json)),
         )
       yield assertTrue(resp.status == Status.NoContent)
+    },
+    test("DELETE /users without Authorization returns 401 and purges nothing") {
+      val repo = stub[UserRepository]
+      val logout = stub[LogoutService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing, users = repo, logout = logout))
+        resp <- client.batched(
+          Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString)),
+        )
+      yield assertTrue(
+        resp.status == Status.Unauthorized,
+        repo.delete.calls.isEmpty,
+        logout.invalidateAllSessions.calls.isEmpty,
+      )
+    },
+    test("DELETE /users with a token signed by the wrong key returns 401 and purges nothing") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(wrongKey)
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(
+          Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.Unauthorized, repo.delete.calls.isEmpty)
+    },
+    test("DELETE /users with valid Bearer token logs the user out everywhere, then purges the account") {
+      val repo = stub[UserRepository]
+      val logout = stub[LogoutService]
+      for
+        order <- Ref.make(List.empty[String])
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateAllSessions.returnsZIO(_ => order.update(_ :+ "logout"))
+        _ <- repo.delete.returnsZIO(_ => order.update(_ :+ "purge"))
+        _ <- TestClient.addRoutes(routes(tracing, users = repo, logout = logout))
+        resp <- client.batched(
+          Request(method = Method.DELETE, url = (URL.empty / "users").addQueryParam("id", passkeyUserId.toString))
+            .addHeader(Header.Authorization.Bearer(token)),
+        )
+        seen <- order.get
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        seen == List("logout", "purge"),
+        logout.invalidateAllSessions.calls == List(passkeyUserId),
+        repo.delete.calls == List(passkeyUserId),
+      ).label("the relying parties are told while the sessions are still there to be read")
+    },
+    test("DELETE /users without an id is refused before anything is purged") {
+      val repo = stub[UserRepository]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- TestClient.addRoutes(routes(tracing, users = repo))
+        resp <- client.batched(
+          Request(method = Method.DELETE, url = URL.empty / "users").addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.BadRequest, repo.delete.calls.isEmpty)
     },
     test("PATCH /users/roles without Authorization returns 401") {
       for
@@ -282,6 +347,77 @@ object UserControllerSpec extends ZIOSpecDefault, ZIOStubs:
         _ <- TestClient.addRoutes(routes(tracing))
         resp <- client.batched(Request(method = Method.DELETE, url = URL.empty / "users" / "sessions"))
       yield assertTrue(resp.status == Status.Unauthorized)
+    },
+    test("DELETE /users/sessions with a sessionId ends that session of the user and answers 204") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(true)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString).addQueryParam("sessionId", "c2lk"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        logout.invalidateSession.calls == List((PublicSessionId("c2lk"), testUserId)),
+        logout.invalidateAllSessions.calls.isEmpty,
+      )
+    },
+    test("DELETE /users/sessions with a sessionId that is not the user's answers 404") {
+      val logout = stub[LogoutService]
+      val testUserId = UserId(UUID.fromString("f077fb08-9935-4a6d-8643-bf97c073bf0f"))
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- logout.invalidateSession.succeedsWith(false)
+        _ <- TestClient.addRoutes(routes(tracing, logout = logout))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "sessions").addQueryParam("userId", testUserId.toString).addQueryParam("sessionId", "c2lk"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(resp.status == Status.NotFound, logout.invalidateAllSessions.calls.isEmpty)
+    },
+    test("DELETE /users/refresh-tokens without Authorization returns 401") {
+      val sessions = stub[SessionService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "app"),
+          ),
+        )
+      yield assertTrue(resp.status == Status.Unauthorized, sessions.revokeRefreshTokensByUserAndClient.calls.isEmpty)
+    },
+    test("DELETE /users/refresh-tokens with valid token revokes the client's refresh tokens for the user") {
+      val sessions = stub[SessionService]
+      for
+        client <- ZIO.service[Client]
+        tracing <- NoopTracing.layer.build
+        token <- validToken(secretKey)
+        _ <- sessions.revokeRefreshTokensByUserAndClient.succeedsWith(2)
+        _ <- TestClient.addRoutes(routes(tracing, sessionsService = sessions))
+        resp <- client.batched(
+          Request(
+            method = Method.DELETE,
+            url = (URL.empty / "users" / "refresh-tokens").addQueryParam("userId", passkeyUserId.toString).addQueryParam("clientId", "app"),
+          ).addHeader(Header.Authorization.Bearer(token)),
+        )
+      yield assertTrue(
+        resp.status == Status.NoContent,
+        sessions.revokeRefreshTokensByUserAndClient.calls == List((passkeyUserId, ClientId("app"))),
+      )
     },
     test("DELETE /users/sessions with valid token returns 204 and invalidates all of the user's sessions") {
       for
