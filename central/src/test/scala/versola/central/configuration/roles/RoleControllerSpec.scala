@@ -48,6 +48,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
     id = adminRole,
     description = Map("en" -> "Admin role"),
     permissions = Set(usersRead, usersWrite),
+    active = true,
   )
 
   private val updateRequest = UpdateRoleRequest(
@@ -61,6 +62,7 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
       add = Set(sessionsRead),
       remove = Set(usersWrite),
     ),
+    active = None,
   )
 
   private val tracingLayer: ULayer[Tracing] =
@@ -157,6 +159,34 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         ZIO.succeed(assertTrue(service.createRole.calls == List(createRequest))),
     ),
     controllerTestCase(
+      description = "create an inactive role when the body says so",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "roles",
+        body = Body.fromString(createRequest.copy(active = false).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Created,
+      setup = service =>
+        service.createRole.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.createRole.calls == List(createRequest.copy(active = false)))),
+    ),
+    controllerTestCase(
+      description = "create role treats a body without active as active, as every caller before the field did",
+      request = Request(
+        method = Method.POST,
+        url = URL.empty / "configuration" / "roles",
+        body = Body.fromString(
+          s"""{"tenantId":"$tenantId","id":"$adminRole","description":{"en":"Admin role"},"permissions":["$usersRead","$usersWrite"]}""",
+        ),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.Created,
+      setup = service =>
+        service.createRole.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.createRole.calls == List(createRequest))),
+    ),
+    controllerTestCase(
       description = "reject create role with an invalid role id instead of forwarding it to the service",
       request = Request(
         method = Method.POST,
@@ -173,6 +203,35 @@ object RoleControllerSpec extends ZIOSpecDefault, ZIOStubs:
         method = Method.PUT,
         url = URL.empty / "configuration" / "roles",
         body = Body.fromString(updateRequest.toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateRole.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.updateRole.calls == List(updateRequest))),
+    ),
+    controllerTestCase(
+      description = "update role deactivates it when the body says so",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "roles",
+        body = Body.fromString(updateRequest.copy(active = Some(false)).toJson),
+      ).addHeader(Header.ContentType(MediaType.application.json)),
+      expectedStatus = Status.NoContent,
+      setup = service =>
+        service.updateRole.succeedsWith(()),
+      verify = (_, service) =>
+        ZIO.succeed(assertTrue(service.updateRole.calls == List(updateRequest.copy(active = Some(false))))),
+    ),
+    controllerTestCase(
+      description = "update role without active leaves the flag to the service as a no-op patch",
+      request = Request(
+        method = Method.PUT,
+        url = URL.empty / "configuration" / "roles",
+        body = Body.fromString(
+          s"""{"tenantId":"$tenantId","id":"$adminRole","description":{"add":{"ru":"Роль администратора"},"delete":[]},""" +
+            s""""permissions":{"add":["$sessionsRead"],"remove":["$usersWrite"]}}""",
+        ),
       ).addHeader(Header.ContentType(MediaType.application.json)),
       expectedStatus = Status.NoContent,
       setup = service =>
