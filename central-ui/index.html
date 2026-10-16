@@ -192,6 +192,29 @@
       --cel-ctxvar: #d2a8ff;
     }
 
+    /* Theme-independent scales. Here rather than in src/styles/theme.ts for
+       the same reason as the colours: one copy, inherited into every shadow
+       root. The type scale stops at 12px: nothing in the console is smaller. */
+    :root {
+      --text-xs: 0.75rem;     /* 12px: chips, badges, table headers, hints */
+      --text-sm: 0.8125rem;   /* 13px: secondary text, filter bar, record subheading */
+      --text-base: 0.875rem;  /* 14px: body, inputs, buttons, nav items */
+      --text-md: 0.9375rem;   /* 15px: a row title */
+      --text-lg: 1rem;        /* 16px: a card heading */
+      --text-xl: 1.125rem;    /* 18px: an empty state heading */
+      --text-2xl: 1.25rem;    /* 20px: the card title, the brand */
+      --text-3xl: 1.5rem;     /* 24px: the page title below 720px */
+      --text-4xl: 2rem;       /* 32px: the page title */
+
+      /* Layers, lowest first: a dropdown or tooltip over its page, the
+         drawer backdrop, the drawer, a modal dialog, a toast over everything. */
+      --z-dropdown: 20;
+      --z-backdrop: 150;
+      --z-drawer: 200;
+      --z-modal: 1000;
+      --z-toast: 1100;
+    }
+
     html {
       scrollbar-gutter: stable;
     }
@@ -205,6 +228,16 @@
     }
     ::selection {
       background: var(--selection-bg);
+    }
+    /* Motion off for the document; src/styles/theme.ts repeats this inside
+       every shadow root, where a document rule does not reach. */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
     }
   </style>
   <script>

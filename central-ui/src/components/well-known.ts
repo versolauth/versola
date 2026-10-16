@@ -150,7 +150,7 @@ export class VersolaWellKnown extends LitElement {
       }
 
       .key-badge {
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.04em;

@@ -41,7 +41,7 @@ export class VersolaNavToggle extends LitElement {
         background: var(--surface);
         color: var(--text-primary);
         font-family: var(--font-family);
-        font-size: 1.25rem;
+        font-size: var(--text-2xl);
         line-height: 1;
         cursor: pointer;
         transition: all var(--transition-fast);

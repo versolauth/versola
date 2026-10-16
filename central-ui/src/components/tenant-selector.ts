@@ -48,7 +48,7 @@ export class TenantSelector extends LitElement {
         border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-primary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         font-family: var(--font-mono);
         cursor: pointer;
         display: flex;
@@ -68,7 +68,7 @@ export class TenantSelector extends LitElement {
       }
 
       .selector-label {
-        font-size: 0.75rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--text-secondary);
         text-transform: uppercase;
@@ -96,7 +96,7 @@ export class TenantSelector extends LitElement {
         box-shadow: var(--shadow-lg);
         max-height: 320px;
         overflow: hidden;
-        z-index: 1000;
+        z-index: var(--z-dropdown);
         display: flex;
         flex-direction: column;
       }
@@ -114,7 +114,7 @@ export class TenantSelector extends LitElement {
         border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-primary);
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         font-family: var(--font-mono);
         transition: all var(--transition-fast);
       }
@@ -156,7 +156,7 @@ export class TenantSelector extends LitElement {
         cursor: pointer;
         transition: all var(--transition-fast);
         font-family: var(--font-mono);
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         color: var(--text-primary);
         display: flex;
         justify-content: center;
@@ -191,7 +191,7 @@ export class TenantSelector extends LitElement {
         padding: 2rem;
         text-align: center;
         color: var(--text-secondary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
       }
     `,
   ];

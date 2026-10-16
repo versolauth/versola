@@ -80,8 +80,8 @@ export class VersolaThemeTokenControls extends LitElement {
       .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
       .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
-      .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
-      .note-inherited { font-size: 0.6875rem; color: var(--text-secondary); white-space: nowrap; }
+      .badge-overridden { font-size: var(--text-xs); font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }
+      .note-inherited { font-size: var(--text-xs); color: var(--text-secondary); white-space: nowrap; }
       .reset { font: inherit; font-size: 0.75rem; color: var(--accent); background: none; border: 0; cursor: pointer; padding: 0; text-decoration: underline; }
 
       .seg-control { display: inline-flex; flex-wrap: wrap; gap: 0.25rem; }

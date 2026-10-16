@@ -187,7 +187,7 @@ export class VersolaFormsList extends LitElement {
         gap: 0.25rem;
       }
       .ctrl-label {
-        font-size: 0.625rem;
+        font-size: var(--text-xs);
         font-weight: 700;
         text-transform: uppercase;
         letter-spacing: 0.08em;
@@ -357,7 +357,7 @@ export class VersolaFormsList extends LitElement {
         background: var(--success-subtle);
         border: 1px solid var(--success-border);
         color: var(--success);
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.04em;
         text-transform: uppercase;

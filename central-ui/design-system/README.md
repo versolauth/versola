@@ -80,6 +80,32 @@ Non-colour tokens (`src/styles/theme.ts`): `--font-family`, `--font-mono`; `--sp
 `-sm` 0.5rem, `-md` 1rem, `-lg` 1.5rem, `-xl` 2rem; `--radius-sm` 4px, `-md` 8px, `-lg` 12px;
 `--transition-fast` 0.15s, `-base` 0.25s, `-slow` 0.4s.
 
+Theme-independent scales, defined once in `index.html` (bare `:root`) and inherited everywhere:
+
+| Token | Value | Use |
+|---|---|---|
+| `--text-xs` | 0.75rem (12px) | Chips, badges, table headers, section titles, hints. **The smallest size in the console**: nothing is set below 12px |
+| `--text-sm` | 0.8125rem (13px) | Secondary text, the filter bar, a record card's subheading, IDs in meta |
+| `--text-base` | 0.875rem (14px) | Body, inputs, buttons, nav items, table cells |
+| `--text-md` | 0.9375rem (15px) | A row title in a list |
+| `--text-lg` | 1rem (16px) | A card heading, `.btn-lg` |
+| `--text-xl` | 1.125rem (18px) | An empty-state heading |
+| `--text-2xl` | 1.25rem (20px) | `.card-title`, the brand wordmark |
+| `--text-3xl` | 1.5rem (24px) | The page title below 720px |
+| `--text-4xl` | 2rem (32px) | The page title |
+| `--z-dropdown` | 20 | A menu, listbox, suggestion list or tooltip over its page |
+| `--z-backdrop` / `--z-drawer` | 150 / 200 | The mobile drawer's backdrop and the drawer |
+| `--z-modal` | 1000 | A dialog and its backdrop (`confirm-dialog.ts`, the users' password popups) |
+| `--z-toast` | 1100 | A toast, above a dialog (reserved; nothing uses it yet) |
+
+The shared styles (`components.ts`), the shell and the shared components use the scale; the
+older screens still carry literal sizes and move to the scale as they are redesigned, except that
+every size under 12px has already been replaced by `--text-xs`.
+
+Motion: `index.html` and `theme.ts` both carry a `prefers-reduced-motion: reduce` block that
+zeroes every animation and transition (the one in `theme.ts` is needed because a document rule
+does not reach into a shadow root).
+
 Deliberate literals, the only ones in `src/`: the theme-preset sketches in `theme-edit.ts` and
 `theme-token-controls.ts` draw the *login forms'* page colours (`#fffdf9` sheet, `#1c1b19` ink,
 the `color-mix` brand tints) so a preset looks the same whatever the console theme is; the brand

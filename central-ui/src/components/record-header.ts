@@ -39,7 +39,7 @@ export class VersolaRecordHeader extends LitElement {
         gap: 0.5rem;
         align-items: center;
         flex-wrap: wrap;
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         color: var(--text-secondary);
         margin-bottom: var(--spacing-md);
       }
@@ -66,7 +66,7 @@ export class VersolaRecordHeader extends LitElement {
 
       .view-title {
         margin: 0 0 var(--spacing-sm);
-        font-size: 2rem;
+        font-size: var(--text-4xl);
         font-weight: 700;
         color: var(--text-primary);
         overflow-wrap: anywhere;
@@ -81,7 +81,7 @@ export class VersolaRecordHeader extends LitElement {
 
       .record-id {
         font-family: var(--font-mono);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         color: var(--accent);
         word-break: break-all;
       }
@@ -92,7 +92,7 @@ export class VersolaRecordHeader extends LitElement {
 
       @media (max-width: 768px) {
         .view-title {
-          font-size: 1.5rem;
+          font-size: var(--text-3xl);
         }
       }
     `,

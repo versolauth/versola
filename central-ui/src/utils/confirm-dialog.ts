@@ -22,7 +22,7 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
     overlay.tabIndex = -1;
     overlay.style.position = 'fixed';
     overlay.style.inset = '0';
-    overlay.style.zIndex = '9999';
+    overlay.style.zIndex = 'var(--z-modal)';
 
     const shadow = overlay.attachShadow({ mode: 'open' });
     shadow.innerHTML = `

@@ -65,7 +65,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       th {
         text-align: left;
-        font-size: 0.75rem;
+        font-size: var(--text-xs);
         font-weight: 500;
         color: var(--text-secondary);
         padding: 0.75rem var(--spacing-md);
@@ -76,7 +76,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         padding: 0.875rem var(--spacing-md);
         border-bottom: 1px solid var(--border-subtle);
         vertical-align: middle;
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         color: var(--text-primary);
       }
 
@@ -125,12 +125,12 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       .row-title {
         font-weight: 600;
-        font-size: 0.9375rem;
+        font-size: var(--text-md);
       }
 
       .row-id {
         font-family: var(--font-mono);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         color: var(--accent);
         word-break: break-all;
       }
@@ -173,7 +173,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         position: absolute;
         right: var(--spacing-md);
         top: 2.75rem;
-        z-index: 5;
+        z-index: var(--z-dropdown);
         min-width: 11rem;
         display: flex;
         flex-direction: column;
@@ -193,7 +193,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         background: none;
         color: var(--text-primary);
         font: inherit;
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         text-align: left;
         cursor: pointer;
       }

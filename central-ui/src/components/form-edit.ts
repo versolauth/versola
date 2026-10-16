@@ -116,7 +116,7 @@ export class VersolaFormEdit extends LitElement {
         margin-top: var(--spacing-xl); border-top: 1px solid var(--border-default);
       }
       .ctrl-group { display: inline-flex; flex-direction: column; gap: 0.25rem; }
-      .ctrl-label { font-size: 0.625rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
+      .ctrl-label { font-size: var(--text-xs); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-secondary); }
       .preview-bar { display: flex; justify-content: flex-start; padding: var(--spacing-md) 0; border-top: 1px solid var(--border-default); }
       .preview-bar .preview-toggle-btn { padding: 0 0.875rem; height: 28px; background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius-md); color: var(--on-accent); font-size: 0.8125rem; font-weight: 600; cursor: pointer; transition: opacity var(--transition-fast); }
       .preview-bar .preview-toggle-btn:hover { opacity: 0.85; }
@@ -287,11 +287,11 @@ export class VersolaFormEdit extends LitElement {
         ${this.editProperties.map((prop, index) => html`
           <div class="property-row">
             <div>
-              <div class="field-label" style="font-size: 0.65rem">Name</div>
+              <div class="field-label" style="font-size: var(--text-xs)">Name</div>
               <input class="kv-value" .value=${prop.name} @input=${(e: Event) => this.updatePropertyName(index, (e.target as HTMLInputElement).value)} />
             </div>
             <div>
-              <div class="field-label" style="font-size: 0.65rem">Type: ${prop.type.replace('Property', '')}</div>
+              <div class="field-label" style="font-size: var(--text-xs)">Type: ${prop.type.replace('Property', '')}</div>
               ${prop.type === 'StringArrayProperty' ? html`
                 <div class="allowed-values">
                   ${prop.allowedValues.map((val, vIdx) => html`

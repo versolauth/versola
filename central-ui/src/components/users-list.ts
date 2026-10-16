@@ -437,7 +437,7 @@ export class VersolaUsersList extends LitElement {
         gap: 0.25rem;
         padding: 0.125rem 0.5rem;
         border-radius: 999px;
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         letter-spacing: 0.03em;
         background: var(--accent-subtle);
@@ -496,7 +496,7 @@ export class VersolaUsersList extends LitElement {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 20rem;
         max-width: min(30rem, 75vw);
         max-height: 22rem;
@@ -531,7 +531,7 @@ export class VersolaUsersList extends LitElement {
       }
 
       .option-tooltip-group-title {
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--accent);
         text-transform: uppercase;
@@ -1169,7 +1169,7 @@ export class VersolaUsersList extends LitElement {
         padding:var(--spacing-xl);
         max-width:28rem;width:90%;
         box-shadow:var(--shadow-lg);
-        z-index:1000;
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-lg)">${this.errorPopup}</p>
         <div style="display:flex;justify-content:flex-end">
@@ -1192,7 +1192,7 @@ export class VersolaUsersList extends LitElement {
         padding:var(--spacing-xl);
         max-width:26rem;width:90%;
         box-shadow:var(--shadow-lg);
-        z-index:1000;
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Reset password</p>
         <div class="form-group" style="margin-bottom:var(--spacing-lg)">
@@ -1257,7 +1257,7 @@ export class VersolaUsersList extends LitElement {
         padding:var(--spacing-xl);
         max-width:28rem;width:90%;
         box-shadow:var(--shadow-lg);
-        z-index:1000;
+        z-index:var(--z-modal);
       ">
         <p style="margin:0 0 var(--spacing-md);font-weight:600">Temporary password</p>
         <p style="margin:0 0 var(--spacing-lg);font-size:0.875rem;color:var(--text-secondary)">
@@ -1291,7 +1291,7 @@ export class VersolaUsersList extends LitElement {
             padding:var(--spacing-xl);
             max-width:28rem;width:90%;
             box-shadow:var(--shadow-lg);
-            z-index:1000;
+            z-index:var(--z-modal);
           ">
             <p style="margin:0 0 var(--spacing-lg)">${this.formError}</p>
             <div style="display:flex;justify-content:flex-end">

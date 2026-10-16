@@ -66,7 +66,7 @@ export class VersolaThemeSwitcher extends LitElement {
         position: absolute;
         right: 0;
         bottom: calc(100% + 0.25rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 8rem;
         margin: 0;
         padding: 0.25rem;
@@ -85,7 +85,7 @@ export class VersolaThemeSwitcher extends LitElement {
         padding: 0 0.625rem;
         border-radius: var(--radius-sm);
         color: var(--text-primary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         cursor: pointer;
       }
 

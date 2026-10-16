@@ -29,14 +29,14 @@ export class VersolaEmptyState extends LitElement {
 
       h3 {
         margin: 0;
-        font-size: 1.125rem;
+        font-size: var(--text-xl);
         font-weight: 600;
         color: var(--text-primary);
       }
 
       p {
         margin: 0.5rem 0 0;
-        font-size: 0.875rem;
+        font-size: var(--text-base);
       }
 
       .actions {

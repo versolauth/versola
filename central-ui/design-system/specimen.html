@@ -176,10 +176,15 @@
       --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
       --radius-sm: 4px; --radius-md: 8px; --radius-lg: 12px;
       --spacing-xs: 0.25rem; --spacing-sm: 0.5rem; --spacing-md: 1rem; --spacing-lg: 1.5rem; --spacing-xl: 2rem;
+      /* type scale and layers: copied from index.html's bare :root block; 12px is the floor */
+      --text-xs: 0.75rem; --text-sm: 0.8125rem; --text-base: 0.875rem; --text-md: 0.9375rem; --text-lg: 1rem;
+      --text-xl: 1.125rem; --text-2xl: 1.25rem; --text-3xl: 1.5rem; --text-4xl: 2rem;
+      --z-dropdown: 20; --z-backdrop: 150; --z-drawer: 200; --z-modal: 1000; --z-toast: 1100;
     }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
     /* ---- specimen styles: only var() below this line ---- */
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: var(--font-family); font-size: 14px; line-height: 1.5; color: var(--text-primary); background: var(--bg-page); -webkit-font-smoothing: antialiased; }
+    body { margin: 0; font-family: var(--font-family); font-size: var(--text-base); line-height: 1.5; color: var(--text-primary); background: var(--bg-page); -webkit-font-smoothing: antialiased; }
     ::selection { background: var(--selection-bg); color: var(--text-primary); }
     a { color: var(--accent); }
     .shell { display: flex; min-height: 100vh; }
@@ -187,7 +192,7 @@
     .brand { display: flex; align-items: center; gap: 10px; padding: 20px 24px; border-bottom: 1px solid var(--border-default); font-weight: 600; font-size: 18px; color: var(--accent); }
     .brand svg { width: 28px; height: 28px; }
     .tenant { padding: 20px 24px; border-bottom: 1px solid var(--border-default); }
-    .group-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); padding: 8px 12px; margin: 12px 0 4px; }
+    .group-label { font-size: var(--text-xs); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); padding: 8px 12px; margin: 12px 0 4px; }
     .nav { padding: 8px 12px; flex: 1; }
     .nav a { display: block; padding: 10px 12px; border-radius: var(--radius-md); color: var(--text-secondary); text-decoration: none; font-weight: 500; margin-bottom: 2px; }
     .nav a:hover { background: var(--surface-inset); color: var(--text-primary); }
@@ -272,7 +277,7 @@
     .danger-card { border-color: var(--danger-border); }
     .danger-card h2 { color: var(--danger-text); }
     .swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 8px; }
-    .sw { font-size: 10px; font-family: var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; } .sw i { display: block; height: 36px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 2px; }
+    .sw { font-size: var(--text-xs); font-family: var(--font-mono); color: var(--text-muted); overflow-wrap: anywhere; } .sw i { display: block; height: 36px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); margin-bottom: 2px; }
 </style>
 </head>
 <body>

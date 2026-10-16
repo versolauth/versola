@@ -8,7 +8,7 @@ export const buttonStyles = css`
     gap: 0.5rem;
     padding: 0.625rem 1.25rem;
     font-family: var(--font-family);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 600;
     line-height: 1.5;
     border: 1px solid transparent;
@@ -87,12 +87,12 @@ export const buttonStyles = css`
 
   .btn-sm {
     padding: 0.375rem 0.75rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .btn-lg {
     padding: 0.75rem 1.5rem;
-    font-size: 1rem;
+    font-size: var(--text-lg);
   }
 `;
 
@@ -101,7 +101,7 @@ export const badgeStyles = css`
     display: inline-block;
     padding: 0.25rem 0.625rem;
     border-radius: var(--radius-sm);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -133,7 +133,7 @@ export const chipStyles = css`
     padding: 0.25rem 0.625rem;
     border-radius: 999px;
     border: 1px solid var(--border-default);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-primary);
     white-space: nowrap;
   }
@@ -210,13 +210,13 @@ export const recordStyles = css`
 
   .record-card-head h2 {
     margin: 0;
-    font-size: 1rem;
+    font-size: var(--text-lg);
     font-weight: 700;
     color: var(--text-primary);
   }
 
   .record-card-sub {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
     margin-top: 0.125rem;
   }
@@ -226,7 +226,7 @@ export const recordStyles = css`
     gap: 0.375rem;
     align-items: center;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     white-space: nowrap;
   }
 
@@ -237,7 +237,7 @@ export const recordStyles = css`
     padding: 0.75rem var(--spacing-lg);
     border-bottom: 1px solid var(--border-subtle);
     align-items: baseline;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
   }
 
   .record-card > :last-child > .record-row,
@@ -303,7 +303,7 @@ export const cardStyles = css`
   }
 
   .card-title {
-    font-size: 1.25rem;
+    font-size: var(--text-2xl);
     font-weight: 700;
     color: var(--text-primary);
     margin: 0;
@@ -324,7 +324,7 @@ export const tableStyles = css`
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 0.875rem;
+    font-size: var(--text-base);
   }
 
   thead {
@@ -338,7 +338,7 @@ export const tableStyles = css`
     font-weight: 600;
     color: var(--text-secondary);
     text-transform: uppercase;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     letter-spacing: 0.05em;
   }
 
@@ -369,7 +369,7 @@ export const tableStyles = css`
     padding: 0;
     cursor: pointer;
     color: var(--text-secondary);
-    font-size: 1.125rem;
+    font-size: var(--text-xl);
     transition: all var(--transition-fast);
     line-height: 1;
   }
@@ -391,7 +391,7 @@ export const iconActionStyles = css`
     padding: 0;
     cursor: pointer;
     color: var(--text-secondary);
-    font-size: 1.125rem;
+    font-size: var(--text-xl);
     transition: all var(--transition-fast);
     line-height: 1;
   }
@@ -437,7 +437,7 @@ export const formStyles = css`
     max-width: min(100%, 32rem);
     color: var(--accent);
     font-family: var(--font-mono);
-    font-size: 0.9375rem;
+    font-size: var(--text-md);
     font-weight: 500;
     line-height: 1.4;
     overflow-wrap: anywhere;
@@ -478,7 +478,7 @@ export const formStyles = css`
   label {
     display: block;
     margin-bottom: var(--spacing-sm);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     font-weight: 500;
     color: var(--text-secondary);
     text-transform: uppercase;
@@ -499,7 +499,7 @@ export const formStyles = css`
     border-radius: var(--radius-md);
     color: var(--text-primary);
     font-family: var(--font-family);
-    font-size: 0.875rem;
+    font-size: var(--text-base);
     transition: border-color var(--transition-fast);
   }
 
@@ -549,13 +549,13 @@ export const formStyles = css`
 
   .error-message {
     margin-top: var(--spacing-xs);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--danger);
   }
 
   .hint {
     margin-top: var(--spacing-xs);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
   }
 
@@ -586,7 +586,7 @@ export const methodBadgeStyles = css`
      second line and shoved the row's remove button down with it. */
   .endpoint-path {
     font-family: var(--font-mono, monospace);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-primary);
     word-break: break-all;
   }
@@ -599,7 +599,7 @@ export const methodBadgeStyles = css`
     padding: 0.3rem 0.65rem;
     border-radius: 999px;
     border: 1px solid transparent;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
     text-transform: uppercase;

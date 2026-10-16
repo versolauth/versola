@@ -384,7 +384,7 @@ export class VersolaChallengesList extends LitElement {
         position: absolute;
         left: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         padding: 0.75rem;
@@ -435,7 +435,7 @@ export class VersolaChallengesList extends LitElement {
       .region-chip .signup-mark {
         margin-left: var(--spacing-xs);
         font-family: var(--font-family);
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         color: var(--success);
         border: 1px solid var(--success);

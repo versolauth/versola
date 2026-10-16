@@ -47,6 +47,21 @@ export const theme = css`
     --transition-fast: 0.15s ease;
     --transition-base: 0.25s ease;
     --transition-slow: 0.4s ease;
+
+    /* The type scale (--text-xs .. --text-4xl) and the layers (--z-dropdown,
+       --z-backdrop, --z-drawer, --z-modal, --z-toast) are in index.html too:
+       theme-independent, but one copy that inherits everywhere. */
+  }
+
+  /* A document-level rule does not reach into a shadow root, so every
+     component carries the reduced-motion switch itself. */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
   }
 `;
 

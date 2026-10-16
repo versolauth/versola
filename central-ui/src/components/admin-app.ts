@@ -276,7 +276,7 @@ export class VersolaAdmin extends LitElement {
           display: block;
           position: fixed;
           inset: 0;
-          z-index: 150; /* under the drawer, over the content */
+          z-index: var(--z-backdrop);
           background: var(--backdrop);
         }
       }

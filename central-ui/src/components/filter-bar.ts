@@ -42,7 +42,7 @@ export class VersolaFilterBar extends LitElement {
         background: none;
         color: var(--text-secondary);
         font: inherit;
-        font-size: 0.8125rem;
+        font-size: var(--text-sm);
         cursor: pointer;
       }
 

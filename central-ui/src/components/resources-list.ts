@@ -139,7 +139,7 @@ export class VersolaResourcesList extends LitElement {
     .cred-mode-card.selected { border-color:var(--accent); background:var(--accent-subtle); }
     .audience-add-row { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; margin-top:.5rem; }
     .audience-input-wrap { position:relative; flex:1; min-width:16rem; }
-    .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:30; display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-default); border-radius:var(--radius-sm); background:var(--surface); box-shadow:var(--shadow-md); }
+    .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:var(--z-dropdown); display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-default); border-radius:var(--radius-sm); background:var(--surface); box-shadow:var(--shadow-md); }
     .audience-suggestion { width:100%; padding:.5rem .625rem; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; text-align:left; cursor:pointer; }
     .audience-suggestion:hover { background:var(--accent-subtle); color:var(--accent); }
     .audience-suggestion:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
@@ -149,7 +149,7 @@ export class VersolaResourcesList extends LitElement {
     .resource-audience { display:grid; gap:.625rem; }
     .resource-section-trigger { display:flex; align-items:center; gap:.625rem; width:max-content; padding:0; border:0; background:transparent; color:var(--text-primary); font-size:.875rem; font-weight:600; cursor:pointer; }
     .resource-section-trigger:hover { color:var(--accent); }
-    .resource-section-chevron { color:var(--text-secondary); font-size:.7rem; }
+    .resource-section-chevron { color:var(--text-secondary); font-size: var(--text-xs); }
     .audience-view-list { display:flex; flex-wrap:wrap; gap:.5rem; }
     .audience-view-item { padding:.375rem .625rem; border:1px solid var(--accent-border); border-radius:var(--radius-sm); background:var(--accent-subtle); color:var(--text-primary); font-family:var(--font-mono); font-size:.8125rem; }
     .secret-banner { margin-bottom:var(--spacing-lg); border-color:var(--success-border); background:var(--success-subtle); }
@@ -187,7 +187,7 @@ export class VersolaResourcesList extends LitElement {
     .rule-group-actions { display:flex; gap:.5rem; flex-wrap:wrap; }
     .rule-logic-separator {
       color:var(--text-secondary);
-      font-size:.72rem;
+      font-size: var(--text-xs);
       font-weight:700;
       letter-spacing:.08em;
       text-transform:uppercase;
@@ -251,7 +251,7 @@ export class VersolaResourcesList extends LitElement {
       position:absolute;
       right:0;
       top:calc(100% + 0.4rem);
-      z-index:20;
+      z-index: var(--z-dropdown);
       min-width:18rem;
       max-width:min(28rem, 75vw);
       padding:0.75rem;
@@ -271,11 +271,11 @@ export class VersolaResourcesList extends LitElement {
     .option-tooltip-copy { color:var(--text-primary); font-size:0.75rem; line-height:1.45; }
     .option-tooltip-copy p { margin:0 0 .5rem; }
     .option-tooltip-copy p:last-child { margin-bottom:0; }
-    .option-tooltip-section-title { margin:.625rem 0 .25rem; color:var(--text-secondary); font-size:.7rem; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+    .option-tooltip-section-title { margin:.625rem 0 .25rem; color:var(--text-secondary); font-size: var(--text-xs); font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
     .option-tooltip-section-title:first-child { margin-top:0; }
     .option-tooltip-list { margin:0; padding-left:1rem; display:grid; gap:.2rem; }
-    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--accent); background:var(--accent-subtle); padding:.05rem .3rem; border-radius:.25rem; }
-    .option-tooltip-pre { margin:.25rem 0 0; padding:.5rem .625rem; border-radius:var(--radius-sm); background:var(--surface-inset); border:1px solid var(--border-default); font-family:var(--font-mono, monospace); font-size:.72rem; color:var(--text-primary); white-space:pre-wrap; word-break:break-word; }
+    .option-tooltip-code { font-family:var(--font-mono, monospace); font-size: var(--text-xs); color:var(--accent); background:var(--accent-subtle); padding:.05rem .3rem; border-radius:.25rem; }
+    .option-tooltip-pre { margin:.25rem 0 0; padding:.5rem .625rem; border-radius:var(--radius-sm); background:var(--surface-inset); border:1px solid var(--border-default); font-family:var(--font-mono, monospace); font-size: var(--text-xs); color:var(--text-primary); white-space:pre-wrap; word-break:break-word; }
     .rule-group-editor-list, .rule-editor-list, .header-editor-list { display:grid; gap:.75rem; }
     .rule-group-editor:not(:first-child), .header-editor-list > :not(:first-child) { padding-top:.75rem; border-top:1px solid var(--border-default); }
     .rule-editor-item, .header-editor-item { display:grid; gap:.75rem; padding:.75rem 0 0; border:0; border-top:1px solid var(--border-default); border-radius:0; background:transparent; }
@@ -319,7 +319,7 @@ export class VersolaResourcesList extends LitElement {
       padding: 0.125rem var(--spacing-sm);
     }
     .permission-or {
-      font-size: 0.6875rem;
+      font-size: var(--text-xs);
       font-style: italic;
       color: var(--text-secondary);
     }

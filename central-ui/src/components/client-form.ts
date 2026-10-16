@@ -366,7 +366,7 @@ export class VersolaClientForm extends LitElement {
         border: 0;
         background: transparent;
         color: var(--accent);
-        font-size: 0.625rem;
+        font-size: var(--text-xs);
         font-weight: 700;
         line-height: 1;
         padding: 0;
@@ -414,7 +414,7 @@ export class VersolaClientForm extends LitElement {
         position: absolute;
         right: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         max-height: 18rem;
@@ -555,7 +555,7 @@ export class VersolaClientForm extends LitElement {
         top: 50%;
         transform: translateY(-50%);
         color: var(--accent);
-        font-size: 0.625rem;
+        font-size: var(--text-xs);
         pointer-events: none;
       }
 
@@ -762,7 +762,7 @@ export class VersolaClientForm extends LitElement {
       }
 
       .section-tag {
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         font-weight: 500;
         padding: 0.15rem 0.5rem;
         border-radius: var(--radius-sm);
@@ -1448,7 +1448,7 @@ export class VersolaClientForm extends LitElement {
         border: 1px solid var(--border-default);
         display: grid;
         place-items: center;
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         color: var(--on-accent);
       }
       .check-row.on .box {
@@ -1481,7 +1481,7 @@ export class VersolaClientForm extends LitElement {
         margin-bottom: 0.5rem;
       }
       .path-tag {
-        font-size: 0.6875rem;
+        font-size: var(--text-xs);
         font-weight: 500;
         padding: 0.1rem 0.4rem;
         border-radius: var(--radius-sm);
@@ -1505,7 +1505,7 @@ export class VersolaClientForm extends LitElement {
       }
       .opt-chevron {
         color: var(--text-secondary);
-        font-size: 0.7rem;
+        font-size: var(--text-xs);
         width: 0.8rem;
       }
       .opt-title {

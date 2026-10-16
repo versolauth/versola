@@ -14,7 +14,7 @@ export class VersolaErrorCard extends LitElement {
       .card { padding: var(--spacing-lg); border: 1px solid var(--border-default); border-radius: var(--radius-lg); background: var(--surface); }
       .empty-state { text-align: center; padding: 3rem; color: var(--text-secondary); }
       .empty-state-icon { font-size: 3rem; margin-bottom: 1rem; }
-      .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: var(--radius-md); border: none; cursor: pointer; font-size: 0.875rem; font-weight: 500; transition: opacity 0.15s; }
+      .btn { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.5rem 1rem; border-radius: var(--radius-md); border: none; cursor: pointer; font-size: var(--text-base); font-weight: 500; transition: opacity 0.15s; }
       .btn:disabled { opacity: 0.5; cursor: not-allowed; }
       .btn-primary { background: var(--accent); color: var(--on-accent); }
       .btn-primary:not(:disabled):hover { opacity: 0.85; }

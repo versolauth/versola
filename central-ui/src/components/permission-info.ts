@@ -79,7 +79,7 @@ export class VersolaPermissionInfo extends LitElement {
         position: absolute;
         right: 0;
         top: calc(100% + 0.4rem);
-        z-index: 20;
+        z-index: var(--z-dropdown);
         min-width: 18rem;
         max-width: min(28rem, 75vw);
         max-height: 18rem;

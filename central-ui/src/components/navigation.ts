@@ -103,7 +103,7 @@ export class VersolaNavigation extends LitElement {
           left: 0;
           width: 250px;
           height: 100vh;
-          z-index: 200;
+          z-index: var(--z-drawer);
           transform: translateX(-100%);
           /* visibility (not just the transform) so the closed drawer leaves the
              a11y tree and tab order — otherwise keyboard/screen-reader users can
@@ -183,7 +183,7 @@ export class VersolaNavigation extends LitElement {
           background: transparent;
           color: var(--text-secondary);
           font-family: var(--font-family);
-          font-size: 1.125rem;
+          font-size: var(--text-xl);
           line-height: 1;
           cursor: pointer;
           transition: all var(--transition-fast);
@@ -201,7 +201,7 @@ export class VersolaNavigation extends LitElement {
       }
 
       .brand-name {
-        font-size: 1.25rem;
+        font-size: var(--text-2xl);
         font-weight: 700;
         color: var(--accent);
       }
@@ -220,7 +220,7 @@ export class VersolaNavigation extends LitElement {
       }
 
       .nav-section-title {
-        font-size: 0.75rem;
+        font-size: var(--text-xs);
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.05em;
@@ -240,7 +240,7 @@ export class VersolaNavigation extends LitElement {
         text-decoration: none;
         text-align: left;
         font: inherit;
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         font-weight: 500;
         line-height: 1.5;
         cursor: pointer;
@@ -283,7 +283,7 @@ export class VersolaNavigation extends LitElement {
         gap: 0.5rem;
         padding: 0.125rem 0.75rem 0.375rem;
         color: var(--text-secondary);
-        font-size: 0.875rem;
+        font-size: var(--text-base);
         font-weight: 500;
       }
     `,
