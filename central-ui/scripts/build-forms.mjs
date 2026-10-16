@@ -13,6 +13,11 @@ const outDir = resolve(here, '../../central/src/main/resources/forms');
 // write fails with ENOENT — this is exactly what would happen in CI right now.
 await mkdir(outDir, { recursive: true });
 
+// The foundation stylesheet is also a classpath resource of `util`: every token theme is composed on it (central's
+// preview, auth's rendering), independent of the stored `default` theme, which is an ordinary editable token theme.
+const baseStylesheetDir = resolve(here, '../../util/src/main/resources/versola/forms');
+await mkdir(baseStylesheetDir, { recursive: true });
+
 const forms = ['credential', 'otp', 'password', 'access-denied', 'conversation-expired', 'service-unavailable', 'passkey-enroll', 'set-password', 'confirm-logout', 'signed-out', 'consent', 'auth-settings'];
 const sharedAssets = ['common.css'];
 
@@ -52,3 +57,6 @@ for (const asset of sharedAssets) {
   await copyFile(resolve(formsSrcDir, asset), resolve(outDir, asset));
   console.log(`Copied ${asset}`);
 }
+
+await copyFile(resolve(formsSrcDir, 'common.css'), resolve(baseStylesheetDir, 'common.css'));
+console.log('Copied common.css to util resources');

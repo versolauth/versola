@@ -636,7 +636,8 @@ object ConversationRenderService:
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
-    // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
+    // A theme is a whole stylesheet, except one built from tokens: that is the base stylesheet (a resource of util, not the
+    // stored default theme, which is itself a token theme), what its
     // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
     // rather than a broken page (plus the theme's own CSS).
     //
@@ -664,7 +665,7 @@ object ConversationRenderService:
       }
 
     private def defaultCss: UIO[String] =
-      configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
+      ZIO.succeed(ThemeCss.baseStylesheet)
 
     /** Resolves one localized configuration string: the first requested locale that has a value (matched
       * case-insensitively, then without its region: `pt-BR` -> `pt`), then the tenant default, then any entry. The

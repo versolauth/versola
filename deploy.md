@@ -908,7 +908,15 @@ The admin login forms under `central/src/main/resources/forms/` are *generated* 
 (`npm run build:forms`) and are gitignored. If the image is built without that step, the files are
 absent and `BootstrapService` fails the moment it tries to seed them — only on an empty database,
 so the image looks fine until the first bootstrap. Fixed in CI (the `docker-central` job builds the
-forms first); if you see this again, the CI step has been lost.
+forms first); if you see this again, the CI step has been lost. The same step also writes the
+foundation stylesheet (`util/src/main/resources/versola/forms/common.css`, also generated and
+gitignored) that `auth` and `central` lay every visual theme on; without it they fail with
+`Classpath resource versola/forms/common.css is missing`.
+
+On upgrade, `central` converts a stored `default` theme that is a stylesheet (what earlier versions
+re-seeded from `common.css` at every start) into a visual theme: base `versola`, no overrides, no
+CSS. A `default` theme that already has tokens is left as the administrator set it. Stylesheet
+themes other than `default` are unchanged.
 
 ### 9.3 Container dies with no error in its own log
 

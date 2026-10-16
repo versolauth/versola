@@ -67,7 +67,7 @@ async function activeForms() {
 }
 
 const themes = [
-  { id: 'default', css: read('../forms/common.css'), tenantId: null },
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'legacy-acme', css: 'body { font-family: Georgia, serif; }', tenantId: null },
   { id: 'acme', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#2563eb' } } },
   { id: 'storefront', css: '', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } } },
@@ -91,7 +91,7 @@ async function openConsole(page: Page, scheme: 'dark' | 'light', path: string) {
   await page.route('**/configuration/themes/css', async route => {
     const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens> }; css?: string };
     const generated = generate(resolve(tokens));
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ css: [themes[0].css, generated, css ?? ''].filter(Boolean).join('\n'), generated }) });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ css: [read('../forms/common.css'), generated, css ?? ''].filter(Boolean).join('\n'), generated }) });
   });
 }
 
