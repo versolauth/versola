@@ -193,6 +193,13 @@ export class VersolaNavigation extends LitElement {
           border-color: var(--accent);
           color: var(--accent);
         }
+
+        /* In the drawer the items are touch targets: 44px, not the desktop's 33. */
+        .nav-item {
+          min-height: 2.75rem;
+          padding-top: 0.625rem;
+          padding-bottom: 0.625rem;
+        }
       }
 
       .brand-logo {
@@ -248,15 +255,19 @@ export class VersolaNavigation extends LitElement {
         margin-bottom: 0.125rem;
       }
 
+      /* Hover is a neutral fill; active is the accent fill plus a bar on the
+         left edge, so the two never read alike. The weight does not change:
+         a bolder active label would shift the text's width. */
       .nav-item:hover {
-        background: var(--accent-subtle);
-        color: var(--accent-text);
+        background: var(--sidebar-hover-bg);
+        color: var(--text-primary);
       }
 
-      .nav-item.active {
-        background: var(--sidebar-active-bg);
-        color: var(--sidebar-active-text);
-        font-weight: 600;
+      .nav-item.active,
+      .nav-item.active:hover {
+        background: var(--accent-subtle);
+        color: var(--accent-text);
+        box-shadow: inset 3px 0 0 var(--accent);
       }
 
       .nav-item:focus-visible,

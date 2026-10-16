@@ -18,8 +18,7 @@
       --surface-inset: #f3f1ed;
       --surface-raised: #ffffff;
       --sidebar-bg: #f3f1ed;
-      --sidebar-active-bg: #d9e8ec;
-      --sidebar-active-text: #0f4a5d;
+      --sidebar-hover-bg: #e9e6e0;
       --code-bg: #f3f1ed;
       --selection-bg: #cfe3ea;
       --backdrop: rgba(28, 27, 25, 0.5);
@@ -104,8 +103,7 @@
       --surface-inset: #232a2c;
       --surface-raised: #20272a;
       --sidebar-bg: #151a1b;
-      --sidebar-active-bg: #1a373f;
-      --sidebar-active-text: #8fd0e2;
+      --sidebar-hover-bg: #20272a;
       --code-bg: #121617;
       --selection-bg: #244a56;
       --backdrop: rgba(0, 0, 0, 0.6);
@@ -195,8 +193,8 @@
     .group-label { font-size: var(--text-xs); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-muted); padding: 8px 12px; margin: 12px 0 4px; }
     .nav { padding: 8px 12px; flex: 1; }
     .nav a { display: block; padding: 10px 12px; border-radius: var(--radius-md); color: var(--text-secondary); text-decoration: none; font-weight: 500; margin-bottom: 2px; }
-    .nav a:hover { background: var(--surface-inset); color: var(--text-primary); }
-    .nav a.active { background: var(--sidebar-active-bg); color: var(--sidebar-active-text); font-weight: 600; }
+    .nav a:hover { background: var(--sidebar-hover-bg); color: var(--text-primary); }
+    .nav a.active { background: var(--accent-subtle); color: var(--accent-text); box-shadow: inset 3px 0 0 var(--accent); }
     .sidebar-footer { border-top: 1px solid var(--border-default); padding: 16px 24px; display: grid; gap: 12px; }
     .sidebar-footer a { color: var(--text-secondary); text-decoration: none; }
     .seg { display: inline-flex; border: 1px solid var(--border-strong); border-radius: 999px; padding: 2px; background: var(--surface); }
@@ -385,7 +383,7 @@
     paint();
   }
   document.querySelectorAll('.seg button').forEach(b => b.addEventListener('click', () => apply(b.dataset.set)));
-  const names = ["bg-page","surface","surface-inset","surface-raised","sidebar-bg","sidebar-active-bg","sidebar-active-text","border-subtle","border-default","border-strong","border-input","text-primary","text-secondary","text-muted","accent","accent-hover","on-accent","accent-subtle","accent-text","focus-ring","success","success-subtle","success-text","success-border","warning","warning-subtle","warning-text","warning-border","danger","on-danger","danger-subtle","danger-text","danger-border","info","info-subtle","info-text","info-border","code-bg","selection-bg","toggle-track-off","toggle-knob-off"];
+  const names = ["bg-page","surface","surface-inset","surface-raised","sidebar-bg","sidebar-hover-bg","border-subtle","border-default","border-strong","border-input","text-primary","text-secondary","text-muted","accent","accent-hover","on-accent","accent-subtle","accent-text","focus-ring","success","success-subtle","success-text","success-border","warning","warning-subtle","warning-text","warning-border","danger","on-danger","danger-subtle","danger-text","danger-border","info","info-subtle","info-text","info-border","code-bg","selection-bg","toggle-track-off","toggle-knob-off"];
   function paint() {
     const cs = getComputedStyle(root); const sw = document.getElementById('sw'); sw.innerHTML = '';
     for (const n of names) { const d = document.createElement('div'); d.className = 'sw'; const i = document.createElement('i'); i.style.background = 'var(--' + n + ')'; d.appendChild(i); d.append(n + ' ' + cs.getPropertyValue('--' + n).trim()); sw.appendChild(d); }

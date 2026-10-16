@@ -48,7 +48,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--surface-inset` | `#f3f1ed` | `#232a2c` | A panel inside a card (claims, permissions, nested rows), hovered table row, disabled button; replaces every old `rgba(0,0,0,.2)` slab |
 | `--surface-raised` | `#ffffff` | `#20272a` | Popovers, dropdowns, menus (with `--shadow-lg`) |
 | `--sidebar-bg` | `#f3f1ed` | `#151a1b` | The sidebar |
-| `--sidebar-active-bg` / `--sidebar-active-text` | `#d9e8ec` / `#0f4a5d` | `#1a373f` / `#8fd0e2` | The active nav item |
+| `--sidebar-hover-bg` | `#e9e6e0` | `#20272a` | A hovered nav item (`--surface-inset` would vanish: it equals `--sidebar-bg` in light). The active item is `--accent-subtle` / `--accent-text` with a 3px `--accent` bar on its left edge |
 | `--code-bg` | `#f3f1ed` | `#121617` | Code blocks |
 | `--selection-bg` | `#cfe3ea` | `#244a56` | `::selection` |
 | `--backdrop` | `rgba(28,27,25,.5)` | `rgba(0,0,0,.6)` | Behind a dialog or the mobile drawer |
@@ -149,7 +149,9 @@ off-canvas drawer opened by the `versola-nav-toggle` in each page header, with a
 
 Sidebar, top to bottom: brand (logo + wordmark in `--accent`), tenant selector (looks like every
 other `<select>`: same padding, chevron at the same inset), the nav (`Tenant Scoped`, `Global`;
-items are buttons with `aria-current="page"` on the active one), and a footer that stays put:
+items are buttons with `aria-current="page"` on the active one; hover is a `--sidebar-hover-bg`
+fill, active is `--accent-subtle` with a 3px `--accent` bar on the left edge, the weight never
+changes so the label's width never shifts; 44px tall in the drawer), and a footer that stays put:
 the `Theme` row with the switcher, `My Security`, `Log out`. The brand, tenant and nav scroll as
 one block with a thin, always-reserved scrollbar when they are taller than the viewport; with
 every permission the whole list fits at 1440×900.
