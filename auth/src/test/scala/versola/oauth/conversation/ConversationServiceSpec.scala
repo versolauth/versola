@@ -173,6 +173,7 @@ object ConversationServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   private val consentingClient = registrationClient.copy(

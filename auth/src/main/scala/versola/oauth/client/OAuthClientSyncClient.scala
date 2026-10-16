@@ -130,7 +130,7 @@ object OAuthClientSyncClient:
         /** Defaulted on the same terms: a central that predates the field only has `web`
           * clients. */
         applicationType: ApplicationType = ApplicationType.web,
-        themeOverrides: Option[ThemeOverrides] = None,
+        themeOverrides: Option[ThemeOverrides],
     ) derives JsonCodec
 
     private case class OAuthClientsSyncResponse(
