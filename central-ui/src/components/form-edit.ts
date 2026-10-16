@@ -93,7 +93,7 @@ export class VersolaFormEdit extends LitElement {
       .kv-grid { display: grid; grid-template-columns: minmax(120px, 220px) 1fr; gap: 0.5rem 0.75rem; align-items: center; }
       .kv-key { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .kv-value[type="number"]::-webkit-inner-spin-button, .kv-value[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
       .kv-value[type="number"] { -moz-appearance: textfield; appearance: textfield; }
       .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-default); }

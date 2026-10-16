@@ -77,7 +77,7 @@ export class VersolaThemeTokenControls extends LitElement {
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-page); border: 1px solid var(--border-default); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
-      .kv-value:focus { outline: none; border-color: var(--accent); }
+      .kv-value:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--accent); }
       .group + .group { margin-top: var(--spacing-lg); }
       .group-title { display: flex; justify-content: space-between; align-items: baseline; gap: var(--spacing-sm); }
       .badge-overridden { font-size: 0.6875rem; font-weight: 600; color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); border-radius: 999px; padding: 0.125rem 0.5rem; white-space: nowrap; }

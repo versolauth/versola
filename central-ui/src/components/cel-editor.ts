@@ -43,7 +43,8 @@ export class VersolaCelEditor extends LitElement {
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-border);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
       }
       :host([has-error]) .wrapper { border-color: var(--danger); }
       .error-message {
@@ -78,6 +79,7 @@ export class VersolaCelEditor extends LitElement {
         color: transparent;
         caret-color: var(--accent);
         resize: none;
+        /* The wrapper draws the focus ring (:focus-within above). */
         outline: none;
         overflow: auto;
       }

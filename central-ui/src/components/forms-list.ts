@@ -457,9 +457,9 @@ export class VersolaFormsList extends LitElement {
       }
       .form-control::placeholder { color: var(--text-secondary); }
       .form-control:focus {
-        outline: none;
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-border);
       }
       .locale-list {
         display: flex;

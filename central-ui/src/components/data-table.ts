@@ -198,10 +198,13 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         cursor: pointer;
       }
 
-      .menu button:hover,
-      .menu button:focus-visible {
+      .menu button:hover {
         background: var(--surface-inset);
-        outline: none;
+      }
+
+      .menu button:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
       }
 
       .menu button.danger {

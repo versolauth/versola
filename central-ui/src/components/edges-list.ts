@@ -268,7 +268,7 @@ export class VersolaEdgesList extends LitElement {
         font-family: var(--font-family);
       }
       .option-info-button:hover { background: var(--accent-subtle); border-color: var(--accent); }
-      .option-info-button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-border); }
+      .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
       .option-tooltip {
         position: absolute;
         left: 0;

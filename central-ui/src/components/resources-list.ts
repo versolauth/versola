@@ -141,7 +141,8 @@ export class VersolaResourcesList extends LitElement {
     .audience-input-wrap { position:relative; flex:1; min-width:16rem; }
     .audience-suggestions { position:absolute; top:calc(100% + .25rem); left:0; right:0; z-index:30; display:grid; max-height:12rem; overflow-y:auto; padding:.25rem; border:1px solid var(--border-default); border-radius:var(--radius-sm); background:var(--surface); box-shadow:var(--shadow-md); }
     .audience-suggestion { width:100%; padding:.5rem .625rem; border:0; border-radius:var(--radius-sm); background:transparent; color:var(--text-primary); font-family:var(--font-mono); font-size:.875rem; text-align:left; cursor:pointer; }
-    .audience-suggestion:hover, .audience-suggestion:focus-visible { background:var(--accent-subtle); color:var(--accent); outline:none; }
+    .audience-suggestion:hover { background:var(--accent-subtle); color:var(--accent); }
+    .audience-suggestion:focus-visible { outline:2px solid var(--focus-ring); outline-offset:-2px; }
     .audience-list { display:grid; gap:.5rem; margin-top:.75rem; }
     .audience-item { display:flex; align-items:center; justify-content:space-between; gap:.75rem; min-height:2.25rem; padding:.375rem .5rem .375rem .75rem; border:1px solid var(--border-default); border-radius:var(--radius-sm); background:var(--surface-inset); font-family:var(--font-mono); font-size:.875rem; }
     .audience-empty { margin-top:.75rem; }
@@ -245,7 +246,7 @@ export class VersolaResourcesList extends LitElement {
     }
     .option-info { position:relative; display:inline-flex; align-items:center; flex:none; }
     .option-info-button:hover { background:var(--accent-subtle); border-color:var(--accent); }
-    .option-info-button:focus-visible { outline:none; box-shadow:0 0 0 2px var(--accent-border); }
+    .option-info-button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
     .option-tooltip {
       position:absolute;
       right:0;

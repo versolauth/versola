@@ -229,8 +229,8 @@ export class VersolaPresetForm extends LitElement {
       }
 
       .option-info-button:focus-visible {
-        outline: none;
-        box-shadow: 0 0 0 2px var(--accent-border);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       .option-tooltip {

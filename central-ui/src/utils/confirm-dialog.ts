@@ -81,8 +81,8 @@ export function confirmDestructiveAction(options: ConfirmDialogOptions): Promise
         }
         button:hover { transform: translateY(-1px); }
         button:focus-visible {
-          outline: none;
-          box-shadow: 0 0 0 3px var(--accent-border);
+          outline: 2px solid var(--focus-ring);
+          outline-offset: 2px;
         }
         .cancel {
           background: var(--surface);

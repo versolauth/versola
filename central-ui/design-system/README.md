@@ -62,10 +62,10 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--accent` | `#155e75` | `#62b9d0` | Links, IDs, the primary button fill, accent outlines, the brand wordmark |
 | `--accent-hover` | `#104c5f` | `#7ec8db` | Primary button hover |
 | `--on-accent` | `#ffffff` | `#0c1a1e` | Text and the toggle knob on `--accent` (dark: near-black on the light petrol) |
-| `--accent-subtle` | `#e1eef2` | `#1a3940` | Accent fills: tags, the active filter, nav hover, selected rows, the halo of a focused field |
+| `--accent-subtle` | `#e1eef2` | `#1a3940` | Accent fills: tags, the active filter, the active nav item, selected rows |
 | `--accent-text` | `#114d61` | `#8fd0e2` | Text on `--accent-subtle` |
-| `--accent-border` | `#74b2c4` | `#2c5f6c` | Outline of an accent-filled chip or tag, focus halo (`0 0 0 2px`) |
-| `--focus-ring` | `#155e75` | `#62b9d0` | `outline` of a focused control (2px, offset 2px) |
+| `--accent-border` | `#74b2c4` | `#2c5f6c` | Outline of an accent-filled chip or tag, the ring of a selected (not focused) card. 2.3:1 on surfaces: never a focus indicator |
+| `--focus-ring` | `#155e75` | `#62b9d0` | The one focus indicator: `outline: 2px solid` (offset 2px around a control, 1px around a field, -2px inside a nav or menu item). 3:1 on every surface, checked |
 | `--success`, `-subtle`, `-text`, `-border` | `#2a7a35`, `#e6f3e2`, `#1f5f26`, `#8ac48e` | `#62c472`, `#1a3121`, `#8bd998`, `#336b3e` | Positive state: FAPI 2.0 chip outline, "created" banner, GET badge |
 | `--warning`, `-subtle`, `-text`, `-border` | `#9a5200`, `#fbf0dc`, `#7a4100`, `#dca452` | `#e0a63a`, `#332b15`, `#efc45f`, `#7a5b1a` | Attention: secret rotation chip, drift panel, PATCH badge |
 | `--danger`, `--on-danger` | `#c0341d`, `#ffffff` | `#ff8a73`, `#1c1b19` | Destructive: danger card outline and title, invalid field border, the solid danger button |
@@ -213,10 +213,17 @@ submit disables its button; one click or Enter sends one request.
 
 WCAG 2.2 AA. Text 4.5:1 (3:1 for 18pt / 14pt bold); control boundaries, icons and focus
 indicators 3:1 (`design:contrast` proves the tokens; `tests/accessibility.spec.ts` proves the
-screens). Targets at least 24×24 CSS px (`iconButtonStyles` enforce it). Focus always visible:
-never `outline: none` without a replacement (`--focus-ring` outline or the input's accent border
-plus `--accent-border` halo). Native elements first: a nav item is a `<button>`, a list is a
-`<table>`, a popover is a listbox or a menu with the ARIA pattern the login forms use. Every input
+screens). Targets at least 24×24 CSS px (`iconButtonStyles` enforce it; nav items are 44px in the
+mobile drawer). Focus always visible, and always the same thing: **every focus indicator is a
+2px `outline` in `--focus-ring`** (`outline-offset` 2px around a control, 1px around a field,
+-2px inside a nav or menu item). A field may also change its border to `--accent`, and a halo
+(`box-shadow`) may be added on top of the outline, but never replaces it: `--accent-border` is
+2.3:1 on the surfaces, below the 3:1 a focus indicator needs. `outline: none` appears only where
+a wrapper draws the ring for the element inside it (`code-editor`, `cel-editor`) and on the
+focus flash of `.main-content` after the drawer closes (`admin-app.ts`), which uses `--accent`
+and falls back to an outline under `prefers-reduced-motion`. Native elements first: a nav item is
+a `<button>`, a list is a `<table>`, a popover is a listbox or a menu with the ARIA pattern the
+login forms use (see the row menu below). Every input
 has a label; icon-only buttons have `aria-label` and `title`; errors are tied to their field.
 Dialogs trap focus, close on Escape and return focus. Motion respects `prefers-reduced-motion`.
 

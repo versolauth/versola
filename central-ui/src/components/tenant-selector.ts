@@ -63,9 +63,8 @@ export class TenantSelector extends LitElement {
       }
 
       .selector-button:focus-visible {
-        outline: none;
-        border-color: var(--focus-ring);
-        box-shadow: 0 0 0 2px var(--accent-border);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
       }
 
       .selector-label {
@@ -121,9 +120,9 @@ export class TenantSelector extends LitElement {
       }
 
       .search-input:focus {
-        outline: none;
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-border);
       }
 
       .search-input::placeholder {

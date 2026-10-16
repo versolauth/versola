@@ -520,12 +520,14 @@ export const formStyles = css`
     background-repeat: no-repeat;
   }
 
+  /* The focus indicator is always the 2px --focus-ring outline (3:1 on every
+     surface, design-system/contrast.mjs); the border colour only follows. */
   input:focus,
   textarea:focus,
   select:focus {
-    outline: none;
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 1px;
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-border);
   }
 
   textarea {
@@ -543,7 +545,6 @@ export const formStyles = css`
   textarea.input-error:focus,
   select.input-error:focus {
     border-color: var(--danger);
-    box-shadow: 0 0 0 2px var(--danger-border);
   }
 
   .error-message {

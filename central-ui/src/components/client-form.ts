@@ -405,9 +405,9 @@ export class VersolaClientForm extends LitElement {
       }
 
       .option-info-button:focus-visible {
-        outline: none;
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
         border-radius: 999px;
-        box-shadow: 0 0 0 2px var(--accent-border);
       }
 
       .option-tooltip {

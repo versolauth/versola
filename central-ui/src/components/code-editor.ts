@@ -37,13 +37,14 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px var(--accent-border);
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 1px;
       }
       .wrapper.invalid {
         border-color: var(--danger);
       }
       .wrapper.invalid:focus-within {
-        box-shadow: 0 0 0 2px var(--danger-border);
+        border-color: var(--danger);
       }
       pre, textarea {
         margin: 0;
@@ -74,6 +75,7 @@ export class VersolaCodeEditor extends LitElement {
         color: transparent;
         caret-color: var(--accent);
         resize: vertical;
+        /* The wrapper draws the focus ring (:focus-within above). */
         outline: none;
         overflow: auto;
       }
