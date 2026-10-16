@@ -304,26 +304,35 @@ trait UserRepositorySpec extends DatabaseSpecBase[UserRepositorySpec.Env]:
           after <- env.userRepository.find(userId1)
         yield assertTrue(after.exists(!_.emailVerified))
       },
+      // upsert only applies a version newer than the stored one (UUIDs compare bytewise), so these
+      // tests use fixed, ordered versions: a random one would be skipped about half the time.
       test("upsert resets email_verified when email changes") {
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
         for
-          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), None, None)
           _ <- env.userRepository.markVerified(userId1, Left(email1))
           verified <- env.userRepository.find(userId1)
-          _ <- env.userRepository.upsert(userId1, UUID.randomUUID(), Some(email2), None, None)
+          _ <- env.userRepository.upsert(userId1, newer, Some(email2), None, None)
           afterChange <- env.userRepository.find(userId1)
         yield assertTrue(
           verified.exists(_.emailVerified),
+          afterChange.exists(_.email.contains(email2)),
           afterChange.exists(!_.emailVerified),
         )
       },
       test("upsert preserves email_verified when email is unchanged") {
-        val version = UUID.randomUUID()
+        val older = UUID(0L, 1L)
+        val newer = UUID(0L, 2L)
         for
-          _ <- seed(env, userId1, email = Some(email1))
+          _ <- env.userRepository.upsert(userId1, older, Some(email1), None, None)
           _ <- env.userRepository.markVerified(userId1, Left(email1))
-          _ <- env.userRepository.upsert(userId1, version, Some(email1), None, None)
+          _ <- env.userRepository.upsert(userId1, newer, Some(email1), None, Some(Login("someone")))
           after <- env.userRepository.find(userId1)
-        yield assertTrue(after.exists(_.emailVerified))
+        yield assertTrue(
+          after.exists(_.login.contains(Login("someone"))),
+          after.exists(_.emailVerified),
+        )
       },
     )
 

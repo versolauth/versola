@@ -31,6 +31,8 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
   val openIdScope = scope(ScopeToken.OpenId)
   val profileScope = scope(ScopeToken("profile"), Claim("name"), Claim("given_name"), Claim("family_name"))
   val emailScope = scope(ScopeToken("email"), Claim("email"))
+  val emailWithVerifiedScope = scope(ScopeToken("email"), Claim("email"), Claim("email_verified"))
+  val phoneWithVerifiedScope = scope(ScopeToken("phone"), Claim("phone_number"), Claim("phone_number_verified"))
 
   val clientId1 = ClientId("test-client")
 
@@ -223,6 +225,61 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
         result <- env.service.getUserInfoForIdToken(testUser, clientId1, Set(ScopeToken.OpenId), Some(requested), None, None)
       yield assertTrue(result.claims.get("email").contains(Json.Str("john@example.com")))
     },
+    suite("verified contact claims")(
+      test("email_verified follows the stored flag, true once the email is verified") {
+        val env = Env()
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true)))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
+        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(true)))
+      },
+      test("email_verified is false for an email nobody has confirmed") {
+        val env = Env()
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
+        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(false)))
+      },
+      test("the stored flag wins over an email_verified value carried in the claims object") {
+        val env = Env()
+        val stale = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(stale))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
+        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(false)))
+      },
+      test("phone_number_verified follows the stored flag") {
+        val env = Env()
+        val phoneUser = testUser.copy(email = None, phone = Some(versola.util.Phone("+49151123456789")), phoneVerified = true)
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(phoneUser))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, phoneWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("phone")), None)
+        yield assertTrue(
+          result.claims.get("phone_number_verified").contains(Json.Bool(true)),
+          !result.claims.contains("email_verified"),
+        )
+      },
+      test("a verified claim is not reported for a contact the user does not have") {
+        val env = Env()
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true, phoneVerified = true)))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, phoneWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("phone")), None)
+        yield assertTrue(!result.claims.contains("phone_number_verified"), !result.claims.contains("phone_number"))
+      },
+      test("email_verified stays out of the response when the email scope was not granted") {
+        val env = Env()
+        for
+          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true)))
+          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
+          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId), None)
+        yield assertTrue(!result.claims.contains("email_verified"))
+      },
+    ),
     test("a first-party client's claims request does not widen what it gets when the request names none") {
       val env = Env()
       for
