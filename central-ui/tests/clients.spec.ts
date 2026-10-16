@@ -2084,8 +2084,8 @@ test('registering a client that asks for consent picks the partner OTP template'
 
 // A partner app's own appearance, laid over the theme it uses.
 const appearancePresets = [
-  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto' } },
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
 ];
 const appearanceThemes = [
   { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
@@ -2140,6 +2140,28 @@ test('shows the values of the theme the app uses as inherited, and sends only wh
   expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ brand: '#112233', shape: 'round' });
 });
 
+test('the background of an app starts at the theme\'s, is overridden from the preset cards and reset to it', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: clientsPath, state: appearanceState({ ...partnerClient, theme: 'money' }) });
+
+  await openClientPage(page, 'acme-app');
+  await openEditSection(page, 'Branding and logout');
+  const block = appearanceBlock(page);
+  const cards = block.getByRole('group', { name: 'Background style' });
+  // The theme is the fintech preset, which is linear.
+  await expect(cards.getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
+
+  await cards.getByRole('button', { name: 'Horizon' }).click();
+  await expect(block.getByText('Overridden · base: linear')).toBeVisible();
+  await block.getByRole('button', { name: 'Reset background to the base' }).click();
+  await expect(block.getByText('This app uses the theme as it is.')).toBeVisible();
+
+  // The glow is a choice like the others, though it is the default look: it undoes the theme's gradient.
+  await cards.getByRole('button', { name: 'Glow' }).click();
+  await saveEdit(page);
+  expect((await findClientWrite(api.requests, 'PUT')).body.themeOverrides).toEqual({ background: 'glow' });
+  await expect(page.getByText('glow background')).toBeVisible();
+});
+
 test('resets one override, and clears all of them with an empty object', async ({ page }) => {
   const api = await loadAdminApp(page, {
     path: clientsPath,
@@ -2172,8 +2194,8 @@ test('says that overrides apply on top of a stylesheet theme, and sends nothing 
   await expect(appearanceBlock(page).getByText('The theme is a stylesheet')).toBeVisible();
   // Its values are not known, so none is claimed: no preset's values stand in for them.
   await expect(appearanceBlock(page).getByLabel('Brand colour, #rrggbb')).toHaveAttribute('placeholder', '#rrggbb');
-  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(4);
-  await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"]')).toHaveCount(0);
+  await expect(appearanceBlock(page).getByText('Set by the stylesheet')).toHaveCount(5);
+  await expect(appearanceBlock(page).locator('.seg-btn[aria-pressed="true"], .bg-card[aria-pressed="true"]')).toHaveCount(0);
 
   await saveEdit(page);
   expect((await findClientWrite(api.requests, 'PUT')).body).not.toHaveProperty('themeOverrides');

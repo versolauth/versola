@@ -67,7 +67,7 @@ for (const theme of themes) {
           }],
         },
         themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
-        themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } }],
+        themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
       },
     });
     await page.getByRole('button', { name: 'Open client partner-app', exact: true }).click();
@@ -103,8 +103,8 @@ for (const theme of themes) {
 }
 
 const themePresets = [
-  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto' } },
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
 ];
 
 for (const theme of themes) {
@@ -131,6 +131,11 @@ for (const theme of themes) {
 
     await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
     await expect(page.getByText('1 override on Studio')).toBeVisible();
+    await clean();
+
+    // With a background chosen: the card that is pressed and the badge with its Reset.
+    await page.getByRole('group', { name: 'Background style' }).getByRole('button', { name: 'Horizon' }).click();
+    await expect(page.getByText('2 overrides on Studio')).toBeVisible();
     await clean();
 
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();

@@ -244,7 +244,8 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
     themeOverrides = None,
   )
 
-  private val partnerTheme = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None)
+  private val partnerTheme =
+    ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None, background = None)
 
   private val createNativeRequest = CreateNativeClientRequest(
     tenantId = tenantId,
@@ -1219,7 +1220,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
         Method.PUT,
         "web",
         UpdateWebClientRequest.of(clientId).copy(themeOverrides =
-          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None)),
+          Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
         ).toJson,
       ),
       expectedStatus = Status.NoContent,
@@ -1230,6 +1231,7 @@ object ClientControllerSpec extends ZIOSpecDefault, ZIOStubs:
           shape = None,
           surface = None,
           mode = None,
+          background = None,
         ))))),
     ),
     controllerTestCase(

@@ -5,7 +5,7 @@ import versola.central.configuration.permissions.Permission
 import versola.central.configuration.scopes.ScopeToken
 import versola.central.configuration.tenants.TenantId
 import versola.central.configuration.{PatchClientRedirectUris, PatchClientScope, PatchPermissions}
-import versola.util.theme.{BrandColor, Mode, Shape, Surface, ThemeOverrides}
+import versola.util.theme.{Background, BrandColor, Mode, Shape, Surface, ThemeOverrides}
 import versola.util.{DatabaseSpecBase, Dpop, Patch, RedirectUri, Secret}
 import zio.*
 import zio.http.URL
@@ -229,9 +229,16 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
       },
       test("create and find a client with theme overrides, then replace and clear them") {
         val branded = client.copy(themeOverrides =
-          Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp), surface = None, mode = None)),
+          Some(ThemeOverrides(
+            brand = BrandColor.parse("#112233").toOption,
+            shape = Some(Shape.sharp),
+            surface = None,
+            mode = None,
+            background = None,
+          )),
         )
-        val replaced = ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark), brand = None, shape = None)
+        val replaced =
+          ThemeOverrides(surface = Some(Surface.neutral), mode = Some(Mode.dark), brand = None, shape = None, background = Some(Background.flat))
 
         for
           _ <- env.repository.createClient(branded)
@@ -242,7 +249,9 @@ trait OAuthClientRepositorySpec extends DatabaseSpecBase[OAuthClientRepositorySp
           untouched <- env.repository.find(clientId)
           _ <- env.repository.updateClient(
             clientId,
-            OAuthClientPatch.empty.copy(themeOverrides = Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None))),
+            OAuthClientPatch.empty.copy(themeOverrides =
+              Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None)),
+            ),
           )
           cleared <- env.repository.find(clientId)
         yield assertTrue(

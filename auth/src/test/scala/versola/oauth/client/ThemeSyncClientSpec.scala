@@ -38,7 +38,7 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
         "studio-dark",
         "",
         None,
-        Some(ThemeTokens("studio", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None)))),
+        Some(ThemeTokens("studio", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)))),
       )
       // What a central from before tokens sends: no `tokens` key at all.
       val oldCentral = """{"themes":[{"id":"default","css":"body {}"}]}"""
@@ -58,7 +58,7 @@ object ThemeSyncClientSpec extends ZIOSpecDefault:
         "studio-dark",
         "",
         None,
-        Some(ThemeTokens("studio", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None)))),
+        Some(ThemeTokens("studio", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)))),
       )
       val other = ThemeRecord("default", "body {}", None, tokens = None)
       val badMode = """{"id":"bad-mode","css":"","tokens":{"base":"studio","overrides":{"mode":"sepia"}}}"""

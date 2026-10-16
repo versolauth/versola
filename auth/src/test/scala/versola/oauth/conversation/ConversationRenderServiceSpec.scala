@@ -12,7 +12,7 @@ import versola.oauth.model.{AuthorizationCode, CodeChallenge, CodeChallengeMetho
 import versola.oauth.session.model.{ClientEntry, PublicSessionId, SessionId, SessionInfo, SessionRecord, UserAgentDetails, UserAgentId}
 import versola.user.model.UserId
 import versola.util.*
-import versola.util.theme.{BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Background, BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemeTokens}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -180,7 +180,8 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
       body <- response.body.asString
     yield body
 
-  private val ownOverrides = ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold), shape = None, mode = None)
+  private val ownOverrides =
+    ThemeOverrides(brand = BrandColor.parse("#112233").toOption, surface = Some(Surface.bold), shape = None, mode = None, background = None)
   private val withOverrides = clientRecord.copy(themeOverrides = Some(ownOverrides))
   private val fintechTheme = theme.copy(css = ".extra { top: 0; }", tokens = Some(ThemeTokens("fintech", overrides = None)))
 
@@ -525,13 +526,19 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
         test("needs no CSS of its own") {
           val tokenTheme = theme.copy(
             css = "",
-            tokens = Some(ThemeTokens("fintech", Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None)))),
+            tokens = Some(ThemeTokens(
+              "fintech",
+              Some(ThemeOverrides(mode = Some(Mode.dark), brand = None, shape = None, surface = None, background = None)),
+            )),
           )
           rendered(tokenTheme).map(body => assertTrue(body.contains("--brand:#5b5bd6;"), body.contains("color-scheme:dark;")))
         },
         test("applies its overrides over the base") {
           val tokens =
-            ThemeTokens("studio", Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None)))
+            ThemeTokens(
+              "studio",
+              Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)),
+            )
           rendered(theme.copy(css = "", tokens = Some(tokens))).map: body =>
             assertTrue(body.contains("--brand:#112233;"), !body.contains("--brand:#ff6b4a;"))
         },
@@ -582,13 +589,25 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
             over.contains("--brand:#112233;"),
           )
         },
+        test("write the background they choose after the theme's, the glow included") {
+          val flat = clientRecord.copy(themeOverrides = Some(ThemeOverrides(None, None, None, None, Some(Background.flat))))
+          val glow = clientRecord.copy(themeOverrides = Some(ThemeOverrides(None, None, None, None, Some(Background.glow))))
+          for
+            onFlat <- rendered(fintechTheme, flat)
+            onGlow <- rendered(fintechTheme, glow)
+          yield assertTrue(
+            // fintech is built on linear
+            onFlat.indexOf("--page-bg:linear-gradient(") < onFlat.indexOf("--page-bg:var(--page);"),
+            onGlow.indexOf("--page-bg:linear-gradient(") < onGlow.indexOf("--page-bg:radial-gradient(75% 70% at 50% 40%,var(--glow)"),
+          )
+        },
         test("leave the page exactly as it was when empty or absent") {
           for
             plain <- rendered(fintechTheme)
             none <- rendered(fintechTheme, clientRecord.copy(themeOverrides = None))
             empty <- rendered(
               fintechTheme,
-              clientRecord.copy(themeOverrides = Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None))),
+              clientRecord.copy(themeOverrides = Some(ThemeOverrides(brand = None, shape = None, surface = None, mode = None, background = None))),
             )
           yield assertTrue(plain == none, plain == empty, !plain.contains("client overrides"))
         },
