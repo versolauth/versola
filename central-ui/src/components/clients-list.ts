@@ -676,6 +676,10 @@ export class VersolaClientsList extends LitElement {
         font-size: 0.8125rem;
         color: var(--text-secondary);
       }
+      /* --info is the accent hue, so a link in a banner is told apart by its underline. */
+      .banner a {
+        text-decoration: underline;
+      }
       .view-flow {
         padding: var(--spacing-md) var(--spacing-lg);
       }

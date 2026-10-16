@@ -41,7 +41,13 @@ const pairs = [
   ['accent', 'bg-page', TEXT, 'link / accent text'], ['accent', 'surface', TEXT, 'link / accent text'], ['accent', 'surface-inset', TEXT], ['accent', 'sidebar-bg', TEXT, 'brand wordmark'],
   ['on-accent', 'accent', TEXT, 'primary button'], ['on-accent', 'accent-hover', TEXT, 'primary button hover'],
   ['accent-text', 'accent-subtle', TEXT, 'accent badge, active filter, nav hover'],
-  ['accent', 'surface', UI, 'focus ring / accent border'], ['focus-ring', 'surface', UI], ['focus-ring', 'bg-page', UI], ['focus-ring', 'sidebar-bg', UI],
+  ['accent', 'surface', UI, 'accent border'],
+  // The one focus indicator, on every surface it can sit on. Against the solid accent and danger
+  // fills it cannot pass in light (no colour is 3:1 against both white and the petrol accent),
+  // which is why the outline is offset 2px: the gap shows the surface, checked just above.
+  ...['bg-page', 'surface', 'surface-inset', 'surface-raised', 'sidebar-bg', 'sidebar-hover-bg', 'accent-subtle'].map((bg) => ['focus-ring', bg, UI, 'focus indicator']),
+  ['focus-ring', 'accent', UI, 'informative only: the ring sits 2px outside the primary button, on the surface'],
+  ['focus-ring', 'danger', UI, 'informative only: the ring sits 2px outside the danger button, on the surface'],
   ['border-strong', 'surface', UI, 'control boundary'], ['border-input', 'surface', UI, 'input border'], ['border-input', 'bg-page', UI], ['border-input', 'sidebar-bg', UI, 'tenant selector'],
   ['toggle-track-off', 'surface', UI], ['toggle-knob-off', 'toggle-track-off', UI], ['on-accent', 'accent', UI, 'toggle knob on'],
   ['success', 'surface', TEXT], ['success-text', 'success-subtle', TEXT], ['success-border', 'success-subtle', UI, 'badge border (decorative, informative only)'],
@@ -70,6 +76,11 @@ for (const [theme, t] of Object.entries(themes)) {
     if (!ok) failed++;
     rows.push({ theme, fg, bg, min, r: r.toFixed(2), ok: informative ? (r >= min ? 'pass' : 'n/a') : ok ? 'pass' : 'FAIL', note: note || '' });
   }
+}
+// --info is the accent hue on purpose (one blue in the console), so a link inside an info banner
+// cannot be told from the banner's text by colour: links in banners are underlined (README).
+for (const [theme, t] of Object.entries(themes)) {
+  if (!md && t['info'] === t['accent']) console.log(`note ${theme} info equals accent: links inside info banners must be underlined`);
 }
 if (md) {
   console.log('| Theme | Foreground | Background | Ratio | Min | Result | Note |');

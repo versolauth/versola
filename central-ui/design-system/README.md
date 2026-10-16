@@ -70,7 +70,7 @@ danger), `X-subtle` is a fill (badge, banner, selected row), `X-text` is the tex
 | `--warning`, `-subtle`, `-text`, `-border` | `#9a5200`, `#fbf0dc`, `#7a4100`, `#dca452` | `#e0a63a`, `#332b15`, `#efc45f`, `#7a5b1a` | Attention: secret rotation chip, drift panel, PATCH badge |
 | `--danger`, `--on-danger` | `#c0341d`, `#ffffff` | `#ff8a73`, `#1c1b19` | Destructive: danger card outline and title, invalid field border, the solid danger button |
 | `--danger-subtle`, `-text`, `-border` | `#fbeae6`, `#9c2915`, `#ec9a88` | `#3c201c`, `#ffab98`, `#80362c` | Danger fills and the outline danger button text |
-| `--info`, `-subtle`, `-text`, `-border` | same as accent | same as accent | Informational banners and badges (POST badge) |
+| `--info`, `-subtle`, `-text`, `-border` | same as accent | same as accent | Informational banners and badges (POST badge). Because it is the accent hue, a link inside a banner is **underlined** (`.banner a`); colour alone would not tell it from the text |
 | `--toggle-track-off`, `--toggle-knob-off` | `#7c766b`, `#ffffff` | `#616d70`, `#f0f1f0` | A switch in the off position (on: `--accent` / `--on-accent`) |
 | `--select-chevron` | image | image | The `<select>` and tenant-selector chevron, drawn in `--text-secondary` (an image cannot read a `var()`) |
 | `--shadow-sm` / `-md` / `-lg` | `rgba(28,27,25,…)` | `rgba(0,0,0,…)` | Elevation: `-lg` for popovers and the drawer, `-md` for suggestion lists |
@@ -114,11 +114,14 @@ swatches in `theme-token-controls.ts` are the preset colours themselves. Nothing
 ### Contrast
 
 `npm run design:contrast` checks every pair the console relies on (text on each surface, accent as
-text and as a boundary, button text on fills, badge text on badge fills, syntax tokens on
-`--code-bg`). The required pairs all pass in both themes (lowest: `--border-input` and
-`--toggle-track-off` on `--surface` in dark, 3.05–3.6:1, chosen just above the line so fields do
-not look heavy). The `*-border` outlines on `*-subtle` fills are 1.7–2.2:1 and are listed as
-informative: the badge's text carries its meaning, the outline is decoration.
+text and as a boundary, `--focus-ring` on every surface it can sit on, button text on fills, badge
+text on badge fills, syntax tokens on `--code-bg`). The required pairs all pass in both themes
+(lowest: `--border-input` and `--toggle-track-off` on `--surface` in dark, 3.05–3.6:1, chosen just
+above the line so fields do not look heavy). The `*-border` outlines on `*-subtle` fills are
+1.7–2.2:1 and are listed as informative: the badge's text carries its meaning, the outline is
+decoration. `--focus-ring` against the solid `--accent` and `--danger` fills is informative too:
+no colour is 3:1 against both white and the petrol accent, which is why the outline is offset 2px
+and the gap shows the surface. The script also prints a note that `--info` equals `--accent`.
 
 ## Theme mechanism
 
