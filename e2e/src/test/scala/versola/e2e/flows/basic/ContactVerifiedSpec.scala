@@ -20,9 +20,11 @@ object ContactVerifiedSpec extends E2ESpec:
   // In non-prod the OTP is always the first N digits of "1234567890"; default length is 6.
   private val fixedOtp = "123456"
 
-  private def unusedPhone: String =
+  /** An unused German mobile number. `prefix` is a real mobile range (151, 152): a made-up one such
+    * as 153 is rejected as not a number, and the flow never leaves the credential step. */
+  private def unusedPhone(prefix: String): String =
     val uid = UUID.randomUUID()
-    f"+49153${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
+    f"+49$prefix${uid.getLeastSignificantBits.abs % 100_000_000L}%08d"
 
   private def unusedEmail: String = s"verified-${UUID.randomUUID().toString.take(12)}@example.test"
 
@@ -71,7 +73,7 @@ object ContactVerifiedSpec extends E2ESpec:
       ).label("a confirmed email OTP must report email_verified=true, and a repeat must leave it so")
     },
     test("an existing user's phone is verified once its OTP is confirmed") {
-      val phone = unusedPhone
+      val phone = unusedPhone("151")
       for
         (s, auth) <- setup(Flows.Id.PhoneOtp)
         _ <- auth.registerUser(phone = Some(phone))
@@ -93,7 +95,7 @@ object ContactVerifiedSpec extends E2ESpec:
       ).label("registration is the OTP itself, so the new account's email must be verified")
     },
     test("a phone that registers through the OTP is verified from the start") {
-      val phone = unusedPhone
+      val phone = unusedPhone("152")
       for
         (s, auth) <- setup(Flows.Id.PhoneRegistration)
         userinfo <- signIn(auth, s, "openid phone", Right(phone))
