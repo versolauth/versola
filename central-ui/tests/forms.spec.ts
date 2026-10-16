@@ -2,7 +2,7 @@ import { expect, test, type Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { findRequest, loadAdminApp } from './fixtures';
 import { formBundle, translations } from './form-harness';
-import type { MockConfigState } from './mocks';
+import { baseStylesheetMock, type MockConfigState } from './mocks';
 
 const formsPath = '/?view=forms&tenant=tenant-alpha';
 
@@ -29,7 +29,7 @@ const locales = [
 ];
 
 const themes = [
-  { id: 'default', css: 'body { background: #fff; }', tenantId: null },
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'dark', css: 'body { background: #000; }', tenantId: null },
 ];
 
@@ -38,6 +38,7 @@ const fullState: Partial<MockConfigState> = {
   formLocales: locales,
   locales: locales.map(l => ({ ...l, active: true, isDefault: l.code === 'en' })),
   themes,
+  themePresets: [{ id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
 };
 
 function formHeader(page: Page, text: string) {
@@ -189,6 +190,15 @@ test('renders a live preview iframe', async ({ page }) => {
   await page.getByRole('button', { name: 'Preview', exact: true }).click();
 
   await expect(page.locator('iframe.preview-iframe')).toHaveCount(1);
+});
+
+test('previews with the stylesheet central composes for a visual theme, not with the empty CSS it stores', async ({ page }) => {
+  await loadAdminApp(page, { path: formsPath, state: fullState });
+  await expandCredential(page);
+  await page.locator('.version-card').filter({ hasText: 'v1' }).click();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+
+  await expect.poll(() => page.locator('iframe.preview-iframe').evaluate((frame: HTMLIFrameElement) => frame.srcdoc)).toContain(baseStylesheetMock);
 });
 
 test('keeps authorization form cards vertical', async ({ page }) => {

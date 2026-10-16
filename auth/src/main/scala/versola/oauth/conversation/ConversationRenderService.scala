@@ -127,14 +127,14 @@ object ConversationRenderService:
     case class Consent(
         clientName: Option[String],
         /** The client's name in every language, see [[ClientBrand]]. */
-        clientNames: Map[String, String] = Map.empty,
+        clientNames: Map[String, String],
         logoUri: Option[String],
         policyUri: Option[String],
         tosUri: Option[String],
         scopes: List[ConsentScope],
         allowPartial: Boolean,
         denyUri: String,
-        user: Option[ConsentUser] = None,
+        user: Option[ConsentUser],
     ) extends StepView
 
     /** One active session of the user, as rendered on the account page. `id` is the
@@ -188,11 +188,11 @@ object ConversationRenderService:
       allT: Map[String, Map[String, String]],
       error: Option[String],
       csrf: String,
-      logo: Option[String] = None,
+      logo: Option[String],
       /** The client the user is signing in to; forms show it inside the card for a partner's app. */
-      client: Option[ClientBrand] = None,
+      client: Option[ClientBrand],
       /** The language each code is shown as in the switcher, as configured under Locales. */
-      localeNames: Map[String, String] = Map.empty,
+      localeNames: Map[String, String],
   ) derives JsonCodec
 
   /** What a form shows of the client: its name and logo, and whether it is a partner's (third-party) app, which has
@@ -206,7 +206,7 @@ object ConversationRenderService:
     */
   case class ClientBrand(
       name: Option[String],
-      names: Map[String, String] = Map.empty,
+      names: Map[String, String],
       logo: Option[String],
       partner: Boolean,
   ) derives JsonCodec
@@ -349,6 +349,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -384,6 +386,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -487,6 +491,8 @@ object ConversationRenderService:
               error = None,
               csrf = "",
               localeNames = localeNames(locales, (form.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             version = form.version,
           )
@@ -528,6 +534,8 @@ object ConversationRenderService:
               None,
               csrfToken,
               localeNames = localeNames(locales, (value.localizations.keySet & activeCodes).toList.sorted),
+              logo = None,
+              client = None,
             ),
             value.version,
           )
@@ -594,6 +602,7 @@ object ConversationRenderService:
             csrf = csrfToken,
             client = clientBrand(client, locale, locales.default),
             localeNames = localeNames(locales, allLocales),
+            logo = None,
           ),
           version = form.version,
         )
@@ -630,7 +639,8 @@ object ConversationRenderService:
       val chosen = form.localizations.getOrElse(chosenLocale, Map.empty)
       (chosenLocale, base ++ chosen)
 
-    // A theme is a whole stylesheet, except one built from tokens: that is the current default stylesheet, what its
+    // A theme is a whole stylesheet, except one built from tokens: that is the base stylesheet (a resource of util, not the
+    // stored default theme, which is itself a token theme), what its
     // tokens set, then its own CSS. A base this service does not know (a newer central) gives the default look
     // rather than a broken page (plus the theme's own CSS).
     //
@@ -658,7 +668,7 @@ object ConversationRenderService:
       }
 
     private def defaultCss: UIO[String] =
-      configuration.getTheme(ThemeDefault).map(_.map(_.css).getOrElse(""))
+      ZIO.succeed(ThemeCss.baseStylesheet)
 
     /** Resolves one localized configuration string: the first requested locale that has a value (matched
       * case-insensitively, then without its region: `pt-BR` -> `pt`), then the tenant default, then any entry. The

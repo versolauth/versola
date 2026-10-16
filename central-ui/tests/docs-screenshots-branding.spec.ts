@@ -21,16 +21,16 @@ const golden = JSON.parse(read('../../central/src/test/resources/form-previews.g
 };
 
 const presets = [
-  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto' } },
-  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto' } },
-  { id: 'wellness', title: { en: 'Wellness' }, tokens: { brand: '#0e9f8e', shape: 'round', surface: 'soft', mode: 'auto' } },
-  { id: 'editorial', title: { en: 'Editorial' }, tokens: { brand: '#14130f', shape: 'sharp', surface: 'neutral', mode: 'auto' } },
-  { id: 'sunny', title: { en: 'Sunny' }, tokens: { brand: '#f5c518', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'berry', title: { en: 'Berry' }, tokens: { brand: '#b4348a', shape: 'round', surface: 'bold', mode: 'auto' } },
+  { id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'studio', title: { en: 'Studio' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
+  { id: 'wellness', title: { en: 'Wellness' }, tokens: { brand: '#0e9f8e', shape: 'round', surface: 'soft', mode: 'auto', background: 'horizon' } },
+  { id: 'editorial', title: { en: 'Editorial' }, tokens: { brand: '#14130f', shape: 'sharp', surface: 'neutral', mode: 'auto', background: 'flat' } },
+  { id: 'sunny', title: { en: 'Sunny' }, tokens: { brand: '#f5c518', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'berry', title: { en: 'Berry' }, tokens: { brand: '#b4348a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
 ];
 
-type Tokens = { brand: string; shape: string; surface: string; mode: string };
+type Tokens = { brand: string; shape: string; surface: string; mode: string; background: string };
 
 // ThemeCss.generate, as central writes it.
 function generate(t: Tokens): string {
@@ -44,7 +44,19 @@ function generate(t: Tokens): string {
     ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:color-mix(in oklab,var(--brand) 14%,#f7f4ee);--page-dark:color-mix(in oklab,var(--brand) 7%,#0e0e0d);--glow-dark:color-mix(in oklab,var(--brand) 16%,transparent);'
     : t.surface === 'neutral' ? '--page-ink:light-dark(#1c1b19,#f3f2f0);--page-light:#ecebe7;--page-dark:#0b0b0a;--glow-dark:transparent;' : '';
   const scheme = t.mode === 'auto' ? '' : `color-scheme:${t.mode};`;
-  return `:root{--brand:${t.brand};--on-brand:${onBrand};--rf:${field};--rb:${button};--rs:${card};${surface}${scheme}}`;
+  // The tint strengths (light, dark) of ThemeCss.tint, per surface.
+  const tint = ({
+    linear: { bold: [40, 45], soft: [34, 34], neutral: [14, 16] },
+    horizon: { bold: [42, 46], soft: [36, 34], neutral: [18, 14] },
+  } as Record<string, Record<string, number[]>>)[t.background]?.[t.surface] ?? [0, 0];
+  const mixes = (light: string, dark: string) => `light-dark(color-mix(in oklab,var(--brand) ${tint[0]}%,${light}),color-mix(in oklab,var(--brand) ${tint[1]}%,${dark}))`;
+  const plain = t.background === 'flat' ? '--page-bg:var(--page);' : '';
+  const supported = t.background === 'linear'
+    ? `--page-tint:${mixes('var(--page-light)', 'var(--page-dark)')};--page-bg:linear-gradient(160deg,var(--page-tint) 0%,var(--page) 65%);`
+    : t.background === 'horizon'
+      ? `--page-tint:${mixes('transparent', 'transparent')};--page-bg:radial-gradient(130% 60% at 50% 110%,var(--page-tint),transparent 72%),var(--page);`
+      : '';
+  return `:root{--brand:${t.brand};--on-brand:${onBrand};--rf:${field};--rb:${button};--rs:${card};${surface}${plain}${scheme}}` + (supported ? `\n@supports (color: light-dark(#000, #fff)){:root{${supported}}}` : '');
 }
 
 const resolve = (tokens: { base: string; overrides?: Partial<Tokens> }): Tokens =>
@@ -67,7 +79,7 @@ async function activeForms() {
 }
 
 const themes = [
-  { id: 'default', css: read('../forms/common.css'), tenantId: null },
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'legacy-acme', css: 'body { font-family: Georgia, serif; }', tenantId: null },
   { id: 'acme', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#2563eb' } } },
   { id: 'storefront', css: '', tenantId: tenant, tokens: { base: 'studio', overrides: { brand: '#b4348a', shape: 'sharp' } } },
@@ -91,7 +103,7 @@ async function openConsole(page: Page, scheme: 'dark' | 'light', path: string) {
   await page.route('**/configuration/themes/css', async route => {
     const { tokens, css } = route.request().postDataJSON() as { tokens: { base: string; overrides?: Partial<Tokens> }; css?: string };
     const generated = generate(resolve(tokens));
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ css: [themes[0].css, generated, css ?? ''].filter(Boolean).join('\n'), generated }) });
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ css: [read('../forms/common.css'), generated, css ?? ''].filter(Boolean).join('\n'), generated }) });
   });
 }
 

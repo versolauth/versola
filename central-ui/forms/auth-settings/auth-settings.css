@@ -78,6 +78,8 @@
   height: 40px;
   padding: 0 14px;
   font-size: 0.85rem;
+  /* A button is one line: when the row is short the details beside it give way (they may wrap), not the label. */
+  white-space: nowrap;
 }
 .account-rename {
   flex: 1;

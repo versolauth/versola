@@ -3,7 +3,7 @@ package versola.oauth.client
 import versola.auth.TestEnvConfig
 import versola.oauth.client.model.{AuthMethod, ClientId, ConsentFlow, ScopeToken, TenantId}
 import versola.util.*
-import versola.util.theme.{BrandColor, Shape, ThemeOverrides}
+import versola.util.theme.{Background, BrandColor, Shape, ThemeOverrides}
 import zio.*
 import zio.http.*
 import zio.json.*
@@ -40,7 +40,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
       dpopBoundAccessTokens: Boolean,
       authMethod: AuthMethod,
       certificateBoundAccessTokens: Boolean,
-      themeOverrides: Option[ThemeOverrides] = None,
+      themeOverrides: Option[ThemeOverrides],
   ) derives JsonCodec
   private case class EncodedClientsSyncResponse(clients: Vector[EncodedClient]) derives JsonCodec
 
@@ -66,6 +66,7 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
     false,
     AuthMethod.client_secret,
     false,
+    themeOverrides = None,
   )
 
   private val tokenLayer: ZLayer[Client, Throwable, CentralSyncTokenService] = ZLayer.fromZIO(
@@ -128,7 +129,14 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
                       true,
                       AuthMethod.client_secret,
                       false,
-                      themeOverrides = Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))),
+                      themeOverrides =
+                        Some(ThemeOverrides(
+                          brand = BrandColor.parse("#112233").toOption,
+                          shape = Some(Shape.sharp),
+                          surface = None,
+                          mode = None,
+                          background = Some(Background.horizon),
+                        )),
                     ),
                     serviceClient,
                   ),
@@ -153,7 +161,13 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         result.size == 2,
         result(ClientId("service")).redirectUris.isEmpty,
         client.redirectUris == Set("https://example.com/callback"),
-        client.themeOverrides == Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = Some(Shape.sharp))),
+        client.themeOverrides == Some(ThemeOverrides(
+          brand = BrandColor.parse("#112233").toOption,
+          shape = Some(Shape.sharp),
+          surface = None,
+          mode = None,
+          background = Some(Background.horizon),
+        )),
         result(ClientId("service")).themeOverrides.isEmpty,
         client.scope == Set(ScopeToken.OpenId, ScopeToken("profile")),
         client.secret.exists(_.sameElements(currentSecret)),
@@ -179,8 +193,12 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         Chunk("id" -> Json.Str("bad-shape"), "themeOverrides" -> Json.Obj("shape" -> Json.Str("triangle-with-secret-marker"))))
       val oldFormat = Json.Obj(encoded.fields.filterNot(_._1 == "id").filterNot(_._1 == "themeOverrides") ++
         Chunk("id" -> Json.Str("bad-format"), "themeOverrides" -> Json.Str("legacy")))
+      // a background a newer central added: the closed enum refuses it here, for this record only
+      val unknownBackground = Json.Obj(encoded.fields.filterNot(_._1 == "id").filterNot(_._1 == "themeOverrides") ++
+        Chunk("id" -> Json.Str("bad-background"), "themeOverrides" -> Json.Obj("background" -> Json.Str("aurora"))))
       val good = serviceClient.copy(id = ClientId("good"))
-      val body = Json.Obj("clients" -> Json.Arr(unknownShape, good.toJsonAST.toOption.get, oldFormat, serviceClient.toJsonAST.toOption.get))
+      val body =
+        Json.Obj("clients" -> Json.Arr(unknownShape, good.toJsonAST.toOption.get, oldFormat, unknownBackground, serviceClient.toJsonAST.toOption.get))
       for
         _ <- TestClient.addRoutes(Handler.succeed(Response.json(body.toJson)).toRoutes)
         service <- ZIO.service[OAuthClientSyncClient]
@@ -189,7 +207,8 @@ object OAuthClientSyncClientSpec extends ZIOSpecDefault:
         warnings = logs.filter(_.logLevel == LogLevel.Warning).map(_.message()).filter(_.startsWith("Skipped"))
       yield assertTrue(
         result.keySet == Set(ClientId("good"), ClientId("service")),
-        warnings.size == 2,
+        warnings.size == 3,
+        warnings.exists(_.contains("'bad-background'")),
         warnings.exists(_.contains("'bad-shape'")),
         warnings.exists(_.contains("'bad-format'")),
         warnings.forall(!_.contains("triangle-with-secret-marker")),

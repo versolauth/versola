@@ -12,7 +12,7 @@ case class PreviewScenario(
     id: String,
     title: Map[String, String],
     step: Json,
-    error: Option[String] = None,
+    error: Option[String],
 ) derives JsonCodec
 
 case class FormPreview(

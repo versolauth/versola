@@ -59,19 +59,15 @@ object ThemeService:
     override def render(request: RenderThemeRequest): Task[RenderThemeResponse] =
       for
         resolved <- ZIO.fromEither(ThemePresets.resolve(request.tokens)).mapError(IllegalArgumentException(_))
-        defaultCss <- cache.get.map(_.find(_.id == DefaultThemeId).fold("")(_.css))
       yield RenderThemeResponse(
-        css = ThemeCss.compose(defaultCss, resolved, request.css),
+        css = ThemeCss.compose(ThemeCss.baseStylesheet, resolved, request.css.getOrElse("")),
         generated = ThemeCss.generate(resolved),
       )
 
-    // The tokens are written into a stylesheet, so a base that is not built in is refused here, and the default
-    // theme, which every token theme is laid over, cannot itself be built from tokens.
+    // The tokens are written into a stylesheet, so a base that is not built in is refused here.
     private def validated(theme: ThemeRecord): Task[Unit] =
       theme.tokens match
         case None => ZIO.unit
-        case Some(_) if theme.id == DefaultThemeId =>
-          ZIO.fail(IllegalArgumentException("The default theme is a stylesheet and cannot be built from tokens"))
         case Some(tokens) =>
           ZIO.fromEither(ThemePresets.resolve(tokens)).mapError(IllegalArgumentException(_)).unit
 

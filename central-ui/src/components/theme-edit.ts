@@ -47,7 +47,8 @@ export class VersolaThemeEdit extends LitElement {
   @state() private previewFormId = '';
   @state() private previewScenarioId = '';
   @state() private previewWidth = 390;
-  @state() private previewDark = false;
+  // Starts from the operator's device, so the preview shows what they see on real pages (the page glow exists only in the dark scheme).
+  @state() private previewDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
 
   @state() private saving = false;
   @state() private saveError = '';
@@ -104,7 +105,7 @@ export class VersolaThemeEdit extends LitElement {
       .title-stack { display: flex; flex-direction: column; gap: 0.5rem; }
       .field-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 0.5rem; }
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
-      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: rgba(0,0,0,0.25); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
+      .kv-value { width: 100%; padding: 0.5rem var(--spacing-md); background: var(--bg-dark); border: 1px solid var(--border-dark); border-radius: var(--radius-md); font-size: 0.8125rem; color: var(--text-primary); box-sizing: border-box; }
       .kv-value:focus { outline: none; border-color: var(--accent); }
       .form-actions { display: flex; align-items: center; gap: 1rem; justify-content: flex-end; margin-top: var(--spacing-xl); padding-top: var(--spacing-xl); border-top: 1px solid var(--border-dark); }
       .form-actions-left { margin-right: auto; }
@@ -172,6 +173,7 @@ export class VersolaThemeEdit extends LitElement {
       shape: this.overrides.shape ?? base.shape,
       surface: this.overrides.surface ?? base.surface,
       mode: this.overrides.mode ?? base.mode,
+      background: this.overrides.background ?? base.background,
     };
   }
 
@@ -304,7 +306,12 @@ export class VersolaThemeEdit extends LitElement {
   private previewSrcdoc(): string {
     const form = this.previewForm;
     if (!form) return '';
-    const scheme = this.previewDark && (this.resolved?.mode ?? 'auto') === 'auto' ? ':root{color-scheme:dark}' : '';
+    // The preview frame follows the operator's own device scheme unless told otherwise, so Light has to be forced too: on a dark
+    // device it would otherwise show the dark card. A theme with a fixed scheme keeps it, and a stylesheet theme decides for itself.
+    const auto = this.kind === 'tokens' && (this.resolved?.mode ?? 'auto') === 'auto';
+    const scheme = auto ? `:root{color-scheme:${this.previewDark ? 'dark' : 'light'}}` : this.previewDark ? ':root{color-scheme:dark}' : '';
+    // Until central has answered there is no stylesheet: a frame drawn now would flash unstyled.
+    if (this.kind === 'tokens' && this.renderedCss === '') return '';
     return buildPreviewSrcdoc({
       formId: form.id,
       properties: form.properties,

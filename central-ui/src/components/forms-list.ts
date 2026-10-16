@@ -10,7 +10,7 @@ import {
   fetchThemes,
   setActiveFormVersion,
 } from '../utils/central-api';
-import { buildPreviewSrcdoc, localeNamesOf } from '../utils/preview';
+import { buildPreviewSrcdoc, localeNamesOf, previewStylesheets } from '../utils/preview';
 import { humanizeLabel, toggleAnyOf, exclusiveAnyOfValues } from '../utils/helpers';
 import './content-header';
 import './error-card';
@@ -27,6 +27,8 @@ export class VersolaFormsList extends LitElement {
   @state() private forms: FormRecord[] = [];
   @state() private locales: Locale[] = [];
   @state() private themes: ThemeRecord[] = [];
+  // What each theme gives a page: a visual theme's is composed by central, so it arrives after the themes do.
+  @state() private themeStylesheets: Record<string, string> = {};
   // The states central lists for the built-in forms; empty from a central that does not list them.
   @state() private previews: FormPreview[] = [];
 
@@ -69,6 +71,10 @@ export class VersolaFormsList extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     window.removeEventListener('message', this.handleIframeMessage);
+  }
+
+  willUpdate(changed: Map<string, unknown>) {
+    if (changed.has('themes')) void previewStylesheets(this.themes).then(sheets => { this.themeStylesheets = sheets; });
   }
 
   updated(changed: Map<string, unknown>) {
@@ -591,7 +597,7 @@ export class VersolaFormsList extends LitElement {
       locale: this.previewLocale[key] || this.locales[0]?.code || 'en',
       locales: this.locales.map(l => l.code),
       localeNames: localeNamesOf(this.locales),
-      themeCss: this.themes.find(t => t.id === themeId)?.css ?? '',
+      themeCss: this.themeStylesheets[themeId] ?? this.themes.find(t => t.id === themeId)?.css ?? '',
       style: form.style,
       jsCompiled: form.jsCompiled ?? '',
       previewId: key,

@@ -79,6 +79,7 @@ object IntrospectionServiceSpec extends UnitSpecBase:
     jwks = None,
     requireSignedRequestObject = false,
     requirePushedAuthorizationRequests = false,
+    themeOverrides = None,
   )
 
   def tokenRecord(now: Instant) = RefreshTokenRecord(

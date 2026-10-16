@@ -26,23 +26,34 @@ enum Shape derives JsonCodec, Schema:
 enum Surface derives JsonCodec, Schema:
   case bold, soft, neutral
 
+/** What lies behind the card, drawn over the page colour: the brand glowing from behind the card (the look
+  * every theme had before this token), a soft diagonal wash, a light rising from the bottom edge, or the plain page
+  * colour. Single-hue and restrained on purpose: each is a tint of the brand, never a second colour.
+  */
+enum Background derives JsonCodec, Schema:
+  case glow, linear, horizon, flat
+
 /** The colour scheme: follow the visitor's device, or always light or dark. */
 enum Mode derives JsonCodec, Schema:
   case auto, light, dark
 
 /** What a theme sets itself on top of its base preset; an absent value is the base's. */
 case class ThemeOverrides(
-    brand: Option[BrandColor] = None,
-    shape: Option[Shape] = None,
-    surface: Option[Surface] = None,
-    mode: Option[Mode] = None,
+    brand: Option[BrandColor],
+    shape: Option[Shape],
+    surface: Option[Surface],
+    mode: Option[Mode],
+    background: Option[Background],
 ) derives JsonCodec, Schema:
-  def isEmpty: Boolean = brand.isEmpty && shape.isEmpty && surface.isEmpty && mode.isEmpty
+  def isEmpty: Boolean = brand.isEmpty && shape.isEmpty && surface.isEmpty && mode.isEmpty && background.isEmpty
 
-/** A theme built from tokens: the id of a built-in preset and the values it overrides. */
+object ThemeOverrides:
+  val empty: ThemeOverrides = ThemeOverrides(None, None, None, None, None)
+
+/** A theme built from tokens: the id of a built-in preset and the values it overrides; absent overrides are none. */
 case class ThemeTokens(
-    base: String = ThemePresets.DefaultId,
-    overrides: ThemeOverrides = ThemeOverrides(),
+    base: String,
+    overrides: Option[ThemeOverrides],
 ) derives JsonCodec, Schema
 
 /** Every token with a value: a preset's, or a preset's with a theme's overrides laid over it. */
@@ -51,4 +62,5 @@ case class ResolvedTokens(
     shape: Shape,
     surface: Surface,
     mode: Mode,
+    background: Background,
 ) derives JsonCodec, Schema

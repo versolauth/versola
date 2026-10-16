@@ -1,14 +1,14 @@
 import { expect, test, type Page } from '@playwright/test';
 import { findRequest, loadAdminApp } from './fixtures';
-import { setupConfigApiMocks, type MockConfigState } from './mocks';
+import { baseStylesheetMock, setupConfigApiMocks, type MockConfigState } from './mocks';
 
 const themesPath = '/?view=themes&tenant=tenant-alpha';
 const formsPath = () => '/?view=forms&tenant=tenant-alpha';
 
 const presets = [
-  { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto' } },
-  { id: 'studio', title: { en: 'Studio', ru: 'Студия' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto' } },
-  { id: 'fintech', title: { en: 'Fintech', ru: 'Финтех' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto' } },
+  { id: 'versola', title: { en: 'Versola', ru: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'studio', title: { en: 'Studio', ru: 'Студия' }, tokens: { brand: '#ff6b4a', shape: 'round', surface: 'bold', mode: 'auto', background: 'glow' } },
+  { id: 'fintech', title: { en: 'Fintech', ru: 'Финтех' }, tokens: { brand: '#5b5bd6', shape: 'soft', surface: 'neutral', mode: 'auto', background: 'linear' } },
 ];
 
 const credential = {
@@ -31,7 +31,7 @@ const credentialStates = {
 };
 
 const themes = [
-  { id: 'default', css: 'DEFAULT-CSS', tenantId: null },
+  { id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } },
   { id: 'legacy', css: 'LEGACY-CSS', tenantId: null },
   { id: 'brand', css: '', tenantId: null, tokens: { base: 'fintech', overrides: { brand: '#112233', mode: 'dark' } } },
 ];
@@ -139,7 +139,7 @@ test('previews the stylesheet central renders for the tokens, on the form and st
   await page.getByRole('button', { name: 'Studio' }).click();
 
   await expect.poll(() => srcdoc(page)).toContain('--brand:#ff6b4a');
-  expect(await srcdoc(page)).toContain('DEFAULT-CSS');
+  expect(await srcdoc(page)).toContain(baseStylesheetMock);
   expect(await srcdoc(page)).toContain('"primaryCredentials":["email"]');
 
   await page.getByRole('button', { name: 'Wrong password' }).click();
@@ -160,6 +160,44 @@ test('the dark preview is available for the device\'s scheme only, not for a sch
   await expect(dark).toBeDisabled();
 });
 
+test('the fields of the editor are as light as the other forms of the console in the light theme', async ({ page }) => {
+  await newTheme(page);
+
+  await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+  await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+});
+
+test('the preview starts in the scheme of the operator\'s device, light on a light one', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:light}');
+  expect(await srcdoc(page)).not.toContain('color-scheme:dark');
+});
+
+test('the light preview is forced, so it does not follow a dark device', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await scheme.getByRole('button', { name: 'Light' }).click();
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:light}');
+  expect(await srcdoc(page)).not.toContain(':root{color-scheme:dark}');
+  await scheme.getByRole('button', { name: 'Dark' }).click();
+  await expect.poll(() => srcdoc(page)).toContain(':root{color-scheme:dark}');
+});
+
+test('the preview starts dark on a dark device, so it shows what real pages show there', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await newTheme(page);
+  const scheme = page.getByRole('group', { name: 'Preview scheme' });
+
+  await expect(scheme.getByRole('button', { name: 'Dark' })).toHaveClass(/seg-active/);
+  await expect.poll(() => srcdoc(page)).toContain('color-scheme:dark');
+});
+
 test('opens a stored token theme on its base with its overrides, and saves it back as tokens', async ({ page }) => {
   const api = await loadAdminApp(page, { path: themesPath, state });
   await page.getByRole('button', { name: 'Edit theme brand', exact: true }).click();
@@ -175,6 +213,23 @@ test('opens a stored token theme on its base with its overrides, and saves it ba
     css: '',
     tokens: { base: 'fintech', overrides: { brand: '#112233', mode: 'dark' } },
   });
+});
+
+test('the built-in default theme opens in the visual editor on the versola base, and saves back as tokens', async ({ page }) => {
+  const api = await loadAdminApp(page, { path: themesPath, state });
+  await page.getByRole('button', { name: 'Edit theme default', exact: true }).click();
+
+  await expect(page.getByRole('button', { name: 'Versola' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('group', { name: 'Built as' })).toHaveCount(0);
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  await expect.poll(() => srcdoc(page)).toContain(baseStylesheetMock);
+
+  await page.getByRole('button', { name: '#5b5bd6' }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const body = (await findRequest(api.requests, 'PUT', '/configuration/themes')).body as { id: string; tokens: { base: string; overrides: Record<string, string> } };
+  expect(body.id).toBe('default');
+  expect(body.tokens.base).toBe('versola');
+  expect(body.tokens.overrides.brand).toBe('#5b5bd6');
 });
 
 test('a theme written as CSS opens in the CSS editor and is saved without tokens', async ({ page }) => {
@@ -364,4 +419,61 @@ test('the dark preview is switched off again when the theme fixes its scheme', a
 
   await expect(scheme.getByRole('button', { name: 'Light' })).toHaveClass(/seg-active/);
   await expect.poll(() => srcdoc(page)).not.toContain('color-scheme:dark');
+});
+
+const backgrounds = (page: Page) => page.getByRole('group', { name: 'Background style' });
+
+test('the background is chosen from preset cards, shown against the base, sent as an override and rendered by central', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+
+  // Versola is on the glow; every preset has a card, and the base's own is pressed.
+  await expect(backgrounds(page).getByRole('button')).toHaveText(['Glow', 'Linear', 'Horizon', 'Flat']);
+  await expect(backgrounds(page).getByRole('button', { name: 'Glow' })).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(() => srcdoc(page)).toContain('--background:glow');
+
+  await backgrounds(page).getByRole('button', { name: 'Horizon' }).click();
+  await expect(backgrounds(page).getByRole('button', { name: 'Horizon' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Overridden · base: glow')).toBeVisible();
+  await expect(page.getByText('1 override on Versola')).toBeVisible();
+  // The preview is what central renders for the tokens: the console writes no gradient of its own.
+  await expect.poll(() => srcdoc(page)).toContain('--background:horizon');
+
+  expect(await save(page, api)).toMatchObject({ tokens: { base: 'versola', overrides: { background: 'horizon' } } });
+});
+
+test('the background can be reset to the base, and the base\'s own value is no override', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+
+  await backgrounds(page).getByRole('button', { name: 'Flat' }).click();
+  await expect.poll(() => srcdoc(page)).toContain('--background:flat');
+  await page.getByRole('button', { name: 'Reset background to the base' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  await expect.poll(() => srcdoc(page)).toContain('--background:glow');
+
+  // Choosing what the base already is overrides nothing.
+  await backgrounds(page).getByRole('button', { name: 'Glow' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  expect(await save(page, api)).toEqual({ id: 'mine', css: '', tenantId: null, tokens: { base: 'versola' } });
+});
+
+test('a base brings its own background, an override follows the base switch only when it differs', async ({ page }) => {
+  const api = await newTheme(page);
+  await page.getByPlaceholder('e.g. default').fill('mine');
+  await backgrounds(page).getByRole('button', { name: 'Linear' }).click();
+  await expect(page.getByText('1 override on Versola')).toBeVisible();
+
+  // Fintech is linear itself: the override is then the base's value and is dropped.
+  await page.getByRole('button', { name: 'Fintech' }).click();
+  await expect(page.getByText('No overrides: this theme is the base theme.')).toBeVisible();
+  await expect(backgrounds(page).getByRole('button', { name: 'Linear' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await save(page, api)).toEqual({ id: 'mine', css: '', tenantId: null, tokens: { base: 'fintech' } });
+});
+
+test('the background cards are drawn in the brand colour of the theme', async ({ page }) => {
+  await newTheme(page);
+  await page.getByRole('button', { name: '#f5c518' }).click();
+  const swatch = backgrounds(page).locator('.bg-swatch').first();
+  await expect(swatch).toHaveAttribute('style', /--b:#f5c518/);
 });

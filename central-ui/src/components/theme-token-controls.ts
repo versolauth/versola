@@ -1,7 +1,7 @@
 import { LitElement, html, css, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import type { ResolvedThemeTokens, ThemeMode, ThemeOverrides, ThemeShape, ThemeSurface } from '../types';
+import type { ResolvedThemeTokens, ThemeBackground, ThemeMode, ThemeOverrides, ThemeShape, ThemeSurface } from '../types';
 
 const HEX = /^#?[0-9a-fA-F]{6}$/;
 // Colours to start from; any #rrggbb can be typed.
@@ -11,6 +11,12 @@ const SURFACES: Array<[ThemeSurface, string, string]> = [
   ['bold', 'Bold', 'A deep shade of the brand colour behind the card'],
   ['soft', 'Soft', 'A pale tint of the brand colour'],
   ['neutral', 'Neutral', 'A plain grey page; the brand shows only in accents'],
+];
+const BACKGROUNDS: Array<[ThemeBackground, string, string]> = [
+  ['glow', 'Glow', 'The brand glowing from behind the card, in the dark scheme (the default look)'],
+  ['linear', 'Linear', 'A soft diagonal wash of the brand colour'],
+  ['horizon', 'Horizon', 'A soft light rising from the bottom edge'],
+  ['flat', 'Flat', 'The plain page colour, no gradient'],
 ];
 const MODES: Array<[ThemeMode, string]> = [['auto', 'Auto'], ['light', 'Light'], ['dark', 'Dark']];
 
@@ -23,7 +29,7 @@ export interface OverridesChange {
 }
 
 /**
- * The four tokens a theme sets (brand colour, page, shape, colour scheme) laid over a base: each shows the
+ * The five tokens a theme sets (brand colour, page, background, shape, colour scheme) laid over a base: each shows the
  * base's value until it is overridden, then an "Overridden" badge with a Reset. Used for the theme itself
  * (the base is a built-in theme) and for a client's own overrides (the base is the theme the client uses).
  * It owns no state beyond the colour field's text: the overrides come in as a property and go out as an
@@ -104,6 +110,27 @@ export class VersolaThemeTokenControls extends LitElement {
       .sketch[data-mode='dark'] .sketch-field { background: #3a3a3d; }
       .sketch[data-shape='sharp'] .sketch-field, .sketch[data-shape='sharp'] .sketch-btn { border-radius: 1px; }
       .sketch-btn { height: 0.625rem; background: var(--b); border-radius: 999px; margin-top: 0.125rem; }
+      /* Thumbnails of the Background presets: what ThemeCss (util) generates, drawn small and in the theme's brand. They only
+         repeat the look; the formulas that reach the forms live in ThemeCss, and the preview next to them renders those.
+         --pg is the page colour (as the sketch above), --lin/--hor the strength of the tint in percent (ThemeCss.tint), --glow-x the glow's.
+         The dark scheme is shown unless the scheme is fixed to light: the glow is only there, and the page of a bold
+         theme is dark in both. */
+      .bgs { display: grid; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); gap: var(--spacing-sm); }
+      .bg-card { text-align: left; padding: 0.375rem; font: inherit; color: var(--text-primary); background: transparent; border: 1px solid var(--border-dark); border-radius: var(--radius-md); cursor: pointer; }
+      .bg-card:hover { border-color: var(--text-secondary); }
+      .bg-card.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+      .bg-card b { display: block; font-size: 0.75rem; margin-top: 0.3125rem; }
+      .bg-swatch { --pg: color-mix(in oklab, var(--b) 10%, #060707); --lin: 45%; --hor: 46%; --glow-x: 55%; display: grid; place-items: center; height: 3.25rem; border-radius: 6px; overflow: hidden; background: var(--pg); }
+      .bg-swatch[data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 22%, #0c1110); --lin: 40%; --hor: 42%; --glow-x: 0%; }
+      .bg-swatch[data-surface='soft'] { --pg: color-mix(in oklab, var(--b) 7%, #0e0e0d); --lin: 34%; --hor: 34%; --glow-x: 16%; }
+      .bg-swatch[data-surface='soft'][data-scheme='light'] { --pg: color-mix(in oklab, var(--b) 14%, #f7f4ee); --lin: 34%; --hor: 36%; --glow-x: 0%; }
+      .bg-swatch[data-surface='neutral'] { --pg: #0b0b0a; --lin: 16%; --hor: 14%; --glow-x: 0%; }
+      .bg-swatch[data-surface='neutral'][data-scheme='light'] { --pg: #ecebe7; --lin: 14%; --hor: 18%; --glow-x: 0%; }
+      .bg-swatch[data-bg='glow'] { background: radial-gradient(75% 70% at 50% 40%, color-mix(in oklab, var(--b) var(--glow-x), transparent), transparent 75%), var(--pg); }
+      .bg-swatch[data-bg='linear'] { background: linear-gradient(160deg, color-mix(in oklab, var(--b) var(--lin), var(--pg)) 0%, var(--pg) 65%); }
+      .bg-swatch[data-bg='horizon'] { background: radial-gradient(130% 60% at 50% 110%, color-mix(in oklab, var(--b) var(--hor), transparent), transparent 72%), var(--pg); }
+      .bg-sheet { display: block; width: 46%; height: 64%; background: #fffdf9; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+      .bg-swatch[data-scheme='dark'] .bg-sheet { background: #262628; }
       .chip { width: 1.25rem; height: 1.25rem; border-radius: 50%; border: 1px solid var(--border-dark); }
     `,
   ];
@@ -119,6 +146,7 @@ export class VersolaThemeTokenControls extends LitElement {
       brand: this.overrides.brand ?? base?.brand,
       shape: this.overrides.shape ?? base?.shape,
       surface: this.overrides.surface ?? base?.surface,
+      background: this.overrides.background ?? base?.background,
       mode: this.overrides.mode ?? base?.mode,
     };
   }
@@ -202,6 +230,22 @@ export class VersolaThemeTokenControls extends LitElement {
           `)}
         </div>
         <div class="hint" style="margin-top: 0.5rem">${SURFACES.find(s => s[0] === resolved.surface)?.[2]}</div>
+      </div>
+
+      <div class="group">
+        <div class="group-title"><div class="field-label">Background style</div>${this.overriddenBadge('background', base?.background)}</div>
+        <div class="hint">What is drawn over the page colour behind the card. Always a tint of the brand colour; text above the card stays readable.</div>
+        <div class="bgs" role="group" aria-label="Background style">
+          ${BACKGROUNDS.map(([value, label, description]) => html`
+            <button class="bg-card ${resolved.background === value ? 'sel' : ''}" aria-pressed=${resolved.background === value ? 'true' : 'false'}
+              title=${description} @click=${() => this.setOverride('background', value)}>
+              <span class="bg-swatch" style=${`--b:${resolved.brand ?? '#155e75'}`} data-bg=${value} data-surface=${resolved.surface ?? 'bold'}
+                data-scheme=${resolved.mode === 'light' ? 'light' : 'dark'} aria-hidden="true"><i class="bg-sheet"></i></span>
+              <b>${label}</b>
+            </button>
+          `)}
+        </div>
+        <div class="hint" style="margin-top: 0.5rem">${BACKGROUNDS.find(b => b[0] === resolved.background)?.[2]}</div>
       </div>
 
       <div class="group">

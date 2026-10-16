@@ -12,20 +12,20 @@ case class ThemeRecord(
     id: String,
     css: String,
     tenantId: Option[TenantId],
-    tokens: Option[ThemeTokens] = None,
+    tokens: Option[ThemeTokens],
 ) derives Schema, JsonCodec
 
 case class CreateThemeRequest(
     id: String,
     css: String,
     tenantId: Option[TenantId],
-    tokens: Option[ThemeTokens] = None,
+    tokens: Option[ThemeTokens],
 ) derives Schema, JsonCodec
 
 case class UpdateThemeRequest(
     id: String,
     css: String,
-    tokens: Option[ThemeTokens] = None,
+    tokens: Option[ThemeTokens],
 ) derives Schema, JsonCodec
 
 case class GetThemePresetsResponse(
@@ -35,11 +35,11 @@ case class GetThemePresetsResponse(
 /** Asks what stylesheet a theme built from these tokens would have, for the console's preview. */
 case class RenderThemeRequest(
     tokens: ThemeTokens,
-    css: String = "",
+    css: Option[String],
 ) derives Schema, JsonCodec
 
 case class RenderThemeResponse(
-    /** The whole stylesheet: the current default, what the tokens set, then the theme's own CSS. */
+    /** The whole stylesheet: the base stylesheet, what the tokens set, then the theme's own CSS. */
     css: String,
     /** Only what the tokens set. */
     generated: String,
