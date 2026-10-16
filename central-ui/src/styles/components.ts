@@ -488,6 +488,11 @@ export const recordStyles = css`
     border-color: var(--danger);
   }
 
+  .danger-reason {
+    color: var(--text-primary);
+    margin-top: 0.375rem;
+  }
+
   .btn-delete:not(:disabled):hover {
     background: var(--danger-subtle);
     border-color: var(--danger);
