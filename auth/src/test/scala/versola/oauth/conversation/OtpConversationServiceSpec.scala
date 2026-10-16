@@ -336,7 +336,7 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.userRepository.markVerified.succeedsWith(())
+          _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
           result <- env.service.checkOtp(record, otp, otpCode, authId)
         yield assertTrue(result.isInstanceOf[ConversationResult.StepPassed])
       },
@@ -345,9 +345,14 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
-        yield assertTrue(result == ConversationResult.WriteConflict)
+        yield assertTrue(
+          result == ConversationResult.WriteConflict,
+          // the flag records that the OTP passed; losing the write race does not unmake it
+          env.userRepository.markVerified.calls == List((userId, Left(email))),
+        )
       },
       test("return AccessDenied when subject is banned") {
         val env = Env()
@@ -440,19 +445,33 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           result <- env.service.checkOtp(otpRecord, submittedOtp, otpCode, authId)
         yield assertTrue(result == ConversationResult.RenderStep(ConversationStep.AccessDenied))
       },
-      test("marks the credential as verified on OTP success when userId is known") {
+      test("marks the credential as verified on OTP success and hands the fresh claims to the conversation") {
+        val env = Env()
+        val otp = realOtp.copy(timesRequested = 1)
+        val fresh = ast.Json.Obj("email_verified" -> ast.Json.Bool(true))
+        for
+          _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
+          _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
+          _ <- env.conversationRepository.overwrite.succeedsWith(true)
+          _ <- env.userRepository.markVerified.succeedsWith(Some(fresh))
+          result <- env.service.checkOtp(otpRecord, otp, otpCode, authId)
+        yield assertTrue(
+          env.userRepository.markVerified.calls == List((userId, Left(email))),
+          // markVerified ran before the overwrite: the stored conversation already carries its claims
+          env.conversationRepository.overwrite.calls.map(_._2.userClaims) == List(Some(fresh)),
+          result.isInstanceOf[ConversationResult.StepPassed],
+        )
+      },
+      test("keeps the conversation's claims when the stored contact no longer matches the credential") {
         val env = Env()
         val otp = realOtp.copy(timesRequested = 1)
         for
           _ <- env.submissionLimiter.isBanned.succeedsWith(LimitStatus.Allowed)
           _ <- env.otpService.checkOtp.succeedsWith(SubmitOtpResult.Success)
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
-          _ <- env.userRepository.markVerified.succeedsWith(())
+          _ <- env.userRepository.markVerified.succeedsWith(Option.empty[ast.Json.Obj])
           _ <- env.service.checkOtp(otpRecord, otp, otpCode, authId)
-        yield assertTrue(
-          env.userRepository.markVerified.calls.size == 1,
-          env.userRepository.markVerified.calls.head == (userId, Left(email)),
-        )
+        yield assertTrue(env.conversationRepository.overwrite.calls.map(_._2.userClaims) == List(otpRecord.userClaims))
       },
       test("does not call markVerified when OTP fails") {
         val env = Env()
@@ -520,8 +539,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
           _ <- env.configService.getSessionIdleTtl.succeedsWith(Option.empty[zio.Duration])
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(java.util.UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
-          _ <-
-            env.userRepository.find.succeedsWith(Some(UserRecord.empty(userId).copy(claims = ast.Json.Obj("email_verified" -> ast.Json.Bool(true)))))
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(
             UserInfoResponse(
               claims = Map("sub" -> ast.Json.Str(userId.toString), "email" -> ast.Json.Str(userEmail)),
@@ -531,7 +548,6 @@ object OtpConversationServiceSpec extends UnitSpecBase:
         yield result match
           case complete: ConversationResult.Complete =>
             assertTrue(
-              env.userInfoService.getUserInfoForIdToken.calls.map(_._1.claims.fields.toMap.get("email_verified")) == List(Some(ast.Json.Bool(true))),
               complete.idTokenData.isDefined,
               complete.idTokenData.get.claims.contains("sub"),
               complete.idTokenData.get.claims.contains("email"),

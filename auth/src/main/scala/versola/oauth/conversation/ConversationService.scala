@@ -388,14 +388,20 @@ object ConversationService:
               Clock.instant.flatMap: now =>
                 val otpType = conversation.authFlow.otpType
                 val otpMethods = Set(AuthMethodRef.otp) ++ Option.when(otpType == OtpType.sms)(AuthMethodRef.sms)
-                val updated = conversation.copy(amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)))
-                conversationRepository.overwrite(authId, updated)
-                  .flatMap:
-                    case true =>
-                      ZIO.foreachDiscard(conversation.userId.zip(conversation.credential).toList):
-                        case (uid, cred) => userRepository.markVerified(uid, cred)
-                      .as(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
-                    case false => Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                for
+                  // Before the overwrite: the flag records that the OTP passed, and a lost write race on
+                  // the conversation does not unmake that. The conversation then carries the fresh claims.
+                  fresh <- ZIO.foreach(conversation.userId.zip(conversation.credential)):
+                    case (uid, cred) => userRepository.markVerified(uid, cred)
+                  updated = conversation.copy(
+                    amr = conversation.amr + (PassedAuthFactor.otp -> PassedFactorRecord(now, otpMethods)),
+                    userClaims = fresh.flatten.orElse(conversation.userClaims),
+                  )
+                  written <- conversationRepository.overwrite(authId, updated)
+                  result <-
+                    if written then ZIO.succeed(ConversationResult.StepPassed(updated.copy(version = updated.version + 1)))
+                    else Observability.setError("write_conflict").as(ConversationResult.WriteConflict)
+                yield result
 
     override def preparePasswordStep(
         authId: AuthId,
@@ -965,7 +971,6 @@ object ConversationService:
       for
         client <- configService.get(conversation.clientId)
         user <- userService.register(credential, client.tenantId, flow.roleIds)
-        _ <- userRepository.markVerified(user.id, credential)
         updated = conversation.copy(
           userId = Some(user.id),
           userEmail = user.email,
@@ -1043,12 +1048,8 @@ object ConversationService:
         acr: Option[Acr],
         sessionId: PublicSessionId,
     ): Task[Option[ConversationResult.IdTokenData]] =
+      val user = conversation.user.getOrElse(UserRecord.empty(userId))
       for
-        // The conversation carries the claims it started with, which predate an OTP confirmed in this
-        // very conversation (it sets `email_verified` / `phone_number_verified`), so read the stored ones.
-        stored <- userRepository.find(userId)
-        base = conversation.user.getOrElse(UserRecord.empty(userId))
-        user = stored.fold(base)(found => base.copy(claims = found.claims))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
           clientId = conversation.clientId,

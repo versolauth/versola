@@ -355,11 +355,12 @@ object ConversationServiceSpec extends UnitSpecBase:
           credential = Some(Left(email)),
           registrationStep = Some(1),
         )
-        val newUser = UserRecord(userId, Some(email), None, None, Json.Obj(), None)
+        val flagged = Json.Obj("email_verified" -> Json.Bool(true))
+        // register returns the account with the claim already set by its own INSERT
+        val newUser = UserRecord(userId, Some(email), None, None, flagged, None)
         for
           _ <- env.configService.get.succeedsWith(registrationClient)
           _ <- env.userService.register.succeedsWith(newUser)
-          _ <- env.userRepository.markVerified.succeedsWith(())
           _ <- env.conversationRepository.overwrite.succeedsWith(true)
           result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
         yield assertTrue(
@@ -367,12 +368,11 @@ object ConversationServiceSpec extends UnitSpecBase:
             pending.copy(
               userId = Some(userId),
               userEmail = Some(email),
-              userClaims = Some(Json.Obj()),
+              userClaims = Some(flagged),
               version = pending.version + 1,
             ),
           ),
           env.userService.register.calls.map(_._3) == List(roleIds),
-          env.userRepository.markVerified.calls == List((userId, Left(email))),
         )
       },
       test("reports a write conflict when the conversation moved on") {
@@ -382,7 +382,6 @@ object ConversationServiceSpec extends UnitSpecBase:
         for
           _ <- env.configService.get.succeedsWith(registrationClient)
           _ <- env.userService.register.succeedsWith(newUser)
-          _ <- env.userRepository.markVerified.succeedsWith(())
           _ <- env.conversationRepository.overwrite.succeedsWith(false)
           result <- env.service.registerVerifiedUser(authId, pending, registrationFlow, Left(email))
         yield assertTrue(result == ConversationResult.WriteConflict)
@@ -558,7 +557,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             assertTrue(s == sessionId)
           case _ => assertTrue(false)
       },
-      test("the ID token of a hybrid flow reports the verified claim stored for the user, not the conversation's") {
+      test("the ID token of a hybrid flow reports the claims the conversation carries, verified ones included") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val record = consentedRecord.copy(
@@ -566,8 +565,8 @@ object ConversationServiceSpec extends UnitSpecBase:
           scope = Set(ScopeToken.OpenId, ScopeToken("email")),
           grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("email"))),
           responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
+          userClaims = Some(Json.Obj("email_verified" -> Json.Bool(true))),
         )
-        val stored = UserRecord(userId, Some(email), None, None, Json.Obj("email_verified" -> Json.Bool(true)), None)
         val mac = MAC(Array.fill(32)(1.toByte))
 
         for
@@ -586,7 +585,6 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.sessionRepository.create.succeedsWith(())
           _ <- env.secureRandom.nextUUIDv7.succeedsWith(UUID.randomUUID())
           _ <- env.userAgentRepository.create.succeedsWith(())
-          _ <- env.userRepository.find.succeedsWith(Some(stored))
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
           _ <- env.service.finish(authId, record)
         yield assertTrue(

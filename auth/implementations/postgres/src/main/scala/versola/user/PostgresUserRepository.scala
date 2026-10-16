@@ -36,17 +36,17 @@ class PostgresUserRepository(
 
   private def createByEmailQuery(id: UserId, email: Email) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
-          values ($id, $email, null, null, '{}'::jsonb, null)
+          values ($id, $email, null, null, '{"email_verified": true}'::jsonb, null)
           on conflict (email) where email is not null
-          do update set email = excluded.email
+          do update set claims = users.claims || '{"email_verified": true}'::jsonb
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createByPhoneQuery(id: UserId, phone: Phone) =
     sql"""insert into users (id, email, phone, login, claims, ui_locales)
-          values ($id, null, $phone, null, '{}'::jsonb, null)
+          values ($id, null, $phone, null, '{"phone_number_verified": true}'::jsonb, null)
           on conflict (phone) where phone is not null
-            do update set phone = excluded.phone
+            do update set claims = users.claims || '{"phone_number_verified": true}'::jsonb
           returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
@@ -91,9 +91,10 @@ class PostgresUserRepository(
               login = excluded.login,
               last_version = excluded.last_version,
               -- A verified flag describes the contact it was earned for: when the contact changes it goes.
-              claims = users.claims
-                - (case when excluded.email is distinct from users.email then 'email_verified' else '' end)
-                - (case when excluded.phone is distinct from users.phone then 'phone_number_verified' else '' end)
+              claims = users.claims - array_remove(array[
+                case when excluded.email is distinct from users.email then 'email_verified' end,
+                case when excluded.phone is distinct from users.phone then 'phone_number_verified' end
+              ]::text[], null)
             where users.last_version is null or users.last_version < excluded.last_version
          """.update.run()
     .unit
@@ -143,16 +144,17 @@ class PostgresUserRepository(
             .update.run()
       .unit
 
-  override def markVerified(userId: UserId, credential: Either[Email, Phone]): Task[Unit] =
+  override def markVerified(userId: UserId, credential: Either[Email, Phone]): Task[Option[Json.Obj]] =
     xa.connectMeasured("mark-credential-verified"):
       credential match
         case Left(email) =>
           sql"""update users set claims = claims || jsonb_build_object('email_verified', true)
-                where id = $userId and email = $email""".update.run()
+                where id = $userId and email = $email
+                returning claims""".query[Json.Obj].run().headOption
         case Right(phone) =>
           sql"""update users set claims = claims || jsonb_build_object('phone_number_verified', true)
-                where id = $userId and phone = $phone""".update.run()
-    .unit
+                where id = $userId and phone = $phone
+                returning claims""".query[Json.Obj].run().headOption
 
   private def findByPhoneQuery(phone: Phone) =
     sql"select id, email, phone, login, claims, ui_locales from users where phone = $phone".query[UserRecord]
