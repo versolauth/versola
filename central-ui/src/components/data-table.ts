@@ -46,6 +46,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
   @property({ attribute: false }) menuItems: ((row: T) => RowMenuItem[]) | null = null;
   /** The accessible name of a row's menu button, e.g. `Actions for alpha-web`. */
   @property({ attribute: false }) menuLabel: (row: T) => string = row => `Actions for ${this.rowKey(row)}`;
+  /** The row whose record is open next to the table (the side panel); drawn selected. */
+  @property({ type: String }) selectedKey: string | null = null;
+  /** A click anywhere on a row (outside its menu) fires `row-select` with the row; the row's
+   *  `.row-link` button stays the keyboard way in. */
+  @property({ type: Boolean }) selectable = false;
   @state() private openMenuKey: string | null = null;
 
   static styles = [
@@ -91,6 +96,19 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
       tbody tr:hover td {
         background: var(--surface-inset);
+      }
+
+      tr.selectable {
+        cursor: pointer;
+      }
+
+      tbody tr[aria-selected='true'] td,
+      tbody tr[aria-selected='true']:hover td {
+        background: var(--accent-subtle);
+      }
+
+      tbody tr[aria-selected='true'] td:first-child {
+        box-shadow: inset 3px 0 0 var(--accent);
       }
 
       .sr-only {
@@ -255,6 +273,15 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           background: none;
         }
 
+        tbody tr[aria-selected='true'],
+        tbody tr[aria-selected='true']:hover td {
+          background: var(--accent-subtle);
+        }
+
+        tbody tr[aria-selected='true'] td:first-child {
+          box-shadow: none;
+        }
+
         td:first-child {
           grid-column: 1;
         }
@@ -320,6 +347,19 @@ export class VersolaDataTable<T = unknown> extends LitElement {
     const key = this.openMenuKey;
     this.openMenuKey = null;
     if (returnFocus && key !== null) this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
+  }
+
+  /** Moves focus to a row's `.row-link`: where the side panel returns focus on Escape. */
+  focusRow(key: string) {
+    this.shadowRoot?.querySelector<HTMLElement>(`tr[data-key="${CSS.escape(key)}"] .row-link`)?.focus();
+  }
+
+  private handleRowClick(event: Event, row: T) {
+    if (!this.selectable) return;
+    // The menu button and its items act on their own; a click there is not a row selection.
+    const path = event.composedPath();
+    if (path.some(node => node instanceof HTMLElement && node.classList.contains('cell-actions'))) return;
+    this.dispatchEvent(new CustomEvent('row-select', { detail: { row }, bubbles: true, composed: true }));
   }
 
   private handleTriggerClick(key: string) {
@@ -392,7 +432,9 @@ export class VersolaDataTable<T = unknown> extends LitElement {
             ${this.rows.map(row => {
               const key = this.rowKey(row);
               return html`
-                <tr role="row">
+                <tr role="row" data-key=${key} class=${this.selectable ? 'selectable' : nothing}
+                  aria-selected=${this.selectedKey === null ? nothing : this.selectedKey === key}
+                  @click=${(e: Event) => this.handleRowClick(e, row)}>
                   ${this.columns.map(column => html`
                     <td role="cell" class=${column.class ?? nothing} data-label=${column.srOnly ? nothing : column.label}>${column.cell(row)}</td>`)}
                   ${this.renderMenu(row, key)}
