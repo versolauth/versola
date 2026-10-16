@@ -3,7 +3,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { badgeStyles, buttonStyles, cardStyles, formStyles } from '../styles/components';
 import {accessSectionTitle} from '../utils/client-presets';
-import {AuthFlow, AuthorizationPreset, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
+import {AuthFlow, AuthorizationPreset, FormPreview, FormPreviewScenario, FormRecord, Locale, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord} from '../types';
 import {
   createClient,
   deleteClient,
@@ -11,6 +11,8 @@ import {
   fetchAllClients,
   fetchClientPresets,
   fetchChallengeSettings,
+  fetchFormPreviews,
+  fetchForms,
   fetchLocales,
   fetchOtpTemplates,
   fetchThemePresets,
@@ -35,6 +37,7 @@ import {
   profilePosture,
 } from '../utils/client-presets';
 import type { ClientEditSection } from './client-form';
+import { pickConsentScenario } from '../utils/consent-preview';
 import { copyToClipboard, formatDuration, getLocalizedDescription, isPartnerClient } from '../utils/helpers';
 import './client-form';
 import './content-header';
@@ -92,6 +95,8 @@ export class VersolaClientsList extends LitElement {
   @state() private availableResources: Resource[] = [];
   @state() private availableThemes: ThemeRecord[] = [];
   @state() private availableThemePresets: ThemePreset[] = [];
+  @state() private consentPreviewForm: FormRecord | null = null;
+  @state() private consentPreviewScenario: FormPreviewScenario | null = null;
   @state() private availableOtpTemplates: OtpTemplateRecord[] = [];
   @state() private availableRoles: Role[] = [];
   @state() private availableLocales: Locale[] = [];
@@ -1124,13 +1129,17 @@ export class VersolaClientsList extends LitElement {
       return;
     }
 
-    const [scopes, permissions, resources, themes, themePresets, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
+    const [scopes, permissions, resources, themes, themePresets, forms, previews, otpTemplates, challengeSettings, roles, locales] = await Promise.all([
       getScopes(tenantId),
       getPermissions(tenantId),
       getResources(tenantId),
       fetchThemes(tenantId),
       // A central that has no built-in themes answers with an error: the client's own appearance is then not offered.
       fetchThemePresets().catch(() => [] as ThemePreset[]),
+      // The appearance block draws the consent form. An older central, or an operator who may not read forms, has no
+      // such preview: the block says so and the rest of the form is unaffected.
+      fetchForms().catch(() => [] as FormRecord[]),
+      fetchFormPreviews().catch(() => [] as FormPreview[]),
       fetchOtpTemplates(tenantId),
       fetchChallengeSettings(tenantId),
       getRoles(tenantId),
@@ -1143,6 +1152,8 @@ export class VersolaClientsList extends LitElement {
       this.availableResources = resources;
       this.availableThemes = themes;
       this.availableThemePresets = themePresets;
+      this.consentPreviewForm = forms.find(f => f.id === 'consent' && f.active && f.jsCompiled) ?? null;
+      this.consentPreviewScenario = pickConsentScenario(previews.find(p => p.formId === 'consent')?.scenarios ?? []);
       this.availableOtpTemplates = otpTemplates;
       this.availableRoles = roles;
       this.availableLocales = locales;
@@ -1457,6 +1468,8 @@ export class VersolaClientsList extends LitElement {
           .availableResources=${this.availableResources}
           .availableThemes=${this.availableThemes}
           .availableThemePresets=${this.availableThemePresets}
+          .consentPreviewForm=${this.consentPreviewForm}
+          .consentPreviewScenario=${this.consentPreviewScenario}
           .availableOtpTemplates=${this.availableOtpTemplates}
           .availableRoles=${this.availableRoles}
           .locales=${this.availableLocales}

@@ -1,7 +1,7 @@
 package versola.central.configuration.themes
 
 import versola.central.configuration.tenants.TenantId
-import versola.util.theme.{Background, BrandColor, Mode, ThemeCss, ThemeOverrides, ThemeTokens}
+import versola.util.theme.{Background, BrandColor, Mode, Surface, ThemeCss, ThemeOverrides, ThemePresets, ThemeTokens}
 import versola.util.{ReloadingCache, UnitSpecBase}
 import zio.*
 import zio.test.*
@@ -135,7 +135,7 @@ object ThemeServiceSpec extends UnitSpecBase:
       test("lays the base stylesheet, what the tokens set and the theme's own CSS in that order") {
         // The stored default theme is a token theme with no CSS (or, in an older store, a stylesheet): neither is the foundation.
         val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "STORED-DEFAULT-CSS", None, tokens = None)))
-        for rendered <- env.service.render(RenderThemeRequest(ThemeTokens("studio", overrides = None), Some("CUSTOM-CSS")))
+        for rendered <- env.service.render(RenderThemeRequest(Some(ThemeTokens("studio", overrides = None)), Some("CUSTOM-CSS"), overrides = None))
         yield assertTrue(
           rendered.css.startsWith(ThemeCss.baseStylesheet),
           !rendered.css.contains("STORED-DEFAULT-CSS"),
@@ -152,24 +152,78 @@ object ThemeServiceSpec extends UnitSpecBase:
             "studio",
             Some(ThemeOverrides(brand = BrandColor.parse("#112233").toOption, shape = None, surface = None, mode = None, background = None)),
           )
-        for rendered <- env.service.render(RenderThemeRequest(tokens, css = None))
+        for rendered <- env.service.render(RenderThemeRequest(Some(tokens), css = None, overrides = None))
         yield assertTrue(rendered.generated.contains("--brand:#112233"), rendered.generated.contains("--rs:32px"))
       },
       test("renders the background of the tokens, so the live preview shows what the forms will") {
         val env = Env(Vector(ThemeRecord(ThemeService.DefaultThemeId, "D", None, tokens = None)))
         val tokens = ThemeTokens("studio", Some(ThemeOverrides(None, None, None, None, Some(Background.horizon))))
         for
-          horizon <- env.service.render(RenderThemeRequest(tokens, css = None))
-          preset <- env.service.render(RenderThemeRequest(ThemeTokens("fintech", overrides = None), css = None))
+          horizon <- env.service.render(RenderThemeRequest(Some(tokens), css = None, overrides = None))
+          preset <- env.service.render(RenderThemeRequest(Some(ThemeTokens("fintech", overrides = None)), css = None, overrides = None))
         yield assertTrue(
           horizon.generated.contains("--page-bg:radial-gradient(130% 60% at 50% 110%,var(--page-tint),transparent 72%),var(--page);"),
           horizon.css.contains(horizon.generated),
           preset.generated.contains("--page-bg:linear-gradient(160deg,"),
         )
       },
+      test("lays a client's overrides after the theme, as the block ThemeCss.generatePartial writes for them") {
+        val env = Env()
+        val own = ThemeOverrides(BrandColor.parse("#112233").toOption, None, None, Some(Mode.dark), None)
+        val tokens = ThemeTokens("studio", overrides = None)
+        val base = ThemePresets.resolve(tokens).toOption.get
+        for
+          plain <- env.service.render(RenderThemeRequest(Some(tokens), Some("CUSTOM-CSS"), overrides = None))
+          rendered <- env.service.render(RenderThemeRequest(Some(tokens), Some("CUSTOM-CSS"), Some(own)))
+        yield assertTrue(
+          rendered.css == plain.css + "\n" + ThemeCss.generatePartial(base, own),
+          rendered.css.indexOf("CUSTOM-CSS") < rendered.css.indexOf("--brand:#112233"),
+          rendered.generated == plain.generated,
+        )
+      },
+      test("measures the overrides of a token theme against the tokens' own overrides, not the preset") {
+        val env = Env()
+        val themeOwn = ThemeOverrides(None, None, None, None, Some(Background.horizon))
+        val tokens = ThemeTokens("studio", Some(themeOwn))
+        val own = ThemeOverrides(None, None, Some(Surface.soft), None, None)
+        val base = ThemePresets.resolve(tokens).toOption.get
+        for rendered <- env.service.render(RenderThemeRequest(Some(tokens), css = None, Some(own)))
+        yield assertTrue(rendered.css.endsWith(ThemeCss.generatePartial(base, own)))
+      },
+      test("an empty overrides object renders exactly what no overrides renders") {
+        val env = Env()
+        val tokens = ThemeTokens("studio", overrides = None)
+        for
+          none <- env.service.render(RenderThemeRequest(Some(tokens), Some("X{}"), overrides = None))
+          empty <- env.service.render(RenderThemeRequest(Some(tokens), Some("X{}"), Some(ThemeOverrides.empty)))
+          sheetNone <- env.service.render(RenderThemeRequest(None, Some("X{}"), overrides = None))
+          sheetEmpty <- env.service.render(RenderThemeRequest(None, Some("X{}"), Some(ThemeOverrides.empty)))
+        yield assertTrue(none == empty, sheetNone == sheetEmpty)
+      },
+      test("a stylesheet theme (no tokens) is its CSS alone, with no foundation and no generated block") {
+        val env = Env()
+        for rendered <- env.service.render(RenderThemeRequest(None, Some("STYLESHEET{}"), overrides = None))
+        yield assertTrue(rendered.css == "STYLESHEET{}", rendered.generated == "")
+      },
+      test("a stylesheet theme takes the overrides on top, measured against the default preset as auth does") {
+        val env = Env()
+        val own = ThemeOverrides(BrandColor.parse("#112233").toOption, None, None, None, None)
+        val base = ThemePresets.find(ThemePresets.DefaultId).map(_.tokens).get
+        for rendered <- env.service.render(RenderThemeRequest(None, Some("STYLESHEET{}"), Some(own)))
+        yield assertTrue(
+          rendered.css == "STYLESHEET{}\n" + ThemeCss.generatePartial(base, own),
+          !rendered.css.contains(ThemeCss.baseStylesheet),
+          rendered.generated == "",
+        )
+      },
+      test("neither tokens nor CSS is the foundation, as for a theme auth does not find") {
+        val env = Env()
+        for rendered <- env.service.render(RenderThemeRequest(None, css = None, overrides = None))
+        yield assertTrue(rendered.css == ThemeCss.baseStylesheet)
+      },
       test("is refused for a base that is not built in") {
         val env = Env()
-        for result <- env.service.render(RenderThemeRequest(ThemeTokens("nope", overrides = None), css = None)).either
+        for result <- env.service.render(RenderThemeRequest(Some(ThemeTokens("nope", overrides = None)), css = None, overrides = None)).either
         yield assertTrue(result.left.exists(_.isInstanceOf[IllegalArgumentException]))
       },
     ),
