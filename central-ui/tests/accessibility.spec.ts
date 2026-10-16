@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import { expect, test } from '@playwright/test';
+import { consentForm, consentPreviews } from './consent-preview-fixtures';
 import { loadAdminApp } from './fixtures';
 
 /**
@@ -68,11 +69,15 @@ for (const theme of themes) {
         },
         themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
         themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
+        forms: [consentForm],
+        formPreviews: [consentPreviews],
       },
     });
     await page.getByRole('button', { name: 'Open client partner-app', exact: true }).click();
     await page.getByRole('button', { name: 'Edit branding and logout', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
+    // The preview is part of the block: scan it drawn, not while central is still rendering it.
+    await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);
 
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);
@@ -152,6 +157,8 @@ for (const theme of themes) {
       state: {
         themes: [{ id: 'default', css: '', tenantId: null, tokens: { base: 'versola' } }],
         themePresets: [{ id: 'versola', title: { en: 'Versola' }, tokens: { brand: '#155e75', shape: 'soft', surface: 'bold', mode: 'auto', background: 'glow' } }],
+        forms: [consentForm],
+        formPreviews: [consentPreviews],
       },
     });
     await page.getByRole('button', { name: '+ Create Client', exact: true }).click();
@@ -164,6 +171,8 @@ for (const theme of themes) {
     await page.getByRole('button', { name: /^Continue to sign-in$/ }).click();
     await page.getByRole('button', { name: 'Partner app', exact: true }).click();
     await expect(page.getByRole('region', { name: 'Appearance for this app' })).toBeVisible();
+    // The preview is part of the block: scan it drawn, not while central is still rendering it.
+    await expect(page.locator('versola-client-consent-preview iframe')).toHaveCount(1);
 
     const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
     expect(results.violations.map(v => `${v.id}: ${v.help} (${v.nodes.length} nodes)`)).toEqual([]);

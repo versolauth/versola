@@ -1473,11 +1473,18 @@ export async function fetchThemePresets(): Promise<ThemePreset[]> {
 }
 
 // The stylesheet central would serve for a theme with these tokens and this CSS: the preview shows
-// exactly what users get, because nobody but central builds it.
-export async function renderTheme(tokens: ThemeTokens, css: string): Promise<{ css: string; generated: string }> {
+// exactly what users get, because nobody but central builds it. `tokens` null is a stylesheet theme (its CSS alone is
+// the stylesheet); `overrides` are a client's own, laid over the theme as auth does, so the answer is that client's
+// effective stylesheet. Empty overrides are not sent.
+export async function renderTheme(
+  tokens: ThemeTokens | null,
+  css: string,
+  overrides?: ThemeOverrides,
+): Promise<{ css: string; generated: string }> {
+  const own = overrides && Object.keys(overrides).length > 0 ? overrides : undefined;
   return request<{ css: string; generated: string }>('/configuration/themes/css', {
     method: 'POST',
-    body: { tokens, css },
+    body: { ...(tokens ? { tokens } : {}), css, ...(own ? { overrides: own } : {}) },
   });
 }
 

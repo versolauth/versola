@@ -1565,7 +1565,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/RenderThemeResponse'
         '400':
-          description: The tokens name a base that is not built in, or a value is not allowed.
+          description: The tokens name a base that is not built in, or a value (in the tokens or the overrides) is not allowed.
           content:
             application/json:
               schema:
@@ -4871,22 +4871,28 @@ components:
       required: [presets]
     RenderThemeRequest:
       type: object
+      description: |
+        What to render: a token theme (`tokens` present: the foundation stylesheet, what the tokens set, then `css`) or a
+        stylesheet theme (`tokens` absent: `css` alone is the stylesheet, as it replaces the foundation; with no `css` either,
+        the foundation). `overrides` are a client's own, laid after all of that exactly as the authorization server does for
+        that client, so the result is the client's effective stylesheet.
       properties:
         tokens:
           $ref: '#/components/schemas/ThemeTokens'
         css:
           type: string
-          description: The theme's own CSS, laid after the generated one; absent means none.
-      required: [tokens]
+          description: The theme's own CSS, laid after the generated one (a stylesheet theme - the whole stylesheet); absent means none.
+        overrides:
+          $ref: '#/components/schemas/ThemeOverrides'
     RenderThemeResponse:
       type: object
       properties:
         css:
           type: string
-          description: The whole stylesheet - the current default, what the tokens set, then the theme's own CSS.
+          description: The whole stylesheet - the current default, what the tokens set, the theme's own CSS, then the client's overrides.
         generated:
           type: string
-          description: Only what the tokens set.
+          description: Only what the theme's tokens set; empty for a stylesheet theme (the client's overrides are in `css` only).
       required: [css, generated]
     GetAllThemesResponse:
       type: object

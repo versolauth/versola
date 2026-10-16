@@ -3,10 +3,11 @@ import { LitElement, html, css } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
 import { buttonStyles, cardStyles, formStyles, iconActionStyles } from '../styles/components';
-import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ResolvedThemeTokens } from '../types';
+import { AuthFactorType, AuthFlow, ClientType, ConsentFlow, Locale, MtlsSubjectType, MutualTlsAuth, OAuthClient, FormPreviewScenario, FormRecord, OAuthScope, OtpTemplateRecord, Permission, Resource, Role, SecurityProfile, ThemeOverrides, ThemePreset, ThemeRecord, ThemeTokens, ResolvedThemeTokens } from '../types';
 import { createDefaultAuthFlow, createDefaultConsentFlow, DEFAULT_CONSENT_REMEMBER_DAYS, otpTemplateForConsent, getLocalizedDescription, resolvePermissionEndpointGroups } from '../utils/helpers';
 import './nav-toggle';
 import './localized-text-editor';
+import './client-consent-preview';
 import './client-kind-step';
 import {
   CLIENT_KINDS,
@@ -85,6 +86,10 @@ export class VersolaClientForm extends LitElement {
   /** The built-in themes a theme is built on; empty from a central that has none, which hides the
    *  client's own appearance, since there is then nothing to show it against. */
   @property({ attribute: false }) availableThemePresets: ThemePreset[] = [];
+  /** The active consent form and the scenario of the preview catalog the appearance block draws; `null` when central has
+   *  no consent form, the catalog lacks it, or the console may not read them. The block then says so instead. */
+  @property({ attribute: false }) consentPreviewForm: FormRecord | null = null;
+  @property({ attribute: false }) consentPreviewScenario: FormPreviewScenario | null = null;
   @property({ attribute: false }) availableOtpTemplates: OtpTemplateRecord[] = [];
   /** The profile the tenant's clients are held to; decides what a kind sets. */
   @property({ attribute: false }) securityProfile: SecurityProfile = 'fapi2';
@@ -4832,6 +4837,20 @@ export class VersolaClientForm extends LitElement {
     return fallback ? { tokens: fallback, stylesheet: false } : null;
   }
 
+  /** What central is asked to render for the preview: the theme the client uses (a stylesheet theme has no tokens), and a
+   *  built-in default look while the theme is not found yet. */
+  private get previewTheme(): { tokens: ThemeTokens | null; css: string } {
+    const record = this.availableThemes.find(t => t.id === (this.formData.theme || 'default'));
+    if (!record) return { tokens: { base: 'versola' }, css: '' };
+    return { tokens: record.tokens ?? null, css: record.css };
+  }
+
+  /** The colour scheme the client's look is fixed to, if it is: the preview has no dark variant to switch on then. */
+  private previewFixedMode(base: { tokens?: ResolvedThemeTokens }, overrides: ThemeOverrides): 'light' | 'dark' | null {
+    const mode = overrides.mode ?? base.tokens?.mode;
+    return mode === 'light' || mode === 'dark' ? mode : null;
+  }
+
   /** The brand colour field of the appearance block holds text that is not a #rrggbb colour. */
   @state() private themeBrandInvalid = false;
 
@@ -4863,7 +4882,12 @@ export class VersolaClientForm extends LitElement {
             : `${count} ${count === 1 ? 'value differs' : 'values differ'} from the theme, for this app only.`}
           ${base.stylesheet ? ' The theme is a stylesheet: what is set here is applied on top of it, and its own values are not shown.' : ''}
         </div>
-        <versola-theme-token-controls preview inheritedNote="From the theme"
+        <versola-client-consent-preview
+          .form=${this.consentPreviewForm} .scenario=${this.consentPreviewScenario}
+          .tokens=${this.previewTheme.tokens} .themeCss=${this.previewTheme.css} .overrides=${overrides}
+          .fixedMode=${this.previewFixedMode(base, overrides)}
+          .clientName=${this.formData.clientName ?? {}} .logoUri=${this.formData.logoUri ?? ''} .locales=${this.locales}></versola-client-consent-preview>
+        <versola-theme-token-controls inheritedNote="From the theme"
           .base=${base.tokens} ?stylesheet=${base.stylesheet} .overrides=${overrides}
           @overrides-change=${(e: CustomEvent<OverridesChange>) => this.setThemeOverrides(e.detail)}></versola-theme-token-controls>
       </section>
