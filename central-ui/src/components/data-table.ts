@@ -27,8 +27,13 @@ export type RowMenuItem = {
  * column is the record's name (a `.row-link` that opens it); the last, when `menuItems` is set,
  * is a `...` button with a menu (open, copy ID, delete) — nothing in a list edits.
  *
- * Below 720px the table becomes a stack of cards: headers are hidden, each row is a grid with the
- * name on the left and the menu on the right, the other cells stacked under them.
+ * The row menu is the WAI-ARIA menu button pattern: click, Enter, Space or the arrows open it with
+ * an item focused; the arrows move with wrap, Home and End jump; Escape closes and returns focus to
+ * the trigger; Tab and a click elsewhere close; `aria-expanded` on the trigger says which.
+ *
+ * Below 720px the table becomes a stack of cards: the header row moves off screen (still read by
+ * screen readers), each row is a grid with the name on the left and the menu on the right, the
+ * other cells stacked under them with their column label above each value.
  *
  * Cells are rendered here, so the styles a cell can rely on are the ones in this file
  * (`.row-link`, `.row-title`, `.row-id`, `.muted`, `.type-label`, `.icon`, chips).
@@ -211,7 +216,11 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         color: var(--danger);
       }
 
-      /* ── card mode ── */
+      /* ── card mode ──
+         The table keeps its semantics: every element carries its ARIA table role explicitly (see
+         render), so changing display here does not strip them (Safari/VoiceOver drop implicit
+         roles on a display: block table), and the header row stays in the accessibility tree off
+         screen. Each cell shows its column label through data-label. */
       @media (max-width: 720px) {
         thead {
           position: absolute;
@@ -228,7 +237,7 @@ export class VersolaDataTable<T = unknown> extends LitElement {
         tr {
           display: grid;
           grid-template-columns: minmax(0, 1fr) auto;
-          gap: 0.375rem var(--spacing-md);
+          gap: 0.5rem var(--spacing-md);
           padding: var(--spacing-md);
           border-bottom: 1px solid var(--border-subtle);
         }
@@ -260,6 +269,14 @@ export class VersolaDataTable<T = unknown> extends LitElement {
           grid-column: 1 / -1;
         }
 
+        td[data-label]:not(:first-child)::before {
+          content: attr(data-label);
+          display: block;
+          margin-bottom: 0.125rem;
+          font-size: var(--text-xs);
+          color: var(--text-secondary);
+        }
+
         .menu {
           right: 0;
           top: 2.25rem;
@@ -270,49 +287,89 @@ export class VersolaDataTable<T = unknown> extends LitElement {
 
   connectedCallback() {
     super.connectedCallback();
-    document.addEventListener('click', this.closeMenu);
-    document.addEventListener('keydown', this.handleKeyDown);
+    document.addEventListener('click', this.handleOutsideClick);
   }
 
   disconnectedCallback() {
-    document.removeEventListener('click', this.closeMenu);
-    document.removeEventListener('keydown', this.handleKeyDown);
+    document.removeEventListener('click', this.handleOutsideClick);
     super.disconnectedCallback();
   }
 
-  private readonly closeMenu = () => {
-    if (this.openMenuKey) this.openMenuKey = null;
+  private readonly handleOutsideClick = (event: Event) => {
+    if (this.openMenuKey && !event.composedPath().includes(this)) this.openMenuKey = null;
   };
 
-  private readonly handleKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape' && this.openMenuKey) {
-      const key = this.openMenuKey;
-      this.openMenuKey = null;
-      this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
+  private menuItemElements(): HTMLElement[] {
+    return Array.from(this.shadowRoot?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []);
+  }
+
+  private focusMenuItem(index: number) {
+    const all = this.menuItemElements();
+    all[(index + all.length) % all.length]?.focus();
+  }
+
+  /** Opens a row's menu with its first item focused: the WAI-ARIA menu button pattern, like the
+    * theme switcher's listbox. `last` focuses the last item (ArrowUp on the trigger). */
+  private async openMenu(key: string, last = false) {
+    this.openMenuKey = key;
+    await this.updateComplete;
+    this.focusMenuItem(last ? -1 : 0);
+  }
+
+  private closeMenu(returnFocus: boolean) {
+    const key = this.openMenuKey;
+    this.openMenuKey = null;
+    if (returnFocus && key !== null) this.shadowRoot?.querySelector<HTMLElement>(`[data-menu-for="${CSS.escape(key)}"]`)?.focus();
+  }
+
+  private handleTriggerClick(key: string) {
+    if (this.openMenuKey === key) this.closeMenu(true);
+    else void this.openMenu(key);
+  }
+
+  private handleTriggerKey(event: KeyboardEvent, key: string) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      void this.openMenu(key, event.key === 'ArrowUp');
+    } else if (event.key === 'Escape' && this.openMenuKey === key) {
+      event.preventDefault();
+      this.closeMenu(true);
     }
-  };
+  }
 
-  private toggleMenu(event: Event, key: string) {
-    event.stopPropagation();
-    this.openMenuKey = this.openMenuKey === key ? null : key;
+  private handleMenuKey(event: KeyboardEvent, index: number) {
+    switch (event.key) {
+      case 'ArrowDown': this.focusMenuItem(index + 1); break;
+      case 'ArrowUp': this.focusMenuItem(index - 1); break;
+      case 'Home': this.focusMenuItem(0); break;
+      case 'End': this.focusMenuItem(-1); break;
+      case 'Escape': this.closeMenu(true); break;
+      case 'Tab': this.closeMenu(false); return;
+      default: return;
+    }
+    event.preventDefault();
   }
 
   private renderMenu(row: T, key: string): TemplateResult | typeof nothing {
     if (!this.menuItems) return nothing;
     const items = this.menuItems(row);
+    const open = this.openMenuKey === key;
+    const label = this.menuLabel(row);
     return html`
-      <td class="cell-actions" @click=${(e: Event) => e.stopPropagation()}>
+      <td class="cell-actions" role="cell">
         <button type="button" class="icon-button menu-button" data-menu-for=${key}
-          aria-label=${this.menuLabel(row)} aria-haspopup="menu" aria-expanded=${this.openMenuKey === key}
-          @click=${(e: Event) => this.toggleMenu(e, key)}>
+          aria-label=${label} aria-haspopup="menu" aria-expanded=${open}
+          @click=${() => this.handleTriggerClick(key)}
+          @keydown=${(e: KeyboardEvent) => this.handleTriggerKey(e, key)}>
           ${statusIcon('dots', 'icon')}
         </button>
-        ${this.openMenuKey === key ? html`
-          <div class="menu" role="menu">
-            ${items.map(item => html`
-              <button type="button" role="menuitem" class=${item.danger ? 'danger' : ''}
+        ${open ? html`
+          <div class="menu" role="menu" aria-label=${label}>
+            ${items.map((item, index) => html`
+              <button type="button" role="menuitem" tabindex="-1" class=${item.danger ? 'danger' : ''}
                 aria-label=${item.ariaLabel ?? nothing}
-                @click=${() => { this.openMenuKey = null; item.onSelect(); }}>${item.label}</button>
+                @keydown=${(e: KeyboardEvent) => this.handleMenuKey(e, index)}
+                @click=${() => { this.closeMenu(false); item.onSelect(); }}>${item.label}</button>
             `)}
           </div>` : ''}
       </td>
@@ -322,21 +379,22 @@ export class VersolaDataTable<T = unknown> extends LitElement {
   render() {
     return html`
       <div class="card table-card">
-        <table>
-          <thead>
-            <tr>
+        <table role="table">
+          <thead role="rowgroup">
+            <tr role="row">
               ${this.columns.map(column => html`
-                <th scope="col">${column.srOnly ? html`<span class="sr-only">${column.label}</span>` : column.label}</th>
+                <th scope="col" role="columnheader">${column.srOnly ? html`<span class="sr-only">${column.label}</span>` : column.label}</th>
               `)}
-              ${this.menuItems ? html`<th scope="col"><span class="sr-only">Actions</span></th>` : ''}
+              ${this.menuItems ? html`<th scope="col" role="columnheader"><span class="sr-only">Actions</span></th>` : ''}
             </tr>
           </thead>
-          <tbody>
+          <tbody role="rowgroup">
             ${this.rows.map(row => {
               const key = this.rowKey(row);
               return html`
-                <tr>
-                  ${this.columns.map(column => html`<td class=${column.class ?? nothing}>${column.cell(row)}</td>`)}
+                <tr role="row">
+                  ${this.columns.map(column => html`
+                    <td role="cell" class=${column.class ?? nothing} data-label=${column.srOnly ? nothing : column.label}>${column.cell(row)}</td>`)}
                   ${this.renderMenu(row, key)}
                 </tr>
               `;

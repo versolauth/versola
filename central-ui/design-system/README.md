@@ -198,7 +198,7 @@ inputs, never two primary buttons in one region.
 | Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
 | Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
 | Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel @action>` | The last card of a record page: delete | Anything reversible |
-| Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel>` | A section's list; card mode under 720px; row menu with Open / Copy ID / Delete | Editing in place; nested detail |
+| Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel>` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`) | Editing in place; nested detail |
 | Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters with counts above a table | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
