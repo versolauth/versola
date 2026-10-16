@@ -24,8 +24,15 @@ object TenantController extends Controller:
       for
         _ <- authorizeBasic(request)
         service <- ZIO.service[TenantService]
-        tenants <- service.getAllTenants
-        response = GetAllTenantsResponse(tenants.map(t => TenantResponse(t.id, t.description, t.edgeId)))
+        summaries <- service.getTenantSummaries
+        response = GetAllTenantsResponse(summaries.map: summary =>
+          TenantResponse(
+            summary.tenant.id,
+            summary.tenant.description,
+            summary.tenant.edgeId,
+            summary.securityProfile,
+            summary.signingKeyId,
+          ))
       yield Response.json(response.toJson)
     }
 

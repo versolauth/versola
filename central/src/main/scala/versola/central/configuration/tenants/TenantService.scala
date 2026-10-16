@@ -18,6 +18,11 @@ import zio.{Schedule, Scope, Task, ZIO, ZLayer, durationInt}
 trait TenantService:
   def getAllTenants: Task[Vector[TenantRecord]]
 
+  /** Every tenant with its security profile and signing key, read off the challenge-settings
+    * cache: one in-memory read for the lot, and a repository lookup only for a tenant the
+    * cache has not caught up with yet (one created moments ago). */
+  def getTenantSummaries: Task[Vector[TenantSummary]]
+
   /** Always seeds the new tenant's challenge settings with `SubmissionLimits.recommended` --
     * `CreateTenantRequest` takes no override for this, so a tenant is never created with a
     * caller-supplied (and potentially invalid) rate-limit configuration.
@@ -56,6 +61,24 @@ object TenantService:
 
     def getAllTenants: Task[Vector[TenantRecord]] =
       cache.get.map(_.sortBy(_.id))
+
+    override def getTenantSummaries: Task[Vector[TenantSummary]] =
+      for
+        tenants <- getAllTenants
+        cached <- challengeSettingsService.getAllSettings
+        settingsByTenant = cached.map(settings => settings.tenantId -> settings).toMap
+        summaries <- ZIO.foreach(tenants): tenant =>
+          settingsByTenant.get(tenant.id)
+            .fold(challengeSettingsService.getSettings(tenant.id))(settings => ZIO.some(settings))
+            .map: settings =>
+              TenantSummary(
+                tenant,
+                // No settings row reads as the profile the tenant would be created with, as
+                // `ChallengeSettingsService.getSecurityProfile` answers for it.
+                settings.fold(ChallengeSettingsRecord.DefaultSecurityProfile)(_.securityProfile),
+                settings.flatMap(_.signingKeyId),
+              )
+      yield summaries
 
     override def createTenant(
         request: CreateTenantRequest,
