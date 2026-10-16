@@ -237,7 +237,8 @@ export class VersolaNavigation extends LitElement {
       }
 
       .nav-item {
-        display: block;
+        display: flex;
+        align-items: center;
         width: 100%;
         padding: 0.375rem 0.75rem;
         border: 0;
@@ -268,6 +269,8 @@ export class VersolaNavigation extends LitElement {
         background: var(--accent-subtle);
         color: var(--accent-text);
         box-shadow: inset 3px 0 0 var(--accent);
+        /* Square the left corners so the bar is a bar, not a curved sliver. */
+        border-radius: 0 var(--radius-md) var(--radius-md) 0;
       }
 
       .nav-item:focus-visible,
