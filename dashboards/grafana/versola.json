@@ -3411,6 +3411,58 @@
             "x": 0,
             "y": 134
           }
+        },
+        {
+          "type": "timeseries",
+          "title": "Configuration served from the snapshot — age",
+          "description": "Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod, cache) (config_snapshot_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"auth\"})",
+              "legendFormat": "{{pod}} {{cache}}"
+            }
+          ],
+          "id": 64,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
+            "y": 134
+          }
         }
       ],
       "gridPos": {
@@ -3421,7 +3473,7 @@
       }
     },
     {
-      "id": 64,
+      "id": 65,
       "type": "row",
       "title": "auth — Saturation",
       "collapsed": false,
@@ -3477,7 +3529,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 65,
+      "id": 66,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -3546,7 +3598,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 66,
+      "id": 67,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -3598,7 +3650,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 67,
+      "id": 68,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -3667,7 +3719,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 68,
+      "id": 69,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -3676,7 +3728,7 @@
       }
     },
     {
-      "id": 69,
+      "id": 70,
       "type": "row",
       "title": "auth — Runtime (per pod)",
       "collapsed": true,
@@ -3734,7 +3786,7 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 70,
+          "id": 71,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3785,7 +3837,7 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 71,
+          "id": 72,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -3802,7 +3854,7 @@
       }
     },
     {
-      "id": 72,
+      "id": 73,
       "type": "row",
       "title": "central — Traffic, errors, latency",
       "collapsed": false,
@@ -3861,7 +3913,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 73,
+      "id": 74,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -3916,7 +3968,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 74,
+      "id": 75,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4012,7 +4064,7 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 75,
+      "id": 76,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4063,7 +4115,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 76,
+      "id": 77,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4118,7 +4170,7 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 77,
+      "id": 78,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4169,7 +4221,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 78,
+      "id": 79,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4178,7 +4230,7 @@
       }
     },
     {
-      "id": 79,
+      "id": 80,
       "type": "row",
       "title": "central — Configuration",
       "collapsed": false,
@@ -4237,7 +4289,7 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 80,
+      "id": 81,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4288,7 +4340,7 @@
           "legendFormat": "{{route}}"
         }
       ],
-      "id": 81,
+      "id": 82,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4343,7 +4395,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 82,
+      "id": 83,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4398,7 +4450,7 @@
           "legendFormat": "{{status_class}}"
         }
       ],
-      "id": 83,
+      "id": 84,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4407,7 +4459,7 @@
       }
     },
     {
-      "id": 84,
+      "id": 85,
       "type": "row",
       "title": "central — Change notifications",
       "collapsed": false,
@@ -4464,7 +4516,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 85,
+      "id": 86,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4515,7 +4567,7 @@
           "legendFormat": "received"
         }
       ],
-      "id": 86,
+      "id": 87,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4584,7 +4636,7 @@
           "legendFormat": "queue overflows"
         }
       ],
-      "id": 87,
+      "id": 88,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -4593,7 +4645,7 @@
       }
     },
     {
-      "id": 88,
+      "id": 89,
       "type": "row",
       "title": "central — Calls to other services",
       "collapsed": true,
@@ -4641,7 +4693,7 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 89,
+          "id": 90,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4693,7 +4745,7 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 90,
+          "id": 91,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4744,7 +4796,7 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 91,
+          "id": 92,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -4761,7 +4813,7 @@
       }
     },
     {
-      "id": 92,
+      "id": 93,
       "type": "row",
       "title": "central — Saturation",
       "collapsed": false,
@@ -4817,7 +4869,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 93,
+      "id": 94,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -4886,7 +4938,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 94,
+      "id": 95,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -4938,7 +4990,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 95,
+      "id": 96,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -5007,7 +5059,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 96,
+      "id": 97,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -5016,7 +5068,7 @@
       }
     },
     {
-      "id": 97,
+      "id": 98,
       "type": "row",
       "title": "central — Runtime (per pod)",
       "collapsed": true,
@@ -5074,7 +5126,7 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 98,
+          "id": 99,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -5125,7 +5177,7 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 99,
+          "id": 100,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -5142,7 +5194,7 @@
       }
     },
     {
-      "id": 100,
+      "id": 101,
       "type": "row",
       "title": "edge — Resources (API proxying, /resources/*)",
       "collapsed": false,
@@ -5201,7 +5253,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 101,
+      "id": 102,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5256,7 +5308,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 102,
+      "id": 103,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5352,7 +5404,7 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 103,
+      "id": 104,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5403,7 +5455,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 104,
+      "id": 105,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5458,7 +5510,7 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 105,
+      "id": 106,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5513,7 +5565,7 @@
           "legendFormat": "{{resource}}"
         }
       ],
-      "id": 106,
+      "id": 107,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5587,7 +5639,7 @@
           "legendFormat": "edge itself"
         }
       ],
-      "id": 107,
+      "id": 108,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5699,7 +5751,7 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 108,
+      "id": 109,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5751,7 +5803,7 @@
           "legendFormat": "{{auth_call}}"
         }
       ],
-      "id": 109,
+      "id": 110,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5760,7 +5812,7 @@
       }
     },
     {
-      "id": 110,
+      "id": 111,
       "type": "row",
       "title": "edge — Web apps (browser sign-in and sign-out)",
       "collapsed": false,
@@ -5819,7 +5871,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 111,
+      "id": 112,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5874,7 +5926,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 112,
+      "id": 113,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -5970,7 +6022,7 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 113,
+      "id": 114,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6021,7 +6073,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 114,
+      "id": 115,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6076,7 +6128,7 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 115,
+      "id": 116,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6127,7 +6179,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 116,
+      "id": 117,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6136,7 +6188,7 @@
       }
     },
     {
-      "id": 117,
+      "id": 118,
       "type": "row",
       "title": "edge — Mobile apps (/native/*)",
       "collapsed": false,
@@ -6195,7 +6247,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 118,
+      "id": 119,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6250,7 +6302,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 119,
+      "id": 120,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6346,7 +6398,7 @@
           "legendFormat": "p99.999"
         }
       ],
-      "id": 120,
+      "id": 121,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6397,7 +6449,7 @@
           "legendFormat": "{{method}} {{route}}"
         }
       ],
-      "id": 121,
+      "id": 122,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6452,7 +6504,7 @@
           "legendFormat": "{{method}} {{route}} {{status}}"
         }
       ],
-      "id": 122,
+      "id": 123,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6503,7 +6555,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 123,
+      "id": 124,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6512,7 +6564,7 @@
       }
     },
     {
-      "id": 124,
+      "id": 125,
       "type": "row",
       "title": "edge — Token revocation",
       "collapsed": false,
@@ -6567,7 +6619,7 @@
           "legendFormat": "entries"
         }
       ],
-      "id": 125,
+      "id": 126,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6635,7 +6687,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 126,
+      "id": 127,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6702,7 +6754,7 @@
           "legendFormat": "failures"
         }
       ],
-      "id": 127,
+      "id": 128,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6762,7 +6814,7 @@
           "legendFormat": "local ring full"
         }
       ],
-      "id": 128,
+      "id": 129,
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -6771,7 +6823,7 @@
       }
     },
     {
-      "id": 129,
+      "id": 130,
       "type": "row",
       "title": "edge — Calls to other services",
       "collapsed": true,
@@ -6819,7 +6871,7 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 130,
+          "id": 131,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -6871,7 +6923,7 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 131,
+          "id": 132,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -6922,11 +6974,63 @@
               "legendFormat": "{{peer}}"
             }
           ],
-          "id": 132,
+          "id": 133,
           "gridPos": {
             "h": 8,
             "w": 12,
             "x": 0,
+            "y": 323
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Configuration served from the snapshot — age",
+          "description": "Age of the configuration a cache is serving from its database snapshot because central could not be reached at startup. Zero is live. Anything else means that pod runs on configuration central last confirmed that long ago, and keeps retrying central in the background.",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "fillOpacity": 0,
+                "showPoints": "never",
+                "spanNulls": false
+              },
+              "min": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "${datasource}"
+              },
+              "expr": "max by (pod, cache) (config_snapshot_age_seconds{namespace=\"$namespace\", app_kubernetes_io_component=\"edge\"})",
+              "legendFormat": "{{pod}} {{cache}}"
+            }
+          ],
+          "id": 134,
+          "gridPos": {
+            "h": 8,
+            "w": 12,
+            "x": 12,
             "y": 323
           }
         }
@@ -6939,7 +7043,7 @@
       }
     },
     {
-      "id": 133,
+      "id": 135,
       "type": "row",
       "title": "edge — Saturation",
       "collapsed": false,
@@ -6995,7 +7099,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 134,
+      "id": 136,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -7064,7 +7168,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 135,
+      "id": 137,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -7116,7 +7220,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 136,
+      "id": 138,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -7185,7 +7289,7 @@
           "legendFormat": "{{pod}}"
         }
       ],
-      "id": 137,
+      "id": 139,
       "gridPos": {
         "h": 8,
         "w": 6,
@@ -7194,7 +7298,7 @@
       }
     },
     {
-      "id": 138,
+      "id": 140,
       "type": "row",
       "title": "edge — Runtime (per pod)",
       "collapsed": true,
@@ -7252,7 +7356,7 @@
               "legendFormat": "{{pod}} limit"
             }
           ],
-          "id": 139,
+          "id": 141,
           "gridPos": {
             "h": 8,
             "w": 12,
@@ -7303,7 +7407,7 @@
               "legendFormat": "{{pod}}"
             }
           ],
-          "id": 140,
+          "id": 142,
           "gridPos": {
             "h": 8,
             "w": 12,
