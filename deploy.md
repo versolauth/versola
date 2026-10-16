@@ -431,7 +431,7 @@ client retries. Sessions, tokens, consents and users are unaffected. The migrati
 logins on the still-running previous version wait while it runs. The tables are small, so it is
 short, but run `versola migrate` at low traffic.
 
-**Migrations `auth` V0015 and `edge` V2005: configuration snapshot tables.** `auth_config_snapshots`
+**Migrations `auth` V0016 and `edge` V2006: configuration snapshot tables.** `auth_config_snapshots`
 and `edge_config_snapshots` keep the body of each configuration sync response the service last
 received from central, one row per request path (#566). A service that restarts while central is
 unreachable starts from these rows once its first load has given up on central, keeps retrying
