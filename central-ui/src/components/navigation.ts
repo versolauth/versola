@@ -1,9 +1,9 @@
 import { LitElement, html, css } from 'lit';
-import { customElement, property, query, state } from 'lit/decorators.js';
+import { customElement, property, query } from 'lit/decorators.js';
 import { theme } from '../styles/theme';
-import { getStoredTheme, toggleTheme, type ThemeName } from '../utils/theme';
 import './versola-logo';
 import './tenant-selector';
+import './theme-switcher';
 
 export type NavItem = 'clients' | 'scopes' | 'permissions' | 'resources' | 'roles' | 'tenants' | 'edges' | 'users' | 'forms' | 'themes' | 'locales' | 'challenges' | 'well-known' | 'system-settings';
 
@@ -21,10 +21,6 @@ export class VersolaNavigation extends LitElement {
   // Account Settings page is auth's self-service surface, not part of the admin API.
   @property({ type: String }) accountSettingsUrl = '/resources/auth/settings';
   @query('.brand-close') private closeButton?: HTMLButtonElement;
-  /** Mirrors whatever's currently applied to <html> (see src/utils/theme.ts).
-    * Read once at construction rather than derived on every render — the only
-    * other place that changes it is this component's own toggle handler. */
-  @state() private currentTheme: ThemeName = getStoredTheme();
 
   /** Called by admin-app right after opening the drawer.
     *
@@ -66,18 +62,26 @@ export class VersolaNavigation extends LitElement {
       .nav-panel {
         display: flex;
         flex-direction: column;
-        background: var(--bg-dark);
-        border-right: 1px solid var(--border-dark);
+        background: var(--sidebar-bg);
+        border-right: 1px solid var(--border-default);
         height: 100vh;
         position: sticky;
         top: 0;
         overflow: hidden;
       }
 
+      /* The brand, tenant and nav list scroll as one when they are taller
+         than the viewport; the footer stays put. The scrollbar is always
+         reserved and thin so a list that does not fit is seen to continue
+         rather than looking cut off under the footer (macOS overlay
+         scrollbars hide until touched). */
       .nav-scroll {
         flex: 1 1 auto;
         overflow-y: auto;
         min-height: 0;
+        scrollbar-width: thin;
+        scrollbar-gutter: stable;
+        overscroll-behavior: contain;
       }
 
       /* On narrow screens the sidebar becomes an off-canvas drawer: fixed to
@@ -112,7 +116,7 @@ export class VersolaNavigation extends LitElement {
           transition:
             transform var(--drawer-duration) ease,
             visibility 0s linear var(--drawer-duration);
-          box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
+          box-shadow: var(--shadow-lg);
         }
 
         /* .nav-panel's own position: sticky (set unconditionally above, for
@@ -150,8 +154,8 @@ export class VersolaNavigation extends LitElement {
         display: flex;
         align-items: center;
         gap: 0.75rem;
-        padding: 1.5rem;
-        border-bottom: 1px solid var(--border-dark);
+        padding: 1rem 1.5rem;
+        border-bottom: 1px solid var(--border-default);
         text-decoration: none;
       }
 
@@ -174,7 +178,7 @@ export class VersolaNavigation extends LitElement {
           width: 2.25rem;
           height: 2.25rem;
           padding: 0;
-          border: 1px solid var(--border-dark);
+          border: 1px solid var(--border-input);
           border-radius: var(--radius-md);
           background: transparent;
           color: var(--text-secondary);
@@ -199,23 +203,20 @@ export class VersolaNavigation extends LitElement {
       .brand-name {
         font-size: 1.25rem;
         font-weight: 700;
-        background: var(--accent-gradient);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+        color: var(--accent);
       }
 
       .tenant-section {
-        padding: var(--spacing-lg);
-        border-bottom: 1px solid var(--border-dark);
+        padding: 0.75rem var(--spacing-lg) var(--spacing-md);
+        border-bottom: 1px solid var(--border-default);
       }
 
       .nav {
-        padding: 1rem;
+        padding: 0.5rem 1rem;
       }
 
       .nav-section {
-        margin-bottom: 1.5rem;
+        margin-bottom: 0.75rem;
       }
 
       .nav-section-title {
@@ -224,98 +225,66 @@ export class VersolaNavigation extends LitElement {
         text-transform: uppercase;
         letter-spacing: 0.05em;
         color: var(--text-secondary);
-        padding: 0.5rem 0.75rem;
-        margin-bottom: 0.25rem;
+        padding: 0.375rem 0.75rem;
+        margin-bottom: 0.125rem;
       }
 
       .nav-item {
         display: block;
-        padding: 0.75rem;
+        width: 100%;
+        padding: 0.375rem 0.75rem;
+        border: 0;
         border-radius: var(--radius-md);
+        background: none;
         color: var(--text-secondary);
         text-decoration: none;
+        text-align: left;
+        font: inherit;
         font-size: 0.875rem;
         font-weight: 500;
+        line-height: 1.5;
         cursor: pointer;
-        transition: all var(--transition-fast);
-        margin-bottom: 0.25rem;
+        transition: background var(--transition-fast), color var(--transition-fast);
+        margin-bottom: 0.125rem;
       }
 
       .nav-item:hover {
-        background: rgba(var(--accent-tint), 0.1);
-        color: var(--accent);
+        background: var(--accent-subtle);
+        color: var(--accent-text);
       }
 
       .nav-item.active {
-        background: rgba(var(--accent-tint), 0.15);
-        color: var(--accent);
+        background: var(--sidebar-active-bg);
+        color: var(--sidebar-active-text);
+        font-weight: 600;
       }
 
-      .nav-item-icon {
-        font-size: 1.2rem;
-        width: 20px;
-        text-align: center;
+      .nav-item:focus-visible,
+      .brand-close:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: -2px;
       }
 
       .nav-footer {
         flex: none;
-        padding: 1rem;
-        border-top: 1px solid var(--border-dark);
+        padding: 0.5rem 1rem;
+        border-top: 1px solid var(--border-default);
+        background: var(--sidebar-bg);
       }
 
       .nav-footer .nav-item {
         margin-bottom: 0;
       }
 
-      .theme-toggle {
+      .theme-row {
         display: flex;
         align-items: center;
         justify-content: space-between;
         gap: 0.5rem;
-        padding: 0.75rem;
-        border-radius: var(--radius-md);
-        margin-bottom: 0.25rem;
+        padding: 0.125rem 0.75rem 0.375rem;
         color: var(--text-secondary);
         font-size: 0.875rem;
         font-weight: 500;
-      }
-
-      /* A two-position switch rather than a single icon button: the icon
-         alone doesn't communicate which mode is *currently* active without
-         a label, and this sidebar already uses plain-language nav items over
-         icons elsewhere (see navItem above) — a switch with both states
-         visible keeps that same at-a-glance clarity for theme too. */
-      .theme-switch {
-        display: inline-flex;
-        border: 1px solid var(--border-dark);
-        border-radius: 9999px;
-        padding: 2px;
-        gap: 2px;
-      }
-
-      .theme-switch-option {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 1.75rem;
-        height: 1.5rem;
-        border: none;
-        border-radius: 9999px;
-        background: transparent;
-        color: var(--text-secondary);
-        cursor: pointer;
-        font-size: 0.9rem;
-        line-height: 1;
-        transition: all var(--transition-fast);
-      }
-
-      .theme-switch-option.active {
-        background: rgba(var(--accent-tint), 0.18);
-        color: var(--accent);
-      }
-
-      .theme-switch-option:hover:not(.active) {
-        color: var(--text-primary);
       }
     `,
   ];
@@ -326,10 +295,6 @@ export class VersolaNavigation extends LitElement {
       composed: true,
     }));
   }
-
-  private handleThemeToggle = () => {
-    this.currentTheme = toggleTheme();
-  };
 
   private handleNavClick(item: NavItem) {
     this.dispatchEvent(new CustomEvent('nav-change', {
@@ -373,11 +338,14 @@ export class VersolaNavigation extends LitElement {
 
   private navItem(item: NavItem, label: string) {
     if (!this.can(item)) return html``;
+    const active = this.activeItem === item;
     return html`
-      <div
-        class="nav-item ${this.activeItem === item ? 'active' : ''}"
+      <button
+        type="button"
+        class="nav-item ${active ? 'active' : ''}"
+        aria-current=${active ? 'page' : 'false'}
         @click=${() => this.handleNavClick(item)}
-      >${label}</div>
+      >${label}</button>
     `;
   }
 
@@ -405,7 +373,7 @@ export class VersolaNavigation extends LitElement {
             ></tenant-selector>
           </div>
 
-          <nav class="nav">
+          <nav class="nav" aria-label="Sections">
             <div class="nav-section">
               <div class="nav-section-title">Tenant Scoped</div>
               ${this.navItem('challenges', 'Challenges & Security')}
@@ -431,28 +399,9 @@ export class VersolaNavigation extends LitElement {
         </div>
 
         <div class="nav-footer">
-          <div class="theme-toggle">
+          <div class="theme-row">
             <span>Theme</span>
-            <span class="theme-switch" role="radiogroup" aria-label="Color theme">
-              <button
-                type="button"
-                class="theme-switch-option ${this.currentTheme === 'light' ? 'active' : ''}"
-                role="radio"
-                aria-checked=${this.currentTheme === 'light'}
-                aria-label="Light theme"
-                title="Light theme"
-                @click=${() => { if (this.currentTheme !== 'light') this.handleThemeToggle(); }}
-              >☀️</button>
-              <button
-                type="button"
-                class="theme-switch-option ${this.currentTheme === 'dark' ? 'active' : ''}"
-                role="radio"
-                aria-checked=${this.currentTheme === 'dark'}
-                aria-label="Dark theme"
-                title="Dark theme"
-                @click=${() => { if (this.currentTheme !== 'dark') this.handleThemeToggle(); }}
-              >🌙</button>
-            </span>
+            <versola-theme-switcher></versola-theme-switcher>
           </div>
           <a class="nav-item" href=${this.accountSettingsUrl}>My Security</a>
           <a class="nav-item" href=${this.logoutUrl}>Log out</a>
@@ -461,4 +410,3 @@ export class VersolaNavigation extends LitElement {
     `;
   }
 }
-
