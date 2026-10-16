@@ -21,8 +21,9 @@ Files next to this one:
 2. **Tokens, never literals.** Every colour is a custom property defined once per theme in
    `index.html`. A component never writes a hex, `rgb()` or `white`. A new colour is a new token
    with a value in both themes, a line in the table below, and a green `design:contrast`.
-3. **View first.** A record opens on a read-only page (breadcrumb, title, meta, one card per group
-   with its own Edit, a Fixed card, the danger card last). A list never edits; it opens.
+3. **View first.** A record opens read-only (title, meta, one card per group with its own Edit,
+   a Fixed card, the danger card last): on a page for a large entity, in the side panel next to
+   its table for a small one. A list never edits; it opens.
 4. **One primary action per page.** The page header carries it; cards carry secondary buttons.
 5. **Same words everywhere.** A setting looks the same where it is chosen (wizard), where it is
    read (record card) and where it is changed (group editor).
@@ -94,7 +95,7 @@ Theme-independent scales, defined once in `index.html` (bare `:root`) and inheri
 | `--text-3xl` | 1.5rem (24px) | The page title below 720px |
 | `--text-4xl` | 2rem (32px) | The page title |
 | `--z-dropdown` | 20 | A menu, listbox, suggestion list or tooltip over its page |
-| `--z-backdrop` / `--z-drawer` | 150 / 200 | The mobile drawer's backdrop and the drawer |
+| `--z-backdrop` / `--z-drawer` | 150 / 200 | The mobile drawer's backdrop and the drawer; the side panel and its backdrop share these layers (the two are never open together: the sheet covers the drawer toggle) |
 | `--z-modal` | 1000 | A dialog and its backdrop (`confirm-dialog.ts`, the users' password popups) |
 | `--z-toast` | 1100 | A toast, above a dialog (reserved; nothing uses it yet) |
 
@@ -172,6 +173,21 @@ nothing matches, or `versola-loading-cards` while loading, or `versola-error-car
 Rows open the record; the row menu holds Open, Copy ID and Delete. Below 720px the table is a
 stack of cards. Reference: `clients-list.ts`.
 
+**Table + panel (small entities).** The list above, and the record in `versola-side-panel`
+next to it: an entity with at most two editable groups and no wizard (Scopes, Permissions,
+Roles, Tenants, Edges; later JWKS keys, OTP templates, authorization detail types) never gets a
+page of its own. A row click, Enter on the row's `.row-link` or the row menu's Open selects the
+row (`selectedKey`) and opens the panel in view mode: kind label, title, ID with copy, chips,
+`Open page`, Close; then the same `versola-record-card` groups a page would show, each with its
+Edit, the read-only reverse references (Requested by, Granted by, Linked tenants), Fixed with its
+reasons, the danger card last. Edit turns the same panel into the group editor (breadcrumb
+`Record › Edit <group>`, modal with a backdrop, footer Cancel / `Save <group>`); the page's one
+primary action opens it in create mode (`Create <entity>`), which lands on the new row selected.
+Escape and Close return focus to the row (`versola-data-table.focusRow`). The URL carries the
+state so a reload restores it: `?view=scopes&id=profile`, `&edit=claims`, `&new=1`; `Open page`
+adds `&layout=page` and renders the same groups under a `versola-record-header` for sharing and
+docs. Reference: `scopes-list.ts`; the pattern's mockups are the approved UX proposal.
+
 **Record (view first).** `versola-record-header` (breadcrumb, title, meta row: ID with copy,
 kind chip, status chips, created) → a status banner when the page can say something about the
 whole record (`.banner`, `.banner.ok`) → one `versola-record-card` per group of settings, each
@@ -202,8 +218,12 @@ inputs, never two primary buttons in one region.
 | Record header | `<versola-record-header .crumbs .heading .recordId idLabel .meta>` | The top of a record page; copies the ID with `Copy <idLabel>`; `meta` holds chips | Pages with no ID |
 | Record card | `<versola-record-card .heading .subheading ?editable ?editDisabled .fixedLabel .body @edit>` | A group of a record's settings, with Edit or a Fixed lock | Forms (use `.card` with `formStyles`) |
 | Record row | `<versola-record-row .label .fixed .value>` | A label/value line in a record card; `fixed` is the reason it cannot change; no label for an action row | Tables |
-| Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel @action>` | The last card of a record page: delete | Anything reversible |
-| Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel>` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`) | Editing in place; nested detail |
+| Danger card | `<versola-danger-card heading text actionLabel .actionAriaLabel .disabledReason @action>` | The last card of a record page or panel: delete; `disabledReason` disables the button and says why (a default role) | Anything reversible |
+| Side panel | `<versola-side-panel kind heading recordId idLabel .meta mode ?wide parentLabel subtitle @close @back @open-page>` + default slot (the groups or the editor, wrapped in `.record-compact`) + `slot="footer"` (the editor's Cancel / Save) | The record of a small entity next to its table: `mode` is `view` (non-modal dialog, 560px), `edit` or `create` (modal: backdrop, focus trap, footer); `wide` (720px) when the body holds a picker; full width below 1024px, a full-screen sheet below 720px. Escape fires `close`; the heading takes focus when it opens | Clients, Resources, Users, Forms, Themes (a record page); confirmations (`confirmDestructiveAction`) |
+| Data table | `<versola-data-table .columns .rows .rowKey .menuItems .menuLabel ?selectable .selectedKey @row-select>` + `focusRow(key)` | A section's list; card mode under 720px (explicit table roles survive the `display` change, each cell shows its column label); row menu with Open / Copy ID / Delete as a WAI-ARIA menu button: opens with the first item focused, arrows wrap, Home/End, Escape returns focus to the trigger, Tab and an outside click close, `aria-expanded` on the trigger (`tests/data-table.spec.ts`). `selectable` makes a click anywhere on a row (outside its menu) fire `row-select`; `selectedKey` draws that row selected (`aria-selected`, accent fill, 3px bar); `focusRow` is where a closing panel returns focus | Editing in place; nested detail |
+| Permission picker | `<versola-permission-picker .permissions .resources .value label @change>` | Choosing permissions (D7): one bordered group per category (the text before the first `:`), `Select all` per group, a filter field from four permissions, the endpoints popover per permission; the host shows the count in its title (`Permissions (3 selected)`) | A single choice (use a `select`) |
+| Endpoint picker | `<versola-endpoint-picker .resources .value @change>` | A permission's endpoints (D8): add a resource, then its endpoints one by one, each a row with method badge, path and Remove; endpoint ids no resource carries any more are listed as detached | Anything that is not resource → endpoint |
+| Localized value | `localizedValue(value, locales)`, `languagesChip`, `languagesCell`, `missingLocales` from `localized-value.ts` | A localized text as a record value (D10): the English value and a `N languages` chip, or a `Missing: ru` warning chip; `languagesCell` is the list's `3 of 3` | Editing (use `versola-localized-text-editor`) |
 | Filter bar | `<versola-filter-bar label .options .value @change>` | One-of filters with counts above a table | Multi-select (use checkboxes) |
 | Empty state | `<versola-empty-state heading text>` + one action in its slot | Nothing to list; nothing matches (no action) | Errors (use the error card) |
 | Error card | `<versola-error-card heading .message @retry>` | A failed load with Retry | Validation |
@@ -211,11 +231,14 @@ inputs, never two primary buttons in one region.
 | Status icon | `statusIcon(name)` from `status-icon.ts` | Stroke icons for state (lock, check, x, shield, alert, info, dots, copy) | Emoji, text glyphs (`✎`, `▼`) |
 | Theme switcher | `<versola-theme-switcher>` | The sidebar footer only | Anywhere else |
 | Tenant selector | `<tenant-selector>` | The sidebar only | |
-| Chips | `chipStyles`: `.chips`, `.chip`, `.chip.ok`, `.chip.warn` | A kind or a state as a small outlined label; the text carries the meaning | Interactive tags |
+| Chips | `chipStyles`: `.chips`, `.chip`, `.chip.ok`, `.chip.warn`, `.chip.danger` | A kind or a state as a small outlined label; the text carries the meaning (`danger`: an inactive role) | Interactive tags |
+| Tags | `tagStyles`: `.tag-list`, `.tag`, `button.tag`, `.tag.quiet` | One value of a list in mono on the accent fill (a scope, a permission, a tenant); a `button.tag` opens the record it names | States (use a chip) |
+| Banners | `bannerStyles`: `.banner`, `.banner.ok`, `.warn`, `.info`, `.banner-text`, `.banner-title` | What a page or a panel says about the whole record, above its cards; an action button may sit on the right | Field errors |
+| Editor boxes | `editorStyles`: `.editor-box` (h3, `.editor-sub`, fields), `.editor-error`, `.option-cards` / `.option-card[aria-pressed]` | The bordered groups of a panel editor or a wizard step; a choice between a few options as pressed cards (the tenant's security profile) | A list of records |
 | Badges | `badgeStyles`: `.badge-success`, `.badge-warning`; `methodBadgeStyles` for HTTP methods | Filled state labels | |
 | Buttons | `buttonStyles`: `.btn-primary`, `.btn-secondary`, `.btn-danger`, `.btn-danger-secondary`, `.btn-sm`, `.btn-lg` | Primary = solid accent, one per page; secondary = outlined; danger = solid red, only on confirmation | Icon-only actions (use `iconButtonStyles` with `aria-label`) |
 | Cards | `cardStyles`: `.card`, `.card-header`, `.card-title` | Forms, banners, nested detail | Lists of records (use the table) |
-| Record styles | `recordStyles` | Include in the host of record cards / rows / danger card (they render into light DOM) | |
+| Record styles | `recordStyles` | Include in the host of record cards / rows / danger card (they render into light DOM); `.record-compact` around them is the panel's narrower grid (8rem label, the Fixed reason under the value) | |
 
 `versola-record-card`, `versola-record-row` and `versola-danger-card` render into **light DOM**
 on purpose: the body of a card is the screen's own markup (a flow chain, a list of URIs) and keeps
@@ -224,6 +247,12 @@ the screen's styles, and a test reads the whole card through its region
 `cardStyles`. `versola-data-table` and `versola-record-header` render cells and meta through
 properties inside their shadow root, so the styles a cell can rely on are the ones they ship
 (`.row-link`, `.row-title`, `.row-id`, `.muted`, `.type-label`, `.icon`, chips).
+
+`versola-side-panel` renders its own chrome in its shadow root and the screen's content through
+slots, so the record cards inside it keep the host's `recordStyles`. A test reaches that content
+from the host element, not from the dialog: `sidePanel(page, heading)` in `tests/fixtures.ts`
+(the slotted nodes are DOM children of the host; the accessibility tree still places them inside
+the dialog), and `sidePanelDialog` for the dialog's own ARIA state and box.
 
 Naming: elements are `versola-<name>` (the older `content-header`, `tenant-selector` stay).
 Shared styles are exported from `src/styles/components.ts`; a style used by two screens moves
@@ -256,17 +285,21 @@ and falls back to an outline under `prefers-reduced-motion`. Native elements fir
 a `<button>`, a list is a `<table>`, a popover is a listbox or a menu with the ARIA pattern the
 login forms use (see the row menu below). Every input
 has a label; icon-only buttons have `aria-label` and `title`; errors are tied to their field.
-Dialogs trap focus, close on Escape and return focus. Motion respects `prefers-reduced-motion`.
+Dialogs trap focus, close on Escape and return focus: the confirm dialog, and the side panel in
+its modal modes (view mode is a non-modal dialog, so the list stays reachable; Escape still
+closes it and returns focus to the row). Motion respects `prefers-reduced-motion`.
 
 ## How to render and verify a screen
 
 1. Playwright renders the console with a mocked API (`tests/mocks.ts`), no backend. Write a
    throwaway spec in `tests/` that calls `loadAdminApp(page, { path, state })`, sets the viewport,
    sets the theme with `page.addInitScript(v => localStorage.setItem('versola-theme', v), 'dark')`
-   (or `page.emulateMedia({ colorScheme })` for Auto) and `page.screenshot({ path })`. Run it with
+   (or `page.emulateMedia({ colorScheme })` for Auto) and `page.screenshot({ path })`; a record
+   opens straight from the URL (`&id=`, `&edit=`, `&new=1`, `&layout=page`). Run it with
    `npx playwright test <file> --output=/tmp/pw-out` so `test-results/` is not wiped. Delete the
    spec before committing.
-2. Shoot 1440 and 1024 in both themes, and 375 for list screens (card mode). Open the PNGs and
+2. Shoot 1440 and 1024 in both themes, and 375 for list screens (card mode) and for a panel (the
+   sheet). Open the PNGs and
    check them against `.claude/rules/frontend.md` (overlap, clipping, no sideways scroll,
    alignment, layering); fix before showing.
 3. `npm run type-check`, `npm run test:unit`, `npm run design:contrast`, `npx playwright test`

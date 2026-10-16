@@ -8,7 +8,7 @@
  * Run with: npx playwright test docs-screenshots
  */
 import { expect, test, type Page } from '@playwright/test';
-import { loadAdminApp } from './fixtures';
+import { loadAdminApp, sidePanel, sidePanelDialog } from './fixtures';
 
 const outputDir = 'docs-screenshots';
 const tenant = 'tenant-alpha';
@@ -545,11 +545,11 @@ test('tenant create form', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=tenants&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: '+ Create Tenant', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Create Tenant', exact: true })).toBeVisible();
+  await expect(sidePanelDialog(page, 'Create tenant')).toBeVisible();
   await shot(page, 'tenant-form-empty');
 
   await page.getByLabel('Tenant ID *').fill('acme-prod');
-  await page.getByLabel('Description').fill('Acme production');
+  await page.getByLabel('Description *').fill('Acme production');
   await shot(page, 'tenant-form-filled');
 });
 
@@ -557,11 +557,11 @@ test('scopes list', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=scopes&tenant=${tenant}`, state });
 
   await expect(page.getByRole('heading', { name: 'OAuth Scopes', exact: true })).toBeVisible();
-  await expect(page.locator('.scope-card')).toHaveCount(scopes.length);
+  await expect(page.locator('versola-data-table').getByRole('button', { name: /^Open scope/ })).toHaveCount(scopes.length);
   await shot(page, 'scopes-list');
 
-  await page.locator('.scope-card').filter({ hasText: 'OpenID scope' }).first().locator('.scope-header').click();
-  await expect(page.getByText('Subject')).toBeVisible();
+  await page.getByRole('button', { name: 'Open scope openid' }).click();
+  await expect(sidePanel(page, 'OpenID scope').getByRole('region', { name: 'Claims' })).toContainText('Subject');
   await shot(page, 'scopes-list-expanded');
 });
 
@@ -569,15 +569,15 @@ test('scope create form', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=scopes&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: '+ Create Scope', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Create New Scope', exact: true })).toBeVisible();
+  await expect(sidePanelDialog(page, 'Create scope')).toBeVisible();
   await shot(page, 'scope-form-empty');
 
-  await page.getByLabel('Scope ID *').fill('orders_read');
-  await page.getByLabel('Description *').fill('Read order history');
-  await page.getByLabel('Claim ID').fill('order_count');
-  await page.getByLabel('Claim Description').fill('Number of orders placed');
-  await page.getByRole('button', { name: 'Add Claim', exact: true }).click();
-  await expect(page.getByText('order_count')).toBeVisible();
+  const dialog = sidePanel(page, 'Create scope');
+  await dialog.getByLabel('Scope ID *').fill('orders_read');
+  await dialog.locator('#scope-description').fill('Read order history');
+  await dialog.getByRole('button', { name: '+ Add claim' }).click();
+  await dialog.getByLabel('Claim ID').fill('order_count');
+  await dialog.locator('versola-localized-text-editor').nth(1).locator('input').fill('Number of orders placed');
   await shot(page, 'scope-form-filled');
 });
 
@@ -587,8 +587,8 @@ test('permissions list', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Permissions', exact: true })).toBeVisible();
   await shot(page, 'permissions-list');
 
-  await page.locator('.permission-card').filter({ hasText: 'orders.read' }).first().click();
-  await expect(page.locator('.endpoint-row').filter({ hasText: '/orders' }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Open permission orders.read' }).click();
+  await expect(sidePanel(page, 'Read orders').getByRole('region', { name: 'Endpoints' })).toContainText('/orders');
   await shot(page, 'permissions-list-expanded');
 });
 
@@ -596,17 +596,18 @@ test('permission create form', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=permissions&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: '+ Create Permission', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Create Permission', exact: true })).toBeVisible();
+  await expect(sidePanelDialog(page, 'Create permission')).toBeVisible();
   await shot(page, 'permission-form-empty');
 
-  await page.getByLabel('Permission ID *').fill('orders.cancel');
-  await page.getByLabel('English description').fill('Cancel orders');
-  await page.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
-  await page.getByRole('button', { name: 'Add resource', exact: true }).click();
-  await page.getByLabel(/Add endpoint for/).selectOption({ label: 'POST /orders' });
-  await page.getByRole('button', { name: 'Add endpoint', exact: true }).click();
-  await expect(page.locator('.endpoint-row').filter({ hasText: '/orders' })).toBeVisible();
-  await shot(page, 'permission-form-filled', true);
+  const dialog = sidePanel(page, 'Create permission');
+  await dialog.getByLabel('Permission ID *').fill('orders.cancel');
+  await dialog.locator('#permission-description').fill('Cancel orders');
+  await dialog.getByLabel('Add resource').selectOption({ label: 'orders-api.orders.svc.cluster.local:8080' });
+  await dialog.getByRole('button', { name: 'Add resource', exact: true }).click();
+  await dialog.getByLabel(/Add endpoint for/).selectOption({ label: 'POST /orders' });
+  await dialog.getByRole('button', { name: 'Add endpoint', exact: true }).click();
+  await expect(dialog.locator('.endpoint-path', { hasText: '/orders' })).toBeVisible();
+  await shot(page, 'permission-form-filled');
 });
 
 test('roles list', async ({ page }) => {
@@ -615,8 +616,8 @@ test('roles list', async ({ page }) => {
   await expect(page.getByRole('heading', { name: 'Roles', exact: true })).toBeVisible();
   await shot(page, 'roles-list');
 
-  await page.locator('.role-card').filter({ hasText: 'Alpha admin' }).first().locator('.role-header').click();
-  await expect(page.locator('.permission-item').filter({ hasText: 'orders.read' })).toBeVisible();
+  await page.getByRole('button', { name: 'Open role alpha_admin' }).click();
+  await expect(sidePanel(page, 'Alpha admin').getByRole('region', { name: 'Permissions (2)' })).toContainText('orders.read');
   await shot(page, 'roles-list-expanded');
 });
 
@@ -624,11 +625,12 @@ test('role create form', async ({ page }) => {
   await loadAdminApp(page, { path: `/?view=roles&tenant=${tenant}`, state });
 
   await page.getByRole('button', { name: '+ Create Role', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Create New Role', exact: true })).toBeVisible();
-  await shot(page, 'role-form-empty', true);
+  await expect(sidePanelDialog(page, 'Create role')).toBeVisible();
+  await shot(page, 'role-form-empty');
 
-  await page.getByLabel('Role ID *').fill('support');
-  await page.getByLabel('Description *').fill('Customer support agent');
-  await page.getByRole('checkbox', { name: /orders\.read/ }).check();
-  await shot(page, 'role-form-filled', true);
+  const dialog = sidePanel(page, 'Create role');
+  await dialog.getByLabel('Role ID *').fill('support');
+  await dialog.locator('#role-description').fill('Customer support agent');
+  await dialog.getByRole('checkbox', { name: /orders\.read/ }).check();
+  await shot(page, 'role-form-filled');
 });
