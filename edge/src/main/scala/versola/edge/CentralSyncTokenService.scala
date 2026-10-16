@@ -8,10 +8,12 @@ import zio.{Schedule, Scope, Task, UIO, ZIO, ZLayer, durationInt}
 trait CentralSyncTokenService:
   def getToken: UIO[String]
 
-  /** Sends a configuration sync request, already carrying the token, to central, through the
-    * [[ConfigSnapshot]].
+  /** Sends a configuration sync request, already carrying the token, to central. The live
+    * service sends it through the [[ConfigSnapshot]]; this default sends it straight, for the
+    * sync client specs' fakes, which implement [[getToken]] only.
     */
-  def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response]
+  def syncRequest(client: Client, request: Request): ZIO[Scope, Throwable, Response] =
+    client.request(request)
 
 object CentralSyncTokenService:
   private val TokenTtl = 10.minutes
