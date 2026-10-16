@@ -261,6 +261,21 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
               body.indexOf(".body { color: red; }") < body.indexOf("--brand:#112233;"),
             )
         },
+        test(s"$name applies the visitor's colour scheme once, after the style block and without any configuration in it") {
+          pageOf(formId, Some(withOverrides), Some(clientId))(render).map: (status, body) =>
+            val script = ConversationRenderService.SchemeScript
+            def count(text: String) = body.sliding(text.length).count(_ == text)
+            assertTrue(
+              status == Status.Ok,
+              count(script) == 1,
+              body.indexOf("</style>") < body.indexOf(script),
+              // read before the form's own script, which is the only place the configuration is written
+              body.indexOf(script) < body.indexOf("window.__VERSOLA_FORM__"),
+              !script.contains("csrf"),
+              !script.contains("--brand"),
+              !script.contains("client"),
+            )
+        },
         test(s"$name shows the theme as it is when the configuration does not know the client") {
           pageOf(formId, None, Some(clientId))(render).map: (status, body) =>
             assertTrue(status == Status.Ok, !body.contains("--brand:#112233;"), body.contains(base))
@@ -354,10 +369,10 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield
-          // The page owns exactly one <style> and two <script> blocks; any extra closing tag
+          // The page owns exactly one <style> and three <script> blocks (the colour scheme script, the configuration, the form); any extra closing tag
           // means injected text ended one of them early.
           assertTrue(styleBlocksAreBalanced(body)) &&
-            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 2) &&
+            assertTrue(body.sliding("</script>".length).count(_ == "</script>") == 3) &&
             assertTrue(body.contains("\\3c /style>")) &&
             assertTrue(body.contains("&lt;/script&gt;")) &&
             assertTrue(body.contains("\\u003c/script\\u003e"))
@@ -655,7 +670,11 @@ object ConversationRenderServiceSpec extends UnitSpecBase:
           response <- env.service.renderStep(conversationRecord, None)
           body <- response.body.asString
         yield assertTrue(response.status == Status.NotFound) &&
-          assertTrue(body.contains("Page not found"))
+          assertTrue(body.contains("Page not found")) &&
+          assertTrue(
+            body.contains(ConversationRenderService.SchemeScript),
+            body.indexOf("</style>") < body.indexOf(ConversationRenderService.SchemeScript),
+          )
       },
       test("renders Otp step with resend timer") {
         val env = Env()

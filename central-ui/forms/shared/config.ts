@@ -16,6 +16,8 @@ export interface BaseFormConfig {
   locales?: string[];
   allT?: Record<string, Record<string, string>>;
   previewId?: string;
+  /** Set by the console's form previews: the visitor's colour scheme toggle is not drawn there (the preview has its own Light / Dark control). */
+  preview?: boolean;
   csrf?: string;
   logo?: string;
   client?: ClientInfo;
