@@ -1044,15 +1044,11 @@ object ConversationService:
         sessionId: PublicSessionId,
     ): Task[Option[ConversationResult.IdTokenData]] =
       for
-        // The conversation carries the profile it started with but not the verified flags, which an
-        // OTP confirmed in this very conversation has just set, so they are read from the stored user.
+        // The conversation carries the claims it started with, which predate an OTP confirmed in this
+        // very conversation (it sets `email_verified` / `phone_number_verified`), so read the stored ones.
         stored <- userRepository.find(userId)
-        user = conversation.user
-          .getOrElse(UserRecord.empty(userId))
-          .copy(
-            emailVerified = stored.exists(_.emailVerified),
-            phoneVerified = stored.exists(_.phoneVerified),
-          )
+        base = conversation.user.getOrElse(UserRecord.empty(userId))
+        user = stored.fold(base)(found => base.copy(claims = found.claims))
         userInfo <- userInfoService.getUserInfoForIdToken(
           user = user,
           clientId = conversation.clientId,

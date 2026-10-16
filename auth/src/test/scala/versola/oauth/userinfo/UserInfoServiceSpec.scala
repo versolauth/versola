@@ -226,55 +226,43 @@ object UserInfoServiceSpec extends UnitSpecBase, ZIOStubs:
       yield assertTrue(result.claims.get("email").contains(Json.Str("john@example.com")))
     },
     suite("verified contact claims")(
-      test("email_verified follows the stored flag, true once the email is verified") {
+      // A confirmed OTP stores email_verified / phone_number_verified in the user's claims; userinfo
+      // reports them like any other claim, when the scope that releases them is granted.
+      test("email_verified is reported once the claim is stored and the scope releases it") {
         val env = Env()
+        val verified = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
         for
-          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true)))
+          _ <- env.userRepo.find.succeedsWith(Some(verified))
           _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
           result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
         yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(true)))
       },
-      test("email_verified is false for an email nobody has confirmed") {
+      test("email_verified is not reported for an email nobody has confirmed") {
         val env = Env()
         for
           _ <- env.userRepo.find.succeedsWith(Some(testUser))
           _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
           result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
-        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(false)))
+        yield assertTrue(!result.claims.contains("email_verified"))
       },
-      test("the stored flag wins over an email_verified value carried in the claims object") {
+      test("phone_number_verified is reported once the claim is stored") {
         val env = Env()
-        val stale = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
-        for
-          _ <- env.userRepo.find.succeedsWith(Some(stale))
-          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
-          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("email")), None)
-        yield assertTrue(result.claims.get("email_verified").contains(Json.Bool(false)))
-      },
-      test("phone_number_verified follows the stored flag") {
-        val env = Env()
-        val phoneUser = testUser.copy(email = None, phone = Some(versola.util.Phone("+49151123456789")), phoneVerified = true)
+        val phoneUser = testUser.copy(
+          email = None,
+          phone = Some(versola.util.Phone("+49151123456789")),
+          claims = Json.Obj("phone_number_verified" -> Json.Bool(true)),
+        )
         for
           _ <- env.userRepo.find.succeedsWith(Some(phoneUser))
           _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, phoneWithVerifiedScope))
           result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("phone")), None)
-        yield assertTrue(
-          result.claims.get("phone_number_verified").contains(Json.Bool(true)),
-          !result.claims.contains("email_verified"),
-        )
-      },
-      test("a verified claim is not reported for a contact the user does not have") {
-        val env = Env()
-        for
-          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true, phoneVerified = true)))
-          _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, phoneWithVerifiedScope))
-          result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId, ScopeToken("phone")), None)
-        yield assertTrue(!result.claims.contains("phone_number_verified"), !result.claims.contains("phone_number"))
+        yield assertTrue(result.claims.get("phone_number_verified").contains(Json.Bool(true)))
       },
       test("email_verified stays out of the response when the email scope was not granted") {
         val env = Env()
+        val verified = testUser.copy(claims = Json.Obj("email_verified" -> Json.Bool(true)))
         for
-          _ <- env.userRepo.find.succeedsWith(Some(testUser.copy(emailVerified = true)))
+          _ <- env.userRepo.find.succeedsWith(Some(verified))
           _ <- env.clientService.getScopes.succeedsWith(Vector(openIdScope, emailWithVerifiedScope))
           result <- env.service.getUserInfo(userId1, clientId1, Set(ScopeToken.OpenId), None)
         yield assertTrue(!result.claims.contains("email_verified"))

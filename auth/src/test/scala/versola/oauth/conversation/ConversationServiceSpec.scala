@@ -558,7 +558,7 @@ object ConversationServiceSpec extends UnitSpecBase:
             assertTrue(s == sessionId)
           case _ => assertTrue(false)
       },
-      test("the ID token of a hybrid flow reports the verified flag stored for the user, not the conversation's") {
+      test("the ID token of a hybrid flow reports the verified claim stored for the user, not the conversation's") {
         val env = Env()
         val now = Instant.parse("2026-07-13T10:00:00Z")
         val record = consentedRecord.copy(
@@ -567,7 +567,7 @@ object ConversationServiceSpec extends UnitSpecBase:
           grantedScope = Some(Set(ScopeToken.OpenId, ScopeToken("email"))),
           responseType = zio.prelude.NonEmptySet(ResponseTypeEntry.Code, ResponseTypeEntry.IdToken),
         )
-        val stored = UserRecord(userId, Some(email), None, None, Json.Obj(), None, emailVerified = true)
+        val stored = UserRecord(userId, Some(email), None, None, Json.Obj("email_verified" -> Json.Bool(true)), None)
         val mac = MAC(Array.fill(32)(1.toByte))
 
         for
@@ -589,7 +589,9 @@ object ConversationServiceSpec extends UnitSpecBase:
           _ <- env.userRepository.find.succeedsWith(Some(stored))
           _ <- env.userInfoService.getUserInfoForIdToken.succeedsWith(versola.oauth.userinfo.model.UserInfoResponse(Map.empty))
           _ <- env.service.finish(authId, record)
-        yield assertTrue(env.userInfoService.getUserInfoForIdToken.calls.map(_._1.emailVerified) == List(true))
+        yield assertTrue(
+          env.userInfoService.getUserInfoForIdToken.calls.map(_._1.claims.fields.toMap.get("email_verified")) == List(Some(Json.Bool(true))),
+        )
       },
       test("creates new session and issues cookie during step-up") {
         val env = Env()

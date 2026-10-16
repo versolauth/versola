@@ -49,9 +49,10 @@ trait UserRepository:
       remove: Set[RoleId],
   ): Task[Unit]
 
-  /** Marks the given credential as verified for this user.
+  /** Marks the given credential as verified for this user by setting its `email_verified` /
+    * `phone_number_verified` claim in `claims`.
     * Only fires when OTP verification actually succeeded – never on failure or expiry.
-    * Idempotent: already-true flags are left unchanged.
+    * Idempotent: an already-true claim is rewritten with the same value.
     * Guards against contact replacement: the UPDATE also checks that the stored value
     * still matches the credential the OTP was sent to, so a concurrent upsert that
     * swapped in a different email/phone cannot accidentally get verified.

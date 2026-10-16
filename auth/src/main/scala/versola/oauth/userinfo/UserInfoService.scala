@@ -71,13 +71,9 @@ object UserInfoService:
       for
         authorizedClaims <- getAuthorizedClaims(clientId, scope, requestedClaims, forIdToken)
 
-        // The verified flags are set only by a confirmed OTP, so they win over any value the claims
-        // object may carry. A claim is reported only next to the contact it describes.
         userClaimsMap = user.claims.fields.toMap ++
           user.email.map(email => ("email", Json.Str(email))) ++
-          user.email.map(_ => ("email_verified", Json.Bool(user.emailVerified))) ++
-          user.phone.map(phone => ("phone_number", Json.Str(phone))) ++
-          user.phone.map(_ => ("phone_number_verified", Json.Bool(user.phoneVerified)))
+          user.phone.map(phone => ("phone_number", Json.Str(phone)))
 
         uiLocales = uiLocalesOpt.getOrElse(Nil)
         resolvedClaims = authorizedClaims.flatMap { claimName =>

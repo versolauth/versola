@@ -39,7 +39,7 @@ class PostgresUserRepository(
           values ($id, $email, null, null, '{}'::jsonb, null)
           on conflict (email) where email is not null
           do update set email = excluded.email
-          returning id, email, phone, login, claims, ui_locales, email_verified, phone_verified, (xmax = 0) as created
+          returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def createByPhoneQuery(id: UserId, phone: Phone) =
@@ -47,7 +47,7 @@ class PostgresUserRepository(
           values ($id, null, $phone, null, '{}'::jsonb, null)
           on conflict (phone) where phone is not null
             do update set phone = excluded.phone
-          returning id, email, phone, login, claims, ui_locales, email_verified, phone_verified, (xmax = 0) as created
+          returning id, email, phone, login, claims, ui_locales, (xmax = 0) as created
        """.returning[(UserRecord, Boolean)]
 
   private def findOrCreateSql(userId: UserId, credential: Either[Email, Phone])(using DbCon) =
@@ -57,14 +57,14 @@ class PostgresUserRepository(
 
   override def find(id: UserId): Task[Option[UserRecord]] =
     xa.connectMeasured("find-user"):
-      sql"select id, email, phone, login, claims, ui_locales, email_verified, phone_verified from users where id = $id"
+      sql"select id, email, phone, login, claims, ui_locales from users where id = $id"
         .query[UserRecord]
         .run()
         .headOption
 
   override def findByLogin(login: Login): Task[Option[UserRecord]] =
     xa.connectMeasured("find-user-by-login"):
-      sql"select id, email, phone, login, claims, ui_locales, email_verified, phone_verified from users where login = $login"
+      sql"select id, email, phone, login, claims, ui_locales from users where login = $login"
         .query[UserRecord]
         .run()
         .headOption
@@ -90,8 +90,10 @@ class PostgresUserRepository(
               phone = excluded.phone,
               login = excluded.login,
               last_version = excluded.last_version,
-              email_verified = case when excluded.email is distinct from users.email then false else users.email_verified end,
-              phone_verified = case when excluded.phone is distinct from users.phone then false else users.phone_verified end
+              -- A verified flag describes the contact it was earned for: when the contact changes it goes.
+              claims = users.claims
+                - (case when excluded.email is distinct from users.email then 'email_verified' else '' end)
+                - (case when excluded.phone is distinct from users.phone then 'phone_number_verified' else '' end)
             where users.last_version is null or users.last_version < excluded.last_version
          """.update.run()
     .unit
@@ -145,18 +147,18 @@ class PostgresUserRepository(
     xa.connectMeasured("mark-credential-verified"):
       credential match
         case Left(email) =>
-          sql"update users set email_verified = true where id = $userId and email = $email"
-            .update.run()
+          sql"""update users set claims = claims || jsonb_build_object('email_verified', true)
+                where id = $userId and email = $email""".update.run()
         case Right(phone) =>
-          sql"update users set phone_verified = true where id = $userId and phone = $phone"
-            .update.run()
+          sql"""update users set claims = claims || jsonb_build_object('phone_number_verified', true)
+                where id = $userId and phone = $phone""".update.run()
     .unit
 
   private def findByPhoneQuery(phone: Phone) =
-    sql"select id, email, phone, login, claims, ui_locales, email_verified, phone_verified from users where phone = $phone".query[UserRecord]
+    sql"select id, email, phone, login, claims, ui_locales from users where phone = $phone".query[UserRecord]
 
   private def findByEmailQuery(email: Email) =
-    sql"select id, email, phone, login, claims, ui_locales, email_verified, phone_verified from users where email = $email".query[UserRecord]
+    sql"select id, email, phone, login, claims, ui_locales from users where email = $email".query[UserRecord]
 
   given DbCodec[UserId] = DbCodec.UUIDCodec.biMap(UserId(_), identity[UUID])
   given DbCodec[Email] = DbCodec.StringCodec.biMap(Email(_), identity[String])
