@@ -1,4 +1,5 @@
-import type { BackendProperty, FormPreviewScenario, Locale } from '../types';
+import type { BackendProperty, FormPreviewScenario, Locale, ThemeRecord } from '../types';
+import { renderTheme } from './central-api';
 
 // Builds the `step` object injected into a form preview generically from the
 // form's `properties`. Each property name becomes a step field, matching the
@@ -59,4 +60,19 @@ export function buildPreviewSrcdoc(params: PreviewSrcdocParams): string {
     previewId: params.previewId,
   });
   return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${params.themeCss}\n${params.style}</style><script>window.__VERSOLA_FORM__=${configJson};</script></head><body><div id="versola-form-root"></div><script>${params.jsCompiled}</script></body></html>`;
+}
+
+/** The stylesheet each theme gives a page, for previews. A stylesheet theme is its own CSS; a visual theme (the
+ *  built-in `default` among them) is composed by central on the base stylesheet, which the console does not have, so
+ *  it is asked for. A theme central cannot render keeps its own CSS rather than failing the preview. */
+export async function previewStylesheets(themes: ThemeRecord[]): Promise<Record<string, string>> {
+  const entries = await Promise.all(themes.map(async (record): Promise<[string, string]> => {
+    if (!record.tokens) return [record.id, record.css];
+    try {
+      return [record.id, (await renderTheme(record.tokens, record.css)).css];
+    } catch {
+      return [record.id, record.css];
+    }
+  }));
+  return Object.fromEntries(entries);
 }

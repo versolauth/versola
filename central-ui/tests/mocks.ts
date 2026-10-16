@@ -279,6 +279,9 @@ type MyPermissionsDto = {
   isProd: boolean;
 };
 
+/** Stands for the foundation stylesheet central lays every visual theme on. */
+export const baseStylesheetMock = 'BASE-STYLESHEET';
+
 export type MockConfigState = {
   tenants: TenantDto[];
   clients: Record<string, ClientDto[]>;
@@ -1246,7 +1249,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       return;
     }
 
-    // What central renders: the default stylesheet, a line naming the tokens, then the theme's own CSS.
+    // What central renders: the base stylesheet (a resource of central's util, not a stored theme), a line naming the tokens, then the theme's own CSS.
     if (pathname === '/configuration/themes/css' && method === 'POST') {
       const payload = body as { tokens: ThemeTokensDto; css?: string };
       const base = (state.themePresets ?? []).find(preset => preset.id === payload.tokens.base);
@@ -1256,8 +1259,7 @@ export async function setupConfigApiMocks(page: Page, overrides: Partial<MockCon
       }
       const resolved = { ...base.tokens, ...(payload.tokens.overrides ?? {}) };
       const generated = `:root{--brand:${resolved.brand};--shape:${resolved.shape};--surface:${resolved.surface};--mode:${resolved.mode}}`;
-      const defaults = state.themes.find(theme => theme.id === 'default')?.css ?? '';
-      await route.fulfill(json({ css: [defaults, generated, payload.css ?? ''].filter(Boolean).join('\n'), generated }));
+      await route.fulfill(json({ css: [baseStylesheetMock, generated, payload.css ?? ''].filter(Boolean).join('\n'), generated }));
       return;
     }
 

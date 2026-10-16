@@ -20,7 +20,7 @@ decide() { # decision, reason
 }
 
 case "$rel" in
-  central/src/main/resources/forms/*)
+  central/src/main/resources/forms/*|util/src/main/resources/versola/forms/*)
     decide deny "Generated output (gitignored). Edit central-ui/forms/ and run 'npm run build:forms' (see .claude/rules/frontend.md)." ;;
   */implementations/postgres/migrations/V*.sql)
     # A migration already on main may have been applied somewhere: Flyway checksums it, so editing it

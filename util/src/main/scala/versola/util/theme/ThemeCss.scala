@@ -1,9 +1,24 @@
 package versola.util.theme
 
+import java.nio.charset.StandardCharsets
+
 /** Turns theme tokens into the few CSS variables the login forms are built on (see `forms/common.css`).
   * Everything written is a fixed string or a validated [[BrandColor]], never free text.
   */
 object ThemeCss:
+
+  private val BaseStylesheetResource = "versola/forms/common.css"
+
+  /** The foundation stylesheet every token theme is composed on (the login forms' `common.css`). It is a classpath resource
+    * of this module, generated from `central-ui/forms/common.css` by `npm run build:forms`, and not the stored `default`
+    * theme: that one is an ordinary token theme the operator edits. Read once; a build without it fails loudly rather
+    * than serving unstyled pages.
+    */
+  lazy val baseStylesheet: String =
+    val stream = Option(getClass.getClassLoader.getResourceAsStream(BaseStylesheetResource)).getOrElse:
+      throw IllegalStateException(s"Classpath resource $BaseStylesheetResource is missing: run `npm run build:forms` in central-ui before building")
+    try new String(stream.readAllBytes(), StandardCharsets.UTF_8)
+    finally stream.close()
 
   private val Ink = "#1c1b19"
   private val White = "#ffffff"
