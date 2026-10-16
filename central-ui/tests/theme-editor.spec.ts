@@ -160,6 +160,13 @@ test('the dark preview is available for the device\'s scheme only, not for a sch
   await expect(dark).toBeDisabled();
 });
 
+test('the fields of the editor are as light as the other forms of the console in the light theme', async ({ page }) => {
+  await newTheme(page);
+
+  await expect(page.locator('#theme-id')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+  await expect(page.locator('#theme-scope')).toHaveCSS('background-color', 'rgb(250, 249, 247)');
+});
+
 test('the preview starts in the scheme of the operator\'s device, light on a light one', async ({ page }) => {
   await page.emulateMedia({ colorScheme: 'light' });
   await newTheme(page);
