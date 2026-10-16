@@ -29,21 +29,21 @@ export class VersolaCodeEditor extends LitElement {
       }
       .wrapper {
         position: relative;
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         overflow: hidden;
         transition: border-color var(--transition-fast);
       }
       .wrapper:focus-within {
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
+        box-shadow: 0 0 0 2px var(--accent-border);
       }
       .wrapper.invalid {
-        border-color: var(--danger, #f85149);
+        border-color: var(--danger);
       }
       .wrapper.invalid:focus-within {
-        box-shadow: 0 0 0 2px rgba(var(--danger-tint), 0.15);
+        box-shadow: 0 0 0 2px var(--danger-border);
       }
       pre, textarea {
         margin: 0;
@@ -77,7 +77,7 @@ export class VersolaCodeEditor extends LitElement {
         outline: none;
         overflow: auto;
       }
-      textarea::selection { background: rgba(var(--accent-tint), 0.35); color: transparent; }
+      textarea::selection { background: var(--selection-bg); color: transparent; }
     `,
   ];
 

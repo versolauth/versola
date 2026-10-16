@@ -72,7 +72,7 @@ export class VersolaUserForm extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
 
       .section-title {
@@ -85,7 +85,7 @@ export class VersolaUserForm extends LitElement {
       }
 
       .role-entry {
-        border-bottom: 1px dashed var(--border-dark);
+        border-bottom: 1px dashed var(--border-default);
       }
 
       .role-entry:last-child { border-bottom: none; }
@@ -100,8 +100,8 @@ export class VersolaUserForm extends LitElement {
       .role-details {
         margin: 0 0 var(--spacing-sm) calc(1.125rem + var(--spacing-sm));
         padding: var(--spacing-md);
-        background: rgba(0,0,0,0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
       }
 
@@ -192,8 +192,8 @@ export class VersolaUserForm extends LitElement {
       .role-preview {
         margin-top: var(--spacing-md);
         padding: var(--spacing-md) var(--spacing-lg);
-        background: rgba(0,0,0,0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
       }
 
@@ -248,7 +248,7 @@ export class VersolaUserForm extends LitElement {
       }
 
       .role-row.staged-add .role-tag {
-        color: var(--success, #22c55e);
+        color: var(--success);
       }
 
       .role-actions {

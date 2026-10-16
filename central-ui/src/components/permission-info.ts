@@ -53,9 +53,9 @@ export class VersolaPermissionInfo extends LitElement {
 
       .option-info-button {
         flex: none;
-        border: 1px solid rgba(var(--accent-tint), 0.4);
+        border: 1px solid var(--accent-border);
         border-radius: 999px;
-        background: rgba(var(--accent-tint), 0.12);
+        background: var(--accent-subtle);
         color: var(--accent);
         font-size: 0.75rem;
         font-weight: 700;
@@ -66,13 +66,13 @@ export class VersolaPermissionInfo extends LitElement {
       }
 
       .option-info-button:hover {
-        background: rgba(var(--accent-tint), 0.18);
-        border-color: rgba(var(--accent-tint), 0.55);
+        background: var(--accent-subtle);
+        border-color: var(--accent);
       }
 
       .option-info-button:focus-visible {
         outline: none;
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.2);
+        box-shadow: 0 0 0 2px var(--accent-border);
       }
 
       .option-tooltip {
@@ -85,10 +85,10 @@ export class VersolaPermissionInfo extends LitElement {
         max-height: 18rem;
         overflow: auto;
         padding: 0.75rem;
-        border: 1px solid rgba(var(--accent-tint), 0.28);
+        border: 1px solid var(--accent-border);
         border-radius: var(--radius-md);
-        background: var(--bg-dark-card);
-        box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+        background: var(--surface);
+        box-shadow: var(--shadow-lg);
       }
 
       .option-tooltip-title {
@@ -112,9 +112,9 @@ export class VersolaPermissionInfo extends LitElement {
       }
 
       .option-tooltip-group {
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--surface-inset);
         padding: 0.625rem 0.75rem;
       }
 

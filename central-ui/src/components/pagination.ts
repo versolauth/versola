@@ -41,7 +41,7 @@ export class VersolaPagination extends LitElement {
         display: flex;
         align-items: center;
         justify-content: center;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         cursor: pointer;
         transition: all var(--transition-fast);
@@ -56,7 +56,7 @@ export class VersolaPagination extends LitElement {
       .page-number.active {
         background: var(--accent);
         border-color: var(--accent);
-        color: white;
+        color: var(--on-accent);
       }
     `,
   ];

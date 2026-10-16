@@ -46,18 +46,18 @@ export class VersolaPermissionsList extends LitElement {
     .empty-state-icon { font-size:3rem; margin-bottom:1rem; }
     .permission-actions { display:flex; align-items:center; gap:.5rem; margin-left:var(--spacing-md); }
     .permission-stack { display:grid; gap:var(--spacing-md); }
-    .permission-card { padding:var(--spacing-lg); border:1px solid var(--border-dark); border-radius:var(--radius-lg); background:var(--bg-dark-card); display:grid; gap:var(--spacing-lg); transition:border-color var(--transition-base); }
+    .permission-card { padding:var(--spacing-lg); border:1px solid var(--border-default); border-radius:var(--radius-lg); background:var(--surface); display:grid; gap:var(--spacing-lg); transition:border-color var(--transition-base); }
     .permission-card:hover { border-color:var(--accent); }
     .permission-header { display:flex; justify-content:space-between; gap:var(--spacing-md); align-items:center; cursor:pointer; user-select:none; }
     .permission-title { display:grid; gap:.35rem; }
     .permission-name { color:var(--text-primary); font-size:1.125rem; font-weight:600; line-height:1.35; }
     .permission-code { color:var(--accent); font-size:.875rem; font-family:var(--font-mono, monospace); word-break:break-all; }
     .resource-groups { display:grid; gap:var(--spacing-md); }
-    .resource-card { display:grid; gap:var(--spacing-md); padding:1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.03); }
+    .resource-card { display:grid; gap:var(--spacing-md); padding:1rem; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-inset); }
     .resource-label-card { max-width:min(28rem, 100%); padding:.15rem 0; }
     .resource-label { color:var(--accent); font-size:1rem; font-weight:600; line-height:1.35; word-break:break-all; }
     .endpoint-list { display:grid; gap:.75rem; }
-    .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-dark); border-radius:var(--radius-md); background:rgba(255,255,255,.02); }
+    .endpoint-row { display:flex; align-items:center; justify-content:space-between; gap:.75rem; flex-wrap:wrap; padding:.875rem 1rem; border:1px solid var(--border-default); border-radius:var(--radius-md); background:var(--surface-inset); }
     .endpoint-main { display:flex; align-items:center; gap:.75rem; flex-wrap:wrap; min-width:0; }
     @media (max-width: 720px) {
       /* align-items:center is inherited from the base rule, where it vertically

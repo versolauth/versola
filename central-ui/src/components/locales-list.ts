@@ -81,7 +81,7 @@ export class VersolaLocalesList extends LitElement {
         align-items: center;
         gap: var(--spacing-md);
         padding: 0.625rem 0;
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
       .locale-row:last-child { border-bottom: none; }
       .locale-code {
@@ -98,7 +98,7 @@ export class VersolaLocalesList extends LitElement {
         align-items: end;
         margin-top: var(--spacing-lg);
         padding-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .form-actions {
         display: flex;
@@ -107,7 +107,7 @@ export class VersolaLocalesList extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .save-msg { font-size: 0.875rem; }
       .save-msg.error { color: var(--danger); }
@@ -137,29 +137,29 @@ export class VersolaLocalesList extends LitElement {
       .pill-btn:disabled { opacity: 0.6; cursor: default; }
       .pill-btn.static { cursor: default; }
       .toggle-active.on {
-        background: rgba(63, 185, 80, 0.15);
+        background: var(--success-subtle);
         color: var(--success);
-        border-color: rgba(63, 185, 80, 0.3);
+        border-color: var(--success-border);
       }
       .toggle-active.off {
-        background: rgba(210, 153, 34, 0.15);
+        background: var(--warning-subtle);
         color: var(--warning);
-        border-color: rgba(210, 153, 34, 0.3);
+        border-color: var(--warning-border);
       }
       .pill-default {
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         color: var(--accent);
-        border-color: rgba(var(--accent-tint), 0.3);
+        border-color: var(--accent-border);
         cursor: default;
       }
       .pill-set-default {
         background: transparent;
         color: var(--text-secondary);
-        border-color: var(--border-dark);
+        border-color: var(--border-default);
       }
       .pill-set-default:hover:not(:disabled) {
         color: var(--accent);
-        border-color: rgba(var(--accent-tint), 0.3);
+        border-color: var(--accent-border);
       }
     `,
   ];

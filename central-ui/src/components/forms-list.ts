@@ -105,8 +105,8 @@ export class VersolaFormsList extends LitElement {
       :host { display: block; }
 
       .form-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         transition: border-color var(--transition-base);
@@ -127,7 +127,7 @@ export class VersolaFormsList extends LitElement {
         font-weight: 600;
         color: var(--accent);
       }
-      .form-body { border-top: 1px solid var(--border-dark); padding: var(--spacing-lg); }
+      .form-body { border-top: 1px solid var(--border-default); padding: var(--spacing-lg); }
 
       .form-title {
         font-size: 1.625rem;
@@ -152,7 +152,7 @@ export class VersolaFormsList extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .form-actions-row {
         display: flex;
@@ -160,7 +160,7 @@ export class VersolaFormsList extends LitElement {
         gap: var(--spacing-sm);
       }
       .save-msg { font-size: 0.875rem; }
-      .save-msg.success { color: var(--success, #3fb950); }
+      .save-msg.success { color: var(--success); }
       .save-msg.error { color: var(--danger); }
 
       .hint { font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
@@ -169,7 +169,7 @@ export class VersolaFormsList extends LitElement {
         width: 100%;
         height: 100%;
         border: none;
-        background: #fff;
+        background: var(--surface);
         display: block;
       }
 
@@ -221,7 +221,7 @@ export class VersolaFormsList extends LitElement {
         position: absolute;
         inset: 0;
         background: var(--toggle-track-off);
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: 9999px;
         transition: background 0.2s, border-color 0.2s;
       }
@@ -242,7 +242,7 @@ export class VersolaFormsList extends LitElement {
       }
       .toggle:has(input:checked)::after {
         transform: translateX(16px);
-        background: #fff;
+        background: var(--on-accent);
       }
       .toggle-val {
         font-size: 0.8125rem;
@@ -260,7 +260,7 @@ export class VersolaFormsList extends LitElement {
       .seg-btn {
         padding: 0 0.875rem;
         background: transparent;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-left-width: 0;
         color: var(--text-secondary);
         font-size: 0.8125rem;
@@ -278,7 +278,7 @@ export class VersolaFormsList extends LitElement {
         border-radius: 0 var(--radius-md) var(--radius-md) 0;
       }
       .seg-btn:hover:not(.seg-active) {
-        background: rgba(255,255,255,0.05);
+        background: var(--surface-inset);
         color: var(--text-primary);
       }
       .seg-btn:disabled {
@@ -287,7 +287,7 @@ export class VersolaFormsList extends LitElement {
       .seg-btn.seg-active {
         background: var(--accent);
         border-color: var(--accent);
-        color: #fff;
+        color: var(--on-accent);
         font-weight: 600;
       }
 
@@ -300,7 +300,7 @@ export class VersolaFormsList extends LitElement {
       .size-btn {
         padding: 0.25rem 0.75rem;
         background: transparent;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-input);
         border-radius: var(--radius-md);
         color: var(--text-secondary);
         font-size: 0.75rem;
@@ -310,7 +310,7 @@ export class VersolaFormsList extends LitElement {
       }
       .size-btn:hover { color: var(--text-primary); border-color: var(--accent); }
       .size-btn.active {
-        background: rgba(var(--accent-tint), 0.1);
+        background: var(--accent-subtle);
         border-color: var(--accent);
         color: var(--accent);
       }
@@ -321,13 +321,13 @@ export class VersolaFormsList extends LitElement {
         height: 600px;
         max-width: 100%;
         margin: 0 auto;
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
-        background: #fff;
+        background: var(--surface);
       }
       .version-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-sm);
         transition: border-color var(--transition-fast);
@@ -354,9 +354,9 @@ export class VersolaFormsList extends LitElement {
         align-items: center;
         padding: 0.125rem 0.625rem;
         border-radius: 9999px;
-        background: rgba(63, 185, 80, 0.15);
-        border: 1px solid rgba(63, 185, 80, 0.4);
-        color: var(--success, #3fb950);
+        background: var(--success-subtle);
+        border: 1px solid var(--success-border);
+        color: var(--success);
         font-size: 0.6875rem;
         font-weight: 600;
         letter-spacing: 0.04em;
@@ -369,13 +369,13 @@ export class VersolaFormsList extends LitElement {
         margin-left: auto;
       }
       .version-body {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .preview-bar {
         display: flex;
         justify-content: flex-start;
         padding: var(--spacing-md) var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .preview-bar .preview-toggle-btn {
         padding: 0 0.875rem;
@@ -383,7 +383,7 @@ export class VersolaFormsList extends LitElement {
         background: var(--accent);
         border: 1px solid var(--accent);
         border-radius: var(--radius-md);
-        color: #fff;
+        color: var(--on-accent);
         font-size: 0.8125rem;
         font-weight: 600;
         cursor: pointer;
@@ -392,7 +392,7 @@ export class VersolaFormsList extends LitElement {
       .preview-bar .preview-toggle-btn:hover { opacity: 0.85; }
       .preview-area {
         padding: var(--spacing-md) var(--spacing-lg) var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .btn-active-set {
         font-size: 0.75rem;
@@ -415,8 +415,8 @@ export class VersolaFormsList extends LitElement {
       .kv-value {
         font-size: 0.8125rem;
         color: var(--text-primary);
-        background: rgba(0,0,0,0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-sm);
         padding: 0.25rem 0.5rem;
       }
@@ -431,8 +431,8 @@ export class VersolaFormsList extends LitElement {
       }
 
       .new-theme-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         padding: var(--spacing-lg);
         margin-bottom: var(--spacing-lg);
@@ -446,8 +446,8 @@ export class VersolaFormsList extends LitElement {
       .form-control {
         width: 100%;
         padding: 0.5rem var(--spacing-md);
-        background: var(--bg-dark);
-        border: 1px solid var(--border-dark);
+        background: var(--bg-page);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         color: var(--text-primary);
         font-family: var(--font-family);
@@ -459,7 +459,7 @@ export class VersolaFormsList extends LitElement {
       .form-control:focus {
         outline: none;
         border-color: var(--accent);
-        box-shadow: 0 0 0 2px rgba(var(--accent-tint), 0.15);
+        box-shadow: 0 0 0 2px var(--accent-border);
       }
       .locale-list {
         display: flex;
@@ -470,7 +470,7 @@ export class VersolaFormsList extends LitElement {
         align-items: center;
         gap: var(--spacing-md);
         padding: 0.5rem 0;
-        border-bottom: 1px solid var(--border-dark);
+        border-bottom: 1px solid var(--border-default);
       }
       .locale-row:last-child { border-bottom: none; }
       .locale-code {

@@ -100,13 +100,13 @@ export class VersolaTenantsList extends LitElement {
         font-weight: 600;
       }
       .badge-selected {
-        border: 1px solid rgba(var(--accent-tint), 0.28);
-        background: rgba(var(--accent-tint), 0.12);
+        border: 1px solid var(--accent-border);
+        background: var(--accent-subtle);
         color: var(--accent);
       }
       .badge-edge {
-        border: 1px solid rgba(147, 147, 147, 0.28);
-        background: rgba(147, 147, 147, 0.12);
+        border: 1px solid var(--border-default);
+        background: var(--surface-inset);
         color: var(--text-secondary);
         font-family: var(--font-mono);
       }
@@ -116,7 +116,7 @@ export class VersolaTenantsList extends LitElement {
         gap: 0.75rem;
         margin-top: var(--spacing-lg);
         padding-top: var(--spacing-lg);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
       .empty-state {
         text-align: center;
@@ -124,8 +124,8 @@ export class VersolaTenantsList extends LitElement {
         color: var(--text-secondary);
       }
       .error-banner {
-        border: 1px solid rgba(var(--danger-tint), 0.35);
-        background: rgba(var(--danger-tint), 0.08);
+        border: 1px solid var(--danger-border);
+        background: var(--danger-subtle);
         color: var(--danger);
         border-radius: var(--radius-md);
         padding: 0.875rem 1rem;

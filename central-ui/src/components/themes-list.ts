@@ -55,8 +55,8 @@ export class VersolaThemesList extends LitElement {
         display: flex;
         align-items: center;
         gap: var(--spacing-md);
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         padding: var(--spacing-md) var(--spacing-lg);
         margin-bottom: var(--spacing-sm);
@@ -64,8 +64,8 @@ export class VersolaThemesList extends LitElement {
       }
       .theme-card:hover { border-color: var(--accent); }
       .theme-id { font-family: var(--font-mono); font-size: 1.0625rem; font-weight: 600; color: var(--accent); }
-      .theme-kind { font-size: 0.6875rem; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--border-dark); border-radius: 999px; padding: 0.0625rem 0.5rem; }
-      .swatch { width: 1rem; height: 1rem; border-radius: 50%; border: 1px solid var(--border-dark); flex: none; }
+      .theme-kind { font-size: 0.6875rem; font-weight: 600; color: var(--text-secondary); border: 1px solid var(--border-default); border-radius: 999px; padding: 0.0625rem 0.5rem; }
+      .swatch { width: 1rem; height: 1rem; border-radius: 50%; border: 1px solid var(--border-default); flex: none; }
       .theme-card .icon-action { margin-left: auto; }
       .empty-state { text-align: center; padding: 3rem; color: var(--text-secondary); }
     `,

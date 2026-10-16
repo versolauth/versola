@@ -88,7 +88,7 @@ export class VersolaScopesList extends LitElement {
       .tab {
         padding: 0.375rem 0.875rem;
         border-radius: var(--radius-md);
-        border: 1px solid var(--border-dark);
+        border: 1px solid var(--border-default);
         background: transparent;
         color: var(--text-secondary);
         font-size: 0.875rem;
@@ -97,7 +97,7 @@ export class VersolaScopesList extends LitElement {
       }
 
       .tab.active {
-        background: rgba(var(--accent-tint), 0.15);
+        background: var(--accent-subtle);
         border-color: var(--accent);
         color: var(--accent);
       }
@@ -117,8 +117,8 @@ export class VersolaScopesList extends LitElement {
       }
 
       .scope-card {
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-lg);
         margin-bottom: var(--spacing-md);
         transition: border-color var(--transition-base);
@@ -167,7 +167,7 @@ export class VersolaScopesList extends LitElement {
       }
 
       .scope-body {
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
         padding: var(--spacing-lg);
       }
 
@@ -178,8 +178,8 @@ export class VersolaScopesList extends LitElement {
       }
 
       .claim-item {
-        background: rgba(var(--accent-tint), 0.15);
-        border: 1px solid var(--border-dark);
+        background: var(--accent-subtle);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-md);
       }

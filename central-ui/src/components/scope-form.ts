@@ -54,8 +54,8 @@ export class VersolaScopeForm extends LitElement {
       }
 
       .claims-section {
-        background: rgba(0, 0, 0, 0.2);
-        border: 1px solid var(--border-dark);
+        background: var(--surface-inset);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         padding: var(--spacing-lg);
       }
@@ -72,8 +72,8 @@ export class VersolaScopeForm extends LitElement {
         align-items: center;
         gap: 1rem;
         padding: var(--spacing-md);
-        background: var(--bg-dark-card);
-        border: 1px solid var(--border-dark);
+        background: var(--surface);
+        border: 1px solid var(--border-default);
         border-radius: var(--radius-md);
         margin-bottom: var(--spacing-sm);
       }
@@ -129,7 +129,7 @@ export class VersolaScopeForm extends LitElement {
         justify-content: flex-end;
         margin-top: var(--spacing-xl);
         padding-top: var(--spacing-xl);
-        border-top: 1px solid var(--border-dark);
+        border-top: 1px solid var(--border-default);
       }
     `,
   ];
